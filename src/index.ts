@@ -1,89 +1,10 @@
-import { readFile } from "node:fs/promises";
+import type { Message, ChatResponse } from "./types";
+import { runTool, tools } from "./tools";
 
 const baseUrl = process.env.BASE_URL;
 const model = process.env.MODEL;
 const apiKey = process.env.API_KEY;
 
-
-type ToolCall = {
-    id: string;
-    type: "function";
-    function: {
-        name: string;
-        arguments: string;
-    };
-};
-
-type UserMessage = {
-    role: "user";
-    content: string;
-};
-
-type AssistantMessage = {
-    role: "assistant";
-    content: string | null;
-    tool_calls?: ToolCall[];
-};
-
-type ToolMessage = {
-    role: "tool";
-    tool_call_id: string;
-    content: string;
-};
-
-type Message = UserMessage | AssistantMessage | ToolMessage;
-
-type ChatResponse = {
-    choices: {
-        message: AssistantMessage;
-        finish_reason: string;
-    }[];
-    usage?: {
-        prompt_tokens: number;
-        completion_tokens: number;
-    };
-}
-
-const tools = [
-    {
-        type: "function",
-        function: {
-            name: "read_file",
-            description: "Read the contents of a file. Use this to look at files in the user's project.",
-            parameters: {
-                type: "object",
-                properties: {
-                    path: {
-                        type: "string",
-                        description: "Path to the file, relative to the current folder",
-                    },
-                },
-                required: ["path"],
-            },
-        },
-    },
-];
-
-async function runTool(toolCall: ToolCall): Promise<string> {
-    const name = toolCall.function.name;
-
-    let args: any;
-    try {
-        args = JSON.parse(toolCall.function.arguments);
-    } catch {
-        return `Error: the arguments were not valid JSON: ${toolCall.function.arguments}`;
-    }
-
-    if (name === "read_file") {
-        try {
-            return await readFile(args.path, "utf-8");
-        } catch (error) {
-            return `Error reading file: ${error}`;
-        }
-    }
-
-    return `Error: unknown tool "${name}"`;
-}
 
 const messages: Message[] = [];
 
