@@ -75,6 +75,7 @@ Rules (`/permissions` to edit them):
 
 - `@path` attaches a file (completion included); `!cmd` runs a shell command yourself; `#note` saves a memory; `/` opens commands.
 - `esc` interrupts; type while it works and your message is delivered at the next step (after an interrupt, anything not yet sent goes back to the prompt); `ctrl+o` toggles verbose output; `ctrl+t` toggles the todo list; `ctrl+g` opens `$EDITOR`; `↑`/`↓` history.
+- The harness takes over the terminal window: it clears the screen and scrollback when it starts, keeps the spinner, prompt and status line on the bottom rows (the reply and running tools follow the conversation above them), and lets the conversation scroll into the terminal's own scrollback (so scrolling, selecting and copying work as usual, and the conversation stays there after you quit). When the window is resized, it clears the screen and scrollback again and lays everything out at the new size.
 - Sessions are saved per project. Resume them with `-c` (latest), `-r` (picker) or `/resume`.
 
 Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rename /export /copy /init /review /memory /config /thinking /mcp /agents /hooks /todos /bashes /add-dir /doctor /exit`.

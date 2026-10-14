@@ -5,7 +5,7 @@ import { spawnSync } from "bun";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { Screen } from "./screen";
+import { Screen, type Entry, type Printable } from "./screen";
 import { Editor } from "./editor";
 import type { Key } from "./keys";
 import { bold, dim, italic, strike, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
@@ -105,6 +105,10 @@ export class App {
     private inputMode: InputMode = "prompt";
     private md?: MarkdownStream;
     private mdLines = 0;
+    /** The streaming reply: what's been printed of it, and its text so far. */
+    private mdEntries: Entry[] = [];
+    private mdSource = "";
+    private mdCols = 0;
     private thinking = "";
     private receiving = new Map<string, { name: string; chars: number }>();
     private active = new Map<string, ActiveTool>();
@@ -210,7 +214,6 @@ export class App {
     }
 
     printWelcome() {
-        const cols = Math.min(termCols(), 90);
         const lines = [
             `${theme.accent("✻")} Welcome to ${bold(APP_TITLE)} ${theme.muted(`v${APP_VERSION}`)}`,
             "",
@@ -218,11 +221,13 @@ export class App {
             "",
             theme.muted(`  cwd: ${displayPath(this.cwd, process.env.HOME ?? "/")}`),
         ];
-        const inner = cols - 5;
-        const out = [theme.accent("╭" + "─".repeat(inner + 2) + "╮")];
-        for (const l of lines) out.push(theme.accent("│") + " " + padEnd(truncate(l, inner), inner) + " " + theme.accent("│"));
-        out.push(theme.accent("╰" + "─".repeat(inner + 2) + "╯"));
-        this.screen.print(out);
+        this.screen.print((cols) => {
+            const inner = Math.min(cols, 90) - 5;
+            const out = [theme.accent("╭" + "─".repeat(inner + 2) + "╮")];
+            for (const l of lines) out.push(theme.accent("│") + " " + padEnd(truncate(l, inner), inner) + " " + theme.accent("│"));
+            out.push(theme.accent("╰" + "─".repeat(inner + 2) + "╯"));
+            return out;
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -514,28 +519,31 @@ export class App {
 
     private replayTranscript() {
         const msgs = this.session.messages;
-        const cols = termCols();
-        const out: string[] = ["", theme.muted(`── Resumed session ${this.session.meta.id} (${msgs.length} messages) ──`)];
+        const id = this.session.meta.id;
+        const count = msgs.length;
         const tail = msgs.slice(-40);
-        for (const m of tail) {
-            if (m.role === "user") {
-                const kind = m.meta?.kind ?? "prompt";
-                if (kind === "prompt" || kind === "summary") {
-                    const t = (m.meta?.display ?? textOf(m)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-                    if (t) out.push("", ...wrapLine(theme.muted("> ") + truncate(t, cols * 3), cols - 2));
+        this.screen.print((cols) => {
+            const out: string[] = ["", theme.muted(`── Resumed session ${id} (${count} messages) ──`)];
+            for (const m of tail) {
+                if (m.role === "user") {
+                    const kind = m.meta?.kind ?? "prompt";
+                    if (kind === "prompt" || kind === "summary") {
+                        const t = (m.meta?.display ?? textOf(m)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+                        if (t) out.push("", ...wrapLine(theme.muted("> ") + truncate(t, cols * 3), cols - 2));
+                    }
+                } else {
+                    const t = textOf(m).trim();
+                    if (t) {
+                        const md = renderMarkdown(t, cols - 2);
+                        out.push("", ...md.slice(0, 30).map((l, i) => (i === 0 ? `${BULLET} ` : "  ") + l));
+                        if (md.length > 30) out.push(theme.subtle(`  … +${md.length - 30} lines`));
+                    }
+                    for (const p of m.content) if (p.type === "tool_call") out.push(theme.muted(`  ${BULLET} ${p.name}`));
                 }
-            } else {
-                const t = textOf(m).trim();
-                if (t) {
-                    const md = renderMarkdown(t, cols - 2);
-                    out.push("", ...md.slice(0, 30).map((l, i) => (i === 0 ? `${BULLET} ` : "  ") + l));
-                    if (md.length > 30) out.push(theme.subtle(`  … +${md.length - 30} lines`));
-                }
-                for (const p of m.content) if (p.type === "tool_call") out.push(theme.muted(`  ${BULLET} ${p.name}`));
             }
-        }
-        out.push(theme.muted("── end of resumed history ──"));
-        this.screen.print(out);
+            out.push(theme.muted("── end of resumed history ──"));
+            return out;
+        });
         if (!this.session.model || this.init.modelRef) return;
         // At startup initModel() picks it up; switching it here too would race that.
         if (this.modelReady) void this.trackSwitch(this.setModel(this.session.model, { quiet: true }).catch(() => false));
@@ -545,21 +553,22 @@ export class App {
     // -----------------------------------------------------------------------
     // Output helpers
 
-    print(lines: string | string[]) {
+    /** Lines, or a function of the terminal width (so it's laid out again after a resize). */
+    print(lines: Printable) {
         this.screen.print(lines);
     }
 
     notice(msg: string, level: "info" | "warn" | "error" = "info") {
         const color = level === "error" ? theme.error : level === "warn" ? theme.warning : theme.muted;
-        const lines = wrapLine(msg, termCols() - 6);
-        this.screen.print(lines.map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+        this.screen.print((cols) => wrapLine(msg, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
     }
 
     private printUser(text: string) {
-        const cols = termCols();
-        const body = text.split("\n").flatMap((l) => wrapLine(l, cols - 4));
-        const shown = body.length > 12 ? [...body.slice(0, 10), theme.subtle(`… +${body.length - 10} lines`)] : body;
-        this.screen.print(["", ...shown.map((l, i) => (i === 0 ? theme.muted("> ") : "  ") + theme.user(l))]);
+        this.screen.print((cols) => {
+            const body = text.split("\n").flatMap((l) => wrapLine(l, cols - 4));
+            const shown = body.length > 12 ? [...body.slice(0, 10), theme.subtle(`… +${body.length - 10} lines`)] : body;
+            return ["", ...shown.map((l, i) => (i === 0 ? theme.muted("> ") : "  ") + theme.user(l))];
+        });
     }
 
     private printAssistant(lines: string[]) {
@@ -570,15 +579,24 @@ export class App {
             else out.push(`  ${l}`);
             this.mdLines++;
         }
-        this.screen.print(out);
+        this.mdEntries.push(this.screen.print(out));
     }
 
     private flushStream() {
         if (this.md) {
             this.printAssistant(this.md.finish());
             this.md = undefined;
+            // Streamed at the width it started with; from the next resize on, lay out the whole reply again.
+            const source = redact(this.mdSource);
+            if (this.mdEntries.length && source.trim()) {
+                this.screen.replace(this.mdEntries, (cols) => assistantLines(renderMarkdown(source, cols - 2)));
+                // Resized while it streamed: show it at the width the window has now.
+                if (termCols() !== this.mdCols) this.screen.redraw();
+            }
         }
         this.mdLines = 0;
+        this.mdEntries = [];
+        this.mdSource = "";
         this.flushThinking();
     }
 
@@ -592,13 +610,14 @@ export class App {
         const t = this.thinking.trim();
         this.thinking = "";
         if (!t || !this.shouldShowThinking()) return;
-        const cols = termCols();
-        const lines = t.split("\n").flatMap((l) => wrapLine(l, cols - 4));
         const max = this.verbose ? 400 : this.settings.showThinking ? 60 : 8;
-        const shown = lines.slice(0, max);
-        const out = ["", ...shown.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l)))];
-        if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (ctrl+o to show more next time)`));
-        this.screen.print(out);
+        this.screen.print((cols) => {
+            const lines = t.split("\n").flatMap((l) => wrapLine(l, cols - 4));
+            const shown = lines.slice(0, max);
+            const out = ["", ...shown.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l)))];
+            if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (ctrl+o to show more next time)`));
+            return out;
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -612,10 +631,12 @@ export class App {
             case "text": {
                 if (this.thinking) this.flushThinking();
                 if (!this.md) {
-                    this.md = new MarkdownStream(termCols() - 2);
+                    this.mdCols = termCols();
+                    this.md = new MarkdownStream(this.mdCols - 2);
                     this.mdLines = 0;
                 }
                 this.streamChars += e.text.length;
+                this.mdSource += e.text;
                 this.printAssistant(this.md.push(e.text));
                 break;
             }
@@ -636,7 +657,10 @@ export class App {
             case "server_tool":
                 this.flushStream();
                 if (e.name === "web_search") this.screen.print(["", toolLine("Web Search", "ok")]);
-                else if (e.name === "web_search_result") this.screen.print(resultLines(e.detail, termCols(), 1));
+                else if (e.name === "web_search_result") {
+                    const detail = e.detail;
+                    this.screen.print((cols) => resultLines(detail, cols, 1));
+                }
                 break;
             case "assistant": {
                 this.flushStream();
@@ -671,6 +695,8 @@ export class App {
                 if (this.md?.hasContent || this.mdLines) this.notice("(connection problem; the partial response above was discarded and is being retried)", "warn");
                 this.md = undefined;
                 this.mdLines = 0;
+                this.mdEntries = [];
+                this.mdSource = "";
                 this.thinking = "";
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
@@ -685,7 +711,10 @@ export class App {
             case "compact_end":
                 this.lastSummary = e.summary;
                 this.screen.print(["", theme.muted(`✻ Conversation compacted · ${this.verbose ? "summary below" : "/summary to view the summary"}`)]);
-                if (this.verbose) this.screen.print(renderMarkdown(e.summary, termCols() - 4).map((l) => "  " + dim(l)));
+                if (this.verbose) {
+                    const summary = e.summary;
+                    this.screen.print((cols) => renderMarkdown(summary, cols - 4).map((l) => "  " + dim(l)));
+                }
                 this.verb = SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!;
                 break;
             case "subagent":
@@ -719,41 +748,48 @@ export class App {
     private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: { summary?: string; body?: string; diff?: { path: string; before: string; after: string } } }, durationMs: number) {
         const a = this.active.get(call.id);
         const title = a?.title ?? call.name;
-        const cols = termCols();
+        const tool = a?.tool;
+        const autoReason = a?.autoReason;
+        const sub = a?.sub ? { ...a.sub } : undefined;
+        const verbose = this.verbose;
+        const todos = this.toolState.todos.map((t) => ({ ...t }));
         const denied = /^The user declined/.test(result.content);
         const state = denied ? "denied" : result.isError ? "error" : "ok";
-        const out: string[] = ["", toolLine(displayTitle(title, a?.tool), state)];
         const d = result.display;
-        const max = this.verbose ? 200 : 4;
-        if (a?.autoReason && a.autoReason !== "hook") out.push(theme.subtle(`  ⎿  auto-approved: ${truncate(a.autoReason, cols - 22)}`));
-        if (call.name === "Task" && a?.sub) {
-            out.push(theme.muted(`  ⎿  ${result.isError ? "Failed" : "Done"} (${a.sub.count} tool use${a.sub.count === 1 ? "" : "s"} · ${formatTokens(a.sub.tokens)} tokens · ${formatDuration(durationMs)})`));
-            if (this.verbose) out.push(...resultLines(result.content, cols, 40));
-        } else if (denied) {
-            const fb = result.content.match(/said:\n([\s\S]*)$/)?.[1];
-            out.push(theme.warning(`  ⎿  ${fb ? `Declined: ${truncate(fb.split("\n")[0]!, cols - 18)}` : "Declined by user"}`));
-        } else if (result.isError) {
-            out.push(...resultLines(redact(result.content), cols, this.verbose ? 40 : 3, theme.error));
-        } else if (call.name === "TodoWrite") {
-            out.push(...renderTodos(this.toolState.todos, cols));
-        } else if (d?.diff) {
-            const { path, before, after } = d.diff;
-            out.push(theme.muted(`  ⎿  ${d.summary ?? "Updated"} ${before ? "" : ""}`.trimEnd()));
-            const body = before ? renderDiff(path, before, after, cols - 6, { maxLines: this.verbose ? 400 : 24 }) : renderFilePreview(path, after, cols - 6, this.verbose ? 400 : 10);
-            out.push(...body.map((l) => "     " + l));
-        } else if (d?.body !== undefined || call.name === "Bash" || call.name === "BashOutput") {
-            // With a display, its body is what to show (none: the summary says it all).
-            const body = d ? (d.body ?? "") : result.content;
-            if (d?.summary) out.push(theme.muted(`  ⎿  ${d.summary}`));
-            if (body.trim()) out.push(...resultLines(body, cols, max, (s) => s));
-            else if (!d?.summary) out.push(theme.muted("  ⎿  (no output)"));
-        } else if (d?.summary) {
-            out.push(theme.muted(`  ⎿  ${d.summary}`));
-            if (this.verbose) out.push(...resultLines(result.content, cols, 40).map((l) => l.replace("  ⎿  ", "     ")));
-        } else {
-            out.push(...resultLines(result.content, cols, max));
-        }
-        this.screen.print(out);
+        const max = verbose ? 200 : 4;
+        // Laid out again for the new width after a resize, from what was known when it finished.
+        this.screen.print((cols) => {
+            const out: string[] = ["", toolLine(displayTitle(title, tool), state)];
+            if (autoReason && autoReason !== "hook") out.push(theme.subtle(`  ⎿  auto-approved: ${truncate(autoReason, cols - 22)}`));
+            if (call.name === "Task" && sub) {
+                out.push(theme.muted(`  ⎿  ${result.isError ? "Failed" : "Done"} (${sub.count} tool use${sub.count === 1 ? "" : "s"} · ${formatTokens(sub.tokens)} tokens · ${formatDuration(durationMs)})`));
+                if (verbose) out.push(...resultLines(result.content, cols, 40));
+            } else if (denied) {
+                const fb = result.content.match(/said:\n([\s\S]*)$/)?.[1];
+                out.push(theme.warning(`  ⎿  ${fb ? `Declined: ${truncate(fb.split("\n")[0]!, cols - 18)}` : "Declined by user"}`));
+            } else if (result.isError) {
+                out.push(...resultLines(redact(result.content), cols, verbose ? 40 : 3, theme.error));
+            } else if (call.name === "TodoWrite") {
+                out.push(...renderTodos(todos, cols));
+            } else if (d?.diff) {
+                const { path, before, after } = d.diff;
+                out.push(theme.muted(`  ⎿  ${d.summary ?? "Updated"}`));
+                const body = before ? renderDiff(path, before, after, cols - 6, { maxLines: verbose ? 400 : 24 }) : renderFilePreview(path, after, cols - 6, verbose ? 400 : 10);
+                out.push(...body.map((l) => "     " + l));
+            } else if (d?.body !== undefined || call.name === "Bash" || call.name === "BashOutput") {
+                // With a display, its body is what to show (none: the summary says it all).
+                const body = d ? (d.body ?? "") : result.content;
+                if (d?.summary) out.push(theme.muted(`  ⎿  ${d.summary}`));
+                if (body.trim()) out.push(...resultLines(body, cols, max, (s) => s));
+                else if (!d?.summary) out.push(theme.muted("  ⎿  (no output)"));
+            } else if (d?.summary) {
+                out.push(theme.muted(`  ⎿  ${d.summary}`));
+                if (verbose) out.push(...resultLines(result.content, cols, 40).map((l) => l.replace("  ⎿  ", "     ")));
+            } else {
+                out.push(...resultLines(result.content, cols, max));
+            }
+            return out;
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -894,8 +930,7 @@ export class App {
     }
 
     private async approvePlan(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string }> {
-        const cols = termCols();
-        this.screen.print(["", `${theme.planMode(BULLET)} ${bold("Plan ready for review")}`, ...renderMarkdown(plan, cols - 4).map((l) => "  " + l)]);
+        this.screen.print((cols) => ["", `${theme.planMode(BULLET)} ${bold("Plan ready for review")}`, ...renderMarkdown(plan, cols - 4).map((l) => "  " + l)]);
         type C = "accept" | "manual" | "auto" | "no";
         const d = new SelectDialog<C>({
             title: "Ready to code?",
@@ -1265,14 +1300,14 @@ export class App {
             }
             return;
         }
-        const cols = termCols();
         this.screen.print(["", theme.bashMode("! ") + cmd]);
         // As a task: esc and ctrl+c stop it, and prompts typed meanwhile queue up.
         const res = await this.runTask("Running", (signal) => runShell({ command: cmd, cwd: this.toolState.cwd, timeoutMs: 120_000, signal, env: childEnv(this.settings.env) }));
         if (!res) return;
         const out = redact(res.output.replace(/\s+$/, ""));
         const note = res.aborted ? "\n(interrupted)" : res.timedOut ? "\n(stopped after 2 minutes)" : "";
-        this.screen.print(resultLines((out || "(no output)") + note, cols, this.verbose ? 200 : 20, (s) => s));
+        const maxLines = this.verbose ? 200 : 20;
+        this.screen.print((cols) => resultLines((out || "(no output)") + note, cols, maxLines, (s) => s));
         if (res.newCwd) this.toolState.cwd = res.newCwd;
         // Let the model see it next turn.
         const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;
@@ -1318,54 +1353,71 @@ export class App {
         if (this.exiting) return;
         const cols = termCols();
         const rows = termRows();
-        const lines: string[] = [];
-        if (this.busy) lines.push(...this.renderActivity(cols, rows));
-        const top = this.dialogs[this.dialogs.length - 1];
+        // The reply and running tools continue the output; the spinner, prompt and footer stay on the bottom rows.
+        const { flow, status } = this.busy ? this.renderActivity(cols, rows) : { flow: [], status: [] };
+        const lines = [...flow];
+        if (status.length) lines.push("", ...status);
         lines.push("");
+        const top = this.dialogs[this.dialogs.length - 1];
         if (top) lines.push(...top.render(cols, Math.max(8, rows - lines.length - 1)));
         else lines.push(...this.renderInput(cols));
-        this.screen.setLive(lines);
+        this.screen.setLive(lines, flow.length);
     }
 
-    private renderActivity(cols: number, rows: number): string[] {
+    /**
+     * What's happening right now: the reply so far and each running tool
+     * (`flow`), then the spinner, todos and queued messages (`status`). Each
+     * part of `flow` has a blank line before it, like the finished output.
+     */
+    private renderActivity(cols: number, rows: number): { flow: string[]; status: string[] } {
         const out: string[] = [];
-        // streaming text tail
+        const block = (lines: string[], attached = false) => {
+            if (!lines.length) return;
+            if (!attached || out.length) out.push("");
+            out.push(...lines);
+        };
+        // The reply's unfinished tail. When part of it is already printed above, this continues it.
         if (this.md) {
             const pend = this.md.pending();
-            const maxPend = Math.max(3, Math.floor(rows / 3));
-            const shown = pend.slice(-maxPend);
-            shown.forEach((l, i) => out.push((this.mdLines === 0 && i === 0 && pend.length === shown.length ? `${BULLET} ` : "  ") + l));
+            const shown = pend.slice(-Math.max(3, Math.floor(rows / 2)));
+            block(
+                shown.map((l, i) => (this.mdLines === 0 && i === 0 && pend.length === shown.length ? `${BULLET} ` : "  ") + l),
+                this.mdLines > 0,
+            );
         }
         if (this.thinking && this.shouldShowThinking() && !this.md) {
             const tl = this.thinking.trim().split("\n").flatMap((l) => wrapLine(l, cols - 4)).slice(-3);
-            out.push(...tl.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l))));
+            block(tl.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l))));
         }
         for (const [, r] of this.receiving) {
-            out.push(`${theme.muted(BULLET)} ${bold(r.name)} ${theme.muted(r.chars ? `writing… ${formatTokens(r.chars)} chars` : "preparing…")}`);
+            block([`${theme.muted(BULLET)} ${bold(r.name)} ${theme.muted(r.chars ? `writing… ${formatTokens(r.chars)} chars` : "preparing…")}`]);
         }
+        const progressLines = rows >= 36 ? 8 : 4;
         for (const a of this.active.values()) {
-            out.push(toolLine(displayTitle(a.title, a.tool), "running", this.frame % 6 < 3));
+            const lines = [toolLine(displayTitle(a.title, a.tool), "running", this.frame % 6 < 3)];
             if (a.sub) {
-                for (const t of a.sub.tools) out.push(theme.muted(`  ⎿  ${truncate(t, cols - 8)}`));
+                for (const t of a.sub.tools) lines.push(theme.muted(`  ⎿  ${truncate(t, cols - 8)}`));
                 const more = a.sub.count - a.sub.tools.length;
-                out.push(theme.subtle(`     ${more > 0 ? `+${more} more tool uses · ` : ""}${formatTokens(a.sub.tokens)} tokens · ${formatDuration(Date.now() - a.sub.startedAt)}`));
+                lines.push(theme.subtle(`     ${more > 0 ? `+${more} more tool uses · ` : ""}${formatTokens(a.sub.tokens)} tokens · ${formatDuration(Date.now() - a.sub.startedAt)}`));
             } else if (a.progress.trim()) {
-                const pl = a.progress.replace(/\x1b\[[0-9;]*m/g, "").trimEnd().split("\n").slice(-4);
-                pl.forEach((l, i) => out.push(theme.muted((i === 0 ? "  ⎿  " : "     ") + truncate(l, cols - 8))));
-            } else if (Date.now() - a.startedAt > 3000) out.push(theme.subtle(`  ⎿  running… ${formatDuration(Date.now() - a.startedAt)}`));
+                const pl = a.progress.replace(/\x1b\[[0-9;]*m/g, "").trimEnd().split("\n").slice(-progressLines);
+                pl.forEach((l, i) => lines.push(theme.muted((i === 0 ? "  ⎿  " : "     ") + truncate(l, cols - 8))));
+            } else if (Date.now() - a.startedAt > 3000) lines.push(theme.subtle(`  ⎿  running… ${formatDuration(Date.now() - a.startedAt)}`));
+            block(lines);
         }
+        const status: string[] = [];
         const waitingForUser = this.dialogs.length > 0;
         const elapsed = formatDuration(Date.now() - this.turnStart);
         const tokens = this.turnTokens + Math.round(this.streamChars / 4);
         const glyph = SPINNER_FRAMES[this.frame % SPINNER_FRAMES.length]!;
         if (!waitingForUser) {
             const label = this.status ?? `${this.verb}…`;
-            out.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""} · esc to interrupt)`)}`);
+            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""} · esc to interrupt)`)}`);
         }
         const todos = this.toolState.todos;
-        if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) out.push(...renderTodos(todos, cols).slice(0, 10));
-        for (const q of this.queued) out.push(theme.muted(`  ⏵ queued: ${truncate(q.replace(/\s+/g, " "), cols - 16)}`));
-        return out;
+        if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
+        for (const q of this.queued) status.push(theme.muted(`  ⏵ queued: ${truncate(q.replace(/\s+/g, " "), cols - 16)}`));
+        return { flow: out, status };
     }
 
     private renderInput(cols: number): string[] {
@@ -1469,6 +1521,11 @@ export class App {
         }
         return s.text;
     }
+}
+
+/** A reply's rendered lines, as they're printed while streaming. */
+function assistantLines(lines: string[]): string[] {
+    return lines.flatMap((l, i) => (i === 0 ? ["", `${BULLET} ${l}`] : [`  ${l}`]));
 }
 
 function shortModel(m: ModelInfo): string {

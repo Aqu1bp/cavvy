@@ -29,6 +29,7 @@ const { plainErrorText } = await import("../src/util/html");
 const { httpError } = await import("../src/providers/openai-compat");
 const { GrepTool } = await import("../src/tools/search-tools");
 const { App } = await import("../src/ui/app");
+const { stripAnsi } = await import("../src/ui/ansi");
 import type { Message } from "../src/providers/types";
 
 afterAll(cleanup);
@@ -475,7 +476,8 @@ describe("Grep without ripgrep", () => {
 function testApp(cwd = tempDir()) {
     const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
     const printed: string[] = [];
-    (app as any).screen = { print: (l: string | string[]) => printed.push(...(Array.isArray(l) ? l : [l])), setLive() {}, flushNow() {}, stop() {}, clearScreen() {} };
+    const print = (l: string | string[] | ((cols: number) => string[])) => (printed.push(...(typeof l === "function" ? l(100) : Array.isArray(l) ? l : [l])), {});
+    (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {} };
     (app as any).renderLive = () => {};
     app.session = Session.create(cwd, { persist: false });
     app.session.setSystem("test system prompt");
@@ -638,5 +640,55 @@ describe("TUI input handling", () => {
         await app.keyChanged("openai");
         expect(app.model).toBeUndefined();
         expect(app.agent).toBeUndefined();
+    });
+});
+
+describe("live region layout", () => {
+    function liveOf(app: InstanceType<typeof App>) {
+        let got = { lines: [] as string[], flow: 0 };
+        (app as any).screen.setLive = (lines: string[], flow = 0) => (got = { lines: lines.map(stripAnsi), flow });
+        App.prototype.renderLive.call(app);
+        return got;
+    }
+    function busyApp() {
+        const { app } = testApp();
+        app.busy = true;
+        (app as any).turnStart = Date.now();
+        return app as any;
+    }
+    const tool = (title: string, progress = "") => ({ call: { id: title, name: "Bash", input: {} }, title, startedAt: Date.now(), progress });
+
+    test("the reply, each running tool and the spinner are separate blocks", () => {
+        const app = busyApp();
+        app.md = { pending: () => ["Let me look."] };
+        app.active.set("a", tool("ls -la", "file1\nfile2"));
+        app.active.set("b", tool("git status"));
+        const { lines, flow } = liveOf(app);
+        const at = (s: string) => lines.findIndex((l) => l.includes(s));
+        expect(lines[0]).toBe("");
+        expect(lines[1]).toContain("Let me look.");
+        expect(lines[at("ls -la") - 1]).toBe("");
+        expect(lines[at("file1") - 1]).toContain("ls -la");
+        expect(lines[at("git status") - 1]).toBe("");
+        expect(lines[at("esc to interrupt") - 1]).toBe("");
+        // The spinner and everything after it stay on the bottom rows; the rest follows the output.
+        expect(flow).toBe(at("esc to interrupt") - 1);
+        expect(lines.slice(0, flow).some((l) => l.includes("git status"))).toBe(true);
+    });
+
+    test("a reply that's partly printed already continues it without a blank line", () => {
+        const app = busyApp();
+        app.md = { pending: () => ["second half"] };
+        app.mdLines = 3;
+        const { lines } = liveOf(app);
+        expect(lines[0]).toBe("  second half");
+    });
+
+    test("when idle, only the prompt is shown, all of it on the bottom rows", () => {
+        const { app } = testApp();
+        const { lines, flow } = liveOf(app);
+        expect(flow).toBe(0);
+        expect(lines[0]).toBe("");
+        expect(lines.some((l) => l.includes("esc to interrupt"))).toBe(false);
     });
 });
