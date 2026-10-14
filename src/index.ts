@@ -65,6 +65,7 @@ while (true) {
 
         for (const toolCall of message.tool_calls) {
             console.log(`[tool] ${toolCall.function.name} ${toolCall.function.arguments}`);
+    
             let result: string;
             if (needsPermission(toolCall.function.name) && !confirm("Allow this?")) {
                 result = "The user denied permission for this tool call.";

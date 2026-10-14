@@ -49,6 +49,18 @@ export const tools = [
             },
         },
     },
+    {
+        type: "function",
+        function: {
+            name: "edit_file",
+            description: "Edit the contents of a file. Use this to modify files in the user's project. The old_text must match the text in the file including spaces and indentation, and will be replaced with new_text. Prefer this over write_file when you want to make changes to an existing file.",
+            parameters: {
+                type: "object",
+                properties: { path: { type: "string", description: "Path to the file, relative to the current folder" }, old_text: { type: "string", description: "The text to be replaced in the file." }, new_text: { type: "string", description: "The new text to replace the old text with" } },
+                required: ["path", "old_text", "new_text"],
+            },
+        },
+    },
 ];
 
 const toolsNeedingPermission = ["write_file", "edit_file", "run_bash"];
@@ -100,6 +112,25 @@ export async function runTool(toolCall: ToolCall): Promise<string> {
         }
         catch (error) {
             return `Error writing file: ${error}`;
+        }
+    }
+        else if (name === "edit_file") {
+        try {
+            const content = await readFile(args.path, "utf-8");
+            const parts = content.split(args.old_text);
+            const count = parts.length - 1;
+
+            if (count === 0) {
+                return `Error: old_text was not found in ${args.path}. Read the file again and check the text.`;   // error: not found
+            }
+            if (count > 1) {
+                return `Error: old_text appears ${count} times in ${args.path}. Include more surrounding lines in old_text so it matches only once.`;   // error: found too many times
+            }
+
+            await writeFile(args.path, parts.join(args.new_text), "utf-8");
+            return `Edited ${args.path}`;
+        } catch (error) {
+            return `Error editing file: ${error}`;
         }
     }
 
