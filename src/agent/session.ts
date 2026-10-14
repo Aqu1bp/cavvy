@@ -1,5 +1,6 @@
 // Sessions are append-only JSONL files under ~/.harness/projects/<slug>/.
-// Each line is one record; a "compact" record starts a fresh history.
+// Each line is one record; a "compact" record starts a fresh history and a
+// "rewind" record cuts it back (/rewind).
 // Everything is passed through the redactor before it touches disk.
 
 import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync } from "fs";
@@ -60,6 +61,7 @@ type Line =
     | { t: "model"; model: string }
     | { t: "title"; title: string }
     | { t: "compact"; summary: string }
+    | { t: "rewind"; count: number }
     | { t: "usage"; usage: Usage; cost: number; model: string };
 
 export interface SessionSummary {
@@ -167,6 +169,18 @@ export class Session {
         this.usageByModel.set(model, cur);
     }
 
+    /**
+     * Keep only the first `count` messages (/rewind). Recorded as a line, like
+     * a compaction, rather than by rewriting the file: an append can't lose
+     * what's already saved if it's cut short (a torn line is ignored on load),
+     * nothing else in the file (usage and cost, titles) has to be copied over,
+     * and nothing written meanwhile by another process on this session is lost.
+     */
+    rewind(count: number) {
+        this.messages = this.messages.slice(0, count);
+        this.write({ t: "rewind", count });
+    }
+
     /** Replace history with a compacted version. */
     compact(summary: string, messages: Message[]) {
         this.messages = [];
@@ -203,6 +217,7 @@ export class Session {
         for (const l of lines) {
             if (l.t === "msg") s.messages.push(l.m);
             else if (l.t === "compact") s.messages = [];
+            else if (l.t === "rewind") s.messages = s.messages.slice(0, l.count);
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "title") s.title = l.title;
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost);

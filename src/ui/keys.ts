@@ -26,8 +26,30 @@ function mods(m: number): { shift?: boolean; meta?: boolean; ctrl?: boolean } {
     return out;
 }
 
+/**
+ * Ctrl+keys that legacy terminals send as LF, CR, tab, backspace or ESC. The
+ * kitty protocol reports them as ctrl+letter; they keep their old meaning.
+ */
+const LEGACY_CTRL: Record<number, Key> = {
+    106: { name: "enter", ctrl: true }, // ctrl+j
+    109: { name: "enter" }, // ctrl+m
+    105: { name: "tab" }, // ctrl+i
+    104: { name: "backspace" }, // ctrl+h
+    91: { name: "escape" }, // ctrl+[
+};
+
+/** Kitty's keypad keys (57399-57427) as the keys they stand for. */
+const KEYPAD = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "/", "*", "-", "+", "enter", "=", ",", "left", "right", "up", "down", "pageup", "pagedown", "home", "end", "insert", "delete"];
+
 function codepointKey(cp: number, m: number): Key {
     const md = mods(m);
+    if (md.ctrl && !md.meta && !md.shift && LEGACY_CTRL[cp]) return { ...LEGACY_CTRL[cp]! };
+    // Kitty's functional keys live in the private use area; they're never text.
+    if (cp >= 0xe000 && cp <= 0xf8ff) {
+        const k = KEYPAD[cp - 57399];
+        if (k === undefined) return { name: "unknown" };
+        return k.length > 1 ? { name: k, ...md } : codepointKey(k.charCodeAt(0), m);
+    }
     switch (cp) {
         case 13:
             return { name: "enter", ...md };
@@ -201,6 +223,8 @@ export class KeyParser {
             return codepointKey(cp, Number(parts[1]?.split(":")[0]) || 1);
         }
         if (final === "Z") return { name: "tab", shift: true };
+        // Focus reporting (?1004): CSI I when the window gains focus, CSI O when it loses it.
+        if (!params && (final === "I" || final === "O")) return { name: final === "I" ? "focus-in" : "focus-out" };
         const name = CSI_FINAL[final];
         if (name) return { name, ...mods(Number(parts[1]) || 1) };
         return { name: "unknown" };

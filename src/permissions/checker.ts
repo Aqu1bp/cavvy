@@ -11,14 +11,21 @@
 //   7. edits to harness / git config    -> ask
 //   8. allow rules                      -> allow
 //   9. per-category defaults by mode (below)
+//
+// Auto mode's shell defaults: commands run in the sandbox when there is one
+// (commands that delete things get the reviewer's look first); what can't be
+// sandboxed (needs the network, or the model opted out after a sandbox
+// failure) goes to the reviewer and runs unsandboxed if it's allowed. Without
+// a sandbox, read-only commands run and the rest go to the reviewer.
 
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import type { Settings } from "../config/settings";
-import { findMatch, EDIT_TOOLS, READ_TOOLS, type RuleTarget } from "./rules";
-import { analyzeCommand, configTarget, dangerousReason, isReadOnlyCommand, sensitiveTarget, suggestBashRules } from "./bash-safety";
+import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
+import { analyzeCommand, configTarget, dangerousReason, ENV_FILE, isReadOnlyCommand, pushesDefaultBranch, sensitiveTarget, suggestBashRules } from "./bash-safety";
+import { looksDestructive, needsHostAccess, sandboxEnabled } from "./sandbox";
 import { isReadOnly } from "../tools/types";
 import { canonical, expandPath, isInside } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
@@ -38,6 +45,8 @@ export interface Decision {
     dangerous?: boolean;
     /** Auto mode: run the classifier before deciding. */
     needsClassifier?: boolean;
+    /** Auto mode: run the command in the sandbox. */
+    sandbox?: boolean;
 }
 
 const SENSITIVE_HOME = [".ssh", ".aws", ".gnupg", ".kube", ".docker/config.json", ".config/gcloud", ".netrc", ".npmrc", ".pypirc", "Library/Keychains"];
@@ -58,9 +67,11 @@ export class PermissionChecker {
     constructor(
         private settings: () => Settings,
         private root: string,
+        /** Whether auto mode can run shell commands sandboxed here (replaceable in tests). */
+        readonly sandboxAvailable: () => boolean = () => sandboxEnabled(settings().sandbox),
     ) {}
 
-    private workspaceRoots(): string[] {
+    workspaceRoots(): string[] {
         return [this.root, ...(this.settings().permissions?.additionalDirectories ?? []).map((d) => expandPath(d, this.root))].map((p) => canonical(p));
     }
 
@@ -72,8 +83,9 @@ export class PermissionChecker {
     target(tool: Tool<any>, input: any, cwd: string): RuleTarget {
         const t: RuleTarget = { toolName: tool.name };
         if (tool.name === "Bash") t.command = String(input?.command ?? "");
-        const p = input?.file_path ?? input?.path ?? input?.notebook_path;
-        if ((EDIT_TOOLS.has(tool.name) || READ_TOOLS.has(tool.name)) && typeof p === "string") t.path = expandPath(p, cwd);
+        // The field the tool itself uses, so an extra key can't stand in for it.
+        const p = toolPath(tool.name, input);
+        if ((EDIT_TOOLS.has(tool.name) || READ_TOOLS.has(tool.name)) && p !== undefined) t.path = expandPath(p, cwd);
         else if (READ_TOOLS.has(tool.name)) t.path = cwd;
         if (tool.name === "WebFetch") t.url = String(input?.url ?? "");
         if (tool.name === "Task") t.agentType = String(input?.subagent_type ?? "general-purpose");
@@ -156,16 +168,42 @@ export class PermissionChecker {
                 if (!t.path) return { behavior: "ask" };
                 const inside = this.inWorkspace(t.path);
                 if (inside && (mode === "acceptEdits" || mode === "auto")) return { behavior: "allow" };
+                // Scratch files: auto mode writes them like the sandboxed shell can.
+                if (mode === "auto" && this.inTemp(t.path)) return { behavior: "allow" };
                 if (!inside) return { behavior: "ask", reason: "Outside the workspace", suggestions: [`Edit(${dirGlob(t.path)})`] };
                 return { behavior: "ask", offerAcceptEdits: true };
             }
             case "execute": {
                 if (tool.name === "Bash") {
-                    const sensitive = sensitiveTarget(t.command ?? "", { cwd, harnessHome: harnessHome() });
-                    if (sensitive) return { behavior: "ask", reason: `This command reads or touches ${sensitive}, which may contain credentials.` };
-                    if (isReadOnlyCommand(t.command ?? "")) return { behavior: "allow", reason: "read-only command" };
-                    if (mode === "auto") return { behavior: "ask", needsClassifier: true, suggestions: suggestBashRules(t.command ?? "") };
-                    return { behavior: "ask", suggestions: suggestBashRules(t.command ?? "") };
+                    const cmd = t.command ?? "";
+                    const suggestions = suggestBashRules(cmd);
+                    const sandbox = mode === "auto" && this.canSandbox(input, cmd);
+                    const sensitive = sensitiveTarget(cmd, { cwd, harnessHome: harnessHome() });
+                    if (sensitive) {
+                        const reason = `This command reads or touches ${sensitive}, which may contain credentials.`;
+                        // Using a .env (loading it to run the tests, creating one from the
+                        // example) is routine; printing or sending it isn't. The reviewer tells them apart.
+                        if (mode === "auto" && sensitive === ENV_FILE) return { behavior: "ask", needsClassifier: true, sandbox, reason, suggestions };
+                        return { behavior: "ask", reason };
+                    }
+                    if (isReadOnlyCommand(cmd)) {
+                        // Even read-only git runs programs from a repo's config (core.fsmonitor,
+                        // core.sshCommand), and a sandboxed command can set one up (in /tmp, say).
+                        // So in auto mode with a sandbox these run in it, and one that can't (it
+                        // needs the network, or the model opted out) takes the reviewer.
+                        const unsandboxed = mode === "auto" && !sandbox && this.sandboxAvailable();
+                        if (!unsandboxed) return { behavior: "allow", reason: "read-only command", ...(sandbox ? { sandbox } : {}) };
+                    }
+                    if (mode !== "auto") return { behavior: "ask", suggestions };
+                    const push = pushesDefaultBranch(cmd, cwd);
+                    if (push) return { behavior: "ask", reason: `This command updates the main branch on the remote (${push}); auto mode always asks for that.`, suggestions };
+                    if (sandbox) {
+                        // The sandbox contains everything but damage inside the project, so deletions get a look.
+                        const destructive = looksDestructive(cmd, cwd);
+                        if (destructive) return { behavior: "ask", needsClassifier: true, sandbox, reason: `This command deletes or discards work (${destructive}).`, suggestions };
+                        return { behavior: "allow", sandbox, reason: "sandboxed" };
+                    }
+                    return { behavior: "ask", needsClassifier: true, suggestions };
                 }
                 return mode === "auto" ? { behavior: "ask", needsClassifier: true } : { behavior: "ask" };
             }
@@ -208,6 +246,18 @@ export class PermissionChecker {
         // All matching ask rules, so approving `src` doesn't also lift a narrower rule inside it.
         const asks = (s.permissions?.ask ?? []).filter(hit);
         return asks.length ? `ask:${[...new Set(asks)].sort().join("\0")}` : undefined;
+    }
+
+    /** Auto mode can run this command in the sandbox: one exists, the model didn't opt out, and it doesn't plainly need the network. */
+    private canSandbox(input: any, cmd: string): boolean {
+        return input?.dangerouslyDisableSandbox !== true && this.sandboxAvailable() && !needsHostAccess(cmd);
+    }
+
+    /** Inside the system temp directories (symlinks resolved, so a link can't point elsewhere). */
+    private inTemp(p: string): boolean {
+        const c = canonical(p);
+        const temps = [canonical("/tmp"), canonical(tmpdir())];
+        return temps.some((t) => t !== "/" && isInside(c, t) && c !== t);
     }
 
     /** Does the command redirect output outside the workspace or into config? */

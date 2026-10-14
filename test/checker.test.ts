@@ -238,10 +238,50 @@ describe("file edits", () => {
         expect(check(NOTEBOOK, { notebook_path: join(W, "n.ipynb") }, mode).behavior).toBe("allow");
     });
 
-    test.each(["default", "acceptEdits", "auto"] as const)("outside the workspace asks with a directory rule (%s)", (mode) => {
+    test.each(["default", "acceptEdits"] as const)("outside the workspace asks with a directory rule (%s)", (mode) => {
         const d = check(T("Write"), write(join(O, "notes.txt")), mode);
         expect(d).toMatchObject({ behavior: "ask", reason: "Outside the workspace", suggestions: [`Edit(/${O}/**)`] });
         expect(d.offerAcceptEdits).toBeFalsy();
+    });
+
+    test("auto mode: outside the workspace and the temp dirs asks", () => {
+        // Never created; the check only resolves the path.
+        const elsewhere = join("/", `harness-test-nowhere-${process.pid}`, "notes.txt");
+        expect(check(T("Write"), write(elsewhere), "auto")).toMatchObject({ behavior: "ask", reason: "Outside the workspace" });
+        expect(check(T("Write"), write(join(homedir(), ".zshrc")), "auto").behavior).toBe("ask");
+    });
+
+    test("auto mode writes scratch files in the temp dirs; other modes ask", () => {
+        expect(check(T("Write"), write(join(O, "notes.txt")), "auto")).toEqual({ behavior: "allow" });
+        expect(check(T("Write"), write(join(tmpdir(), "scratch.py")), "auto")).toEqual({ behavior: "allow" });
+        expect(check(T("Write"), write("/tmp/parse_test.py"), "auto")).toEqual({ behavior: "allow" });
+        expect(check(T("Write"), write("/tmp/parse_test.py"), "acceptEdits").behavior).toBe("ask");
+        // The temp dir itself, a link out of it, and config inside it are not scratch files.
+        expect(check(T("Write"), write(tmpdir()), "auto").behavior).toBe("ask");
+        symlinkSync(join(homedir(), `.harness-test-target-${process.pid}`), join(O, "to-home"));
+        expect(check(T("Write"), write(join(O, "to-home")), "auto").behavior).toBe("ask");
+        expect(check(T("Write"), write(join(O, "repo", ".git", "hooks", "pre-commit")), "auto").behavior).toBe("ask");
+    });
+
+    test("the checked path is the one the tool uses: a decoy key next to it changes nothing", () => {
+        // Grep/Glob/LS search `path`; an in-workspace `file_path` beside it must not be what's checked.
+        for (const name of ["Grep", "Glob", "LS"]) {
+            const input = { pattern: "x", path: join(O, "sub"), file_path: join(W, "a.ts") };
+            expect(check(T(name), input).behavior).toBe("ask");
+            settings.permissions!.deny = [`Read(/${O}/**)`];
+            expect(check(T(name), input, "bypassPermissions").behavior).toBe("deny");
+            settings.permissions!.deny = [];
+        }
+        // Read uses file_path, even next to an in-workspace `path`.
+        expect(check(T("Read"), { file_path: join(O, ".env"), path: W }).behavior).toBe("ask");
+    });
+
+    test("a dangling symlink in the workspace pointing outside counts as outside", () => {
+        // Writing through it would create the target, outside.
+        symlinkSync(join(O, "not-yet", "created.txt"), join(W, "dangling"));
+        expect(check(T("Write"), write(join(W, "dangling")), "acceptEdits").behavior).toBe("ask");
+        symlinkSync(join(W, "src", "new.ts"), join(W, "dangling-inside"));
+        expect(check(T("Write"), write(join(W, "dangling-inside")), "acceptEdits").behavior).toBe("allow");
     });
 
     test("the suggested rule, once granted, allows the edit", () => {
@@ -323,9 +363,11 @@ describe("Bash", () => {
     test.each(["ls -la", "cat README.md", "git status", "git log --oneline -5", "grep -rn TODO src", "cat a | grep b | wc -l", "find . -name '*.ts'"])(
         "read-only %p is allowed in default, acceptEdits and auto",
         (cmd) => {
-            for (const mode of ["default", "acceptEdits", "auto"] as const) {
+            for (const mode of ["default", "acceptEdits"] as const) {
                 expect(check(T("Bash"), bash(cmd), mode)).toEqual({ behavior: "allow", reason: "read-only command" });
             }
+            // Sandboxed when this machine has one (see "auto mode" below).
+            expect(check(T("Bash"), bash(cmd), "auto")).toMatchObject({ behavior: "allow", reason: "read-only command" });
         },
     );
 
@@ -349,8 +391,105 @@ describe("Bash", () => {
         expect(check(T("Bash"), bash("npm run build"), "acceptEdits")).toEqual({ behavior: "ask", suggestions: ["Bash(npm run build:*)"] });
     });
 
-    test("auto mode sends non-read-only commands to the classifier", () => {
-        expect(check(T("Bash"), bash("npm run build"), "auto")).toEqual({ behavior: "ask", needsClassifier: true, suggestions: ["Bash(npm run build:*)"] });
+    describe("auto mode", () => {
+        const withSandbox = (available: boolean) => new PermissionChecker(() => settings, W, () => available);
+        const auto = (c: Checker, input: unknown) => c.check(T("Bash"), input, "auto", W);
+
+        test("without a sandbox, non-read-only commands go to the classifier and run unsandboxed", () => {
+            expect(auto(withSandbox(false), bash("npm run build"))).toEqual({ behavior: "ask", needsClassifier: true, suggestions: ["Bash(npm run build:*)"] });
+        });
+
+        test("with a sandbox, local commands run sandboxed without the classifier", () => {
+            for (const cmd of ["npm run build", "npm test", "make", "python3 script.py", "git commit -am x", "sed -i '' s/a/b/ f", "mkdir -p out && mv a out/"]) {
+                expect(auto(withSandbox(true), bash(cmd))).toEqual({ behavior: "allow", sandbox: true, reason: "sandboxed" });
+            }
+        });
+
+        test.each(["rm build.log", "rm -rf dist", "git checkout -- src", "git stash drop", "git branch -D old", "find . -name '*.o' -delete", "ls | xargs rm", "python3 -c 'import shutil; shutil.rmtree(\"src\")'"])(
+            "with a sandbox, %p still goes to the classifier, then runs sandboxed",
+            (cmd) => {
+                expect(auto(withSandbox(true), bash(cmd))).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true });
+            },
+        );
+
+        test.each(["npm install lodash", "git push", "curl https://example.com", "gh pr create --fill", "docker build ."])(
+            "%p needs the network: classifier, unsandboxed",
+            (cmd) => {
+                const d = auto(withSandbox(true), bash(cmd));
+                expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+                expect(d.sandbox).toBeFalsy();
+            },
+        );
+
+        test("dangerouslyDisableSandbox sends the command to the classifier, unsandboxed", () => {
+            const d = auto(withSandbox(true), { command: "npm test", dangerouslyDisableSandbox: true });
+            expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+            expect(d.sandbox).toBeFalsy();
+        });
+
+        test("read-only commands run sandboxed too, and leaving the sandbox for one takes the classifier", () => {
+            // Read-only git still runs programs from a repo's config, which a sandboxed command could have written.
+            expect(auto(withSandbox(true), bash("git -C /tmp/x status"))).toEqual({ behavior: "allow", reason: "read-only command", sandbox: true });
+            expect(auto(withSandbox(false), bash("git -C /tmp/x status"))).toEqual({ behavior: "allow", reason: "read-only command" });
+            const out = auto(withSandbox(true), { command: "git -C /tmp/x status", dangerouslyDisableSandbox: true });
+            expect(out).toMatchObject({ behavior: "ask", needsClassifier: true });
+            expect(out.sandbox).toBeFalsy();
+            // With no sandbox to leave, the flag changes nothing.
+            expect(auto(withSandbox(false), { command: "git status", dangerouslyDisableSandbox: true })).toEqual({ behavior: "allow", reason: "read-only command" });
+            // Nor can a read-only command that needs the network skip the reviewer (core.sshCommand runs on the host).
+            const remote = auto(withSandbox(true), bash("git -C /tmp/x remote show origin"));
+            expect(remote).toMatchObject({ behavior: "ask", needsClassifier: true });
+            expect(remote.sandbox).toBeFalsy();
+        });
+
+        test("git checkout of a file goes to the classifier; of a branch it doesn't", () => {
+            writeFileSync(join(W, "checkout-me.ts"), "");
+            for (const cmd of ["git checkout checkout-me.ts", "git -C . checkout checkout-me.ts", "/bin/rm checkout-me.ts", "git -C . restore checkout-me.ts"]) {
+                expect(auto(withSandbox(true), bash(cmd))).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true });
+            }
+            expect(auto(withSandbox(true), bash("git checkout some-branch"))).toEqual({ behavior: "allow", sandbox: true, reason: "sandboxed" });
+        });
+
+        test("a push while main is checked out asks, even without naming main", () => {
+            const repo = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-repo-")));
+            mkdirSync(join(repo, ".git"));
+            const on = (branch: string) => writeFileSync(join(repo, ".git", "HEAD"), `ref: refs/heads/${branch}\n`);
+            const push = (cmd: string) => withSandbox(true).check(T("Bash"), bash(cmd), "auto", repo);
+            try {
+                on("main");
+                for (const cmd of ["git push", "git push origin", "git push -u origin HEAD", `git -C ${repo} push`]) expect(push(cmd)).toMatchObject({ behavior: "ask", reason: expect.stringContaining("main branch") });
+                expect(push("git push origin feature").needsClassifier).toBe(true);
+                on("feature");
+                for (const cmd of ["git push", "git push origin HEAD"]) expect(push(cmd)).toMatchObject({ behavior: "ask", needsClassifier: true });
+                // An old-style HEAD: a symlink to the branch's ref file.
+                rmSync(join(repo, ".git", "HEAD"));
+                symlinkSync("refs/heads/main", join(repo, ".git", "HEAD"));
+                expect(push("git push")).toMatchObject({ behavior: "ask", reason: expect.stringContaining("main branch") });
+            } finally {
+                rmSync(repo, { recursive: true, force: true });
+            }
+        });
+
+        test("dangerouslyDisableSandbox changes nothing outside auto mode", () => {
+            expect(check(T("Bash"), { command: "npm test", dangerouslyDisableSandbox: true }, "default")).toEqual({ behavior: "ask", suggestions: ["Bash(npm test:*)"] });
+        });
+
+        test("the sandbox setting turns it off", () => {
+            settings.sandbox = false;
+            const d = check(T("Bash"), bash("npm test"), "auto");
+            expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+            expect(d.sandbox).toBeFalsy();
+        });
+
+        test("dangerous, config and allow-rule decisions come before the sandbox", () => {
+            const c = withSandbox(true);
+            expect(auto(c, bash("rm -rf ~"))).toMatchObject({ behavior: "ask", dangerous: true });
+            expect(auto(c, bash("echo x > .git/hooks/pre-commit")).behavior).toBe("ask");
+            expect(auto(c, bash("echo x > .git/hooks/pre-commit")).needsClassifier).toBeFalsy();
+            settings.permissions!.allow = ["Bash(npm test:*)"];
+            expect(auto(c, bash("npm test"))).toMatchObject({ behavior: "allow", rule: "Bash(npm test:*)" });
+            expect(auto(c, bash("npm test")).sandbox).toBeFalsy();
+        });
     });
 
     test("allow rules approve only fully matching compound commands", () => {
@@ -359,10 +498,25 @@ describe("Bash", () => {
         expect(check(T("Bash"), bash("npm test && rm -rf build")).behavior).toBe("ask");
     });
 
-    test.each(["cat .env", "grep KEY .env.local", "cp .env /tmp/x", "cat ~/.ssh/id_rsa", "cat ~/.aws/credentials", "ls ~/Library/Keychains"])(
-        "sensitive %p asks without the classifier",
+    test.each(["cat ~/.ssh/id_rsa", "cat ~/.aws/credentials", "ls ~/Library/Keychains", "cat ~/.harness/credentials.json"])(
+        "credential store %p asks without the classifier, in auto mode too",
         (cmd) => {
             for (const mode of ["default", "acceptEdits", "auto"] as const) {
+                const d = check(T("Bash"), bash(cmd), mode);
+                expect(d.behavior).toBe("ask");
+                expect(d.reason).toMatch(/credential/);
+                expect(d.needsClassifier).toBeFalsy();
+            }
+        },
+    );
+
+    test.each(["cat .env", "grep KEY .env.local", "cp .env /tmp/x", "source .env && npm test", "cp .env.example .env"])(
+        ".env command %p asks in manual modes and goes to the classifier in auto mode",
+        (cmd) => {
+            const d = check(T("Bash"), bash(cmd), "auto");
+            expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+            expect(d.reason).toMatch(/\.env file/);
+            for (const mode of ["default", "acceptEdits"] as const) {
                 const d = check(T("Bash"), bash(cmd), mode);
                 expect(d.behavior).toBe("ask");
                 expect(d.reason).toMatch(/credentials/);

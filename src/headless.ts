@@ -3,6 +3,7 @@
 // denied unless a rule, --allowedTools or the permission mode allows it.
 
 import { Agent, type AgentEvent } from "./agent/agent";
+import { fireHooks } from "./agent/hooks";
 import { Session } from "./agent/session";
 import { buildSystemPrompt } from "./agent/system-prompt";
 import { loadSettings, type Effort, type Settings } from "./config/settings";
@@ -144,8 +145,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         }
         return { client, model: smallModelFor(model!.provider, listings) ?? model! };
     };
-    const complete = async (system: string, prompt: string, signal?: AbortSignal) => {
-        const s = await smallClient();
+    const complete = async (system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean }) => {
+        const s = opts?.main ? { client, model: model! } : await smallClient();
         // Not a session message, so redact here (WebFetch pages, reviewer prompts).
         const res = await s.client.stream({ model: s.model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal }, () => {});
         if (res.usage) {
@@ -157,10 +158,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         return textOf(res);
     };
 
-    if (!session.meta.system) {
-        const append = [mcp.instructions(), o.appendSystemPrompt ?? ""].filter(Boolean).join("\n\n");
-        session.setSystem(buildSystemPrompt({ cwd: o.cwd, model, append: append || undefined }));
-    }
+    // --append-system-prompt isn't frozen in: the agent adds this run's to every request.
+    if (!session.meta.system) session.setSystem(buildSystemPrompt({ cwd: o.cwd, model, append: mcp.instructions() || undefined }));
 
     // ---- output
     let lastText = "";
@@ -221,6 +220,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         toolState,
         nativeWebSearch,
         maxTurns: o.maxTurns,
+        appendSystemPrompt: o.appendSystemPrompt,
         host: {
             emit,
             ui: {
@@ -261,6 +261,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         });
     }
 
+    const hookWarning = (m: string) => stderr(`warning: ${m}`);
+    const sessionStarted = fireHooks(settings, "SessionStart", { session_id: session.meta.id, source: resumed ? "resume" : "startup" }, o.cwd, hookWarning);
     const ac = new AbortController();
     const onSig = () => ac.abort();
     process.on("SIGINT", onSig);
@@ -275,7 +277,15 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     } finally {
         process.off("SIGINT", onSig);
         process.off("SIGTERM", onSig);
-        await Promise.all([killAllShells({ state: toolState }), Promise.race([mcp.closeAll(), sleep(1500)])]);
+        // A SessionStart hook still running and the SessionEnd hooks get at most 5 seconds between them.
+        // (Raced too: a hook's leftover background process can hold its output open after the abort.)
+        const deadline = AbortSignal.timeout(5000);
+        const timedOut = new Promise<void>((r) => deadline.addEventListener("abort", () => r(), { once: true }));
+        const ended = Promise.race([
+            Promise.race([sessionStarted, timedOut]).then(() => (deadline.aborted ? undefined : fireHooks(settings, "SessionEnd", { session_id: session.meta.id, reason: "exit" }, o.cwd, hookWarning, deadline))),
+            timedOut,
+        ]);
+        await Promise.all([ended, killAllShells({ state: toolState }), Promise.race([mcp.closeAll(), sleep(1500)])]);
     }
 
     const isError = reason !== "done";

@@ -29,7 +29,9 @@ import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
 import { PermissionChecker } from "../permissions/checker";
-import { AutoClassifier } from "../permissions/classifier";
+import { AutoClassifier, type ReviewContext } from "../permissions/classifier";
+import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
+import { harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
@@ -37,10 +39,11 @@ import { isReadOnlyCommand } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
-import { runHooks } from "./hooks";
+import { fireHooks, runHooks } from "./hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, transcriptText } from "./compact";
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
+import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { redact } from "../util/redact";
 
 // ---------------------------------------------------------------------------
@@ -56,7 +59,7 @@ export type AgentEvent =
     | { type: "assistant"; message: AssistantMessage }
     | { type: "tool_start"; call: ToolCallPart; title: string; tool?: Tool<any>; autoApproved?: string }
     | { type: "tool_progress"; id: string; text: string }
-    | { type: "tool_approved"; id: string; reason: string }
+    | { type: "tool_approved"; id: string; reason: string; sandboxed?: boolean }
     | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
@@ -126,14 +129,31 @@ export interface AgentOptions {
     host: AgentHost;
     helpers?: Helpers;
     isSubagent?: boolean;
+    /** A sub-agent's type and task, for its SubagentStop hooks. */
+    subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
     readOnly?: boolean;
     maxTurns?: number;
+    /**
+     * This run's --append-system-prompt. Added to the session's frozen system
+     * prompt on each request rather than stored in it, so it also reaches a
+     * resumed session and isn't kept by later runs without the flag.
+     */
+    appendSystemPrompt?: string;
     /** Use the provider's server-side web search when available. */
     nativeWebSearch?: boolean;
+    /**
+     * Sub-agents: what the developer asked the parent for. The child's own
+     * session holds only the task the parent wrote, which authorizes nothing.
+     */
+    parentRequests?: () => Pick<ReviewContext, "requests" | "summary">;
+    /** Sub-agents: the task the parent gave it. */
+    delegatedTask?: string;
 }
 
 const MAX_RETRIES = 10;
+/** Starts the text of a message the user sent while tools were running. */
+const STEERING = "The user sent this message while you were working:\n";
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -172,16 +192,22 @@ export class Agent {
     client: ProviderClient;
     readonly state: ToolState;
     private pendingReminders: string[] = [];
+    /** additionalContext from PostToolUse hooks, sent along with the tool results. */
+    private toolHookContext: string[] = [];
     private running = false;
     /** Prompt tokens of the most recent request (context usage). */
     contextTokens = 0;
     private lastUsageTotal = 0;
+    /** The last few tool calls, for the auto-mode reviewer ("Bash: npm test"). */
+    private recentActions: string[] = [];
 
     constructor(private o: AgentOptions) {
         this.session = o.session;
         this.model = o.model;
         this.client = o.client;
         this.state = o.toolState;
+        // Edits are saved into this session's file history; sub-agents get their parent's.
+        if (!o.isSubagent) this.state.fileHistory = FileHistory.for(o.session);
     }
 
     get tools(): Tool<any>[] {
@@ -221,7 +247,11 @@ export class Agent {
     }
 
     private systemPrompt(): string {
-        return this.session.meta.system ?? "";
+        const base = this.session.meta.system ?? "";
+        const append = this.o.appendSystemPrompt;
+        // Sessions frozen by older versions may end with it already, as its own paragraph.
+        if (!append || base === append || base.endsWith(`\n\n${append}`)) return base;
+        return base ? `${base}\n\n${append}` : append;
     }
 
     private toolSchemas() {
@@ -279,7 +309,7 @@ export class Agent {
 
         const parts: UserContent[] = [...content];
         for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r));
-        this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display } });
+        this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
 
         let turns = 0;
         let maxTokenStrikes = 0;
@@ -291,7 +321,7 @@ export class Agent {
         while (true) {
             if (signal.aborted) return this.interrupted(false);
             if (++turns > maxTurns) {
-                this.emit({ type: "notice", level: "warn", message: `Stopped after ${maxTurns} model turns (max turns).` });
+                this.emit({ type: "notice", level: "warn", message: `Stopped after ${maxTurns} model turn${maxTurns === 1 ? "" : "s"} (max turns).` });
                 this.emit({ type: "turn_end", reason: "max_turns" });
                 return "max_turns";
             }
@@ -369,16 +399,19 @@ export class Agent {
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
-                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n") } });
+                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
                     continue;
                 }
 
-                if (!this.o.isSubagent && settings.hooks?.Stop?.length && stopHookRounds < 3) {
-                    const h = await runHooks(this.o.settings(), "Stop", { session_id: this.session.meta.id, last_message: textOf(msg) }, this.state.cwd, signal).catch(() => undefined);
+                const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
+                if (settings.hooks?.[stopEvent]?.length && stopHookRounds < 3) {
+                    const sub = this.o.subagent;
+                    const payload = sub ? { session_id: sub.parentSessionId, agent_type: sub.type, description: sub.description } : { session_id: this.session.meta.id };
+                    const h = await runHooks(this.o.settings(), stopEvent, { ...payload, last_message: textOf(msg) }, this.state.cwd, signal).catch(() => undefined);
                     for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
                     if (h?.blocked) {
                         stopHookRounds++;
-                        this.session.push({ role: "user", content: [reminder(`A Stop hook asked you to keep going:\n${h.blocked}`)], meta: { kind: "reminder" } });
+                        this.session.push({ role: "user", content: [reminder(`A ${stopEvent} hook asked you to keep going:\n${h.blocked}`)], meta: { kind: "reminder" } });
                         continue;
                     }
                 }
@@ -388,11 +421,11 @@ export class Agent {
 
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
-            const extra: UserContent[] = [];
+            const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
             if (signal.aborted) extra.push({ type: "text", text: "[Request interrupted by user for tool use]" });
             else {
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (queued.length) extra.push({ type: "text", text: `The user sent this message while you were working:\n${queued.join("\n\n")}` });
+                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
             }
             this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results" } });
             if (signal.aborted) {
@@ -404,6 +437,32 @@ export class Agent {
                 return "denied";
             }
         }
+    }
+
+    /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
+    private checkpoint(): number | undefined {
+        return this.o.isSubagent ? undefined : this.state.fileHistory?.begin();
+    }
+
+    /**
+     * Drop the history from message `index` (a prompt) on, for /rewind, with
+     * what came from it: the context estimate, read state, todos, the approved
+     * plan and the auto-mode reviewer's verdicts. Notes that went out with that
+     * prompt were pending just before it, so they're queued again.
+     */
+    rewind(index: number) {
+        if (this.running) throw new Error("Agent is already running");
+        const prompt = this.session.messages[index];
+        this.session.rewind(index);
+        this.contextTokens = 0;
+        this.lastUsageTotal = 0;
+        resetToolState(this.state, this.session.messages);
+        this.o.classifier?.clearCache();
+        if (prompt?.role === "user") this.pendingReminders.unshift(...promptNotes(prompt));
+        // The mode may have changed in the dropped turns: say what it is now.
+        const mode = this.o.mode.get();
+        if (mode === "plan") this.noteModeChange("default", "plan");
+        else this.addReminder(`The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}`);
     }
 
     private interrupted(_duringTools: boolean): TurnEndReason {
@@ -491,6 +550,10 @@ export class Agent {
         const history = this.session.messages;
         if (history.length < 2) return false;
         this.emit({ type: "compact_start", auto: opts.auto });
+        if (!this.o.isSubagent) {
+            const warn = (message: string) => this.emit({ type: "notice", level: "warn", message });
+            await fireHooks(this.o.settings(), "PreCompact", { session_id: this.session.meta.id, trigger: opts.auto ? "auto" : "manual", custom_instructions: opts.instructions ?? "" }, this.state.cwd, warn, opts.signal);
+        }
         const req = [...history, compactRequestMessage(opts.instructions)];
         let summary = "";
         try {
@@ -540,8 +603,9 @@ export class Agent {
         return this.tools.find((t) => t.name === name);
     }
 
-    private toolContext(callId: string, signal: AbortSignal): ToolContext {
+    private toolContext(callId: string, signal: AbortSignal, sandbox?: Sandbox): ToolContext {
         return {
+            sandbox,
             state: this.state,
             settings: this.o.settings(),
             signal,
@@ -590,7 +654,7 @@ export class Agent {
                 while (i < calls.length && this.concurrent(this.findTool(calls[i]!.name), calls[i]!.input)) batch.push(calls[i++]!);
             } else batch.push(calls[i++]!);
 
-            const approved: { call: ToolCallPart; tool: Tool<any>; input: any; auto?: string }[] = [];
+            const approved: { call: ToolCallPart; tool: Tool<any>; input: any; auto?: string; sandbox?: boolean }[] = [];
             for (const call of batch) {
                 if (denied || signal.aborted) break;
                 const prep = await this.prepare(call, signal);
@@ -600,7 +664,7 @@ export class Agent {
                 } else approved.push({ call, ...prep });
             }
             if (signal.aborted) break;
-            await Promise.all(approved.map(async (a) => results.set(a.call.id, await this.runTool(a.call, a.tool, a.input, signal, a.auto))));
+            await Promise.all(approved.map(async (a) => results.set(a.call.id, await this.runTool(a.call, a.tool, a.input, signal, a.auto, a.sandbox))));
             if (denied || signal.aborted) break;
         }
         const out: ToolResultPart[] = calls.map(
@@ -626,7 +690,7 @@ export class Agent {
     private async prepare(
         call: ToolCallPart,
         signal: AbortSignal,
-    ): Promise<{ tool: Tool<any>; input: any; auto?: string } | { result: ToolResultPart; stop?: boolean }> {
+    ): Promise<{ tool: Tool<any>; input: any; auto?: string; sandbox?: boolean } | { result: ToolResultPart; stop?: boolean }> {
         const tool = this.findTool(call.name);
         if (!tool) {
             this.emit({ type: "tool_start", call, title: call.name });
@@ -670,18 +734,18 @@ export class Agent {
         const mode = this.o.mode.get();
         const decision = this.o.checker.check(tool, input, mode, this.state.cwd);
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied") };
-        if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input };
-        if (hookDecision === "allow" && !decision.dangerous) return { tool, input, auto: "hook" };
+        // Whatever approves it, a command the checker sandboxed stays sandboxed.
+        const sandbox = decision.sandbox;
+        if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
+        if (hookDecision === "allow" && !decision.dangerous) return { tool, input, sandbox, auto: "hook" };
 
         let classifierReason: string | undefined;
         // A hook that asked wants the user, not the auto-mode reviewer.
         if (decision.needsClassifier && !decision.dangerous && hookDecision !== "ask" && this.o.classifier) {
             try {
-                const v = await this.o.classifier.classify(
-                    { toolName: tool.name, input, cwd: this.state.cwd, userRequests: this.recentUserRequests() },
-                    signal,
-                );
-                if (v.decision === "allow") return { tool, input, auto: v.reason };
+                const v = await this.o.classifier.classify({ toolName: tool.name, input, cwd: this.state.cwd, context: this.reviewContext(), sandboxed: sandbox }, signal);
+                if (v.warning) this.emit({ type: "notice", level: "warn", message: v.warning });
+                if (v.decision === "allow") return { tool, input, sandbox, auto: v.reason };
                 classifierReason = v.reason;
             } catch (e) {
                 if (isAbort(e, signal)) return { result: this.errorResult(call, "Interrupted") };
@@ -717,7 +781,7 @@ export class Agent {
                 this.o.host.saveRules?.(answer.rules, answer.scope);
             }
         }
-        if (answer.allow) return { tool, input };
+        if (answer.allow) return { tool, input, sandbox };
         const fb = answer.feedback?.trim();
         if (fb) {
             return { result: this.errorResult(call, `The user declined this tool call and said:\n${fb}`) };
@@ -728,12 +792,20 @@ export class Agent {
         };
     }
 
-    private async runTool(call: ToolCallPart, tool: Tool<any>, input: any, signal: AbortSignal, auto?: string): Promise<ToolResultPart> {
+    private async runTool(call: ToolCallPart, tool: Tool<any>, input: any, signal: AbortSignal, auto?: string, sandboxed?: boolean): Promise<ToolResultPart> {
         const started = Date.now();
-        if (auto) this.emit({ type: "tool_approved", id: call.id, reason: auto });
+        this.noteAction(tool, input);
+        if (auto) this.emit({ type: "tool_approved", id: call.id, reason: auto, sandboxed });
+        let sandbox: Sandbox | undefined;
+        if (sandboxed) {
+            const kind = sandboxKind();
+            // Approved on the condition that it's contained: never fall back to running it bare.
+            if (!kind) return this.errorResult(call, "The sandbox this command was approved for isn't available. Run it with dangerouslyDisableSandbox: true to have it reviewed instead.");
+            sandbox = { kind, policy: sandboxPolicy(this.o.checker.workspaceRoots(), { harnessHome: harnessHome() }) };
+        }
         let result: ToolResult;
         try {
-            result = await tool.run(input, this.toolContext(call.id, signal));
+            result = await tool.run(input, this.toolContext(call.id, signal, sandbox));
         } catch (e) {
             result = signal.aborted ? { content: "Interrupted by user", isError: true } : { content: `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }
@@ -742,6 +814,7 @@ export class Agent {
             const h = await runHooks(settings, "PostToolUse", { tool_name: tool.name, tool_input: input, tool_response: { content: result.content.slice(0, 20_000), is_error: Boolean(result.isError) }, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
             for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
             if (h?.blocked) result = { ...result, content: `${result.content}\n\nPostToolUse hook feedback:\n${h.blocked}` };
+            if (h?.additionalContext) this.toolHookContext.push(`Context from a PostToolUse hook (${tool.name}):\n${h.additionalContext}`);
         }
         this.emit({ type: "tool_end", call, result, durationMs: Date.now() - started });
         return {
@@ -754,16 +827,47 @@ export class Agent {
         };
     }
 
-    private recentUserRequests(): string[] {
-        const out: string[] = [];
-        for (let i = this.session.messages.length - 1; i >= 0 && out.length < 3; i--) {
+    /**
+     * What the developer asked for: their last few messages (prompts and the
+     * slash commands they ran), plus the compaction summary when their
+     * earlier messages were folded into one. The summary is the model's
+     * writing, so the reviewer is told not to treat it as the developer's.
+     */
+    requestContext(): Pick<ReviewContext, "requests" | "summary"> {
+        const requests: string[] = [];
+        let summary: string | undefined;
+        for (let i = this.session.messages.length - 1; i >= 0; i--) {
             const m = this.session.messages[i]!;
-            if (m.role === "user" && (m.meta?.kind === "prompt" || m.meta?.kind === "summary" || !m.meta)) {
-                const t = textOf(m).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-                if (t) out.unshift(t);
+            if (m.role !== "user") continue;
+            const kind = m.meta?.kind;
+            const text = () => textOf(m).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+            if (kind === "summary") {
+                summary = text() || undefined;
+                break;
+            }
+            if (requests.length < 3 && (kind === "prompt" || kind === "command" || !m.meta)) {
+                const t = text();
+                if (t) requests.unshift(kind === "command" && m.meta?.display ? `(ran ${m.meta.display})\n${t}` : t);
+            }
+            // Messages the developer sent while tools ran ride along with the results.
+            if (requests.length < 3 && kind === "tool_results") {
+                const sent = m.content.flatMap((p) => (p.type === "text" && p.text.startsWith(STEERING) ? [p.text.slice(STEERING.length).trim()] : [])).filter(Boolean);
+                if (sent.length) requests.unshift(sent.join("\n\n"));
             }
         }
-        return out;
+        return { requests, summary };
+    }
+
+    private reviewContext(): ReviewContext {
+        if (this.o.parentRequests) return { ...this.o.parentRequests(), delegatedTask: this.o.delegatedTask, recentActions: [...this.recentActions] };
+        return { ...this.requestContext(), recentActions: [...this.recentActions] };
+    }
+
+    private noteAction(tool: Tool<any>, input: any) {
+        const i = (input ?? {}) as Record<string, unknown>;
+        const what = i.command ?? i.file_path ?? i.notebook_path ?? i.url ?? i.pattern ?? i.path ?? i.query ?? JSON.stringify(input ?? {});
+        this.recentActions.push(`${tool.name}: ${String(what).replace(/\s+/g, " ").slice(0, 300)}`);
+        if (this.recentActions.length > 8) this.recentActions.shift();
     }
 
     // -----------------------------------------------------------------------
@@ -807,8 +911,12 @@ export class Agent {
             client,
             tools,
             isSubagent: true,
+            parentRequests: () => this.requestContext(),
+            delegatedTask: opts.prompt,
+            subagent: { type, description: label, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
             maxTurns: 200,
+            appendSystemPrompt: undefined,
             nativeWebSearch: this.o.nativeWebSearch && model.provider === this.model.provider,
             toolState: {
                 cwd: this.state.cwd,
@@ -816,6 +924,7 @@ export class Agent {
                 fileState: new Map(this.state.fileState),
                 todos: [],
                 shells: this.state.shells,
+                fileHistory: this.state.fileHistory,
             },
             host: {
                 emit: (e) => parentHost.emit({ type: "subagent", parentId: callId, label, event: e }),

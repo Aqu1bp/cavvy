@@ -9,11 +9,13 @@ import { InputDialog, MessageDialog, SelectDialog } from "../ui/dialogs";
 import { bold, padEnd, termCols, theme, truncate, width } from "../ui/ansi";
 import { formatDuration, type SelectItem } from "../ui/components";
 import { renderMarkdown } from "../ui/markdown";
+import { notificationMode, notifyAfterMs } from "../ui/notify";
 import { APP_TITLE, APP_VERSION, paths } from "../config/paths";
-import { EFFORT_LEVELS, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, type Effort, type SettingsScope, type Settings } from "../config/settings";
+import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, type Effort, type SettingsScope, type Settings } from "../config/settings";
 import { isTrusted } from "../config/trust";
 import { MODE_INFO, PERMISSION_MODES, parseMode, type PermissionMode } from "../permissions/modes";
 import { parseRule } from "../permissions/rules";
+import { sandboxEnabled, sandboxKind } from "../permissions/sandbox";
 import {
     allProviders,
     getProvider,
@@ -43,11 +45,13 @@ import { listSessions, findSession } from "../agent/session";
 import { loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
 import { estimateTokens } from "../agent/compact";
+import { BLOCKING_EVENTS, HOOK_EVENTS } from "../agent/hooks";
 import { toSchema } from "../tools/index";
 import { displayPath, expandPath } from "../util/files";
 import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
+import { rewindCommand } from "./rewind";
 
 export interface Command {
     name: string;
@@ -967,13 +971,14 @@ async function effortCommand(app: App, args: string) {
 async function configCommand(app: App) {
     let index = 0;
     for (;;) {
-        type K = "showThinking" | "autoCompact" | "webSearch" | "defaultMode" | "allowBypass" | "smallModel" | "verbose";
+        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "defaultMode" | "allowBypass" | "smallModel" | "verbose";
         const s = app.settings;
         const onOff = (b: boolean | undefined) => (b ? theme.success("on") : theme.muted("off"));
         const items: SelectItem<K>[] = [
             { label: "Show thinking text", value: "showThinking", detail: onOff(s.showThinking), description: "full reasoning text when the provider returns it" },
             { label: "Auto-compact", value: "autoCompact", detail: onOff(s.autoCompact !== false), description: "summarize the conversation near the context limit" },
             { label: "Web search backend", value: "webSearch", detail: s.webSearch ?? "auto", description: "auto · anthropic · brave · tavily · duckduckgo · off" },
+            { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
             { label: "Default permission mode", value: "defaultMode", detail: MODE_INFO[s.permissions?.defaultMode ?? "default"].label, description: "mode at startup" },
             { label: "Bypass in shift+tab cycle", value: "allowBypass", detail: onOff(s.permissions?.allowBypass), description: "lets shift+tab reach bypass permissions" },
             { label: "Small model", value: "smallModel", detail: s.smallModel ?? "auto", description: "for the auto-mode classifier and summaries" },
@@ -999,6 +1004,12 @@ async function configCommand(app: App) {
                 const next = order[(order.indexOf(s.webSearch ?? "auto") + 1) % order.length]!;
                 save((x) => (x.webSearch = next));
                 if (app.agent) app.agent.options.nativeWebSearch = app.tools().every((t) => t.name !== "WebSearch") && next !== "off";
+                break;
+            }
+            case "notifications": {
+                const order = ["auto", "terminal", "bell", "system", "off"] as const;
+                const next = order[(order.indexOf(notificationMode(s)) + 1) % order.length]!;
+                save((x) => (x.notifications = next));
                 break;
             }
             case "defaultMode": {
@@ -1156,16 +1167,16 @@ function hooksCommand(app: App) {
     const h = app.settings.hooks ?? {};
     const lines = ["", heading("Hooks")];
     let any = false;
-    for (const event of ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"] as const) {
+    for (const event of HOOK_EVENTS) {
         const list = h[event] ?? [];
         if (!list.length) continue;
         any = true;
-        lines.push(`  ${bold(event)}`);
+        lines.push(`  ${bold(event)}${BLOCKING_EVENTS.has(event) ? "" : theme.subtle(" (informational)")}`);
         for (const x of list) lines.push(`    ${theme.muted(x.matcher ? `[${x.matcher}]` : "[*]")} ${x.command}${x.timeout ? theme.subtle(` (timeout ${x.timeout}s)`) : ""}`);
     }
     if (!any) lines.push(theme.muted("  None configured."));
     lines.push(
-        theme.muted(`  Configure under "hooks" in settings. A hook gets JSON on stdin; exit code 2 blocks the action and shows stderr to the model.`),
+        theme.muted(`  Configure under "hooks" in settings. A hook gets JSON on stdin; exit code 2 blocks the action and shows stderr to the model (informational events can't block).`),
         ...(app.init.trusted ? [] : [theme.warning("  This folder isn't trusted, so project hooks are ignored.")]),
     );
     app.print(lines);
@@ -1181,14 +1192,20 @@ async function doctorCommand(app: App) {
     lines.push(ok(`Keys are stored in ${await storageDescription()}`));
     lines.push(Bun.which("git") ? ok("git found") : warn("git not found: git context and @-file completion are limited"));
     lines.push(Bun.which("rg") ? ok("ripgrep found (fast Grep)") : warn("ripgrep (rg) not found: Grep falls back to a slower built-in search"));
+    const sandbox = sandboxKind();
+    if (app.settings.sandbox === false) lines.push(warn('The auto-mode sandbox is off ("sandbox": false): auto mode sends every shell command to its reviewer'));
+    else if (sandbox && sandboxEnabled(app.settings.sandbox)) lines.push(ok(`Auto mode runs shell commands in a sandbox (${sandbox === "seatbelt" ? "Seatbelt" : "bubblewrap, experimental"})`));
+    else if (sandbox === "bwrap") lines.push(warn('bubblewrap is here, but the Linux sandbox is experimental and off unless "sandbox": true: auto mode sends every shell command to its reviewer'));
+    else lines.push(warn(`No sandbox here${process.platform === "linux" ? " (install bubblewrap, and allow unprivileged user namespaces)" : ""}: auto mode sends every shell command to its reviewer`));
     for (const scope of ["user", "project", "local"] as SettingsScope[]) {
         const f = settingsPath(scope, app.cwd);
         if (!existsSync(f)) continue;
         try {
-            JSON.parse(readFileSync(f, "utf-8"));
+            // The settings loader's parser: comments and trailing commas are fine.
+            readJsonForUpdate(f);
             lines.push(ok(`${displayPath(f, app.cwd)} parses`));
         } catch (e) {
-            lines.push(bad(`${displayPath(f, app.cwd)}: ${(e as Error).message}`));
+            lines.push(bad(`${displayPath(f, app.cwd)}: ${e instanceof JsonFileError ? e.reason : (e as Error).message}`));
         }
     }
     if (existsSync(paths.credentialsFile())) {
@@ -1337,6 +1354,7 @@ const BUILTIN: Command[] = [
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },
+    { name: "rewind", description: "Go back to before an earlier prompt: restore files, the conversation, or both", noEcho: true, run: rewindCommand },
     { name: "rename", description: "Name this conversation", args: "<title>", run: (app, args) => (args ? (app.session.setTitle(args), app.notice(`Renamed to "${args}"`)) : app.notice("Usage: /rename <title>", "error")) },
     { name: "export", description: "Save the conversation as markdown (or --copy)", args: "[file|--copy]", run: exportCommand },
     {
@@ -1434,7 +1452,7 @@ function helpLines(app: App, cmds: ReturnType<typeof commandList>, custom: numbe
         `  ${theme.bashMode("!")} run a shell command    ${theme.memoryMode("#")} save a memory    ${bold("@")} attach a file    ${bold("/")} commands    ${bold("\\⏎")} or ${bold("shift+⏎")} newline`,
         "",
         heading("Keys"),
-        `  ${bold("shift+tab")} cycle permission modes    ${bold("esc")} interrupt    ${bold("esc esc")} clear input    ${bold("ctrl+c ×2")} exit`,
+        `  ${bold("shift+tab")} cycle permission modes    ${bold("esc")} interrupt    ${bold("esc esc")} clear or rewind    ${bold("ctrl+c ×2")} exit`,
         `  ${bold("ctrl+o")} verbose output    ${bold("ctrl+t")} todos    ${bold("ctrl+g")} edit in $EDITOR    ${bold("ctrl+l")} clear screen    ${bold("↑/↓")} history`,
         "",
         heading("Permission modes"),

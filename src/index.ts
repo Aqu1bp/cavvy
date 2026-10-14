@@ -8,7 +8,7 @@
 //   harness models               combined model list from every provider
 //   harness mcp list|add|remove  manage MCP servers
 
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { existsSync, readFileSync } from "fs";
 import { APP_NAME, APP_TITLE, APP_VERSION, harnessHome, paths } from "./config/paths";
 import { loadHarnessEnv, preloadKeys, getKey, setKey, removeKey, storageDescription } from "./auth/credentials";
@@ -22,6 +22,7 @@ import { listAllModels, forgetClient } from "./providers/models";
 import { formatPrice, formatTokens } from "./providers/pricing";
 import { modelRef } from "./providers/types";
 import { findSession, listSessions } from "./agent/session";
+import { pruneFileHistory } from "./agent/checkpoints";
 import { McpManager } from "./mcp/manager";
 import { maskKey, redact } from "./util/redact";
 import { bold, padEnd, theme, truncate } from "./ui/ansi";
@@ -56,7 +57,7 @@ ${bold("Options")}
       --add-dir <path>           allow access to another directory (repeatable)
       --append-system-prompt <t> extra instructions appended to the system prompt
       --output-format <f>        with -p: text (default) | json | stream-json
-      --max-turns <n>            with -p: stop after n model turns
+      --max-turns <n>            stop each prompt after n model turns
       --verbose                  more detail (tool calls on stderr with -p)
   -v, --version                  print the version
   -h, --help                     show this help
@@ -634,6 +635,8 @@ async function main() {
         resumeFile = findSession(cwd, f.resume);
         if (!resumeFile) die(`no session matching "${f.resume}" in this directory`);
     }
+    // File snapshots of sessions untouched for 30 days (the one being resumed stays).
+    void pruneFileHistory({ keep: resumeFile && basename(resumeFile, ".jsonl") });
 
     if (!interactive) {
         if (f.resume === true) die("--resume without an id needs an interactive terminal; pass a session id or use --continue");
@@ -671,6 +674,7 @@ async function main() {
         resumePicker: f.resume === true,
         initialPrompt: prompt || undefined,
         appendSystemPrompt: f.append,
+        maxTurns: f.maxTurns,
         startupNotes: notes,
         extraAllow: f.allowed,
         extraDeny: f.disallowed,

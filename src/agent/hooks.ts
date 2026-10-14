@@ -2,17 +2,25 @@
 // settings.json under "hooks". Each receives a JSON payload on stdin.
 //
 //   exit 0  -> continue (stdout may carry a JSON decision, see below)
-//   exit 2  -> block; stderr is shown to the model (PreToolUse/UserPromptSubmit)
+//   exit 2  -> block; stderr is shown to the model (PreToolUse, PostToolUse,
+//              UserPromptSubmit, Stop, SubagentStop). The other events are
+//              informational: there exit 2 is reported like any other failure.
 //   other   -> non-blocking error, shown to the user
 //
 // PreToolUse may print {"permissionDecision": "allow"|"deny"|"ask", "reason": "..."}.
-// UserPromptSubmit may print {"additionalContext": "..."} to add context.
+// UserPromptSubmit and PostToolUse may print {"additionalContext": "..."} to add context.
 
 import type { HookConfig, Settings } from "../config/settings";
 import { childEnv } from "../tools/bash";
 import { redactedJson } from "../util/redact";
 
-export type HookEvent = "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "Stop";
+export type HookEvent = keyof NonNullable<Settings["hooks"]>;
+
+/** In the order /hooks lists them. */
+export const HOOK_EVENTS: HookEvent[] = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "PreCompact", "Stop", "SubagentStop", "SessionEnd"];
+
+/** Events whose hooks can block (exit 2). */
+export const BLOCKING_EVENTS = new Set<HookEvent>(["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop"]);
 
 export interface HookOutcome {
     blocked?: string;
@@ -60,7 +68,7 @@ export async function runHooks(settings: Settings, event: HookEvent, payload: Re
         proc.stdin.write(redactedJson({ hook_event_name: event, cwd, ...payload }));
         await proc.stdin.end();
         const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-        if (code === 2) {
+        if (code === 2 && BLOCKING_EVENTS.has(event)) {
             out.blocked = stderr.trim() || `Blocked by ${event} hook`;
             return out;
         }
@@ -90,4 +98,11 @@ export async function runHooks(settings: Settings, event: HookEvent, payload: Re
         }
     }
     return out;
+}
+
+/** Run an informational event's hooks for their side effects. Never throws; problems go to `warn`. */
+export async function fireHooks(settings: Settings, event: HookEvent, payload: Record<string, unknown>, cwd: string, warn: (msg: string) => void, signal?: AbortSignal): Promise<void> {
+    if (!settings.hooks?.[event]?.length) return;
+    const h = await runHooks(settings, event, payload, cwd, signal).catch((e) => ({ errors: [`${event} hook failed: ${(e as Error).message}`] }));
+    for (const err of h.errors) warn(err);
 }

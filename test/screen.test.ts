@@ -164,6 +164,36 @@ describe("full-window renderer", () => {
         expect(vt.screen().slice(0, 2)).toEqual(["only line", "spinner"]);
     });
 
+    test("the kitty keyboard flag is pushed on start, and popped on stop and while a child process has the terminal", async () => {
+        const out: string[] = [];
+        process.stdout.write = ((s: string | Uint8Array) => (out.push(typeof s === "string" ? s : new TextDecoder().decode(s)), true)) as typeof process.stdout.write;
+        // No real terminal here: stub what start/stop/suspend ask of stdin and stdout.
+        const stubs: [any, string][] = [...["setRawMode", "setEncoding", "on", "off", "resume", "pause"].map((k) => [process.stdin, k] as [any, string]), [process.stdout, "on"], [process.stdout, "off"]];
+        const saved = stubs.map(([o, k]) => Object.getOwnPropertyDescriptor(o, k));
+        for (const [o, k] of stubs) o[k] = () => o;
+        try {
+            const screen = new Screen();
+            (screen as any).interactive = true;
+            screen.start(() => {});
+            expect(out.join("")).toContain("\x1b[?2004h\x1b[>1u");
+            out.length = 0;
+            let during = "";
+            await screen.suspend(() => void (during = out.join("")));
+            expect(during).toContain("\x1b[?2004l\x1b[<u");
+            expect(during).not.toContain("\x1b[>1u");
+            expect(out.join("").slice(during.length)).toContain("\x1b[?2004h\x1b[>1u");
+            out.length = 0;
+            screen.stop();
+            expect(out.join("")).toContain("\x1b[?2004l\x1b[<u");
+            // A second stop (process exit after a crash handler) writes nothing more.
+            out.length = 0;
+            screen.stop();
+            expect(out).toEqual([]);
+        } finally {
+            stubs.forEach(([o, k], i) => (saved[i] ? Object.defineProperty(o, k, saved[i]!) : delete o[k]));
+        }
+    });
+
     test("on stop the output isn't followed by the gap", () => {
         const { vt, screen } = harness(12, 40);
         (screen as any).started = true;

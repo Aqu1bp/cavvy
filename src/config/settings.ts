@@ -5,6 +5,8 @@ import type { PermissionMode } from "../permissions/modes";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_LEVELS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+export type NotificationMode = "auto" | "terminal" | "bell" | "system" | "off";
+export const NOTIFICATION_MODES: NotificationMode[] = ["auto", "terminal", "bell", "system", "off"];
 
 export interface McpServerConfig {
     /** stdio transport */
@@ -51,6 +53,11 @@ export interface Settings {
         PostToolUse?: HookConfig[];
         UserPromptSubmit?: HookConfig[];
         Stop?: HookConfig[];
+        SubagentStop?: HookConfig[];
+        Notification?: HookConfig[];
+        SessionStart?: HookConfig[];
+        SessionEnd?: HookConfig[];
+        PreCompact?: HookConfig[];
     };
     /** Show model reasoning/thinking text when the provider returns it. */
     showThinking?: boolean;
@@ -67,6 +74,12 @@ export interface Settings {
     enableAllProjectMcpServers?: boolean;
     /** Custom status line: a shell command whose first output line is shown. */
     statusLine?: { command: string };
+    /** Auto mode runs shell commands in a sandbox where the OS has one (default true). */
+    sandbox?: boolean;
+    /** How to alert you to a long turn ending, a prompt or an error while the window isn't focused (auto: terminal or bell). */
+    notifications?: NotificationMode;
+    /** A finished turn alerts only when it took at least this long (default 30). */
+    notifyAfterSeconds?: number;
 }
 
 export type SettingsScope = "user" | "project" | "local";

@@ -179,6 +179,83 @@ describe("CSI u (kitty) and modifyOtherKeys", () => {
     });
 });
 
+// What a terminal sends once the harness pushes the kitty protocol's
+// "disambiguate escape codes" flag (CSI > 1 u): Esc, ctrl+key and alt+key
+// become CSI u; plain Enter, Tab and Backspace keep their legacy bytes; the
+// modifier number is 1 + shift 1, alt 2, ctrl 4, super 8, caps lock 64, num lock 128.
+describe("kitty keyboard protocol, disambiguate flag", () => {
+    test.each([
+        ["\x1b[27u", { name: "escape" }],
+        ["\x1b[27;65u", { name: "escape" }], // caps lock on
+        ["\x1b[99;5u", { name: "c", ctrl: true }],
+        ["\x1b[99;69u", { name: "c", ctrl: true }], // caps lock on
+        ["\x1b[99;133u", { name: "c", ctrl: true }], // num lock on
+        ["\x1b[100;5u", { name: "d", ctrl: true }],
+        ["\x1b[103;5u", { name: "g", ctrl: true }],
+        ["\x1b[111;5u", { name: "o", ctrl: true }],
+        ["\x1b[116;5u", { name: "t", ctrl: true }],
+        ["\x1b[45;6u", { name: "-", ctrl: true, shift: true }], // ctrl+_ (undo)
+        ["\x1b[98;3u", { name: "b", meta: true }],
+        ["\x1b[102;3u", { name: "f", meta: true }],
+        ["\x1b[100;3u", { name: "d", meta: true }],
+        ["\x1b[98;4u", { name: "b", meta: true, shift: true }],
+        ["\x1b[13;2u", { name: "enter", shift: true }],
+        ["\x1b[13;5u", { name: "enter", ctrl: true }],
+        ["\x1b[13;3u", { name: "enter", meta: true }],
+        ["\x1b[9;2u", { name: "tab", shift: true }],
+        ["\x1b[127;5u", { name: "backspace", ctrl: true }],
+        ["\x1b[127;3u", { name: "backspace", meta: true }],
+    ] as [string, Key][])("%j", (seq, key) => {
+        expect(only(seq)).toEqual(key);
+    });
+
+    test("unmodified Enter, Tab, Backspace and arrows are unchanged", () => {
+        expect(feed("\r", "\t", "\x7f", "\x1b[A", "\x1b[1;3D", "\x1b[1;5C", "\x1b[Z").keys).toEqual([
+            { name: "enter" },
+            { name: "tab" },
+            { name: "backspace" },
+            { name: "up" },
+            { name: "left", meta: true },
+            { name: "right", ctrl: true },
+            { name: "tab", shift: true },
+        ]);
+    });
+
+    test("esc esc arrives as two escapes, in one chunk or two, with no lone-ESC wait", () => {
+        const one = feed("\x1b[27u\x1b[27u");
+        expect(one.keys).toEqual([{ name: "escape" }, { name: "escape" }]);
+        expect(one.parser.pendingEscape).toBe(false);
+        expect(feed("\x1b[27u", "\x1b[27u").keys).toEqual([{ name: "escape" }, { name: "escape" }]);
+    });
+
+    test("ctrl+keys that legacy terminals send as LF, CR, tab, backspace and ESC keep that meaning", () => {
+        expect(only("\x1b[106;5u")).toEqual({ name: "enter", ctrl: true }); // ctrl+j: newline
+        expect(only("\x1b[106;69u")).toEqual({ name: "enter", ctrl: true }); // with caps lock
+        expect(only("\x1b[109;5u")).toEqual({ name: "enter" }); // ctrl+m
+        expect(only("\x1b[105;5u")).toEqual({ name: "tab" }); // ctrl+i
+        expect(only("\x1b[104;5u")).toEqual({ name: "backspace" }); // ctrl+h
+        expect(only("\x1b[91;5u")).toEqual({ name: "escape" }); // ctrl+[
+        // With other modifiers they're ordinary keys.
+        expect(only("\x1b[106;7u")).toEqual({ name: "j", ctrl: true, meta: true });
+        expect(only("\x1b[106;3u")).toEqual({ name: "j", meta: true });
+        // modifyOtherKeys spells ctrl+j the same way.
+        expect(only("\x1b[27;5;106~")).toEqual({ name: "enter", ctrl: true });
+    });
+
+    test("keypad keys are the keys they stand for, and other functional keys are never typed as text", () => {
+        expect(only("\x1b[57414u")).toEqual({ name: "enter" }); // KP_Enter
+        expect(only("\x1b[57414;2u")).toEqual({ name: "enter", shift: true });
+        expect(only("\x1b[57419u")).toEqual({ name: "up" }); // KP_Up
+        expect(only("\x1b[57417;5u")).toEqual({ name: "left", ctrl: true });
+        expect(only("\x1b[57426u")).toEqual({ name: "delete" });
+        expect(only("\x1b[57399u")).toEqual({ name: "text", text: "0" });
+        expect(only("\x1b[57413u")).toEqual({ name: "text", text: "+" });
+        expect(only("\x1b[57427u")).toEqual({ name: "unknown" }); // KP_Begin
+        expect(only("\x1b[57441;2u")).toEqual({ name: "unknown" }); // left shift
+        expect(only("\x1b[57376u")).toEqual({ name: "unknown" }); // F13
+    });
+});
+
 describe("bracketed paste", () => {
     test("a complete paste in one chunk", () => {
         expect(feed("\x1b[200~hello\nworld\x1b[201~").keys).toEqual([{ name: "paste", paste: "hello\nworld" }]);

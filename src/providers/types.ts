@@ -43,7 +43,12 @@ export interface UserMessage {
     role: "user";
     content: UserContent[];
     /** Harness-only bookkeeping, never sent to providers. */
-    meta?: { kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder"; display?: string };
+    meta?: {
+        kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder";
+        display?: string;
+        /** The file checkpoint this prompt started (/rewind). */
+        checkpoint?: number;
+    };
 }
 
 export interface AssistantMessage {

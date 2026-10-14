@@ -71,7 +71,7 @@ Model ids are `provider:model`. Wire formats: Anthropic Messages (with prompt ca
 | **Manual** (default) | Reads, searches and read-only shell commands inside the workspace. Everything else asks. |
 | **Accept edits** | The above, plus file edits inside the workspace. |
 | **Plan** | Read-only research. Edits and state-changing commands are refused until you approve the plan the model presents. |
-| **Auto** | Edits in the workspace, plus any action a reviewer model judges routine and in scope. Risky actions are shown to you with the reason. |
+| **Auto** | Edits in the workspace and temp directories, shell commands inside a sandbox, and anything else a reviewer model judges routine and asked for. Risky actions are shown to you with the reason. See [Auto mode](#auto-mode). |
 | **Bypass permissions** | Everything. Only available when started with `--dangerously-skip-permissions` or `--permission-mode bypassPermissions`, or with `permissions.allowBypass` in your user settings. |
 
 Whatever the mode:
@@ -81,6 +81,35 @@ Whatever the mode:
 - Edits to the harness's own configuration, `.mcp.json` or `.git/` always ask, except in bypass mode.
 
 When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.harness/settings.local.json`), or decline and say what to do instead.
+
+### Auto mode
+
+- **Sandboxed shell.** Shell commands, read-only ones included, run in a sandbox when the OS has one: Seatbelt (`sandbox-exec`) on macOS. On Linux, bubblewrap is used only when you turn it on with `"sandbox": true`, because it's experimental (see below). Inside the sandbox a command:
+  - can write only in the workspace and the temp directories, and never to `.git/hooks`, git config (submodules' and worktrees' included), `.harness/`, `.mcp.json` or `~/.harness`. It also can't move or repoint the repo's git directory (`.git`, a worktree's `.git` file, `commondir`) or the workspace itself, so it can't plant config that a later unsandboxed git command would run;
+  - can't read credential files (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, the keychain, `~/.harness` and others);
+  - has no network except localhost, and no Unix sockets (so no ssh-agent or Docker);
+  - can't signal processes it didn't start;
+  - on macOS, can't open apps, send Apple Events, create launchd jobs, or reach the keychain, clipboard or window server.
+
+  Sandboxed commands run without asking and without review. The exception is commands that delete or discard work, which go to the reviewer first and then still run sandboxed. These are `rm`, `find -delete`, `git checkout` of files, `git restore`, `git stash drop`, `git branch -D`, and deletions in inline `python -c`/`node -e` code.
+- **The reviewer** sees everything else:
+  - commands that need the network or the host (`npm install`, `git push`, `curl`, `gh`, `docker`, `kill`, …), read-only ones like `gh pr view` included, since even those can run programs from a repo's config;
+  - commands the model reruns outside the sandbox after the sandbox got in the way (`dangerouslyDisableSandbox`);
+  - web fetches and MCP tools.
+
+  It's a small model (`smallModel` in settings, or the provider's small default). It allows routine work, and effects outside the machine (push, PR, deploy) only when you asked for that specific action in your own words. Everything else is shown to you with its reason: pushes, deploys, publishing or messages you didn't ask for, exposing secrets, data leaving the machine, changes outside the project, deleting work, actions unrelated to your request. If the small model fails or answers nonsense, the main model reviews instead, and you're told once.
+- **Only your messages authorize anything.** The reviewer sees your last few messages, labelled as yours. A sub-agent's task, a compaction summary, the agent's recent actions, file contents and tool output are shown to it as the agent's words or as data.
+- **Always asks:** catastrophic commands, harness and git configuration, credential stores, and `git push` to `main`/`master`/`trunk`. That push rule also covers `--all`/`--mirror`, and a plain `git push` or `git push origin HEAD` while `main` is checked out. Commands that use a `.env` file go to the reviewer: loading it for the tests or creating it from `.env.example` is fine; printing or sending its values asks.
+- `"sandbox": false` in settings turns the sandbox off. Read-only commands then run, and other shell commands go to the reviewer.
+
+What the sandbox doesn't cover:
+- Changes inside the workspace itself. That's why deletions are reviewed. Git is the undo for shell changes; `/rewind` restores only what the edit tools changed.
+- Code a sandboxed command leaves behind runs with your full access when something unsandboxed runs it later. That includes scripts, `package.json` scripts on `npm install`, `.husky/` hooks, and a nested repo or submodule with its own git config when git runs inside it unsandboxed (your own `git status` in a terminal recurses into submodules).
+- Which commands need the network is a guess from the command text. One that fails in the sandbox is retried outside it, after review.
+- Linux (bubblewrap, experimental):
+  - It has its own network, PID and IPC namespaces. It hides the usual Unix-socket locations (`/run`, X11, tmux, ssh-agent, Docker Desktop, Colima, Lima), but sockets elsewhere stay reachable.
+  - It can only protect paths that exist when the command starts. A `.harness/` or `.mcp.json` that doesn't exist yet can be created, and so can the hooks of a repo created by that same command.
+  - It has only been tested at the level of the arguments it builds, not on a real Linux machine.
 
 Rules (`/permissions` to edit them):
 
@@ -98,10 +127,14 @@ Rules (`/permissions` to edit them):
 
 - `@path` attaches a file (completion included); `!cmd` runs a shell command yourself; `#note` saves a memory; `/` opens commands.
 - `esc` interrupts; type while it works and your message is delivered at the next step (after an interrupt, anything not yet sent goes back to the prompt); `ctrl+o` toggles verbose output; `ctrl+t` toggles the todo list; `ctrl+g` opens `$EDITOR`; `↑`/`↓` history.
+- For a newline in the prompt, type `\` then `enter`, or press `ctrl+j`. `shift+enter` works too in terminals that support the kitty keyboard protocol, which the harness turns on while it runs; in other terminals it usually sends the message instead.
 - The harness takes over the terminal window: it clears the screen and scrollback when it starts, keeps the spinner, prompt and status line on the bottom rows (the reply and running tools follow the conversation above them), and lets the conversation scroll into the terminal's own scrollback (so scrolling, selecting and copying work as usual, and the conversation stays there after you quit). When the window is resized, it clears the screen and scrollback again and lays everything out at the new size.
-- Sessions are saved per project. Resume them with `-c` (latest), `-r` (picker) or `/resume`.
+- Sessions are saved per project. Resume them with `-c` (latest), `-r` (picker) or `/resume`. `--append-system-prompt` applies to the run you give it on, a resumed session included, and isn't saved with the session.
+- `--max-turns n` stops each prompt after n model turns, in the TUI as with `-p`; send another message to let it continue.
+- Jupyter notebooks: `Read` shows each cell with its id, and the `NotebookEdit` tool replaces, inserts or deletes a cell by that id (replacing a code cell clears its outputs). It asks for permission like any other edit.
+- `/rewind` (or `esc esc` on an empty prompt) goes back to before one of your prompts: restore the files Harness changed since then, the conversation, or both. The prompt goes back in the input box to edit and resend. Before an edit tool first changes a file during a prompt, Harness saves a copy in `~/.harness/projects/<project>/file-history/<session>/` (private to you; files over 10 MB aren't saved), so it works after `-c`/`-r` too. Files changed outside Harness since it last wrote them are listed before they're overwritten, and if a file can't be restored the conversation is kept, so you can try again. Changes made by shell commands aren't tracked, prompts from before a `/compact` can't be rewound to, and the copies are deleted 30 days after the session was last used.
 
-Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rename /export /copy /init /review /memory /config /thinking /mcp /agents /hooks /todos /bashes /add-dir /doctor /exit`.
+Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rewind /rename /export /copy /init /review /memory /config /thinking /mcp /agents /hooks /todos /bashes /add-dir /doctor /exit`.
 
 Custom commands are markdown files in `~/.harness/commands/` or `.harness/commands/`. The body is the prompt; `$ARGUMENTS` and `$1`…`$9` are substituted; `commands/git/pr.md` becomes `/git:pr`.
 
@@ -137,12 +170,29 @@ Both protocol generations are supported. The client probes with `server/discover
   "hooks": {
     "PreToolUse": [{ "matcher": "Edit|Write", "command": "./scripts/check-paths.sh" }],
     "PostToolUse": [{ "matcher": "Edit", "command": "npx prettier --write \"$(jq -r .tool_input.file_path)\"" }],
-    "Stop": [{ "command": "npm test --silent" }]
+    "Stop": [{ "command": "npm test --silent" }],
+    "Notification": [{ "command": "jq -r .message >> ~/harness-alerts.log" }]
   }
 }
 ```
 
-Hooks get the event as JSON on stdin. Exit code 2 blocks the action and shows stderr to the model. JSON output can set `permissionDecision` (`allow` / `deny` / `ask`) or add `additionalContext`.
+Hooks get the event as JSON on stdin: `hook_event_name`, `cwd`, `session_id`, and the fields below, with keys redacted. `matcher` (a tool name, `*` or a regex) applies to PreToolUse and PostToolUse; other events run every hook. Each hook is stopped after `timeout` seconds (default 60). Project hooks only run in folders you trust.
+
+| Event | When | Input | Exit code 2 |
+|---|---|---|---|
+| `SessionStart` | A session starts | `source`: `startup`, `resume` or `clear` | — |
+| `UserPromptSubmit` | You send a prompt | `prompt` | Blocks the prompt |
+| `PreToolUse` | Before a tool runs | `tool_name`, `tool_input` | Blocks the call; stderr goes to the model |
+| `PostToolUse` | After a tool runs | `tool_name`, `tool_input`, `tool_response` | stderr is added to the tool result |
+| `Notification` | A notification would be shown, even with `notifications` off | `message`, `kind`: `done`, `permission`, `question`, `plan` or `error` | — |
+| `PreCompact` | Before the conversation is compacted | `trigger`: `manual` or `auto`, `custom_instructions` | — |
+| `Stop` | The model finishes its answer | `last_message` | The model keeps going, with stderr as the reason (up to 3 times) |
+| `SubagentStop` | A sub-agent finishes | `agent_type`, `description`, `last_message`; `session_id` is the parent's | The sub-agent keeps going |
+| `SessionEnd` | A session ends | `reason`: `exit`, `clear` or `resume` | — |
+
+Only UserPromptSubmit, PreToolUse, PostToolUse, Stop and SubagentStop can block. The other events are informational: an exit code 2 there is reported like any other failure. SessionStart, SessionEnd and Notification hooks run in the background, except that the harness waits up to 5 seconds for SessionEnd hooks when it exits.
+
+JSON output on stdout: PreToolUse can set `permissionDecision` (`allow` / `deny` / `ask`). UserPromptSubmit and PostToolUse can add `additionalContext`, which reaches the model with the prompt or with the tool results. UserPromptSubmit also takes plain text as context. Other events' output is ignored.
 
 ## Status line
 
@@ -152,6 +202,26 @@ Hooks get the event as JSON on stdin. Exit code 2 blocks the action and shows st
 
 The command gets `{session_id, cwd, model: {id, display_name}, permission_mode, cost_usd, context_tokens, context_window}` as JSON on stdin. The first line it prints replaces the right side of the footer. It runs at most every 2 seconds and is killed after 3. Colors are kept; any other escape sequence is stripped.
 
+## Notifications
+
+When the terminal window isn't focused, the harness lets you know when a turn that took 30 seconds or more finishes, when it's waiting for you (a permission prompt, a question, or a plan to approve), and when a turn stops with an error.
+
+```jsonc
+{ "notifications": "auto", "notifyAfterSeconds": 30 }
+```
+
+| `notifications` | How |
+|---|---|
+| `auto` (default) | A desktop notification in terminals known to show one (iTerm2, WezTerm, Ghostty, kitty, foot), otherwise the terminal bell. |
+| `terminal` | The terminal's notification sequence: OSC 9, or OSC 99 in kitty. |
+| `bell` | The terminal bell. |
+| `system` | `osascript` on macOS, `notify-send` on Linux. The bell if that fails. |
+| `off` | Nothing. Notification hooks still run. |
+
+`/config` switches between them. Focus comes from the terminal's focus reporting. If the terminal doesn't report focus, prompts and errors always notify, and so do turns over the time limit. Nothing is notified in `-p` mode. Messages are short ("Harness: done (2m 10s)", "Harness: waiting for your approval") and never include tool input.
+
+Inside tmux, `auto` uses the bell, which tmux passes on to your terminal. `terminal` wraps the sequence for tmux passthrough, which works only with `set -g allow-passthrough on` (tmux 3.3 and later; `on` passes it only from a visible pane, `all` from any pane). For focus reporting inside tmux, also `set -g focus-events on`.
+
 ## Headless
 
 ```bash
@@ -160,7 +230,7 @@ git diff | harness -p "review this" --output-format json
 harness -p "…" --output-format stream-json     # one JSON event per line
 ```
 
-In `-p` mode nothing can prompt you, so anything that would ask is denied. Allow it with `--allowedTools`, rules, or `--permission-mode`. The exit code is 0 on success and 1 on error or `--max-turns`.
+In `-p` mode nothing can prompt you, so anything that would ask is denied, and there are no notifications. Allow it with `--allowedTools`, rules, or `--permission-mode`. The exit code is 0 on success and 1 on error or `--max-turns`.
 
 Piped stdin is added to the prompt. When the prompt is also given on the command line, stdin is optional: if nothing arrives within 3 seconds the run goes on without it (so a parent process that leaves stdin open can't hang it). To pipe a command that's slow to start printing, save its output to a file first. Retries (rate limits, overloaded or unreachable providers) are reported on stderr as they happen. `-c` and `-r` continue with the model the session was using, if it's still available.
 

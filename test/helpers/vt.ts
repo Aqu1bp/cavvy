@@ -32,7 +32,7 @@ export class VT {
         for (let i = 0; i < s.length; i++) {
             const ch = s[i]!;
             if (ch === "\x1b") {
-                const m = /^\x1b\[([?]?)([0-9;]*)([A-Za-z])/.exec(s.slice(i)) ?? /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(s.slice(i));
+                const m = /^\x1b\[([?<>=]?)([0-9;]*)([A-Za-z])/.exec(s.slice(i)) ?? /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(s.slice(i));
                 if (!m) continue;
                 i += m[0].length - 1;
                 if (m[0][1] !== "[" || m[1]) continue;

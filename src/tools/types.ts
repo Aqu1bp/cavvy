@@ -1,6 +1,8 @@
 import type { ImagePart } from "../providers/types";
 import type { Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
+import type { Sandbox } from "../permissions/sandbox";
+import type { FileHistory } from "../agent/checkpoints";
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -43,6 +45,8 @@ export interface BackgroundShell {
     output: string;
     readOffset: number;
     exitCode: number | null;
+    /** Started in the auto-mode sandbox. */
+    sandboxed?: boolean;
     /** SIGTERM, then SIGKILL after the grace period if anything in the group is still running. */
     kill: (graceMs?: number) => Promise<"gone" | "stopped" | "killed">;
 }
@@ -56,6 +60,8 @@ export interface ToolState {
     shells: Map<string, BackgroundShell>;
     /** Plan text submitted via ExitPlanMode and approved. */
     approvedPlan?: string;
+    /** Saves files before edit tools change them, for /rewind (see writeTracked). */
+    fileHistory?: FileHistory;
 }
 
 export interface UiBridge {
@@ -86,6 +92,8 @@ export interface ToolContext {
      * permission check only sees the search root, not every file under it.
      */
     hidden?: (toolName: string, absPath: string) => HiddenReason | undefined;
+    /** Auto mode approved this shell command on the condition that it runs in this sandbox. */
+    sandbox?: Sandbox;
 }
 
 export interface Tool<I = Record<string, unknown>> {

@@ -1,10 +1,12 @@
-import { mkdir, readFile, stat, writeFile } from "fs/promises";
+import { mkdir, readFile, stat } from "fs/promises";
 import { existsSync } from "fs";
-import { dirname } from "path";
+import { randomBytes } from "crypto";
+import { dirname, isAbsolute } from "path";
 import type { Tool, ToolContext, ToolResult } from "./types";
 import { displayPath, expandPath, imageMediaType, looksBinary, numberLines } from "../util/files";
 import { redact } from "../util/redact";
 import { diffLines, diffStats } from "../util/diff";
+import { writeTracked } from "../agent/checkpoints";
 
 const MAX_LINES = 2000;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -116,14 +118,14 @@ Usage:
 
 function renderNotebook(json: string, abs: string): ToolResult {
     try {
-        const nb = JSON.parse(json) as { cells?: { cell_type: string; source: string | string[]; outputs?: any[] }[] };
+        const nb = JSON.parse(json) as { cells?: NotebookCell[] };
         const parts: string[] = [];
         (nb.cells ?? []).forEach((c, i) => {
-            const src = Array.isArray(c.source) ? c.source.join("") : c.source;
-            parts.push(`<cell id="${i}" type="${c.cell_type}">\n${src}\n</cell>`);
-            for (const o of c.outputs ?? []) {
+            const id = cellId(c, i);
+            parts.push(`<cell id="${id}" type="${c.cell_type}">\n${cellSource(c)}\n</cell>`);
+            for (const o of (c.outputs ?? []) as any[]) {
                 const t = o.text ?? o.data?.["text/plain"];
-                if (t) parts.push(`<output cell="${i}">\n${(Array.isArray(t) ? t.join("") : t).slice(0, 4000)}\n</output>`);
+                if (t) parts.push(`<output cell="${id}">\n${(Array.isArray(t) ? t.join("") : t).slice(0, 4000)}\n</output>`);
             }
         });
         return { content: redact(parts.join("\n")), display: { summary: `Read notebook (${nb.cells?.length ?? 0} cells)` } };
@@ -171,7 +173,7 @@ Usage:
         const existed = existsSync(abs);
         const before = existed ? await readFile(abs, "utf-8").catch(() => "") : "";
         await mkdir(dirname(abs), { recursive: true });
-        await writeFile(abs, input.content, "utf-8");
+        await writeTracked(ctx.state, abs, input.content);
         await recordRead(ctx, abs, false);
         const lines = input.content ? input.content.replace(/\n$/, "").split("\n").length : 0;
         const stats = diffStats(diffLines(before, input.content));
@@ -286,7 +288,7 @@ Usage:
         const abs = expandPath(input.file_path, ctx.state.cwd);
         if (input.old_string === "" && !existsSync(abs)) {
             await mkdir(dirname(abs), { recursive: true });
-            await writeFile(abs, input.new_string, "utf-8");
+            await writeTracked(ctx.state, abs, input.new_string);
             await recordRead(ctx, abs, false);
             const lines = input.new_string ? input.new_string.replace(/\n$/, "").split("\n").length : 0;
             return {
@@ -299,7 +301,7 @@ Usage:
         const before = await readFile(abs, "utf-8");
         const r = applyEdit(before, input, rel(abs, ctx));
         if ("error" in r) return { content: r.error, isError: true };
-        await writeFile(abs, r.text, "utf-8");
+        await writeTracked(ctx.state, abs, r.text);
         await recordRead(ctx, abs, false);
         const stats = diffStats(diffLines(before, r.text));
         return {
@@ -376,7 +378,7 @@ Same rules as Edit: Read the file first, match text exactly, make each old_strin
             if ("error" in r) return { content: `Edit ${i + 1} failed, no changes applied: ${r.error}`, isError: true };
             text = r.text;
         }
-        await writeFile(abs, text, "utf-8");
+        await writeTracked(ctx.state, abs, text);
         await recordRead(ctx, abs, false);
         const stats = diffStats(diffLines(before, text));
         return {
@@ -386,5 +388,192 @@ Same rules as Edit: Read the file first, match text exactly, make each old_strin
                 diff: { path: rel(abs, ctx), before, after: text },
             },
         };
+    },
+};
+
+// ---------------------------------------------------------------------------
+// Jupyter notebooks
+
+interface NotebookCell {
+    cell_type: string;
+    id?: string;
+    source?: string | string[];
+    metadata?: Record<string, unknown>;
+    outputs?: unknown[];
+    execution_count?: number | null;
+    [key: string]: unknown;
+}
+
+interface Notebook {
+    cells: NotebookCell[];
+    nbformat?: number;
+    nbformat_minor?: number;
+    [key: string]: unknown;
+}
+
+/** The id Read shows for a cell: its own (nbformat 4.5+), or its position. */
+function cellId(c: NotebookCell, i: number): string {
+    return typeof c.id === "string" && c.id ? c.id : `cell-${i}`;
+}
+
+function cellSource(c: NotebookCell): string {
+    return Array.isArray(c.source) ? c.source.join("") : (c.source ?? "");
+}
+
+/** Source as stored: a list of lines (what Jupyter writes) or one string. */
+function toSource(text: string, asList: boolean): string | string[] {
+    return asList ? (text.match(/[^\n]*\n|[^\n]+$/g) ?? []) : text;
+}
+
+/** Only the ids Read shows: a position in a notebook with ids could be a different cell by now. */
+function findCell(cells: NotebookCell[], id: string): number {
+    return cells.findIndex((c, n) => cellId(c, n) === id);
+}
+
+/** A new cell, keys in the order Jupyter writes them. */
+function newCell(type: "code" | "markdown", source: string | string[], id?: string): NotebookCell {
+    const ident = id ? { id } : {};
+    return type === "code" ? { cell_type: "code", execution_count: null, ...ident, metadata: {}, outputs: [], source } : { cell_type: "markdown", ...ident, metadata: {}, source };
+}
+
+function newCellId(cells: NotebookCell[]): string {
+    const taken = new Set(cells.map((c) => c.id));
+    for (;;) {
+        const id = randomBytes(4).toString("hex");
+        if (!taken.has(id)) return id;
+    }
+}
+
+type NotebookEditInput = { notebook_path: string; cell_id?: string; new_source?: string; cell_type?: "code" | "markdown"; edit_mode?: "replace" | "insert" | "delete" };
+
+interface NotebookChange {
+    /** The whole file after the edit. */
+    text: string;
+    /** The cell's source before and after, for the diff. */
+    before: string;
+    after: string;
+    /** For the permission prompt, the result line, and the model. */
+    summary: string;
+    done: string;
+    message: string;
+}
+
+/** Apply a NotebookEdit to the notebook's JSON, keeping its indentation and line endings. */
+function editNotebook(raw: string, input: NotebookEditInput, label: string): NotebookChange | { error: string } {
+    let nb: Notebook;
+    try {
+        nb = JSON.parse(raw) as Notebook;
+    } catch (e) {
+        return { error: `${label} isn't valid notebook JSON: ${(e as Error).message}` };
+    }
+    if (!nb || !Array.isArray(nb.cells)) return { error: `${label} has no cells; is it a Jupyter notebook?` };
+    const cells = nb.cells;
+    const mode = input.edit_mode ?? "replace";
+    let idx = -1;
+    if (input.cell_id) {
+        idx = findCell(cells, input.cell_id);
+        if (idx < 0) {
+            const ids = cells.slice(0, 30).map((c, i) => cellId(c, i));
+            return { error: `Cell "${input.cell_id}" not found in ${label}. Its cells are: ${ids.join(", ") || "(none)"}${cells.length > 30 ? ", …" : ""}. Use the ids Read shows.` };
+        }
+    } else if (mode !== "insert") return { error: `cell_id is required to ${mode} a cell.` };
+    if (mode !== "delete" && typeof input.new_source !== "string") return { error: `new_source is required to ${mode} a cell.` };
+    const source = input.new_source ?? "";
+    // Cells need ids from nbformat 4.5 on; before that Read shows positions.
+    const hasIds = (nb.nbformat ?? 0) > 4 || (nb.nbformat === 4 && (nb.nbformat_minor ?? 0) >= 5);
+    const asList = cells.some((c) => Array.isArray(c.source)) || !cells.some((c) => typeof c.source === "string");
+    const shifted = hasIds ? "" : " Cells after it moved, so their ids (positions) changed; Read the notebook again before editing them.";
+
+    let change: Omit<NotebookChange, "text">;
+    if (mode === "insert") {
+        if (!input.cell_type) return { error: "cell_type (code or markdown) is required to insert a cell." };
+        const at = idx + 1;
+        const id = hasIds ? newCellId(cells) : undefined;
+        cells.splice(at, 0, newCell(input.cell_type, toSource(source, asList), id));
+        const where = idx < 0 ? "at the start" : `after cell ${input.cell_id}`;
+        change = {
+            before: "",
+            after: source,
+            summary: `Insert a ${input.cell_type} cell ${where}`,
+            done: `Inserted a ${input.cell_type} cell ${where}`,
+            message: `Inserted a ${input.cell_type} cell ${where}; its id is ${id ?? `cell-${at}`}.${at < cells.length - 1 ? shifted : ""}`,
+        };
+    } else if (mode === "delete") {
+        const [old] = cells.splice(idx, 1);
+        change = { before: cellSource(old!), after: "", summary: `Delete cell ${input.cell_id}`, done: `Deleted cell ${input.cell_id}`, message: `Deleted cell ${input.cell_id}.${idx < cells.length ? shifted : ""}` };
+    } else {
+        const old = cells[idx]!;
+        const type = input.cell_type ?? old.cell_type;
+        const src = toSource(source, Array.isArray(old.source) || (old.source === undefined && asList));
+        let cell: NotebookCell;
+        if (type !== old.cell_type) cell = { ...newCell(type as "code" | "markdown", src, old.id), metadata: old.metadata ?? {} };
+        // Outputs belong to the old code; they'd be wrong for the new.
+        else if (type === "code") cell = { ...old, execution_count: null, outputs: [], source: src };
+        else cell = { ...old, source: src };
+        cells[idx] = cell;
+        const cleared = old.cell_type === "code" && (old.outputs?.length || old.execution_count != null) ? " Its outputs were cleared." : "";
+        change = {
+            before: cellSource(old),
+            after: source,
+            summary: `Replace cell ${input.cell_id}${type !== old.cell_type ? ` (now ${type})` : ""}${cleared ? "; its outputs are cleared" : ""}`,
+            done: `Updated cell ${input.cell_id}`,
+            message: `Updated cell ${input.cell_id}${type !== old.cell_type ? `, now a ${type} cell` : ""}.${cleared}`,
+        };
+    }
+
+    const indent = /^\s*\{\r?\n([ \t]+)"/.exec(raw)?.[1] ?? (raw.trim().includes("\n") ? 1 : 0);
+    let text = JSON.stringify(nb, null, indent) + (raw.endsWith("\n") ? "\n" : "");
+    if (raw.includes("\r\n")) text = text.replace(/\n/g, "\r\n");
+    return { ...change, text };
+}
+
+export const NotebookEditTool: Tool<NotebookEditInput> = {
+    name: "NotebookEdit",
+    category: "edit",
+    readOnly: false,
+    description: `Edits one cell of a Jupyter notebook (.ipynb): replaces its source, inserts a new cell, or deletes it.
+
+Usage:
+- notebook_path must be an absolute path. Read the notebook first; the edit fails otherwise.
+- cell_id is the id Read shows (<cell id="...">). In notebooks without their own cell ids, ids are positions (cell-0, cell-1, …) and change when cells are inserted or deleted.
+- edit_mode is replace (the default), insert or delete. Insert puts the new cell after cell_id, or at the start when cell_id is omitted, and needs cell_type.
+- With replace, cell_type changes the cell's type. Replacing a code cell clears its outputs and execution count.`,
+    parameters: {
+        type: "object",
+        properties: {
+            notebook_path: { type: "string", description: "Absolute path to the .ipynb file" },
+            cell_id: { type: "string", description: "Cell to replace or delete, or to insert after (omit to insert at the start)" },
+            new_source: { type: "string", description: "The cell's new source (replace and insert)" },
+            cell_type: { type: "string", enum: ["code", "markdown"], description: "Cell type; required for insert" },
+            edit_mode: { type: "string", enum: ["replace", "insert", "delete"], description: "replace (default), insert or delete" },
+        },
+        required: ["notebook_path"],
+    },
+    title: (i) => `NotebookEdit(${i.notebook_path ?? ""})`,
+    async validate(input, ctx) {
+        if (!isAbsolute(input.notebook_path.trim())) return `notebook_path must be an absolute path, not ${input.notebook_path}.`;
+        const abs = expandPath(input.notebook_path, ctx.state.cwd);
+        if (!abs.toLowerCase().endsWith(".ipynb")) return `${rel(abs, ctx)} isn't a Jupyter notebook (.ipynb). Use Edit for other files.`;
+        if (!existsSync(abs)) return `File does not exist: ${abs}`;
+        const stale = await checkFresh(ctx, abs);
+        if (stale) return stale;
+        const r = editNotebook(await readFile(abs, "utf-8"), input, rel(abs, ctx));
+        return "error" in r ? r.error : undefined;
+    },
+    async preview(input, ctx) {
+        const abs = expandPath(input.notebook_path, ctx.state.cwd);
+        const r = editNotebook(await readFile(abs, "utf-8"), input, rel(abs, ctx));
+        if ("error" in r) return undefined;
+        return { summary: r.summary, diff: { path: rel(abs, ctx), before: r.before, after: r.after } };
+    },
+    async run(input, ctx) {
+        const abs = expandPath(input.notebook_path, ctx.state.cwd);
+        const stale = await checkFresh(ctx, abs);
+        if (stale) return { content: stale, isError: true };
+        const r = editNotebook(await readFile(abs, "utf-8"), input, rel(abs, ctx));
+        if ("error" in r) return { content: r.error, isError: true };
+        await writeTracked(ctx.state, abs, r.text);
+        await recordRead(ctx, abs, false);
+        return { content: r.message, display: { summary: r.done, diff: { path: rel(abs, ctx), before: r.before, after: r.after } } };
     },
 };

@@ -1,8 +1,9 @@
 // Static analysis of shell commands: split compound commands, recognise
 // read-only commands, flag catastrophic ones, and suggest allow-rule prefixes.
 
+import { closeSync, existsSync, lstatSync, openSync, readlinkSync, readSync, statSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join, resolve } from "path";
 
 export interface SimpleCommand {
     text: string;
@@ -532,8 +533,11 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
     return undefined;
 }
 
+/** What sensitiveTarget() calls a project's .env file. */
+export const ENV_FILE = "a .env file";
+
 const SENSITIVE: [RegExp, string][] = [
-    [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)\b)([.*?[][\w.*?[\]-]*)?(?=$|[\s'";|&)>])/, "a .env file"],
+    [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)\b)([.*?[][\w.*?[\]-]*)?(?=$|[\s'";|&)>])/, ENV_FILE],
     [/(^|[\s'"=:/~])\.(ssh|aws|gnupg|azure)(\/|\b)|\.kube\/config|\.docker\/config\.json|\.config\/gcloud/, "a credentials directory"],
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
@@ -602,6 +606,118 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
 const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
 // `git config` keys that make later read-only git commands run programs.
 const GIT_EXEC_CONFIG = /\bgit\b[^|;&\n]*\bconfig\b[^|;&\n]*\b(core\.(fsmonitor|pager|editor|sshcommand|hookspath|askpass)|diff\.[^\s=]*(external|textconv|command)|filter\.|alias\.|credential\.|gpg\.|sequence\.editor|uploadpack\.|merge\.[^\s=]*driver|include\.|includeif\.)/i;
+
+const DEFAULT_BRANCH = /^(refs\/heads\/)?(main|master|trunk)$/;
+// `git push` options that take a value as the next word.
+const PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
+
+/**
+ * A `git push` that updates the default branch (main/master/trunk) by name,
+ * or every branch at once. Auto mode always asks for these: what the
+ * developer asked for rarely spells out the destination, and the reviewer
+ * can read "push the branch" as covering it.
+ */
+export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefined {
+    for (const { argv, dir } of commandsWithDirs(cmd, cwd)) {
+        if ((argv[0] ?? "").split("/").pop() !== "git") continue;
+        const { index: i, dirs } = gitSubcommand(argv);
+        if (argv[i] !== "push") continue;
+        const positional: string[] = [];
+        for (let j = i + 1; j < argv.length; j++) {
+            const a = argv[j]!;
+            if (a === "--all" || a === "--mirror" || a === "--branches") return `git push ${a}`;
+            if (PUSH_VALUE_OPTS.has(a)) j++;
+            else if (!a.startsWith("-")) positional.push(a);
+        }
+        // positional[0] is the remote; the rest are refspecs ([+]src[:dst]).
+        const specs = positional.slice(1);
+        const branch = typeof dir === "string" ? headBranch(resolve(dir, ...dirs)) : undefined;
+        // Without a refspec git pushes the current branch (push.default "simple").
+        if (!specs.length && branch && DEFAULT_BRANCH.test(branch)) return `git push from ${branch}`;
+        for (const spec of specs) {
+            let dst = spec.replace(/^\+/, "").split(":").pop()!;
+            if ((dst === "HEAD" || dst === "@") && branch) dst = branch;
+            if (DEFAULT_BRANCH.test(dst)) return `git push to ${dst.replace(/^refs\/heads\//, "")}`;
+        }
+    }
+    return undefined;
+}
+
+// git's own options that take a value as the next word.
+const GIT_VALUE_OPTS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source"]);
+
+/** Where git's subcommand is in argv (argv[0] is git), past git's own options, and the `-C` directories on the way. */
+export function gitSubcommand(argv: string[]): { index: number; dirs: string[] } {
+    const dirs: string[] = [];
+    let i = 1;
+    while (i < argv.length && argv[i]!.startsWith("-")) {
+        if (argv[i] === "-C") dirs.push(argv[i + 1] ?? "");
+        i += GIT_VALUE_OPTS.has(argv[i]!) ? 2 : 1;
+    }
+    return { index: i, dirs };
+}
+
+/**
+ * The start of a small regular file, or undefined. For files a sandboxed
+ * command could have replaced: a FIFO would block, a huge file would stall.
+ */
+export function readSmallFile(path: string, max = 4096): string | undefined {
+    try {
+        if (!statSync(path).isFile()) return undefined;
+        const fd = openSync(path, "r");
+        try {
+            const buf = Buffer.alloc(max);
+            return buf.toString("utf-8", 0, readSync(fd, buf, 0, max, 0));
+        } finally {
+            closeSync(fd);
+        }
+    } catch {
+        return undefined;
+    }
+}
+
+/** The branch checked out in the repo that contains dir, from its HEAD file (without running git). */
+export function headBranch(dir: string): string | undefined {
+    for (let d = resolve(dir); ; d = dirname(d)) {
+        const dotGit = join(d, ".git");
+        if (existsSync(dotGit)) {
+            try {
+                let gitDir = dotGit;
+                if (!statSync(dotGit).isDirectory()) {
+                    const m = readSmallFile(dotGit)?.match(/^gitdir:\s*(.+?)\s*$/m);
+                    if (!m) return undefined;
+                    gitDir = resolve(d, m[1]!);
+                }
+                const head = join(gitDir, "HEAD");
+                // git still follows a HEAD that's a symlink to the branch's ref file.
+                if (lstatSync(head).isSymbolicLink()) return readlinkSync(head).match(/(?:^|\/)refs\/heads\/(.+)$/)?.[1];
+                return readSmallFile(head)?.match(/^ref:\s*refs\/heads\/(.+?)\s*$/m)?.[1];
+            } catch {
+                return undefined;
+            }
+        }
+        if (dirname(d) === d) return undefined;
+    }
+}
+
+/**
+ * The commands of a command line with the directory each runs in, following
+ * `cd`. null: a `cd` the text doesn't settle (`cd $DIR`, `cd -`, `cd ~x`).
+ */
+export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: string[]; dir: string | null | undefined }[] {
+    const out: { argv: string[]; dir: string | null | undefined }[] = [];
+    let dir: string | null | undefined = cwd;
+    for (const c of analyzeCommand(cmd).commands) {
+        const argv = effectiveArgv(c.argv);
+        if (argv[0] === "cd" || argv[0] === "pushd") {
+            const to = argv[1];
+            if (dir !== undefined) dir = dir === null || to === undefined || /^[-~]|\$/.test(to) || /\$/.test(c.text) ? null : resolve(dir, to);
+            continue;
+        }
+        out.push({ argv, dir });
+    }
+    return out;
+}
 
 export function configTarget(cmd: string, harnessHome?: string): string | undefined {
     if (isReadOnlyCommand(cmd)) return undefined;

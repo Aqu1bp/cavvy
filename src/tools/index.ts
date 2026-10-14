@@ -1,6 +1,6 @@
 import type { Tool } from "./types";
 import type { ToolSchema } from "../providers/types";
-import { ReadTool, WriteTool, EditTool, MultiEditTool } from "./file-tools";
+import { ReadTool, WriteTool, EditTool, MultiEditTool, NotebookEditTool } from "./file-tools";
 import { BashTool, BashOutputTool, KillShellTool } from "./bash";
 import { GlobTool, GrepTool, LSTool } from "./search-tools";
 import { WebFetchTool, WebSearchTool } from "./web-tools";
@@ -18,6 +18,7 @@ export const BUILTIN_TOOLS: Tool<any>[] = [
     EditTool,
     MultiEditTool,
     WriteTool,
+    NotebookEditTool,
     WebFetchTool,
     WebSearchTool,
     TodoWriteTool,

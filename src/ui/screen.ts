@@ -15,8 +15,18 @@ import { KeyParser, type Key } from "./keys";
 const SYNC_START = "\x1b[?2026h";
 const SYNC_END = "\x1b[?2026l";
 const RESET = "\x1b[0m";
+/**
+ * Bracketed paste, plus the kitty keyboard protocol's "disambiguate" flag so
+ * shift+enter and friends arrive as distinct keys. Terminals without the
+ * protocol ignore the push and the pop.
+ */
+const KEYS_ON = "\x1b[?2004h\x1b[>1u";
+const KEYS_OFF = "\x1b[?2004l\x1b[<u";
 /** Home, clear the screen, then the scrollback (which some terminals fill on a clear). */
 const CLEAR_ALL = "\x1b[H\x1b[2J\x1b[3J";
+/** Focus reporting: the terminal sends CSI I / CSI O when the window gains or loses focus. */
+const FOCUS_ON = "\x1b[?1004h";
+const FOCUS_OFF = "\x1b[?1004l";
 /** Rows laid out again after a resize; older output stays in the transcript. */
 const MAX_REDRAW_ROWS = 10_000;
 const MAX_ENTRIES = 20_000;
@@ -54,6 +64,8 @@ export class Screen {
     private resizeHandler?: () => void;
     private started = false;
     private suspended = false;
+    /** Whether the terminal window has focus; undefined until the terminal says. */
+    focus: boolean | undefined;
     readonly interactive: boolean;
     private dataListener = (d: string | Buffer) => this.onData(typeof d === "string" ? d : d.toString("utf-8"));
     private resizeListener = () => this.onResize();
@@ -73,10 +85,11 @@ export class Screen {
         process.stdin.on("data", this.dataListener);
         process.stdin.resume();
         process.stdout.on("resize", this.resizeListener);
-        // bracketed paste on, cursor hidden (we draw our own), and the window is ours
-        process.stdout.write("\x1b[?2004h" + cursor.hide + CLEAR_ALL);
+        // key reporting on, cursor hidden (we draw our own), and the window is ours
+        process.stdout.write(KEYS_ON + cursor.hide + CLEAR_ALL);
         this.top = 0;
         this.liveRows = 0;
+        this.setFocusReporting(true);
     }
 
     stop() {
@@ -86,6 +99,7 @@ export class Screen {
         // No gap below the output: the shell prompt goes right after it.
         this.pinned = false;
         this.flushNow();
+        this.setFocusReporting(false);
         this.started = false;
         process.stdin.off("data", this.dataListener);
         process.stdout.off("resize", this.resizeListener);
@@ -95,7 +109,7 @@ export class Screen {
             // ignore
         }
         process.stdin.pause();
-        process.stdout.write("\x1b[?2004l" + cursor.show);
+        process.stdout.write(KEYS_OFF + cursor.show);
     }
 
     /** Temporarily hand the terminal to a child process (external editor). */
@@ -104,18 +118,20 @@ export class Screen {
         this.suspended = true;
         const wasStarted = this.started;
         if (wasStarted) {
+            this.setFocusReporting(false);
             process.stdin.off("data", this.dataListener);
             process.stdin.setRawMode(false);
-            process.stdout.write("\x1b[?2004l" + cursor.show);
+            process.stdout.write(KEYS_OFF + cursor.show);
         }
         try {
             return await fn();
         } finally {
             if (wasStarted) {
+                this.setFocusReporting(true);
                 process.stdin.setRawMode(true);
                 process.stdin.on("data", this.dataListener);
                 process.stdin.resume();
-                process.stdout.write("\x1b[?2004h" + cursor.hide);
+                process.stdout.write(KEYS_ON + cursor.hide);
             }
             this.suspended = false;
             // Whatever the child drew is gone after this.
@@ -128,13 +144,25 @@ export class Screen {
             clearTimeout(this.escTimer);
             this.escTimer = undefined;
         }
-        for (const k of this.parser.feed(d)) this.keyHandler?.(k);
+        for (const k of this.parser.feed(d)) {
+            // Focus changes are tracked here and never reach the input.
+            if (k.name === "focus-in" || k.name === "focus-out") this.focus = k.name === "focus-in";
+            else this.keyHandler?.(k);
+        }
         if (this.parser.pendingEscape) {
             this.escTimer = setTimeout(() => {
                 this.escTimer = undefined;
                 for (const k of this.parser.flushEscape()) this.keyHandler?.(k);
             }, 40);
         }
+    }
+
+    /** Turn focus reporting on or off (off whenever another program gets the terminal). */
+    private setFocusReporting(on: boolean) {
+        if (!this.started) return;
+        process.stdout.write(on ? FOCUS_ON : FOCUS_OFF);
+        // Changes while it was off went unreported.
+        this.focus = undefined;
     }
 
     private onResize() {

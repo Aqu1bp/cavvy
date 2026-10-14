@@ -32,6 +32,28 @@ export function parseRule(raw: string): ParsedRule {
 export const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 export const READ_TOOLS = new Set(["Read", "Glob", "Grep", "LS"]);
 
+/**
+ * The input field each file tool acts on. Checks must read the same field the
+ * tool does: inputs can carry extra keys, so a decoy `file_path` next to a
+ * Grep's real `path` must not be what gets checked.
+ */
+const PATH_FIELD: Record<string, string> = {
+    Read: "file_path",
+    Write: "file_path",
+    Edit: "file_path",
+    MultiEdit: "file_path",
+    NotebookEdit: "notebook_path",
+    Glob: "path",
+    Grep: "path",
+    LS: "path",
+};
+
+export function toolPath(toolName: string, input: unknown): string | undefined {
+    const field = PATH_FIELD[toolName];
+    const v = field ? (input as Record<string, unknown> | undefined)?.[field] : undefined;
+    return typeof v === "string" ? v : undefined;
+}
+
 function globToRegex(glob: string): RegExp {
     let re = "";
     for (let i = 0; i < glob.length; i++) {

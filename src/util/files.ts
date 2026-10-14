@@ -1,6 +1,6 @@
 import { homedir } from "os";
-import { isAbsolute, join, relative, resolve, sep } from "path";
-import { realpathSync } from "fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { lstatSync, readlinkSync, realpathSync } from "fs";
 
 export function expandPath(p: string, cwd: string): string {
     let s = p.trim();
@@ -9,14 +9,25 @@ export function expandPath(p: string, cwd: string): string {
     return isAbsolute(s) ? resolve(s) : resolve(cwd, s);
 }
 
-/** Resolve symlinks when the path exists; otherwise resolve the nearest existing parent. */
-export function canonical(p: string): string {
+/**
+ * Resolve symlinks when the path exists; otherwise resolve the nearest
+ * existing parent. A dangling symlink resolves to its target: writing
+ * through it creates the target, so that's where the write lands.
+ */
+export function canonical(p: string, hops = 0): string {
     try {
         return realpathSync(p);
     } catch {
+        if (hops < 40) {
+            try {
+                if (lstatSync(p).isSymbolicLink()) return canonical(resolve(dirname(p), readlinkSync(p)), hops + 1);
+            } catch {
+                // not there at all
+            }
+        }
         const parent = resolve(p, "..");
         if (parent === p) return p;
-        return join(canonical(parent), p.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
+        return join(canonical(parent, hops), p.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
     }
 }
 

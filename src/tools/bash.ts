@@ -7,6 +7,7 @@ import { stripAnsi } from "../ui/ansi";
 import { redact } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
+import { blockedBySandbox, sandboxArgv, SANDBOX_HINT, type Sandbox } from "../permissions/sandbox";
 
 export { childEnv };
 
@@ -20,6 +21,11 @@ function pickShell(): string {
     return existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
 }
 
+/** `shell -c script`, inside the sandbox when there is one. */
+function shellArgv(script: string, sandbox?: Sandbox): string[] {
+    return sandbox ? sandboxArgv(sandbox, pickShell(), script) : [pickShell(), "-c", script];
+}
+
 let cwdFileCounter = 0;
 
 interface RunOpts {
@@ -29,6 +35,7 @@ interface RunOpts {
     signal: AbortSignal;
     env: Record<string, string>;
     onData?: (chunk: string) => void;
+    sandbox?: Sandbox;
 }
 
 interface RunResult {
@@ -44,7 +51,8 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
     const cwdFile = join(tmpdir(), `harness-cwd-${process.pid}-${++cwdFileCounter}`);
     const script = `${opts.command}\n__harness_ec=$?\npwd -P > '${cwdFile}' 2>/dev/null\nexit $__harness_ec\n`;
     return new Promise((resolvePromise) => {
-        const child = spawn(pickShell(), ["-c", script], {
+        const [file, ...args] = shellArgv(script, opts.sandbox);
+        const child = spawn(file!, args, {
             cwd: opts.cwd,
             env: opts.env,
             detached: true,
@@ -122,7 +130,7 @@ function allowedRoots(ctx: ToolContext): string[] {
 
 let shellCounter = 0;
 
-export const BashTool: Tool<{ command: string; description?: string; timeout?: number; run_in_background?: boolean }> = {
+export const BashTool: Tool<{ command: string; description?: string; timeout?: number; run_in_background?: boolean; dangerouslyDisableSandbox?: boolean }> = {
     name: "Bash",
     category: "execute",
     readOnly: false,
@@ -145,6 +153,11 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
             description: { type: "string", description: "Clear 5-10 word description of what the command does" },
             timeout: { type: "number", description: "Timeout in milliseconds (max 600000)" },
             run_in_background: { type: "boolean", description: "Run in the background and return immediately" },
+            dangerouslyDisableSandbox: {
+                type: "boolean",
+                description:
+                    "Auto mode only: run outside the sandbox (which has no network except localhost and allows writes only in the project and temp directories). Set it only after a command failed because of the sandbox; the command then goes to the safety reviewer.",
+            },
         },
         required: ["command"],
     },
@@ -156,6 +169,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
     async run(input, ctx) {
         const env = childEnv(ctx.settings.env);
         if (input.run_in_background) return startBackground(input.command, ctx, env);
+        const sandboxed = ctx.sandbox !== undefined;
         const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(1000, input.timeout ?? ctx.settings.bashTimeout ?? 120_000));
         let lastProgress = 0;
         let pending = "";
@@ -165,6 +179,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
             timeoutMs,
             signal: ctx.signal,
             env,
+            sandbox: ctx.sandbox,
             onData: (chunk) => {
                 pending += chunk;
                 const now = Date.now();
@@ -190,6 +205,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         else if (res.signal) out += `\n\nTerminated by signal ${res.signal}`;
         out += notes;
         const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
+        if (sandboxed && failed && !res.aborted && blockedBySandbox(res.output)) out += `\n\n${SANDBOX_HINT}`;
         const lineCount = out.trim() ? out.trim().split("\n").length : 0;
         return {
             content: out.trim() || "(no output)",
@@ -241,7 +257,8 @@ export async function stopGroup(pid: number | undefined, graceMs: number): Promi
 
 function startBackground(command: string, ctx: ToolContext, env: Record<string, string>) {
     const id = `bash_${++shellCounter}`;
-    const child = spawn(pickShell(), ["-c", command], { cwd: ctx.state.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const [file, ...args] = shellArgv(command, ctx.sandbox);
+    const child = spawn(file!, args, { cwd: ctx.state.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const shell: BackgroundShell = {
         id,
         command,
@@ -249,6 +266,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         output: "",
         readOffset: 0,
         exitCode: null,
+        sandboxed: ctx.sandbox !== undefined,
         kill: (graceMs = KILL_GRACE_MS) => stopGroup(child.pid, graceMs),
     };
     const onChunk = (b: Buffer) => {
@@ -270,7 +288,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
     });
     ctx.state.shells.set(id, shell);
     return {
-        content: `Started background shell ${id} (pid ${child.pid}). Use BashOutput with bash_id "${id}" to read its output and KillShell to stop it.`,
+        content: `Started background shell ${id} (pid ${child.pid})${ctx.sandbox ? " in the auto-mode sandbox" : ""}. Use BashOutput with bash_id "${id}" to read its output and KillShell to stop it.`,
         display: { summary: `Running in background as ${id}` },
     };
 }
@@ -303,8 +321,9 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
             }
         }
         const status = sh.exitCode === null ? "running" : `exited with code ${sh.exitCode}`;
+        const hint = sh.sandboxed && sh.exitCode !== null && sh.exitCode !== 0 && blockedBySandbox(sh.output) ? `\n${SANDBOX_HINT}` : "";
         return {
-            content: `<status>${status}</status>\n<output>\n${truncateMiddle(fresh, MAX_OUTPUT) || "(no new output)"}\n</output>`,
+            content: `<status>${status}</status>\n<output>\n${truncateMiddle(fresh, MAX_OUTPUT) || "(no new output)"}\n</output>${hint}`,
             display: { summary: `${status}${fresh ? `, ${fresh.split("\n").length} new lines` : ""}`, body: fresh || undefined },
         };
     },

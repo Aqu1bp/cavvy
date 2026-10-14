@@ -13,9 +13,12 @@ import { MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
 import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
-import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse } from "../agent/agent";
+import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { fireHooks, type HookEvent } from "../agent/hooks";
+import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { appendPromptHistory, loadPromptHistory } from "../agent/session";
+import { rewindTargets } from "../agent/checkpoints";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { addMemoryNote } from "../agent/memory";
 import type { Effort, Settings } from "../config/settings";
@@ -24,6 +27,7 @@ import { APP_TITLE, APP_VERSION } from "../config/paths";
 import { MODE_INFO, nextMode, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier } from "../permissions/classifier";
+import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
 import { BUILTIN_TOOLS } from "../tools/index";
 import type { Tool, ToolState, TodoItem } from "../tools/types";
@@ -48,6 +52,8 @@ export interface AppInit {
     resumeFile?: string;
     initialPrompt?: string;
     appendSystemPrompt?: string;
+    /** --max-turns: model turns allowed per prompt. */
+    maxTurns?: number;
     startupNotes: string[];
     extraAllow?: string[];
     extraDeny?: string[];
@@ -66,6 +72,7 @@ interface ActiveTool {
     startedAt: number;
     progress: string;
     autoReason?: string;
+    sandboxed?: boolean;
     sub?: { label: string; tools: string[]; count: number; tokens: number; startedAt: number };
 }
 
@@ -129,6 +136,14 @@ export class App {
     private exitResolve!: () => void;
     private permissionQueue: Promise<unknown> = Promise.resolve();
     private exiting = false;
+    readonly notifier = new Notifier({
+        settings: () => this.settings,
+        focus: () => this.screen.focus,
+        interactive: this.screen.interactive,
+        cwd: () => this.toolState.cwd,
+        sessionId: () => this.session?.meta.id,
+        warn: (msg) => this.notice(msg, "warn"),
+    });
 
     constructor(readonly init: AppInit) {
         this.settings = loadSettings(init.cwd, { trusted: init.trusted });
@@ -187,6 +202,7 @@ export class App {
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
+        void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
 
         await this.trackSwitch(this.initModel());
         this.renderLive();
@@ -207,7 +223,9 @@ export class App {
         if (this.session?.cost) this.screen.print(theme.muted(`Total cost: ${formatUsd(this.session.cost)}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
-        await Promise.all([killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        // SessionEnd hooks get at most 5 seconds.
+        const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
+        await Promise.all([ended, killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         this.screen.stop();
         this.exitResolve?.();
         process.exit(code);
@@ -377,15 +395,17 @@ export class App {
     }
 
     private updateHelpers() {
-        this.classifier.setComplete(this.client ? (system, prompt, signal) => this.complete(system, prompt, signal) : undefined);
+        this.classifier.setComplete(this.client ? (system, prompt, signal, opts) => this.complete(system, prompt, signal, opts) : undefined);
     }
 
-    /** One-shot completion on a cheap model (classifier, summaries). */
-    async complete(system: string, prompt: string, signal?: AbortSignal): Promise<string> {
+    /** One-shot completion on a cheap model (classifier, summaries), or with `main` on the session's model. */
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
         const smallRef = this.settings.smallModel;
-        if (smallRef) {
+        if (opts?.main) {
+            // the session's own model
+        } else if (smallRef) {
             const p = parseModelRef(smallRef);
             if (p) {
                 try {
@@ -430,6 +450,8 @@ export class App {
             mode: { get: () => this.mode, set: (m) => this.setMode(m, { fromAgent: true }) },
             toolState: this.toolState,
             nativeWebSearch: this.nativeSearch(),
+            maxTurns: this.init.maxTurns,
+            appendSystemPrompt: this.init.appendSystemPrompt,
             host: {
                 emit: (e) => this.onAgentEvent(e),
                 askPermission: (req) => this.askPermission(req),
@@ -498,13 +520,16 @@ export class App {
     }
 
     newSession() {
+        const prev = this.session;
         this.session = Session.create(this.cwd);
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.makeAgent();
+        this.sessionSwitched(prev, "clear");
     }
 
     resume(file: string) {
+        const prev = this.session;
         try {
             this.session = Session.load(file);
         } catch (e) {
@@ -515,6 +540,19 @@ export class App {
         this.toolState.fileState.clear();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
+        // At startup, run() fires SessionStart.
+        if (prev) this.sessionSwitched(prev, "resume");
+    }
+
+    /** /clear or /resume: SessionEnd for the old session, then SessionStart for the new one. */
+    private sessionSwitched(prev: Session, how: "clear" | "resume") {
+        const id = this.session.meta.id;
+        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => this.sessionHook("SessionStart", { session_id: id, source: how }));
+    }
+
+    /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
+    private sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+        return fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
     }
 
     private replayTranscript() {
@@ -680,7 +718,10 @@ export class App {
             }
             case "tool_approved": {
                 const a = this.active.get(e.id);
-                if (a) a.autoReason = e.reason;
+                if (a) {
+                    a.autoReason = e.reason;
+                    a.sandboxed = e.sandboxed;
+                }
                 break;
             }
             case "tool_end":
@@ -727,7 +768,7 @@ export class App {
                     this.screen.print(theme.error(`  ⎿  Interrupted · What should ${APP_TITLE} do instead?`));
                     // Messages queued for the interrupted turn go back to the prompt instead of running.
                     this.returnQueued();
-                }
+                } else if (e.reason === "max_turns") this.notice(`--max-turns ${this.init.maxTurns} limits each prompt; send a message to let it continue.`);
                 break;
         }
         this.renderLive();
@@ -750,6 +791,7 @@ export class App {
         const title = a?.title ?? call.name;
         const tool = a?.tool;
         const autoReason = a?.autoReason;
+        const sandboxed = a?.sandboxed;
         const sub = a?.sub ? { ...a.sub } : undefined;
         const verbose = this.verbose;
         const todos = this.toolState.todos.map((t) => ({ ...t }));
@@ -760,7 +802,8 @@ export class App {
         // Laid out again for the new width after a resize, from what was known when it finished.
         this.screen.print((cols) => {
             const out: string[] = ["", toolLine(displayTitle(title, tool), state)];
-            if (autoReason && autoReason !== "hook") out.push(theme.subtle(`  ⎿  auto-approved: ${truncate(autoReason, cols - 22)}`));
+            if (sandboxed && autoReason === "sandboxed") out.push(theme.subtle("  ⎿  ran in the sandbox"));
+            else if (autoReason && autoReason !== "hook") out.push(theme.subtle(`  ⎿  auto-approved${sandboxed ? " (sandboxed)" : ""}: ${truncate(autoReason, cols - 34)}`));
             if (call.name === "Task" && sub) {
                 out.push(theme.muted(`  ⎿  ${result.isError ? "Failed" : "Done"} (${sub.count} tool use${sub.count === 1 ? "" : "s"} · ${formatTokens(sub.tokens)} tokens · ${formatDuration(durationMs)})`));
                 if (verbose) out.push(...resultLines(result.content, cols, 40));
@@ -848,10 +891,11 @@ export class App {
                 items.push({ label: `Yes, and don't ask again for ${bold(label)} commands in ${bold(projectName)}`, value: "always" });
             }
         } else if (tool.category === "edit") {
-            const path = String(input.file_path ?? input.notebook_path ?? "");
+            const path = toolPath(tool.name, input) ?? "";
             const exists = (await import("fs")).existsSync(path.startsWith("/") ? path : join(this.toolState.cwd, path));
-            title = tool.name === "Write" ? (exists ? "Overwrite file" : "Create file") : "Edit file";
+            title = tool.name === "Write" ? (exists ? "Overwrite file" : "Create file") : tool.name === "NotebookEdit" ? "Edit notebook" : "Edit file";
             header.push(bold(displayPath(path.startsWith("/") ? path : join(this.toolState.cwd, path), this.cwd)));
+            if (req.preview?.summary) header.push(theme.muted(req.preview.summary));
             const diff = req.preview?.diff;
             if (diff) {
                 const room = Math.max(6, termRows() - 16);
@@ -862,7 +906,7 @@ export class App {
             else if (suggestions.length) items.push({ label: `Yes, and allow edits in ${bold(suggestions[0]!.replace(/^Edit\(\/?(.*?)\/\*\*\)$/, "$1"))} this session`, value: "always" });
         } else if (tool.category === "read") {
             title = "Read outside the workspace";
-            header.push(bold(String(input.file_path ?? input.path ?? "")));
+            header.push(bold(toolPath(tool.name, input) ?? ""));
             if (suggestions.length) items.push({ label: `Yes, and allow reading from ${bold(suggestions[0]!.replace(/^Read\(\/?(.*?)\/\*\*\)$/, "$1"))} this session`, value: "always" });
         } else if (tool.name === "WebFetch") {
             title = "Fetch web page";
@@ -900,6 +944,7 @@ export class App {
                 return false;
             },
         });
+        void this.notifier.notify("permission");
         const choice = ((await this.showDialog(d)) as Choice | undefined) ?? "no";
         switch (choice) {
             case "yes":
@@ -918,6 +963,7 @@ export class App {
         const items: SelectItem<string>[] = options.map((o) => ({ label: o.label, value: o.label, description: o.description }));
         items.push({ label: theme.muted("Type something else…"), value: OTHER });
         const d = new SelectDialog<string>({ title: question, items, multi, numbers: true, color: theme.info });
+        void this.notifier.notify("question");
         const r = await this.showDialog(d);
         if (r === undefined) return undefined;
         const arr = Array.isArray(r) ? r : [r];
@@ -944,6 +990,7 @@ export class App {
             numbers: true,
             color: theme.planMode,
         });
+        void this.notifier.notify("plan");
         const c = (await this.showDialog(d)) as C | undefined;
         if (!c) return { approved: false };
         if (c === "no") {
@@ -1013,13 +1060,18 @@ export class App {
         if (n === "escape") {
             if (this.busy) return this.interrupt();
             if (this.showHelp) return void (this.showHelp = false);
-            if (Date.now() - this.escAt < 800 && !e.isEmpty) {
-                e.clear();
-                this.inputMode = "prompt";
+            if (Date.now() - this.escAt < 800) {
+                this.escAt = 0;
+                this.flash = undefined;
+                if (!e.isEmpty) {
+                    e.clear();
+                    this.inputMode = "prompt";
+                } else if (this.inputMode === "prompt") void runCommand(this, "/rewind");
                 return;
             }
             this.escAt = Date.now();
             if (!e.isEmpty) this.flash = { text: "Esc again to clear", until: Date.now() + 800 };
+            else if (this.inputMode === "prompt" && rewindTargets(this.session.messages).length) this.flash = { text: "Esc again to rewind", until: Date.now() + 800 };
             return;
         }
         if (n === "tab" && k.shift) return this.cycleMode();
@@ -1199,6 +1251,7 @@ export class App {
         this.verb = SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!;
         this.status = undefined;
         this.startTicker();
+        let reason: TurnEndReason | undefined;
         try {
             this.printUser(opts.display ?? text);
             if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
@@ -1210,10 +1263,11 @@ export class App {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
                 const { parts, attached } = expandMentions(text, this.toolState, roots);
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
-                await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind });
+                reason = await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind });
             }
         } catch (e) {
             this.notice(`Unexpected error: ${redact((e as Error).message)}`, "error");
+            reason = "error";
         } finally {
             this.busy = false;
             this.abort = undefined;
@@ -1222,6 +1276,7 @@ export class App {
             this.status = undefined;
             this.renderLive();
         }
+        if (reason) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
         if (ac.signal.aborted) return this.returnQueued();
         const next = this.queued.shift();
         if (next !== undefined) await this.submitText(next);
@@ -1287,8 +1342,8 @@ export class App {
             while (connecting() && Date.now() < until && !signal?.aborted) await new Promise((r) => setTimeout(r, 100));
             this.status = undefined;
         }
-        const append = [this.mcp.instructions(), this.init.appendSystemPrompt ?? ""].filter(Boolean).join("\n\n");
-        this.session.setSystem(buildSystemPrompt({ cwd: this.cwd, model: this.model!, append: append || undefined }));
+        // --append-system-prompt isn't frozen in: the agent adds this run's to every request.
+        this.session.setSystem(buildSystemPrompt({ cwd: this.cwd, model: this.model!, append: this.mcp.instructions() || undefined }));
     }
 
     private async runBashMode(cmd: string) {
@@ -1550,11 +1605,14 @@ export function renderTodos(todos: TodoItem[], cols: number): string[] {
 
 function shortcutHelp(cols: number): string[] {
     const rows = [
-        ["! for bash mode", "double esc to clear input", "shift+tab to cycle modes"],
+        ["! for bash mode", "double esc to clear or rewind", "shift+tab to cycle modes"],
         ["/ for commands", "ctrl+g to edit in $EDITOR", "ctrl+o for verbose output"],
-        ["@ for file paths", "shift+enter or \\⏎ for newline", "ctrl+t to toggle todos"],
+        ["@ for file paths", "\\⏎ or ctrl+j for newline", "ctrl+t to toggle todos"],
         ["# to memorize", "esc to interrupt", "ctrl+c twice to exit"],
     ];
     const w = Math.floor((cols - 4) / 3);
-    return rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c, w - 1)), w)).join(""));
+    return [
+        ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c, w - 1)), w)).join("")),
+        "  " + theme.muted(truncate("shift+enter also adds a newline, in terminals that support it", cols - 4)),
+    ];
 }
