@@ -43,7 +43,8 @@ export interface BackgroundShell {
     output: string;
     readOffset: number;
     exitCode: number | null;
-    kill: () => void;
+    /** SIGTERM, then SIGKILL after the grace period if anything in the group is still running. */
+    kill: (graceMs?: number) => Promise<"gone" | "stopped" | "killed">;
 }
 
 /** Shared, mutable state that tools read and write during a session. */

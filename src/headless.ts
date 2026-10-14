@@ -67,9 +67,25 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     if (o.effort) settings.effort = o.effort;
     for (const n of o.startupNotes) stderr(`warning: ${n}`);
 
+    // ---- session to resume (its model comes before the default)
+    let resumed: Session | undefined;
+    if (o.resumeFile) {
+        try {
+            resumed = Session.load(o.resumeFile);
+        } catch (e) {
+            return fail(`Could not resume: ${(e as Error).message}`);
+        }
+    }
+
     // ---- model
     let listings = cachedListings();
     let ref = o.modelRef ?? settings.model ?? o.fallbackModel;
+    if (!o.modelRef && resumed?.model && resumed.model !== ref) {
+        const p = parseModelRef(resumed.model);
+        const usable = p && getProvider(p.provider) && resolveModelInfo(resumed.model) && (await clientFor(p.provider).then(() => true, () => false));
+        if (usable) ref = resumed.model;
+        else stderr(`warning: this session used ${resumed.model}, which isn't available now; using ${ref ?? "the default model"}.`);
+    }
     if (!ref) {
         let pick = defaultModelFrom(listings);
         if (!pick) {
@@ -92,12 +108,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     if (!model) return fail(`Unknown model "${ref}".`);
 
     // ---- session and tools
-    let session: Session;
-    try {
-        session = o.resumeFile ? Session.load(o.resumeFile) : Session.create(o.cwd);
-    } catch (e) {
-        return fail(`Could not resume: ${(e as Error).message}`);
-    }
+    const session: Session = resumed ?? Session.create(o.cwd);
     const toolState: ToolState = { cwd: o.cwd, projectRoot: o.cwd, fileState: new Map(), todos: [], shells: new Map() };
     const checker = new PermissionChecker(() => settings, o.cwd);
     const mcp = new McpManager(o.cwd, () => settings, o.trusted);
@@ -182,7 +193,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
                 break;
             case "retry":
                 if (o.outputFormat === "stream-json") json({ type: "system", subtype: "retry", attempt: e.attempt, delay_ms: e.delayMs, reason: e.reason });
-                else if (o.verbose) stderr(`retrying (${e.attempt}): ${e.reason}`);
+                // Always: otherwise a provider that's down looks like a hang for minutes.
+                else stderr(`retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt}): ${e.reason}`);
                 break;
             case "usage":
                 totalCost += e.cost.usd;
@@ -263,8 +275,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     } finally {
         process.off("SIGINT", onSig);
         process.off("SIGTERM", onSig);
-        killAllShells({ state: toolState });
-        await Promise.race([mcp.closeAll(), sleep(1500)]);
+        await Promise.all([killAllShells({ state: toolState }), Promise.race([mcp.closeAll(), sleep(1500)])]);
     }
 
     const isError = reason !== "done";

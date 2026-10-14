@@ -5,7 +5,7 @@
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join, resolve } from "path";
-import { readJson, writeJson } from "./settings";
+import { readJson, readJsonForUpdate, writeJson } from "./settings";
 import { harnessHome, paths } from "./paths";
 import { isInside } from "../util/files";
 
@@ -26,7 +26,14 @@ export function trustFolder(dir: string) {
         sessionTrusted.add(d);
         return;
     }
-    const cur = readJson<{ dirs?: string[] }>(file()) ?? {};
+    let cur: { dirs?: string[] };
+    try {
+        cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
+    } catch (e) {
+        // Don't drop the other trusted folders; trust this one until exit.
+        sessionTrusted.add(d);
+        throw e;
+    }
     const dirs = new Set(cur.dirs ?? []);
     dirs.add(d);
     writeJson(file(), { dirs: [...dirs].sort() }, 0o600);

@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "fs";
 import { APP_NAME, APP_TITLE, APP_VERSION, harnessHome, paths } from "./config/paths";
 import { loadHarnessEnv, preloadKeys, getKey, setKey, removeKey, storageDescription } from "./auth/credentials";
 import { detectKeyProvider, validateKey } from "./auth/detect";
-import { EFFORT_LEVELS, loadScope, loadSettings, readJson, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
+import { EFFORT_LEVELS, loadScope, loadSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, type PermissionMode } from "./permissions/modes";
 import { allProviders, getProvider, SEARCH_PROVIDERS } from "./providers/registry";
@@ -204,6 +204,34 @@ function parseFlags(argv: string[]): Flags {
 }
 
 // ---------------------------------------------------------------------------
+// Piped input for -p.
+
+const STDIN_WAIT_MS = Number(process.env.HARNESS_STDIN_WAIT_MS) || 3000;
+
+/**
+ * With a prompt on the command line stdin is optional, and a parent process
+ * that leaves the pipe open (without ever writing or closing it) mustn't hang
+ * the run: wait a few seconds for the first bytes, then go on without.
+ */
+async function readPipedStdin(havePrompt: boolean): Promise<string> {
+    if (!havePrompt) return (await Bun.stdin.text()).trim();
+    const reader = Bun.stdin.stream().getReader();
+    const first = await Promise.race([reader.read(), Bun.sleep(STDIN_WAIT_MS).then(() => undefined)]);
+    if (!first) {
+        process.stderr.write(`${APP_NAME}: no input on stdin after ${STDIN_WAIT_MS / 1000}s, continuing without it. To pipe a slow command's output, save it to a file first; to skip stdin, add < /dev/null.\n`);
+        void reader.cancel().catch(() => {});
+        return "";
+    }
+    const chunks: Uint8Array[] = [];
+    let r = first;
+    while (!r.done) {
+        chunks.push(r.value);
+        r = await reader.read();
+    }
+    return Buffer.concat(chunks).toString("utf-8").trim();
+}
+
+// ---------------------------------------------------------------------------
 // Secret input for `auth add` (no echo).
 
 async function readHidden(prompt: string): Promise<string> {
@@ -386,13 +414,21 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
         if (scope === "project") {
             // project scope = the shared .mcp.json, like other tools use
             const file = paths.projectMcp(cwd);
-            const f = readJson<{ mcpServers?: Record<string, McpServerConfig> }>(file) ?? {};
-            (f.mcpServers ??= {})[name] = cfg;
-            writeJson(file, f);
-            updateSettings("local", cwd, (s) => (s.enabledMcpjsonServers = [...new Set([...(s.enabledMcpjsonServers ?? []), name])]));
+            try {
+                const f = readJsonForUpdate<{ mcpServers?: Record<string, McpServerConfig> }>(file) ?? {};
+                (f.mcpServers ??= {})[name] = cfg;
+                writeJson(file, f);
+                updateSettings("local", cwd, (s) => (s.enabledMcpjsonServers = [...new Set([...(s.enabledMcpjsonServers ?? []), name])]));
+            } catch (e) {
+                die((e as Error).message);
+            }
             process.stdout.write(`Added ${name} to ${file}\n`);
         } else {
-            updateSettings(scope, cwd, (s) => ((s.mcpServers ??= {})[name] = cfg));
+            try {
+                updateSettings(scope, cwd, (s) => ((s.mcpServers ??= {})[name] = cfg));
+            } catch (e) {
+                die((e as Error).message);
+            }
             process.stdout.write(`Added ${name} to ${settingsPath(scope, cwd)}\n`);
         }
         if (Object.keys(env).length || Object.keys(headers).length) process.stderr.write(`note: env values and headers are stored in plain text in that file.\n`);
@@ -407,7 +443,11 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
         for (const scope of scopes) {
             const s = loadScope(scope, cwd);
             if (s.mcpServers?.[name]) {
-                updateSettings(scope, cwd, (x) => delete x.mcpServers?.[name]);
+                try {
+                    updateSettings(scope, cwd, (x) => delete x.mcpServers?.[name]);
+                } catch (e) {
+                    die((e as Error).message);
+                }
                 process.stdout.write(`Removed ${name} from ${settingsPath(scope, cwd)}\n`);
                 removed = true;
             }
@@ -489,7 +529,7 @@ async function main() {
 
     let prompt = f.rest.join(" ").trim();
     if (!process.stdin.isTTY && (f.print || !interactive)) {
-        const piped = (await Bun.stdin.text()).trim();
+        const piped = await readPipedStdin(Boolean(prompt));
         if (piped) prompt = prompt ? `${prompt}\n\n<stdin>\n${piped}\n</stdin>` : piped;
     }
     if (!interactive && !prompt) die('no prompt given. Use -p "your prompt" (or pipe text on stdin) for non-interactive runs.');
@@ -500,7 +540,13 @@ async function main() {
     if (!trusted && found.length) {
         if (interactive) {
             trusted = await askTrust(cwd, found);
-            if (trusted) trustFolder(cwd);
+            if (trusted) {
+                try {
+                    trustFolder(cwd);
+                } catch (e) {
+                    env.notes.push(`Trusted for this session only. ${(e as Error).message}`);
+                }
+            }
         } else process.stderr.write(`warning: this folder isn't trusted, so ${found.join(", ")} and its memory files are ignored (except deny/ask rules). Run ${APP_NAME} interactively once to trust it.\n`);
     } else if (!trusted) {
         // Nothing to protect yet. Anything created later this session (like a

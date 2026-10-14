@@ -193,6 +193,8 @@ describe("Session persistence", () => {
     test("registered secrets and known key formats are redacted on disk and in the user turns sent to models", () => {
         const secret = "my-very-private-token-0123456789";
         registerSecret(secret, "test-secret");
+        // Other test files store FAKE.anthropic as a key; here it should be caught by its format.
+        unregisterSecret(FAKE.anthropic);
         try {
             const s = Session.create(project(), { system: `system mentions ${secret}` });
             s.setTitle(`title with ${secret}`);

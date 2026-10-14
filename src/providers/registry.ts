@@ -1,6 +1,6 @@
 // Built-in provider catalog. Adding an OpenAI-compatible provider is one entry.
 
-import { readJson, writeJson } from "../config/settings";
+import { readJson, readJsonForUpdate, writeJson } from "../config/settings";
 import { paths } from "../config/paths";
 
 /** anthropic = Messages API; openai = Chat Completions; responses = OpenAI Responses API. */
@@ -229,6 +229,11 @@ interface ProvidersFile {
 
 export function readProvidersFile(): ProvidersFile {
     return readJson<ProvidersFile>(paths.providers()) ?? {};
+}
+
+/** Read before writing back: throws on a broken file rather than losing its custom providers. */
+export function readProvidersFileForUpdate(): ProvidersFile {
+    return readJsonForUpdate<ProvidersFile>(paths.providers()) ?? {};
 }
 
 export function writeProvidersFile(f: ProvidersFile) {

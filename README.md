@@ -74,7 +74,7 @@ Rules (`/permissions` to edit them):
 ## Using it
 
 - `@path` attaches a file (completion included); `!cmd` runs a shell command yourself; `#note` saves a memory; `/` opens commands.
-- `esc` interrupts; type while it works and your message is delivered at the next step; `ctrl+o` toggles verbose output; `ctrl+t` toggles the todo list; `ctrl+g` opens `$EDITOR`; `↑`/`↓` history.
+- `esc` interrupts; type while it works and your message is delivered at the next step (after an interrupt, anything not yet sent goes back to the prompt); `ctrl+o` toggles verbose output; `ctrl+t` toggles the todo list; `ctrl+g` opens `$EDITOR`; `↑`/`↓` history.
 - Sessions are saved per project. Resume them with `-c` (latest), `-r` (picker) or `/resume`.
 
 Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rename /export /copy /init /review /memory /config /thinking /mcp /agents /hooks /todos /bashes /add-dir /doctor /exit`.
@@ -91,6 +91,8 @@ Custom commands are markdown files in `~/.harness/commands/` or `.harness/comman
 | `.harness/settings.json`, `.harness/settings.local.json`, `~/.harness/settings.json` | Settings: project, personal, user. |
 | `.mcp.json` | Shared MCP servers (each needs approval in `/mcp` the first time). |
 | `.harness/agents/*.md`, `~/.harness/agents/*.md` | Custom sub-agents (frontmatter: `name`, `description`, `tools`, `model`). |
+
+Settings files may contain `//` and `/* */` comments and trailing commas. A settings, credentials, providers or trust file that has a JSON error is ignored (with a warning) and is never overwritten: saving a setting into it fails with a message naming the file, so nothing in it is lost. Saving rewrites the file as plain JSON, so comments in a file the harness edits are not kept.
 
 When a folder contains harness configuration, you're asked once whether you trust it. Until you do, its settings, hooks, MCP servers, commands and memory files (HARNESS.md, AGENTS.md, CLAUDE.md) are ignored, except deny/ask rules, which only add restrictions. Memory files are only read when they are markdown inside the project (a symlink pointing elsewhere is skipped), and the harness's own git calls run with `core.fsmonitor` disabled so an untrusted repo can't run code on startup.
 
@@ -135,6 +137,8 @@ harness -p "…" --output-format stream-json     # one JSON event per line
 ```
 
 In `-p` mode nothing can prompt you, so anything that would ask is denied. Allow it with `--allowedTools`, rules, or `--permission-mode`. The exit code is 0 on success and 1 on error or `--max-turns`.
+
+Piped stdin is added to the prompt. When the prompt is also given on the command line, stdin is optional: if nothing arrives within 3 seconds the run goes on without it (so a parent process that leaves stdin open can't hang it). To pipe a command that's slow to start printing, save its output to a file first. Retries (rate limits, overloaded or unreachable providers) are reported on stderr as they happen. `-c` and `-r` continue with the model the session was using, if it's still available.
 
 ## Development
 

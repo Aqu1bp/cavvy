@@ -202,6 +202,43 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
     },
 };
 
+const KILL_GRACE_MS = 3000;
+
+/** Whether any process in the group is still alive. */
+function groupAlive(pid: number): boolean {
+    try {
+        process.kill(-pid, 0);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+}
+
+/**
+ * SIGTERM the process group, give it `graceMs` to exit, then SIGKILL
+ * whatever is left (a server stuck in its shutdown handler would otherwise
+ * keep running, and holding its port, after we stopped tracking it).
+ */
+export async function stopGroup(pid: number | undefined, graceMs: number): Promise<"gone" | "stopped" | "killed"> {
+    if (pid === undefined || !groupAlive(pid)) return "gone";
+    try {
+        process.kill(-pid, "SIGTERM");
+    } catch {
+        return "gone";
+    }
+    for (const until = Date.now() + graceMs; Date.now() < until; ) {
+        await new Promise((r) => setTimeout(r, 50));
+        if (!groupAlive(pid)) return "stopped";
+    }
+    try {
+        process.kill(-pid, "SIGKILL");
+    } catch {
+        return "stopped";
+    }
+    for (let i = 0; i < 20 && groupAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+    return "killed";
+}
+
 function startBackground(command: string, ctx: ToolContext, env: Record<string, string>) {
     const id = `bash_${++shellCounter}`;
     const child = spawn(pickShell(), ["-c", command], { cwd: ctx.state.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -212,13 +249,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         output: "",
         readOffset: 0,
         exitCode: null,
-        kill: () => {
-            try {
-                if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
-            } catch {
-                // gone
-            }
-        },
+        kill: (graceMs = KILL_GRACE_MS) => stopGroup(child.pid, graceMs),
     };
     const onChunk = (b: Buffer) => {
         shell.output += b.toString("utf-8");
@@ -293,13 +324,17 @@ export const KillShellTool: Tool<{ shell_id: string }> = {
     async run(input, ctx) {
         const sh = ctx.state.shells.get(input.shell_id);
         if (!sh) return { content: `No background shell with id ${input.shell_id}`, isError: true };
-        sh.kill();
+        const how = await sh.kill();
         ctx.state.shells.delete(input.shell_id);
+        if (how === "killed") return { content: `Killed ${input.shell_id} (it didn't exit on SIGTERM, so it was sent SIGKILL)`, display: { summary: "Killed (forced)" } };
+        if (how === "gone") return { content: `${input.shell_id} had already exited${sh.exitCode !== null ? ` with code ${sh.exitCode}` : ""}`, display: { summary: "Already exited" } };
         return { content: `Killed ${input.shell_id}`, display: { summary: "Killed" } };
     },
 };
 
-export function killAllShells(ctx: { state: { shells: Map<string, BackgroundShell> } }) {
-    for (const sh of ctx.state.shells.values()) sh.kill();
+/** On exit: a shorter grace period, so quitting stays quick. */
+export async function killAllShells(ctx: { state: { shells: Map<string, BackgroundShell> } }, graceMs = 1500) {
+    const shells = [...ctx.state.shells.values()];
     ctx.state.shells.clear();
+    await Promise.all(shells.map((sh) => sh.kill(graceMs)));
 }

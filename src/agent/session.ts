@@ -3,7 +3,7 @@
 // Everything is passed through the redactor before it touches disk.
 
 import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_VERSION } from "../config/paths";
 import type { Message, Usage } from "../providers/types";
@@ -228,30 +228,75 @@ function repairTail(s: Session) {
     });
 }
 
-function firstPrompt(file: string): { title?: string; first?: string; count: number } {
-    // Only read the head of the file; sessions can be large.
+const HEAD_BYTES = 256 * 1024;
+const MAX_LINE_BYTES = 64 * 1024 * 1024;
+
+interface SessionHead {
+    cwd?: string;
+    title?: string;
+    first?: string;
+    /** Messages seen in the part that was read. */
+    count: number;
+}
+
+/**
+ * The session's cwd, title and first prompt, reading only the head of the
+ * file (sessions can be large). Past the head it reads on until the first
+ * message is complete: one with a pasted screenshot can be bigger than the head.
+ */
+function sessionHead(file: string): SessionHead {
+    const head: SessionHead = { count: 0 };
     const fd = openSync(file, "r");
-    const buf = Buffer.alloc(256 * 1024);
-    const n = readSync(fd, buf, 0, buf.length, 0);
-    closeSync(fd);
-    const text = buf.subarray(0, n).toString("utf-8");
-    let title: string | undefined;
-    let first: string | undefined;
-    let count = 0;
-    for (const raw of text.split("\n")) {
-        if (!raw.trim()) continue;
-        try {
-            const l = JSON.parse(raw) as Line;
-            if (l.t === "title") title = l.title;
-            if (l.t === "msg") {
-                count++;
-                if (!first && l.m.role === "user" && (l.m.meta?.kind ?? "prompt") === "prompt") first = l.m.meta?.display ?? textOf(l.m);
+    try {
+        const chunk = Buffer.alloc(HEAD_BYTES);
+        let partial: Buffer[] = [];
+        let partialLen = 0;
+        let pos = 0;
+        while (!(pos >= HEAD_BYTES && head.count > 0)) {
+            const n = readSync(fd, chunk, 0, chunk.length, pos);
+            if (n <= 0) break; // a torn last line is ignored, as load() does
+            pos += n;
+            const c = chunk.subarray(0, n);
+            let start = 0;
+            for (let nl = c.indexOf(10); nl >= 0; nl = c.indexOf(10, start)) {
+                const piece = c.subarray(start, nl);
+                const line = partialLen ? Buffer.concat([...partial, piece]) : piece;
+                partial = [];
+                partialLen = 0;
+                start = nl + 1;
+                readHeadLine(line.toString("utf-8"), head);
             }
-        } catch {
-            break;
+            if (start < n) {
+                partial.push(Buffer.from(c.subarray(start))); // chunk is reused
+                partialLen += n - start;
+                if (partialLen > MAX_LINE_BYTES) break;
+            }
         }
+    } finally {
+        closeSync(fd);
     }
-    return { title, first, count };
+    return head;
+}
+
+function readHeadLine(raw: string, head: SessionHead) {
+    if (!raw.trim()) return;
+    let l: Line;
+    try {
+        l = JSON.parse(raw) as Line;
+    } catch {
+        return;
+    }
+    if (l.t === "meta") head.cwd = l.cwd;
+    else if (l.t === "title") head.title = l.title;
+    else if (l.t === "msg") {
+        head.count++;
+        if (!head.first && l.m.role === "user" && (l.m.meta?.kind ?? "prompt") === "prompt") head.first = l.m.meta?.display ?? textOf(l.m);
+    }
+}
+
+/** Different paths can share a sessions folder (foo-bar and foo.bar); the session records its own. */
+function sameProject(head: SessionHead, cwd: string): boolean {
+    return head.cwd === undefined || resolve(head.cwd) === resolve(cwd);
 }
 
 export function listSessions(cwd: string, limit = 50): SessionSummary[] {
@@ -263,8 +308,8 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
         const file = join(dir, f);
         try {
             const st = statSync(file);
-            const head = firstPrompt(file);
-            if (!head.count) continue;
+            const head = sessionHead(file);
+            if (!head.count || !sameProject(head, cwd)) continue;
             out.push({
                 id: f.replace(/\.jsonl$/, ""),
                 file,
@@ -283,6 +328,15 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
 }
 
 export function findSession(cwd: string, idOrPrefix: string): string | undefined {
+    if (/^[A-Za-z0-9_-]+$/.test(idOrPrefix)) {
+        const exact = join(projectStateDir(cwd), `${idOrPrefix}.jsonl`);
+        try {
+            const head = existsSync(exact) ? sessionHead(exact) : undefined;
+            if (head?.count && sameProject(head, cwd)) return exact;
+        } catch {
+            // fall back to the listing
+        }
+    }
     const all = listSessions(cwd, 1000);
     return all.find((s) => s.id === idOrPrefix)?.file ?? all.find((s) => s.id.startsWith(idOrPrefix))?.file;
 }

@@ -9,10 +9,10 @@
 // registered with the redactor so they cannot leak through tool output.
 
 import { chmodSync, existsSync, readFileSync, statSync } from "fs";
-import { readJson, writeJson } from "../config/settings";
+import { readJson, readJsonForUpdate, writeJson } from "../config/settings";
 import { paths } from "../config/paths";
-import { allProviders, getProvider, readProvidersFile, writeProvidersFile, SEARCH_PROVIDERS, type ProviderDef } from "../providers/registry";
-import { registerSecret, unregisterSecret } from "../util/redact";
+import { allProviders, getProvider, readProvidersFile, readProvidersFileForUpdate, writeProvidersFile, SEARCH_PROVIDERS, type ProviderDef } from "../providers/registry";
+import { registerSecret } from "../util/redact";
 
 const SERVICE = "harness-cli";
 
@@ -38,7 +38,8 @@ async function keychainWorks(): Promise<boolean> {
     return keychainAvailable;
 }
 
-function readFileStore(): Record<string, string> {
+/** `forUpdate`: throw on a broken file instead of reading it as empty (writing that back would drop every key in it). */
+function readFileStore(forUpdate = false): Record<string, string> {
     const file = paths.credentialsFile();
     if (!existsSync(file)) return {};
     try {
@@ -50,7 +51,7 @@ function readFileStore(): Record<string, string> {
     } catch {
         // ignore
     }
-    return readJson<Record<string, string>>(file) ?? {};
+    return (forUpdate ? readJsonForUpdate<Record<string, string>>(file) : readJson<Record<string, string>>(file)) ?? {};
 }
 
 function writeFileStore(data: Record<string, string>) {
@@ -97,14 +98,21 @@ async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
 export async function setKey(providerId: string, value: string): Promise<KeySource> {
     const key = value.trim();
     if (!key) throw new Error("empty key");
-    const old = cache.get(providerId);
-    if (old) unregisterSecret(old.value);
+    // The previous key stays registered: it's still the one in use if this
+    // update fails, and masking a retired key costs nothing.
+    registerSecret(key, providerId);
     let source: KeySource = "file";
     if (await keychainWorks()) {
+        // Read providers.json first, so a broken one fails the update before the keychain changes.
+        const pf = readProvidersFileForUpdate();
         try {
             await Bun.secrets.set({ service: SERVICE, name: providerId, value: key });
             source = "keychain";
-            const pf = readProvidersFile();
+        } catch {
+            source = "file";
+        }
+        if (source === "keychain") {
+            cache.delete(providerId);
             pf.keychain = [...new Set([...(pf.keychain ?? []), providerId])];
             writeProvidersFile(pf);
             // Remove any stale plaintext copy.
@@ -113,17 +121,14 @@ export async function setKey(providerId: string, value: string): Promise<KeySour
                 delete store[providerId];
                 writeFileStore(store);
             }
-        } catch {
-            source = "file";
         }
     }
     if (source === "file") {
-        const store = readFileStore();
+        const store = readFileStore(true);
         store[providerId] = key;
         writeFileStore(store);
     }
     cache.delete(providerId);
-    registerSecret(key, providerId);
     // An env var still takes precedence; tell the caller via getKey().source.
     return source;
 }
@@ -148,8 +153,7 @@ export async function removeKey(providerId: string): Promise<boolean> {
         pf.keychain = pf.keychain.filter((x) => x !== providerId);
         writeProvidersFile(pf);
     }
-    const old = cache.get(providerId);
-    if (old) unregisterSecret(old.value);
+    // The removed key stays registered with the redactor for the rest of the session.
     cache.delete(providerId);
     return removed;
 }

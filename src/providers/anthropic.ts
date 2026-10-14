@@ -25,6 +25,7 @@ import {
 } from "./types";
 import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS } from "./anthropic-models";
 import type { Effort } from "../config/settings";
+import { plainErrorText } from "../util/html";
 
 type BetaParams = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type BetaMessageParam = Anthropic.Beta.Messages.BetaMessageParam;
@@ -353,7 +354,7 @@ function toProviderError(e: unknown): ProviderError {
         const status = e.status;
         const retryAfter = Number(e.headers?.get?.("retry-after"));
         const retryable = status === undefined || status === 408 || status === 409 || status === 429 || status >= 500;
-        let message = e.message;
+        let message = plainErrorText(e.message);
         if (status === 401) message = "Authentication failed: the Anthropic API key was rejected. Run /login to update it.";
         else if (status === 529 || /overloaded/i.test(message)) message = "Anthropic API is overloaded";
         return new ProviderError(message, status, retryable, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined);

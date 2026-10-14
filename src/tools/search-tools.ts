@@ -4,14 +4,15 @@ import type { Tool, ToolContext } from "./types";
 import { displayPath, expandPath, formatBytes, looksBinary, truncateMiddle } from "../util/files";
 import { redact } from "../util/redact";
 import { childEnv } from "../util/env";
+import { gitListFiles } from "../util/git";
 
 const DEFAULT_IGNORES = ["node_modules", ".git", "dist", "build", ".next", "__pycache__", ".venv", "venv", "target", ".cache", ".DS_Store"];
 
-let rgPath: string | null | undefined;
+let rgPath: { path: string | null; for?: string } | undefined;
 function ripgrep(): string | null {
-    if (rgPath !== undefined) return rgPath;
-    rgPath = Bun.which("rg");
-    return rgPath;
+    // Looked up again if PATH changes; Bun.which's default PATH is the one at startup.
+    if (!rgPath || rgPath.for !== process.env.PATH) rgPath = { path: Bun.which("rg", { PATH: process.env.PATH ?? "" }), for: process.env.PATH };
+    return rgPath.path;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,19 +225,19 @@ async function jsGrep(input: GrepInput, target: string, mode: string, signal: Ab
         return `Invalid regex: ${(e as Error).message}`;
     }
     const fileGlob = input.glob ? new Bun.Glob(input.glob.includes("/") ? input.glob : `**/${input.glob}`) : undefined;
+    const exts = input.type ? TYPE_EXTS[input.type.toLowerCase()] : undefined;
+    if (input.type && !exts) return `Grep error: unrecognized file type: ${input.type}`;
     const out: string[] = [];
     const st = await stat(target).catch(() => undefined);
     const files: string[] = [];
     if (st?.isFile()) files.push(target);
     else if (st?.isDirectory()) {
-        for await (const f of new Bun.Glob("**/*").scan({ cwd: target, onlyFiles: true })) {
-            if (f.split("/").some((p) => DEFAULT_IGNORES.includes(p))) continue;
-            if (fileGlob && !fileGlob.match(f)) continue;
-            if (hide?.("Grep", join(target, f))) continue;
-            files.push(join(target, f));
-            if (files.length > 20000) break;
-        }
+        const wanted = (f: string) => (!fileGlob || fileGlob.match(f)) && (!exts || exts.includes(f.slice(f.lastIndexOf(".") + 1).toLowerCase())) && !hide?.("Grep", join(target, f));
+        for (const f of await candidateFiles(target, wanted)) files.push(join(target, f));
     }
+    const before = Math.max(0, input.before ?? input.context ?? 0);
+    const after = Math.max(0, input.after ?? input.context ?? 0);
+    const num = input.show_line_numbers !== false;
     for (const f of files) {
         if (signal.aborted) break;
         const buf = await readFile(f).catch(() => undefined);
@@ -247,16 +248,107 @@ async function jsGrep(input: GrepInput, target: string, mode: string, signal: Ab
             continue;
         }
         const lines = text.split("\n");
-        let count = 0;
-        lines.forEach((line, i) => {
-            if (re.test(line)) {
-                count++;
-                if (mode === "content") out.push(`${f}:${input.show_line_numbers !== false ? `${i + 1}:` : ""}${line.slice(0, 500)}`);
+        const { hits, matches, spanning } = matchingLines(text, lines, re, Boolean(input.multiline));
+        if (mode === "count") {
+            // Like ripgrep: lines, except when a multiline match crosses a newline, then matches.
+            const n = spanning ? matches : hits.length;
+            if (n) out.push(`${f}:${n}`);
+            continue;
+        }
+        // Matches with ":" and context lines with "-", groups split by "--", like ripgrep.
+        const hitSet = new Set(hits);
+        let last = -2;
+        for (const h of hits) {
+            const from = Math.max(0, h - before, last + 1);
+            const to = Math.min(lines.length - 1, h + after);
+            if (last >= 0 && from > last + 1) out.push("--");
+            for (let i = from; i <= to; i++) {
+                const sep = hitSet.has(i) ? ":" : "-";
+                out.push(`${f}${sep}${num ? `${i + 1}${sep}` : ""}${lines[i]!.slice(0, 500)}`);
             }
-        });
-        if (mode === "count" && count) out.push(`${f}:${count}`);
+            last = Math.max(last, to);
+        }
     }
     return out.join("\n");
+}
+
+/** Line indexes (sorted) that a match touches (with multiline, a match can span several), the match count, and whether any match contains a newline. */
+function matchingLines(text: string, lines: string[], re: RegExp, multiline: boolean): { hits: number[]; matches: number; spanning: boolean } {
+    if (!multiline) {
+        const hits = lines.flatMap((line, i) => (re.test(line) ? [i] : []));
+        return { hits, matches: hits.length, spanning: false };
+    }
+    const starts: number[] = [];
+    for (let i = 0, off = 0; i < lines.length; off += lines[i]!.length + 1, i++) starts.push(off);
+    const lineAt = (offset: number) => {
+        let lo = 0;
+        let hi = starts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (starts[mid]! <= offset) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo;
+    };
+    const hit = new Set<number>();
+    let n = 0;
+    let spanning = false;
+    for (const m of text.matchAll(new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g"))) {
+        const a = lineAt(m.index);
+        const b = lineAt(m.index + Math.max(0, m[0].length - 1));
+        for (let i = a; i <= b; i++) hit.add(i);
+        if (m[0].includes("\n")) spanning = true;
+        if (++n > 100_000) break;
+    }
+    return { hits: [...hit].sort((x, y) => x - y), matches: n, spanning };
+}
+
+/** File extensions per --type for the fallback search (a subset of ripgrep's list). */
+const TYPE_EXTS: Record<string, string[]> = {
+    js: ["js", "jsx", "mjs", "cjs"],
+    ts: ["ts", "tsx", "mts", "cts"],
+    py: ["py", "pyi"],
+    go: ["go"],
+    rust: ["rs"],
+    java: ["java"],
+    kotlin: ["kt", "kts"],
+    c: ["c", "h"],
+    cpp: ["cpp", "cc", "cxx", "hpp", "hh", "hxx", "h"],
+    cs: ["cs"],
+    ruby: ["rb"],
+    php: ["php"],
+    swift: ["swift"],
+    sh: ["sh", "bash", "zsh"],
+    md: ["md", "markdown"],
+    markdown: ["md", "markdown"],
+    json: ["json"],
+    yaml: ["yaml", "yml"],
+    toml: ["toml"],
+    html: ["html", "htm"],
+    css: ["css", "scss", "sass", "less"],
+    sql: ["sql"],
+    lua: ["lua"],
+    scala: ["scala"],
+    dart: ["dart"],
+    elixir: ["ex", "exs"],
+};
+
+/**
+ * Files to search under `dir`, relative to it. In a git work tree that's
+ * what git lists (so .gitignore is honored, as ripgrep would); hidden files
+ * are skipped either way, also like ripgrep.
+ */
+async function candidateFiles(dir: string, wanted: (f: string) => boolean): Promise<string[]> {
+    const tracked = gitListFiles(dir);
+    // The cap applies after filtering, so a glob or type still finds files late in a big tree.
+    if (tracked) return tracked.filter((f) => !f.split("/").some((p) => p.startsWith(".")) && wanted(f)).slice(0, 20_000);
+    const out: string[] = [];
+    for await (const f of new Bun.Glob("**/*").scan({ cwd: dir, onlyFiles: true })) {
+        if (f.split("/").some((p) => DEFAULT_IGNORES.includes(p)) || !wanted(f)) continue;
+        out.push(f);
+        if (out.length >= 20_000) break;
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------

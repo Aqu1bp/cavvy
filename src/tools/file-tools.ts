@@ -165,6 +165,9 @@ Usage:
     },
     async run(input, ctx) {
         const abs = expandPath(input.file_path, ctx.state.cwd);
+        // Again: the user may have saved the file while the approval prompt was open.
+        const stale = await checkFresh(ctx, abs);
+        if (stale) return { content: stale, isError: true };
         const existed = existsSync(abs);
         const before = existed ? await readFile(abs, "utf-8").catch(() => "") : "";
         await mkdir(dirname(abs), { recursive: true });

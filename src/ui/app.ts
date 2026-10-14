@@ -19,7 +19,7 @@ import { appendPromptHistory, loadPromptHistory } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { addMemoryNote } from "../agent/memory";
 import type { Effort, Settings } from "../config/settings";
-import { loadSettings, loadScope, addPermissionRule } from "../config/settings";
+import { loadSettings, loadScope, addPermissionRule, onConfigWarning } from "../config/settings";
 import { APP_TITLE, APP_VERSION } from "../config/paths";
 import { MODE_INFO, nextMode, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
@@ -96,6 +96,12 @@ export class App {
     busy = false;
     private abort?: AbortController;
     private queued: string[] = [];
+    /** Set once the startup model choice is done. */
+    private modelReady = false;
+    /** The model of a session resumed at startup, tried before the default. */
+    private resumedModel?: string;
+    /** A model switch in progress; prompts wait for it so they go to the right model. */
+    private switching?: Promise<unknown>;
     private inputMode: InputMode = "prompt";
     private md?: MarkdownStream;
     private mdLines = 0;
@@ -162,6 +168,8 @@ export class App {
         );
         const restore = () => this.screen.stop();
         process.on("exit", restore);
+        // stderr would scribble over the screen.
+        onConfigWarning((msg) => this.notice(msg, "warn"));
         for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0));
 
         this.customCommands = loadCustomCommands(this.cwd, this.init.trusted);
@@ -176,7 +184,7 @@ export class App {
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
 
-        await this.initModel();
+        await this.trackSwitch(this.initModel());
         this.renderLive();
 
         if (this.init.resumePicker) await runCommand(this, "/resume");
@@ -195,8 +203,7 @@ export class App {
         if (this.session?.cost) this.screen.print(theme.muted(`Total cost: ${formatUsd(this.session.cost)}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
-        killAllShells({ state: this.toolState });
-        await Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))]);
+        await Promise.all([killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         this.screen.stop();
         this.exitResolve?.();
         process.exit(code);
@@ -221,12 +228,30 @@ export class App {
     // -----------------------------------------------------------------------
     // Model
 
+    private trackSwitch<T>(p: Promise<T>): Promise<T> {
+        const tracked = p.finally(() => {
+            if (this.switching === tracked) this.switching = undefined;
+        });
+        this.switching = tracked;
+        return tracked;
+    }
+
     private async initModel() {
-        const ref = this.init.modelRef ?? this.settings.model ?? this.init.fallbackModel;
-        if (ref && parseModelRef(ref)) {
+        try {
+            await this.pickStartupModel();
+        } finally {
+            this.modelReady = true;
+        }
+    }
+
+    private async pickStartupModel() {
+        // --model, then a resumed session's own model, then the saved default.
+        const candidates = [this.init.modelRef, this.resumedModel, this.settings.model ?? this.init.fallbackModel].filter((r): r is string => Boolean(r && parseModelRef(r)));
+        for (const ref of new Set(candidates)) {
             // An explicit --model should say why it can't be used.
-            const ok = await this.setModel(ref, { quiet: !this.init.modelRef, persist: false });
+            const ok = await this.setModel(ref, { quiet: ref !== this.init.modelRef, persist: false });
             if (ok) {
+                if (ref !== this.resumedModel && this.resumedModel) this.notice(`This session used ${this.resumedModel}, which isn't available now.`, "warn");
                 this.printModelLine();
                 void this.refreshListings();
                 return;
@@ -243,6 +268,7 @@ export class App {
             pick = defaultModelFrom(this.listings);
         } else void this.refreshListings();
         if (pick && (await this.setModel(modelRef(pick), { quiet: true, persist: false }))) {
+            if (this.resumedModel) this.notice(`This session used ${this.resumedModel}, which isn't available now.`, "warn");
             this.printModelLine();
             return;
         }
@@ -308,12 +334,34 @@ export class App {
         }
         if (opts.persist) {
             const { updateSettings } = await import("../config/settings");
-            updateSettings("user", this.cwd, (s) => (s.model = ref));
-            this.settings.model = ref;
+            try {
+                updateSettings("user", this.cwd, (s) => (s.model = ref));
+                this.settings.model = ref;
+            } catch (e) {
+                this.notice(`Switched for this session only. ${redact((e as Error).message)}`, "warn");
+            }
         }
         if (!opts.quiet) this.screen.print(["", `${theme.success("✔")} Model set to ${bold(info.name ?? info.id)} ${theme.muted(`(${ref})`)}`]);
         this.renderLive();
         return true;
+    }
+
+    /**
+     * A provider's key changed (/login, /logout): the current client still
+     * holds the old one. Rebuild it; with no key left, deselect the model.
+     */
+    async keyChanged(providerId: string) {
+        if (!this.model || this.model.provider !== providerId) return;
+        try {
+            this.client = await clientFor(providerId);
+            this.agent?.setModel(this.model, this.client);
+        } catch {
+            this.model = undefined;
+            this.client = undefined;
+            this.agent = undefined;
+        }
+        this.updateHelpers();
+        this.renderLive();
     }
 
     private nativeSearch(): boolean {
@@ -381,7 +429,11 @@ export class App {
                 emit: (e) => this.onAgentEvent(e),
                 askPermission: (req) => this.askPermission(req),
                 saveRules: (rules, scope) => {
-                    for (const r of rules) addPermissionRule(scope, this.cwd, "allow", r);
+                    try {
+                        for (const r of rules) addPermissionRule(scope, this.cwd, "allow", r);
+                    } catch (e) {
+                        this.notice(`Allowed for this session only; the rule wasn't saved. ${redact((e as Error).message)}`, "warn");
+                    }
                     this.reloadSettings();
                 },
                 ui: {
@@ -484,7 +536,10 @@ export class App {
         }
         out.push(theme.muted("── end of resumed history ──"));
         this.screen.print(out);
-        if (this.session.model && !this.init.modelRef) void this.setModel(this.session.model, { quiet: true });
+        if (!this.session.model || this.init.modelRef) return;
+        // At startup initModel() picks it up; switching it here too would race that.
+        if (this.modelReady) void this.trackSwitch(this.setModel(this.session.model, { quiet: true }).catch(() => false));
+        else this.resumedModel = this.session.model;
     }
 
     // -----------------------------------------------------------------------
@@ -642,11 +697,7 @@ export class App {
                 if (e.reason === "aborted") {
                     this.screen.print(theme.error(`  ⎿  Interrupted · What should ${APP_TITLE} do instead?`));
                     // Messages queued for the interrupted turn go back to the prompt instead of running.
-                    if (this.queued.length && this.editor.isEmpty) {
-                        this.editor.set(this.queued.join("\n"));
-                        this.queued = [];
-                        this.inputMode = "prompt";
-                    }
+                    this.returnQueued();
                 }
                 break;
         }
@@ -1085,6 +1136,7 @@ export class App {
     }
 
     async submitText(text: string) {
+        if (this.switching) await this.switching.catch(() => undefined);
         if (text.startsWith("/") && !text.startsWith("//")) {
             const handled = await runCommand(this, text);
             if (handled) return;
@@ -1102,13 +1154,10 @@ export class App {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
         }
-        if (!this.session.meta.system) await this.freezeSystemPrompt();
-        this.printUser(opts.display ?? text);
-        const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
-        const { parts, attached } = expandMentions(text, this.toolState, roots);
-        if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
+        // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
+        const agent = this.agent;
         this.busy = true;
-        this.abort = new AbortController();
+        const ac = (this.abort = new AbortController());
         this.turnStart = Date.now();
         this.turnTokens = 0;
         this.streamChars = 0;
@@ -1116,7 +1165,18 @@ export class App {
         this.status = undefined;
         this.startTicker();
         try {
-            await this.agent.run(parts, { signal: this.abort.signal, display: opts.display ?? text, kind: opts.kind });
+            this.printUser(opts.display ?? text);
+            if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
+            if (ac.signal.aborted) {
+                // Nothing was sent: hand the message back rather than dropping it.
+                this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
+                this.queued.unshift(opts.kind === "command" ? (opts.display ?? text) : text);
+            } else {
+                const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
+                const { parts, attached } = expandMentions(text, this.toolState, roots);
+                if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
+                await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind });
+            }
         } catch (e) {
             this.notice(`Unexpected error: ${redact((e as Error).message)}`, "error");
         } finally {
@@ -1127,6 +1187,7 @@ export class App {
             this.status = undefined;
             this.renderLive();
         }
+        if (ac.signal.aborted) return this.returnQueued();
         const next = this.queued.shift();
         if (next !== undefined) await this.submitText(next);
     }
@@ -1157,17 +1218,38 @@ export class App {
             this.stopTicker();
             this.active.clear();
             this.renderLive();
+            this.afterTask(ac.signal.aborted);
         }
     }
 
-    async freezeSystemPrompt() {
+    /** Messages typed during a task run next; after a cancel they go back to the prompt. */
+    private afterTask(cancelled: boolean) {
+        if (!this.queued.length) return;
+        if (cancelled) return this.returnQueued();
+        const next = this.queued.shift()!;
+        // After the caller (a command like /compact) has finished.
+        setTimeout(() => void this.submitText(next), 0);
+    }
+
+    /** After an interrupt, unsent messages go back to the prompt, ahead of anything being typed, instead of running. */
+    private returnQueued() {
+        if (!this.queued.length) return;
+        const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
+        const draft = this.editor.text ? prefix + this.editor.text : "";
+        this.editor.set([...this.queued, draft].filter(Boolean).join("\n"));
+        this.queued = [];
+        this.inputMode = "prompt";
+        this.renderLive();
+    }
+
+    async freezeSystemPrompt(signal?: AbortSignal) {
         // Give MCP servers a moment so their instructions make it into the prompt.
         const connecting = () => [...this.mcp.servers.values()].some((s) => s.status === "connecting" || s.status === "pending");
         if (connecting()) {
             this.status = "Connecting MCP servers";
             this.renderLive();
             const until = Date.now() + 5000;
-            while (connecting() && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+            while (connecting() && Date.now() < until && !signal?.aborted) await new Promise((r) => setTimeout(r, 100));
             this.status = undefined;
         }
         const append = [this.mcp.instructions(), this.init.appendSystemPrompt ?? ""].filter(Boolean).join("\n\n");
@@ -1175,11 +1257,22 @@ export class App {
     }
 
     private async runBashMode(cmd: string) {
+        if (this.busy) {
+            this.notice("Still working on the last request; press esc to interrupt it, then run the command.", "warn");
+            if (this.editor.isEmpty) {
+                this.editor.set(cmd);
+                this.inputMode = "bash";
+            }
+            return;
+        }
         const cols = termCols();
         this.screen.print(["", theme.bashMode("! ") + cmd]);
-        const res = await runShell({ command: cmd, cwd: this.toolState.cwd, timeoutMs: 120_000, signal: new AbortController().signal, env: childEnv(this.settings.env) });
+        // As a task: esc and ctrl+c stop it, and prompts typed meanwhile queue up.
+        const res = await this.runTask("Running", (signal) => runShell({ command: cmd, cwd: this.toolState.cwd, timeoutMs: 120_000, signal, env: childEnv(this.settings.env) }));
+        if (!res) return;
         const out = redact(res.output.replace(/\s+$/, ""));
-        this.screen.print(resultLines(out || "(no output)", cols, this.verbose ? 200 : 20, (s) => s));
+        const note = res.aborted ? "\n(interrupted)" : res.timedOut ? "\n(stopped after 2 minutes)" : "";
+        this.screen.print(resultLines((out || "(no output)") + note, cols, this.verbose ? 200 : 20, (s) => s));
         if (res.newCwd) this.toolState.cwd = res.newCwd;
         // Let the model see it next turn.
         const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;

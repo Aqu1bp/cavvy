@@ -38,7 +38,7 @@ import { mcpToolMatches } from "../permissions/rules";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
 import { runHooks } from "./hooks";
-import { compactRequestMessage, estimateTokens, summaryMessage } from "./compact";
+import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, transcriptText } from "./compact";
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { redact } from "../util/redact";
@@ -507,11 +507,20 @@ export class Agent {
         }
         if (!summary.trim()) {
             // Too long even to summarize, or the model only called tools:
-            // summarize the most recent part without tools.
-            const tail = history.slice(Math.floor(history.length / 2));
-            while (tail.length && tail[0]!.role !== "user") tail.shift();
-            while (tail.length && tail[0]!.content.some((p) => p.type === "tool_result")) tail.shift();
-            const res = await this.client.stream(this.request([...tail, compactRequestMessage(opts.instructions)], opts.signal, { tools: [], maxTokens: 16_000, lightweight: true }), () => {});
+            // summarize a condensed text transcript instead, without tools.
+            const window = this.model.contextWindow;
+            const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
+            // ~2.5 characters per token leaves room for code and JSON.
+            const maxChars = window ? Math.max(2_000, Math.min(400_000, Math.floor((window - maxOut - 2_000) * 2.5))) : 100_000;
+            const transcript = transcriptText(history, maxChars);
+            if (!transcript.trim()) throw new Error("Nothing in the conversation to summarize");
+            const req = this.request([transcriptCompactRequest(transcript, opts.instructions)], opts.signal, {
+                system: "You summarize conversations between a user and an AI coding assistant so the work can continue in a fresh context.",
+                tools: [],
+                maxTokens: maxOut,
+                lightweight: true,
+            });
+            const res = await this.client.stream(req, () => {});
             summary = textOf(res);
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");

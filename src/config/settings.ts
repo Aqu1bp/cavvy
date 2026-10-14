@@ -77,20 +77,77 @@ export function settingsPath(scope: SettingsScope, cwd: string): string {
     return paths.localSettings(cwd);
 }
 
-export function readJson<T>(file: string): T | undefined {
+/** A config file that exists but can't be parsed; writing it would lose what's in it. */
+export class JsonFileError extends Error {
+    constructor(
+        readonly file: string,
+        readonly reason: string,
+    ) {
+        super(`Can't update ${file}: it isn't valid JSON (${reason}). Fix or remove the file, then try again.`);
+    }
+}
+
+let warn: (msg: string) => void = (msg) => process.stderr.write(`warning: ${msg}\n`);
+const warned = new Set<string>();
+
+/** Where parse warnings go (the TUI shows them as notices instead of writing to stderr). */
+export function onConfigWarning(fn: (msg: string) => void) {
+    warn = fn;
+}
+
+/** For files that are read and then written back: throws rather than treating a broken file as empty. */
+export function readJsonForUpdate<T>(file: string): T | undefined {
+    if (!existsSync(file)) return undefined;
+    const text = readFileSync(file, "utf-8");
+    if (!text.trim()) return undefined;
     try {
-        if (!existsSync(file)) return undefined;
-        const text = readFileSync(file, "utf-8");
-        if (!text.trim()) return undefined;
         return JSON.parse(stripJsonComments(text)) as T;
     } catch (e) {
-        process.stderr.write(`warning: could not parse ${file}: ${(e as Error).message}\n`);
+        throw new JsonFileError(file, (e as Error).message);
+    }
+}
+
+export function readJson<T>(file: string): T | undefined {
+    try {
+        return readJsonForUpdate<T>(file);
+    } catch (e) {
+        const msg = e instanceof JsonFileError ? `${file} isn't valid JSON, so it's being ignored (${e.reason})` : `could not read ${file}: ${(e as Error).message}`;
+        if (!warned.has(msg)) {
+            warned.add(msg);
+            warn(msg);
+        }
         return undefined;
     }
 }
 
-/** Allow // and /* *\/ comments in settings files. Strings are respected. */
+/** Allow // and /* *\/ comments and trailing commas in settings files. Strings are respected. */
 function stripJsonComments(text: string): string {
+    return stripTrailingCommas(stripComments(text));
+}
+
+function stripTrailingCommas(text: string): string {
+    let out = "";
+    let inStr = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i]!;
+        if (inStr) {
+            out += c;
+            if (c === "\\") out += text[++i] ?? "";
+            else if (c === '"') inStr = false;
+            continue;
+        }
+        if (c === '"') inStr = true;
+        if (c === ",") {
+            let j = i + 1;
+            while (j < text.length && /\s/.test(text[j]!)) j++;
+            if (text[j] === "}" || text[j] === "]") continue;
+        }
+        out += c;
+    }
+    return out;
+}
+
+function stripComments(text: string): string {
     let out = "";
     let inStr = false;
     for (let i = 0; i < text.length; i++) {
@@ -170,7 +227,7 @@ function restrictiveOnly(s: Settings): Settings {
 /** Read-modify-write one settings file. */
 export function updateSettings(scope: SettingsScope, cwd: string, fn: (s: Settings) => void) {
     const file = settingsPath(scope, cwd);
-    const s = readJson<Settings>(file) ?? {};
+    const s = readJsonForUpdate<Settings>(file) ?? {};
     fn(s);
     writeJson(file, s);
     if (scope === "local") ensureLocalGitignore(cwd);

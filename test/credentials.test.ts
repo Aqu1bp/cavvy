@@ -140,6 +140,8 @@ describe("redaction", () => {
     ];
 
     test.each(samples)("redacts %s by pattern (%s)", (secret, label) => {
+        // Stored keys stay registered for the session; this is about the pattern.
+        unregisterSecret(secret);
         const out = redact(`before ${secret} after`);
         expect(out).toBe(`before [REDACTED ${label}] after`);
         expect(containsSecret(secret)).toBe(true);

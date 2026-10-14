@@ -152,7 +152,7 @@ describe("settings scopes", () => {
         } finally {
             process.stderr.write = orig;
         }
-        expect(errs.join("")).toContain("warning: could not parse");
+        expect(errs.join("")).toContain("isn't valid JSON, so it's being ignored");
         expect(errs.join("")).toContain(paths.projectSettings(cwd));
     });
 });

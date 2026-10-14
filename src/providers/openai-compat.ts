@@ -18,6 +18,7 @@ import {
     type Usage,
 } from "./types";
 import type { Effort } from "../config/settings";
+import { plainErrorText } from "../util/html";
 
 type Json = Record<string, any>;
 
@@ -31,7 +32,7 @@ export function httpError(status: number, statusText: string, body: string, retr
         const m = j?.error?.message ?? j?.message ?? j?.detail ?? (Array.isArray(j) ? j[0]?.error?.message : undefined);
         if (m) message = `${providerName}: ${typeof m === "string" ? m : JSON.stringify(m)} (${status})`;
     } catch {
-        if (body.trim()) message += `: ${body.trim().slice(0, 300)}`;
+        if (body.trim()) message += `: ${plainErrorText(body).slice(0, 300)}`;
     }
     if (status === 401 || status === 403) message += `. Check the API key with /login.`;
     if (status === 402) message += `. The account may be out of credits.`;

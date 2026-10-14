@@ -27,11 +27,25 @@ const ENTITIES: Record<string, string> = {
     larr: "←",
 };
 
+/** Error bodies from proxies and gateways are often HTML pages: keep the gist (title or heading), not the markup. */
+export function plainErrorText(body: string): string {
+    const s = body.trim();
+    if (!/<(?:!doctype|html|head|body|title|h1)\b/i.test(s)) return s;
+    const picked = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? s.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+    const raw = picked ?? s.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]+>/g, " ");
+    const text = decodeEntities(raw.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim().slice(0, 200);
+    // Keep a short prefix like the SDK's "502 " before the markup.
+    const lead = s.slice(0, s.indexOf("<")).trim();
+    const prefix = lead && lead.length < 80 && !text.startsWith(lead) ? `${lead} ` : "";
+    return `${prefix}${text || "error"} (HTML error page)`;
+}
+
 export function decodeEntities(s: string): string {
     return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
         if (e[0] === "#") {
             const code = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
-            return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+            // fromCodePoint throws past U+10FFFF; leave a malformed entity as written.
+            return Number.isFinite(code) && code <= 0x10ffff ? String.fromCodePoint(code) : m;
         }
         return ENTITIES[e.toLowerCase()] ?? m;
     });

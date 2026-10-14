@@ -14,7 +14,7 @@ import { EFFORT_LEVELS, loadScope, removePermissionRule, addPermissionRule, sett
 import { isTrusted } from "../config/trust";
 import { MODE_INFO, PERMISSION_MODES, parseMode, type PermissionMode } from "../permissions/modes";
 import { parseRule } from "../permissions/rules";
-import { allProviders, getProvider, readProvidersFile, resolveBaseUrl, SEARCH_PROVIDERS, writeProvidersFile, type ProviderDef, type WireKind } from "../providers/registry";
+import { allProviders, getProvider, readProvidersFileForUpdate, resolveBaseUrl, SEARCH_PROVIDERS, writeProvidersFile, type ProviderDef, type WireKind } from "../providers/registry";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
 import { modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
 import { formatPrice, formatTokens, formatUsd } from "../providers/pricing";
@@ -323,6 +323,7 @@ async function loginCommand(app: App, args: string) {
     }
     const source = await setKey(providerId, value);
     forgetClient(providerId);
+    await app.keyChanged(providerId);
     app.print(["", `${theme.success("✔")} Saved ${bold(name)} key ${theme.muted(maskKey(value))} to ${source === "keychain" ? (await storageDescription()) : `${paths.credentialsFile()} (chmod 600)`}`]);
     const effective = await getKey(providerId);
     if (effective?.source === "env") app.notice(`Note: $${effective.envVar} is set in your environment and takes precedence over the saved key.`, "warn");
@@ -383,7 +384,7 @@ async function addCustomProvider(app: App) {
     if (key === undefined) return;
     const models = await app.showDialog(new InputDialog({ title: "Model ids (optional)", header: [theme.muted("Comma-separated. Only needed if the endpoint has no /models listing.")], placeholder: "model-a, model-b" }));
     if (models === undefined) return;
-    const pf = readProvidersFile();
+    const pf = readProvidersFileForUpdate();
     pf.custom = (pf.custom ?? []).filter((c) => c.id !== id);
     pf.custom.push({
         id,
@@ -399,6 +400,7 @@ async function addCustomProvider(app: App) {
     writeProvidersFile(pf);
     if (key.trim()) await setKey(id, key.trim());
     forgetClient(id);
+    await app.keyChanged(id);
     app.print(["", `${theme.success("✔")} Added provider ${bold(nameIn.trim())} (${id}) → ${baseUrl.trim()}`]);
     const listings = await withProgress(app, [theme.permission(bold("Loading models…"))], () => app.refreshListings());
     const l = listings?.find((x) => x.provider.id === id);
@@ -443,7 +445,9 @@ async function logoutCommand(app: App, args: string) {
     await removeKey(id);
     forgetClient(id);
     app.print(["", `${theme.success("✔")} Removed the ${bold(row.name)} key`]);
-    if (app.model?.provider === id) app.notice(`The current model (${app.model.id}) used this key; pick another with /model.`, "warn");
+    const current = app.model?.provider === id ? app.model.id : undefined;
+    await app.keyChanged(id);
+    if (current && !app.model) app.notice(`The current model (${current}) used this key; pick another with /model.`, "warn");
     void app.refreshListings();
 }
 
@@ -1030,8 +1034,9 @@ async function bashesCommand(app: App) {
     const tail = redact(sh.output).split("\n").slice(-20);
     app.print(["", heading(`${sh.id}: ${truncate(sh.command, 80)}`), ...tail.map((l) => theme.muted("  " + l))]);
     if (sh.exitCode === null && (await confirm(app, `Stop ${sh.id}?`))) {
-        sh.kill();
-        app.notice(`Stopped ${sh.id}`);
+        const how = await sh.kill();
+        app.toolState.shells.delete(sh.id);
+        app.notice(how === "killed" ? `Stopped ${sh.id} (it ignored SIGTERM, so it was force-killed)` : `Stopped ${sh.id}`);
     }
 }
 

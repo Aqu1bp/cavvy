@@ -78,8 +78,17 @@ export class Editor {
     clear() {
         this.snapshot();
         this.set("");
-        this.pastes.clear();
+        this.prunePastes();
         this.histIdx = -1;
+    }
+
+    /** Drop pasted text nothing can bring back; undo (or a yank) can restore a placeholder. */
+    private prunePastes() {
+        const live = new Set<number>();
+        for (const t of [this.text, this.draft, this.killRing, ...this.undoStack.map((u) => u.text)]) {
+            for (const m of t.matchAll(/\[Pasted text #(\d+) \+\d+ lines\]/g)) live.add(Number(m[1]));
+        }
+        for (const id of this.pastes.keys()) if (!live.has(id)) this.pastes.delete(id);
     }
 
     get isEmpty(): boolean {

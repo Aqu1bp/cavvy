@@ -1,4 +1,5 @@
 import type { Message, UserMessage } from "../providers/types";
+import { truncateMiddle } from "../util/files";
 
 export const COMPACT_PROMPT = `Your task is to write a detailed summary of the conversation so far. The summary replaces the conversation history, so it must preserve everything needed to continue the work without losing context.
 
@@ -22,6 +23,55 @@ export function compactRequestMessage(extra?: string): UserMessage {
         content: [{ type: "text", text: COMPACT_PROMPT + (extra?.trim() ? `\n\nAdditional instructions from the user for this summary:\n${extra.trim()}` : "") }],
         meta: { kind: "command" },
     };
+}
+
+/**
+ * The conversation as condensed plain text, for when the real history is too
+ * long to summarize: tool inputs and outputs are cut short, the first message
+ * (usually the user's request) is always kept, and the rest is filled in from
+ * the most recent end. No message takes more than a quarter of the space, so
+ * one huge batch of tool results can't push out what was said around it.
+ */
+export function transcriptText(messages: Message[], maxChars: number): string {
+    const cap = Math.floor(maxChars / 4);
+    const blocks = messages
+        .map(renderForTranscript)
+        .filter(Boolean)
+        .map((b) => truncateMiddle(b, cap));
+    if (!blocks.length) return "";
+    const first = blocks[0]!;
+    const recent: string[] = [];
+    let used = first.length;
+    for (let i = blocks.length - 1; i >= 1; i--) {
+        const b = blocks[i]!;
+        if (used + b.length + 2 > maxChars) {
+            recent.push("[… earlier messages omitted …]");
+            break;
+        }
+        recent.push(b);
+        used += b.length + 2;
+    }
+    return [first, ...recent.reverse()].join("\n\n");
+}
+
+function renderForTranscript(m: Message): string {
+    const out: string[] = [];
+    for (const p of m.content) {
+        if (p.type === "text") out.push(truncateMiddle(p.text, 4000));
+        else if (p.type === "tool_call") out.push(`[called ${p.name}: ${truncateMiddle(JSON.stringify(p.input), 600)}]`);
+        else if (p.type === "tool_result") out.push(`[${p.isError ? "error from" : "result of"} ${p.toolName}: ${truncateMiddle(p.content, 1500)}]`);
+        else if (p.type === "image") out.push("[image]");
+    }
+    if (!out.length) return "";
+    const results = m.content.every((p) => p.type === "tool_result");
+    return results ? out.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${out.join("\n")}`;
+}
+
+/** The compaction request with a condensed transcript in place of the full history. */
+export function transcriptCompactRequest(transcript: string, extra?: string): UserMessage {
+    const req = compactRequestMessage(extra);
+    const intro = `The conversation is too long to send in full, so here is a condensed transcript of it (long tool inputs and outputs are shortened):\n\n<transcript>\n${transcript}\n</transcript>`;
+    return { ...req, content: [{ type: "text", text: intro }, ...req.content] };
 }
 
 /** The message that replaces history after compaction. */

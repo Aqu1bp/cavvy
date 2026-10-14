@@ -102,6 +102,8 @@ export class SelectDialog<T> implements Dialog {
             if (this.o.searchable) this.list.setQuery(this.list.query + k.text);
             return;
         }
+        // A pasted model id (or anything else) goes into the search, on one line.
+        if (n === "paste" && k.paste && this.o.searchable) return this.list.setQuery(this.list.query + k.paste.replace(/\s*\n\s*/g, " ").trim());
         if (n === "backspace" && this.o.searchable) this.list.setQuery(this.list.query.slice(0, -1));
         if (k.ctrl && n === "u" && this.o.searchable) this.list.setQuery("");
     }

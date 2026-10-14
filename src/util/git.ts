@@ -24,6 +24,17 @@ function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined 
     }
 }
 
+/** Tracked and untracked-but-not-ignored files under `cwd`, relative to it; undefined outside a git work tree. */
+export function gitListFiles(cwd: string): string[] | undefined {
+    try {
+        const r = spawnSync(gitArgv(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]), { cwd, stdout: "pipe", stderr: "ignore", timeout: 10_000, env: gitEnv() });
+        if (r.exitCode !== 0) return undefined;
+        return [...new Set(r.stdout.toString().split("\0").filter(Boolean))];
+    } catch {
+        return undefined;
+    }
+}
+
 const rootCache = new Map<string, string | null>();
 
 export function gitRoot(cwd: string): string | undefined {
