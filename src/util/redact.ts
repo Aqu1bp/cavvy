@@ -17,6 +17,7 @@ const PATTERNS: [RegExp, string][] = [
     [/\bgithub_pat_[A-Za-z0-9_]{50,}\b/g, "github-token"],
     [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "aws-key-id"],
     [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "slack-token"],
+    [/\bya29\.[A-Za-z0-9._-]{20,}/g, "google-token"],
 ];
 
 export function registerSecret(value: string | undefined, label = "secret") {

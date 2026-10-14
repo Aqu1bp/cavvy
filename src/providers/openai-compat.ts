@@ -25,7 +25,7 @@ type Json = Record<string, any>;
 /** Gemini accepts this documented placeholder for tool calls it didn't produce. */
 const GEMINI_FOREIGN_SIGNATURE = "skip_thought_signature_validator";
 
-export function httpError(status: number, statusText: string, body: string, retryAfter: string | null, providerName: string): ProviderError {
+export function httpError(status: number, statusText: string, body: string, retryAfter: string | null, providerName: string, authHint = "Check the API key with /login."): ProviderError {
     let message = `${providerName} API error ${status} ${statusText}`;
     try {
         const j = JSON.parse(body);
@@ -34,7 +34,7 @@ export function httpError(status: number, statusText: string, body: string, retr
     } catch {
         if (body.trim()) message += `: ${plainErrorText(body).slice(0, 300)}`;
     }
-    if (status === 401 || status === 403) message += `. Check the API key with /login.`;
+    if (status === 401 || status === 403) message += `. ${authHint}`;
     if (status === 402) message += `. The account may be out of credits.`;
     const retryable = [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529].includes(status);
     const ra = retryAfter ? Number(retryAfter) * 1000 || Date.parse(retryAfter) - Date.now() : undefined;
@@ -105,7 +105,7 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
         if (calls.length) {
             m.tool_calls = calls.map((c, i) => {
                 const tc: Json = { id: mapToolId(c.id, def), type: "function", function: { name: c.name, arguments: JSON.stringify(c.input ?? {}) } };
-                if (def.id === "gemini" && i === 0) tc.extra_content = { google: { thought_signature: GEMINI_FOREIGN_SIGNATURE } };
+                if (def.geminiCompat && i === 0) tc.extra_content = { google: { thought_signature: GEMINI_FOREIGN_SIGNATURE } };
                 return tc;
             });
         }
@@ -134,23 +134,39 @@ function effortFor(def: ProviderDef, model: ModelInfo, effort: Effort | undefine
         return [...levels].sort((x, y) => Math.abs(order.indexOf(x) - wi) - Math.abs(order.indexOf(y) - wi))[0];
     }
     // Gemini compat accepts minimal/low/medium/high; map the top levels down.
-    if (def.id === "gemini" || def.reasoning === "openai") return effort === "xhigh" || effort === "max" ? "high" : effort;
+    if (def.geminiCompat || def.reasoning === "openai") return effort === "xhigh" || effort === "max" ? "high" : effort;
     return effort;
 }
 
 export class OpenAICompatProvider implements ProviderClient {
-    private base: string;
+    protected base: string;
 
     constructor(
-        private def: ProviderDef,
+        protected def: ProviderDef,
         private apiKey: string | undefined,
+        base?: string,
     ) {
-        this.base = resolveBaseUrl(def);
+        this.base = base ?? resolveBaseUrl(def);
     }
 
-    private headers(): Record<string, string> {
+    /** The Authorization header, if any. `fresh`: the previous one was rejected. */
+    protected async authorization(_fresh: boolean): Promise<string | undefined> {
+        return this.apiKey ? `Bearer ${this.apiKey}` : undefined;
+    }
+
+    /** Whether a rejected credential can be swapped for a fresh one and the request sent again. */
+    protected canRefresh(): boolean {
+        return false;
+    }
+
+    protected apiError(status: number, statusText: string, body: string, retryAfter: string | null): ProviderError {
+        return httpError(status, statusText, body, retryAfter, this.def.name);
+    }
+
+    private async headers(fresh = false): Promise<Record<string, string>> {
         const h: Record<string, string> = { "Content-Type": "application/json", ...(this.def.headers ?? {}) };
-        if (this.apiKey) h.Authorization = `Bearer ${this.apiKey}`;
+        const auth = await this.authorization(fresh);
+        if (auth) h.Authorization = auth;
         return h;
     }
 
@@ -176,18 +192,26 @@ export class OpenAICompatProvider implements ProviderClient {
             else body.reasoning_effort = effort;
         }
 
-        const res = await fetch(`${this.base}/chat/completions`, {
-            method: "POST",
-            headers: this.headers(),
-            body: JSON.stringify(body),
-            signal: req.signal,
-        }).catch((e: Error) => {
-            if (req.signal?.aborted) throw new ProviderError("aborted");
-            throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
-        });
+        const payload = JSON.stringify(body);
+        const post = async (fresh: boolean) =>
+            fetch(`${this.base}/chat/completions`, {
+                method: "POST",
+                headers: await this.headers(fresh),
+                body: payload,
+                signal: req.signal,
+            }).catch((e: Error) => {
+                if (req.signal?.aborted) throw new ProviderError("aborted");
+                throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
+            });
+        let res = await post(false);
+        // An expired token: get a new one and try once more.
+        if (res.status === 401 && this.canRefresh()) {
+            await res.body?.cancel().catch(() => {});
+            res = await post(true);
+        }
         if (!res.ok || !res.body) {
             const text = await res.text().catch(() => "");
-            throw httpError(res.status, res.statusText, text, res.headers.get("retry-after"), def.name);
+            throw this.apiError(res.status, res.statusText, text, res.headers.get("retry-after"));
         }
 
         let text = "";
@@ -321,11 +345,11 @@ export class OpenAICompatProvider implements ProviderClient {
             const native = await this.listGeminiNative(signal).catch(() => undefined);
             if (native?.length) return native;
         }
-        const res = await fetch(`${this.base}/models`, { headers: this.headers(), signal: signal ?? AbortSignal.timeout(20_000) });
+        const res = await fetch(`${this.base}/models`, { headers: await this.headers(), signal: signal ?? AbortSignal.timeout(20_000) });
         if (!res.ok) {
             const configured = customProviderModels(def.id);
             if (configured.length) return configured.map((id) => ({ provider: def.id, id }));
-            throw httpError(res.status, res.statusText, await res.text().catch(() => ""), null, def.name);
+            throw this.apiError(res.status, res.statusText, await res.text().catch(() => ""), null);
         }
         const json = (await res.json()) as Json;
         const list: Json[] = Array.isArray(json) ? json : (json.data ?? json.models ?? []);

@@ -32,6 +32,12 @@ export interface ProviderDef {
     streamUsage?: boolean;
     /** OpenAI: how to ask for reasoning. */
     reasoning?: "openai" | "openrouter" | "none";
+    /** Gemini's Chat Completions dialect: tool calls carry thought signatures. */
+    geminiCompat?: boolean;
+    /** No API key: short-lived tokens from the gcloud CLI, for the account set up with /login. */
+    auth?: "gcloud";
+    /** The model listing already comes newest first. */
+    sorted?: boolean;
     custom?: boolean;
 }
 
@@ -79,6 +85,25 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         hideModels: NON_CHAT,
         streamUsage: true,
         reasoning: "openai",
+        geminiCompat: true,
+    },
+    {
+        // Gemini on Google Cloud (renamed Gemini Enterprise Agent Platform in
+        // 2026), billed to a Cloud project, so Cloud credits apply. The
+        // project path is added to baseUrl from the saved setup.
+        id: "vertex",
+        name: "Google Vertex AI",
+        kind: "openai",
+        baseUrl: "https://aiplatform.googleapis.com",
+        envKeys: [],
+        keyUrl: "https://console.cloud.google.com/vertex-ai",
+        requiresKey: true,
+        auth: "gcloud",
+        hideModels: new RegExp(`${NON_CHAT.source}|live|translate|nano-banana|omni|^google/gemini-1\\.|-exp-|-preview-\\d\\d-\\d\\d$`, "i"),
+        streamUsage: true,
+        reasoning: "openai",
+        geminiCompat: true,
+        sorted: true,
     },
     {
         id: "openrouter",
@@ -221,10 +246,20 @@ export interface CustomProviderEntry {
     models?: string[];
 }
 
+/** Vertex AI setup from /login vertex. Not secret: the token comes from gcloud each time. */
+export interface VertexConfig {
+    project: string;
+    /** "global", or a region such as us-central1. */
+    location: string;
+    /** The Google account gcloud gets tokens for. */
+    account: string;
+}
+
 interface ProvidersFile {
     custom?: CustomProviderEntry[];
     /** Providers whose key is in the OS keychain (keychain has no "list"). */
     keychain?: string[];
+    vertex?: VertexConfig;
 }
 
 export function readProvidersFile(): ProvidersFile {
@@ -238,6 +273,47 @@ export function readProvidersFileForUpdate(): ProvidersFile {
 
 export function writeProvidersFile(f: ProvidersFile) {
     writeJson(paths.providers(), f, 0o600);
+}
+
+// These go into a URL path and a gcloud command line, so only plain values pass.
+// Project ids: lowercase letters, digits and hyphens (older ones may have a domain: prefix).
+export const validVertexProject = (s: string) => /^([a-z0-9.-]+:)?[a-z][a-z0-9-]{4,62}$/.test(s) && !s.endsWith("-");
+export const validVertexLocation = (s: string) => /^(global|[a-z]+-[a-z]+\d+)$/.test(s);
+export const validGoogleAccount = (s: string) => /^[^\s@-][^\s@]*@[^\s@]+\.[^\s@]+$/.test(s);
+
+/** The saved Vertex AI setup, if there is a valid one. */
+export function readVertexConfig(): VertexConfig | undefined {
+    const v = readProvidersFile().vertex;
+    if (!v || typeof v !== "object") return undefined;
+    const { project, location, account } = v as Partial<VertexConfig>;
+    if (typeof project !== "string" || typeof location !== "string" || typeof account !== "string") return undefined;
+    if (!validVertexProject(project) || !validVertexLocation(location) || !validGoogleAccount(account)) return undefined;
+    return { project, location, account };
+}
+
+export function saveVertexConfig(cfg: VertexConfig) {
+    if (!validVertexProject(cfg.project) || !validVertexLocation(cfg.location) || !validGoogleAccount(cfg.account)) throw new Error("invalid Vertex AI setup");
+    const pf = readProvidersFileForUpdate();
+    pf.vertex = { project: cfg.project, location: cfg.location, account: cfg.account };
+    writeProvidersFile(pf);
+}
+
+export function removeVertexConfig(): boolean {
+    const pf = readProvidersFileForUpdate();
+    if (!pf.vertex) return false;
+    delete pf.vertex;
+    writeProvidersFile(pf);
+    return true;
+}
+
+/** Vertex's API host for a location: the global endpoint, or the region's own. */
+export function vertexHost(location: string): string {
+    return location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+}
+
+/** The Chat Completions root for a Vertex setup. */
+export function vertexBaseUrl(cfg: VertexConfig): string {
+    return `https://${vertexHost(cfg.location)}/v1/projects/${cfg.project}/locations/${cfg.location}/endpoints/openapi`;
 }
 
 export function customProviders(): ProviderDef[] {

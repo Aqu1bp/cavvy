@@ -31,6 +31,9 @@ afterEach(() => {
 const credFile = () => paths.credentialsFile();
 const readStore = () => JSON.parse(readFileSync(credFile(), "utf-8")) as Record<string, string>;
 const mode = (f: string) => statSync(f).mode & 0o777;
+// Test files share one process, so another file may already have looked a provider up
+// (and cached that it has no key). Removing the key clears that cached lookup.
+const uncached = (id: string) => creds.removeKey(id);
 
 // ---------------------------------------------------------------------------
 
@@ -83,6 +86,7 @@ describe("credential store (file backend, HARNESS_NO_KEYCHAIN)", () => {
     });
 
     test("env vars are checked in order and blank values are skipped", async () => {
+        await uncached("gemini");
         process.env.GEMINI_API_KEY = "   ";
         process.env.GOOGLE_API_KEY = FAKE.gemini;
         expect(await creds.getKey("gemini")).toEqual({ value: FAKE.gemini, source: "env", envVar: "GOOGLE_API_KEY" });
@@ -91,11 +95,13 @@ describe("credential store (file backend, HARNESS_NO_KEYCHAIN)", () => {
     test("search providers resolve through their own env vars", async () => {
         expect(creds.envKeysFor("brave")).toEqual(["BRAVE_API_KEY", "BRAVE_SEARCH_API_KEY"]);
         expect(creds.envKeysFor("nope")).toEqual([]);
+        await uncached("brave");
         process.env.BRAVE_SEARCH_API_KEY = "BSA" + "q".repeat(25);
         expect(await creds.getKey("brave")).toMatchObject({ source: "env", envVar: "BRAVE_SEARCH_API_KEY" });
     });
 
     test("lookups are cached until setKey/removeKey for that provider", async () => {
+        await uncached("xai");
         process.env.XAI_API_KEY = "xai-" + "1".repeat(40);
         expect((await creds.getKey("xai"))?.value).toBe("xai-" + "1".repeat(40));
         process.env.XAI_API_KEY = "xai-" + "2".repeat(40);

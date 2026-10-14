@@ -16,7 +16,8 @@ import { detectKeyProvider, validateKey } from "./auth/detect";
 import { EFFORT_LEVELS, loadScope, loadSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, type PermissionMode } from "./permissions/modes";
-import { allProviders, getProvider, SEARCH_PROVIDERS } from "./providers/registry";
+import { allProviders, getProvider, readVertexConfig, removeVertexConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
+import { checkVertex, gcloudAccounts } from "./auth/gcloud";
 import { listAllModels, forgetClient } from "./providers/models";
 import { formatPrice, formatTokens } from "./providers/pricing";
 import { modelRef } from "./providers/types";
@@ -32,6 +33,8 @@ ${bold("Usage")}
   ${APP_NAME} [options] [prompt]          start an interactive session
   ${APP_NAME} -p [options] "prompt"       run one prompt and print the result
   ${APP_NAME} auth add [provider]          add an API key (read from stdin or a hidden prompt)
+  ${APP_NAME} auth add vertex --project <id> [--location global] [--account <email>]
+                                         use Gemini on Google Cloud through gcloud (no key)
   ${APP_NAME} auth list                    show which providers have keys (values never shown)
   ${APP_NAME} auth remove <provider>       delete a stored key
   ${APP_NAME} models [--refresh] [--json]  list every model you can use, across providers
@@ -276,15 +279,71 @@ async function readHidden(prompt: string): Promise<string> {
     });
 }
 
+/** `auth add vertex`: save a gcloud-based setup after checking it. */
+async function addVertexCli(args: string[]): Promise<number> {
+    const flag = (name: string) => {
+        const i = args.indexOf(`--${name}`);
+        const eq = args.find((a) => a.startsWith(`--${name}=`));
+        return eq ? eq.slice(name.length + 3) : i >= 0 ? args[i + 1] : undefined;
+    };
+    const project = flag("project");
+    const location = flag("location") ?? "global";
+    if (!project) die(`usage: ${APP_NAME} auth add vertex --project <id> [--location global] [--account <email>]`);
+    if (!validVertexProject(project)) die(`"${project}" isn't a project ID (lowercase letters, digits and hyphens)`);
+    if (!validVertexLocation(location)) die(`"${location}" isn't a location (global, or a region like us-central1)`);
+    let account = flag("account");
+    try {
+        if (!account) {
+            account = (await gcloudAccounts()).find((a) => a.active)?.account;
+            if (!account) die("gcloud has no active account; run gcloud auth login, or pass --account");
+        }
+        if (!validGoogleAccount(account)) die(`"${account}" isn't a Google account`);
+        const cfg = { project, location, account };
+        process.stderr.write(`Checking Vertex AI in ${project} as ${account}… `);
+        const r = await checkVertex(cfg);
+        if (r.ok) process.stderr.write(theme.success(`ok (${r.models} models)\n`));
+        else if (r.apiDisabled) {
+            process.stderr.write(theme.error("API off\n"));
+            die(`the Vertex AI API is off in ${project}. Turn it on with: gcloud services enable aiplatform.googleapis.com --project=${project}`);
+        } else if (r.definitive) {
+            process.stderr.write(theme.error("failed\n"));
+            die(`${redact(r.reason).replace(/[.\s]*$/, ".")} Nothing was saved.`);
+        } else process.stderr.write(theme.warning(`couldn't check (${redact(r.reason)}); saving anyway\n`));
+        saveVertexConfig(cfg);
+    } catch (e) {
+        die(redact((e as Error).message));
+    }
+    forgetClient("vertex");
+    process.stdout.write(`Saved Vertex AI: project ${project} (${location}) as ${account}. Usage is billed to ${project}; nothing secret is stored.\n`);
+    return 0;
+}
+
 async function authCommand(args: string[]): Promise<number> {
     const [sub, arg] = args;
     if (sub === "list" || !sub) {
         process.stdout.write(`Keys are stored in ${await storageDescription()}\n\n`);
         for (const p of [...allProviders().filter((x) => x.requiresKey), ...SEARCH_PROVIDERS]) {
+            if ("auth" in p && p.auth === "gcloud") {
+                const cfg = readVertexConfig();
+                process.stdout.write(`  ${padEnd(p.name, 22)}${padEnd(p.id, 14)}${cfg ? theme.success(`✔ gcloud  (${cfg.project}, ${cfg.location}, as ${cfg.account})`) : theme.subtle("—")}\n`);
+                continue;
+            }
             const k = await getKey(p.id);
             process.stdout.write(`  ${padEnd(p.name, 22)}${padEnd(p.id, 14)}${k ? theme.success(`✔ ${maskKey(k.value)}  (${k.source === "env" ? `$${k.envVar}` : k.source})`) : theme.subtle("—")}\n`);
         }
         return 0;
+    }
+    if (sub === "add" && arg?.toLowerCase() === "vertex") return addVertexCli(args.slice(2));
+    if ((sub === "remove" || sub === "rm" || sub === "logout") && arg?.toLowerCase() === "vertex") {
+        let removed = false;
+        try {
+            removed = removeVertexConfig();
+        } catch (e) {
+            die(redact((e as Error).message));
+        }
+        forgetClient("vertex");
+        process.stdout.write(removed ? "Removed the Vertex AI setup (gcloud stays signed in)\n" : "Vertex AI isn't set up\n");
+        return removed ? 0 : 1;
     }
     if (sub === "add") {
         let providerId = arg?.toLowerCase();

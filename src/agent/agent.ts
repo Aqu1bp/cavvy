@@ -159,7 +159,7 @@ function isAbort(e: unknown, signal?: AbortSignal): boolean {
 function isContextOverflow(e: unknown): boolean {
     const err = e as ProviderError;
     const msg = String(err?.message ?? "") + String(err?.body ?? "");
-    return (err?.status === 400 || err?.status === 413 || err?.status === undefined) && /prompt is too long|context.{0,20}(length|window|limit)|maximum context|too many (input )?tokens|input (is )?too long|exceeds the context/i.test(msg);
+    return (err?.status === 400 || err?.status === 413 || err?.status === undefined) && /prompt is too long|context.{0,20}(length|window|limit)|maximum context|too many (input )?tokens|input (is )?too long|exceeds the context|exceeds the maximum number of tokens/i.test(msg);
 }
 
 function reminder(text: string): TextPart {

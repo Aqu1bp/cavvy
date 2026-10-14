@@ -17,13 +17,36 @@ Run `harness` and type `/login`, then paste a key. The provider is recognized fr
 - in the OS keychain (macOS Keychain, libsecret, Windows Credential Manager) via `Bun.secrets`, or
 - in `~/.harness/credentials.json` with mode 600 when no keychain is available.
 
-Supported: Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
+Supported: Anthropic, OpenAI, Google Gemini, Google Vertex AI (through gcloud, below), OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
 
 From a shell: `harness auth add [provider]` (hidden prompt, or pipe the key on stdin), `harness auth list`, `harness auth remove <provider>`. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) also work and take precedence.
 
+### Google Cloud (Vertex AI)
+
+Gemini through Vertex AI (which Google now calls Gemini Enterprise Agent Platform) is billed to a Google Cloud project, so Cloud credits such as the free trial's apply. A Gemini API key from AI Studio is billed separately, and the free trial's credit doesn't cover it.
+
+There's no key to paste. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install), run `gcloud auth login`, then `/login vertex` in the harness:
+
+1. Pick the Google account (from the accounts gcloud is signed in with).
+2. Pick the project to bill (projects with billing on are listed first).
+3. Pick `global` or a region.
+
+The setup is checked by listing the model catalog at the location you picked (no model is called), so a misspelled region is caught before anything is saved. If the Vertex AI API is off in the project, you're offered to turn it on (`gcloud services enable aiplatform.googleapis.com`). From a shell: `harness auth add vertex --project <id> [--location global] [--account <email>]`.
+
+Only the project, location and account are saved (in `~/.harness/providers.json`). Requests carry an access token from `gcloud config config-helper --account=<account>`:
+
+- The harness keeps the token in memory until a few minutes before it expires, and forces gcloud to issue a new one if Vertex rejects it.
+- gcloud keeps its own copy in its credential store, as it does for any gcloud command. Its log file is turned off for these calls, because it would record the token there.
+- The token is only sent to `aiplatform.googleapis.com` (or the region's own host).
+- It's masked like a key, and so is any other Google access token (`ya29.…`) that shows up in tool output.
+
+The account is always named explicitly, so switching gcloud's active account doesn't change who is billed. Shell commands that print a gcloud token ask first. `/logout vertex` removes the setup; gcloud itself stays signed in.
+
+Vertex's model catalog has no context sizes or prices. They're filled in from the Gemini API's listing (if you also have a Gemini key) and OpenRouter's catalog (if you have an OpenRouter key).
+
 How keys are kept safe:
 
-- A key is only ever sent to its own provider's API host.
+- A key is only ever sent to its own provider's API host. (Vertex AI uses gcloud tokens instead of a key; see above.)
 - Keys are registered with a redactor, so they're masked in tool output, session transcripts, exports, and error messages. Nothing that's written to disk (sessions, history, settings, the model cache) contains a key.
 - Everything that enters the conversation is redacted before any model sees it: your prompts, tool results, memory files, and the model's own replies (so a key can't hop from one provider's transcript to another's when you switch models). The terminal and `-p` output are redacted too, and so is what hooks receive on stdin.
 - Every process the harness starts (shell commands, hooks, MCP servers, git, ripgrep, your editor) gets an environment with all provider keys removed. A settings `env` entry can't put one back; MCP servers' own `env` blocks are passed through as you wrote them.

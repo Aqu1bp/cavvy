@@ -10,7 +10,8 @@ import { existsSync } from "fs";
 import { AnthropicProvider } from "./anthropic";
 import { OpenAICompatProvider } from "./openai-compat";
 import { OpenAIResponsesProvider } from "./openai-responses";
-import { allProviders, getProvider, type ProviderDef } from "./registry";
+import { allProviders, getProvider, readVertexConfig, type ProviderDef } from "./registry";
+import { VertexProvider, forgetTokens } from "./vertex";
 import { anthropicTraits } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
@@ -31,22 +32,37 @@ export function createClient(def: ProviderDef, key: string | undefined): Provide
 
 const clients = new Map<string, { fp: string; client: ProviderClient }>();
 
+/**
+ * What identifies a provider's credential, without the credential: a key's
+ * short hash, or the gcloud setup. Undefined when it has none.
+ */
+async function credentialFingerprint(def: ProviderDef): Promise<{ fp: string; key?: string } | undefined> {
+    if (def.auth === "gcloud") {
+        const cfg = readVertexConfig();
+        return cfg ? { fp: `${cfg.account}|${cfg.project}|${cfg.location}` } : undefined;
+    }
+    const key = def.requiresKey ? await getKey(def.id) : undefined;
+    if (def.requiresKey && !key) return undefined;
+    return { fp: fingerprint(key?.value) + "|" + def.baseUrl, key: key?.value };
+}
+
 /** A client for a provider, with its stored key. Throws if a key is required but missing. */
 export async function clientFor(providerId: string): Promise<ProviderClient> {
     const def = getProvider(providerId);
     if (!def) throw new ProviderError(`Unknown provider "${providerId}". Run /providers to see the list.`);
-    const key = await getKey(providerId);
-    if (def.requiresKey && !key) throw new ProviderError(`No API key for ${def.name}. Run /login to add one.`, 401);
-    const fp = fingerprint(key?.value) + "|" + def.baseUrl;
+    const cred = await credentialFingerprint(def);
+    if (!cred) throw new ProviderError(def.auth === "gcloud" ? `${def.name} isn't set up. Run /login vertex.` : `No API key for ${def.name}. Run /login to add one.`, 401);
     const hit = clients.get(providerId);
-    if (hit && hit.fp === fp) return hit.client;
-    const client = createClient(def, key?.value);
-    clients.set(providerId, { fp, client });
+    if (hit && hit.fp === cred.fp) return hit.client;
+    const cfg = def.auth === "gcloud" ? readVertexConfig() : undefined;
+    const client = cfg ? new VertexProvider(def, cfg) : createClient(def, cred.key);
+    clients.set(providerId, { fp: cred.fp, client });
     return client;
 }
 
 export function forgetClient(providerId: string) {
     clients.delete(providerId);
+    if (getProvider(providerId)?.auth === "gcloud") forgetTokens();
     const c = readCache();
     if (c.providers[providerId]) {
         delete c.providers[providerId];
@@ -115,11 +131,11 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
     let dirty = false;
     const results = await Promise.all(
         allProviders().map(async (def): Promise<ProviderListing | undefined> => {
-            const key = def.requiresKey ? await getKey(def.id) : undefined;
-            if (def.requiresKey && !key) {
+            const cred = await credentialFingerprint(def);
+            if (!cred) {
                 return opts.includeUnconfigured ? { provider: def, models: [], status: "no-key" } : undefined;
             }
-            const fp = fingerprint(key?.value) + "|" + def.baseUrl;
+            const fp = cred.fp;
             const cached = cache.providers[def.id];
             if (!def.local && !opts.refresh && cached && cached.fp === fp && Date.now() - cached.fetchedAt < TTL_MS) {
                 const l: ProviderListing = { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt };
@@ -129,7 +145,8 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
             try {
                 const client = await clientFor(def.id);
                 const signal = combine(opts.signal, def.local ? 1500 : 20_000);
-                const models = sortModels(await client.listModels(signal));
+                const listed = await client.listModels(signal);
+                const models = def.sorted ? listed : sortModels(listed);
                 if (!def.local) {
                     cache.providers[def.id] = { fetchedAt: Date.now(), fp, models };
                     dirty = true;
@@ -174,12 +191,14 @@ function sortModels(models: ModelInfo[]): ModelInfo[] {
 // First-party providers whose models OpenRouter also lists under a vendor
 // prefix. When the user has OpenRouter configured we borrow its pricing for
 // models whose own API doesn't report prices. Marked as estimates in the UI.
+// Vertex ids already carry the vendor (google/gemini-…).
 const OPENROUTER_VENDOR: Record<string, string> = {
-    openai: "openai",
-    gemini: "google",
-    deepseek: "deepseek",
-    xai: "x-ai",
-    mistral: "mistralai",
+    openai: "openai/",
+    gemini: "google/",
+    vertex: "",
+    deepseek: "deepseek/",
+    xai: "x-ai/",
+    mistral: "mistralai/",
 };
 
 function normId(id: string): string {
@@ -187,16 +206,23 @@ function normId(id: string): string {
 }
 
 function enrichPricing(listings: ProviderListing[]) {
+    // Vertex's catalog has no token limits; the same models listed by the Gemini API do.
+    const gemini = new Map((listings.find((l) => l.provider.id === "gemini")?.models ?? []).map((m) => [m.id, m]));
+    for (const m of listings.find((l) => l.provider.id === "vertex")?.models ?? []) {
+        const g = gemini.get(m.id.replace(/^google\//, ""));
+        m.contextWindow ??= g?.contextWindow;
+        m.maxOutput ??= g?.maxOutput;
+    }
     const or = listings.find((l) => l.provider.id === "openrouter");
     if (!or || !or.models.length) return;
     const byId = new Map<string, ModelInfo>();
     for (const m of or.models) byId.set(normId(m.id), m);
     for (const l of listings) {
         const vendor = OPENROUTER_VENDOR[l.provider.id];
-        if (!vendor) continue;
+        if (vendor === undefined) continue;
         for (const m of l.models) {
             if (m.pricing) continue;
-            const match = byId.get(normId(`${vendor}/${m.id}`));
+            const match = byId.get(normId(`${vendor}${m.id}`));
             if (match?.pricing) {
                 m.pricing = match.pricing;
                 m.pricingEstimated = true;
@@ -256,6 +282,8 @@ const PREFERRED: Record<string, RegExp[]> = {
     anthropic: [/^claude-opus-5-5$/, /^claude-sonnet-5-5$/, /^claude-opus/, /^claude-sonnet/],
     openai: [/^gpt-6\.1-sol$/, /^gpt-6-sol$/, /^gpt-6-astra$/, /^gpt-\d/],
     gemini: [/pro-latest$/, /-pro$/, /pro/, /flash/],
+    // Listed newest first: the newest released model that isn't a lite one.
+    vertex: [/^google\/gemini-(?!.*(lite|preview))/, /^google\/gemini-/],
     openrouter: [/^anthropic\/claude-opus-5\.5$/, /^anthropic\/claude-sonnet-5\.5$/, /^anthropic\//, /^openai\//],
     deepseek: [/v4-pro/, /flash/, /chat/],
     xai: [/^grok-\d/],
@@ -267,6 +295,7 @@ const SMALL: Record<string, RegExp[]> = {
     anthropic: [/^claude-haiku-5-5$/, /^claude-haiku/],
     openai: [/^gpt-6-luna$/, /luna/, /mini/],
     gemini: [/flash-lite/, /flash/],
+    vertex: [/^google\/gemini-[\d.]+-flash-lite$/, /^google\/gemini-[\d.]+-flash$/],
     openrouter: [/^anthropic\/claude-haiku/, /mini/, /flash/],
     deepseek: [/flash/, /chat/],
     xai: [/mini|fast/],
@@ -284,7 +313,7 @@ function pick(models: ModelInfo[], prefs: RegExp[] | undefined): ModelInfo | und
 
 /** Choose a default model when none is configured: first configured provider, best model. */
 export function defaultModelFrom(listings: ProviderListing[]): ModelInfo | undefined {
-    const order = ["anthropic", "openai", "openrouter", "gemini", "xai", "deepseek", "mistral", "groq"];
+    const order = ["anthropic", "openai", "openrouter", "gemini", "vertex", "xai", "deepseek", "mistral", "groq"];
     const usable = listings.filter((l) => l.models.length);
     usable.sort((a, b) => idx(order, a.provider.id) - idx(order, b.provider.id));
     for (const l of usable) {

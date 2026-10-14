@@ -14,7 +14,25 @@ import { EFFORT_LEVELS, loadScope, removePermissionRule, addPermissionRule, sett
 import { isTrusted } from "../config/trust";
 import { MODE_INFO, PERMISSION_MODES, parseMode, type PermissionMode } from "../permissions/modes";
 import { parseRule } from "../permissions/rules";
-import { allProviders, getProvider, readProvidersFileForUpdate, resolveBaseUrl, SEARCH_PROVIDERS, writeProvidersFile, type ProviderDef, type WireKind } from "../providers/registry";
+import {
+    allProviders,
+    getProvider,
+    readProvidersFileForUpdate,
+    readVertexConfig,
+    removeVertexConfig,
+    resolveBaseUrl,
+    saveVertexConfig,
+    SEARCH_PROVIDERS,
+    validVertexLocation,
+    validVertexProject,
+    vertexBaseUrl,
+    writeProvidersFile,
+    type ProviderDef,
+    type VertexConfig,
+    type WireKind,
+} from "../providers/registry";
+import { GcloudError } from "../providers/vertex";
+import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
 import { modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
 import { formatPrice, formatTokens, formatUsd } from "../providers/pricing";
@@ -138,7 +156,7 @@ async function modelItems(app: App): Promise<SelectItem<string>[]> {
     // Providers without a key: picking one starts /login for it.
     const have = new Set(listings.map((l) => l.provider.id));
     const missing = allProviders().filter((p) => p.requiresKey && !have.has(p.id));
-    for (const p of missing) items.push({ label: theme.muted(`+ ${p.name}`), value: `login:${p.id}`, description: "add an API key", group: "Add a provider", keywords: `${p.id} ${p.name} login` });
+    for (const p of missing) items.push({ label: theme.muted(`+ ${p.name}`), value: `login:${p.id}`, description: p.auth === "gcloud" ? "set up with gcloud (Google Cloud billing and credits)" : "add an API key", group: "Add a provider", keywords: `${p.id} ${p.name} login` });
     return items;
 }
 
@@ -255,6 +273,7 @@ async function modelCommand(app: App, args: string) {
 async function loginCommand(app: App, args: string) {
     let providerId: string | undefined = args.trim().toLowerCase() || undefined;
     if (providerId === "custom") return addCustomProvider(app);
+    if (providerId && getProvider(providerId)?.auth === "gcloud") return vertexLogin(app);
     const known = (id: string) => getProvider(id) ?? SEARCH_PROVIDERS.find((s) => s.id === id);
     if (providerId && !known(providerId)) {
         app.notice(`Unknown provider "${providerId}". Known: ${[...allProviders().map((p) => p.id), ...SEARCH_PROVIDERS.map((s) => s.id)].join(", ")}, or "custom".`, "error");
@@ -272,7 +291,7 @@ async function loginCommand(app: App, args: string) {
               theme.muted("Paste a key from any supported provider; it's recognized automatically:"),
               theme.muted("  Anthropic · OpenAI · Google Gemini · OpenRouter · Groq · DeepSeek · xAI · Mistral"),
               theme.muted("  Together · Fireworks · Cerebras · Brave / Tavily (web search)"),
-              theme.muted(`Other OpenAI-compatible endpoints: ${bold("/login custom")}`),
+              theme.muted(`Gemini billed to Google Cloud (credits apply): ${bold("/login vertex")} · other OpenAI-compatible endpoints: ${bold("/login custom")}`),
           ];
     header.push("", theme.subtle(`Stored in ${storage}. Never written to transcripts, logs or settings, and only sent to its own provider.`));
     const key = await app.showDialog(
@@ -295,7 +314,7 @@ async function loginCommand(app: App, args: string) {
             const items: SelectItem<string>[] = [
                 ...guesses.map((g) => ({ label: g.name, value: g.id, description: "matches this key's format" })),
                 ...allProviders()
-                    .filter((p) => p.requiresKey && !ids.has(p.id))
+                    .filter((p) => p.requiresKey && !p.auth && !ids.has(p.id))
                     .map((p) => ({ label: p.name, value: p.id, description: p.custom ? "custom" : undefined })),
                 ...SEARCH_PROVIDERS.filter((s) => !ids.has(s.id)).map((s) => ({ label: s.name, value: s.id, description: "web search" })),
             ];
@@ -339,6 +358,159 @@ async function loginCommand(app: App, args: string) {
     if (!app.model) {
         const pick = defaultModelFrom(l ? [l] : []);
         if (pick) await app.setModel(modelRef(pick), { persist: true });
+    }
+}
+
+/** A gcloud step behind a progress dialog: undefined when cancelled, or after showing its error. */
+async function gcloudStep<T>(app: App, lines: string[], fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
+    try {
+        return await withProgress(app, lines, fn);
+    } catch (e) {
+        if ((e as Error).message !== "aborted") app.notice(redact((e as Error).message), e instanceof GcloudError && e.missing ? "warn" : "error");
+        return undefined;
+    }
+}
+
+/**
+ * /login vertex: pick a Google account (from gcloud), a project and a
+ * location, check it, and save the setup. Nothing secret is stored: every
+ * request gets a fresh-enough token from gcloud for that account.
+ */
+async function vertexLogin(app: App) {
+    const def = getProvider("vertex")!;
+    const current = readVertexConfig();
+    const accounts = await gcloudStep(app, [theme.permission(bold("Checking gcloud…")), theme.muted("gcloud auth list")], (s) => gcloudAccounts(s));
+    if (!accounts) return;
+    if (!accounts.length) {
+        app.notice("gcloud has no signed-in Google account. In a terminal, run gcloud auth login (with the account that has your Cloud billing or credits), then /login vertex again.", "warn");
+        return;
+    }
+    let account = accounts[0]!.account;
+    if (accounts.length > 1) {
+        const initial = Math.max(0, accounts.findIndex((a) => a.account === (current?.account ?? accounts.find((x) => x.active)?.account)));
+        const pick = (await app.showDialog(
+            new SelectDialog<string>({
+                title: "Which Google account?",
+                header: [theme.muted("Vertex AI usage is billed to a project this account can use.")],
+                items: accounts.map((a) => ({ label: a.account, value: a.account, description: [a.account === current?.account ? "current setup" : "", a.active ? "gcloud's active account" : ""].filter(Boolean).join(" · ") || undefined })),
+                initial,
+                numbers: true,
+            }),
+        )) as string | undefined;
+        if (!pick) return;
+        account = pick;
+    }
+
+    const projects = await gcloudStep(app, [theme.permission(bold(`Listing projects for ${account}…`)), theme.muted("gcloud projects list, gcloud billing projects list")], (s) => gcloudProjects(account, s));
+    if (!projects) return;
+    projects.sort((a, b) => Number(b.billing === true) - Number(a.billing === true) || a.projectId.localeCompare(b.projectId));
+    let project: string | undefined;
+    if (projects.length) {
+        const items: SelectItem<string>[] = projects.map((p) => ({
+            label: p.projectId,
+            value: p.projectId,
+            description: p.name && p.name !== p.projectId ? p.name : undefined,
+            detail: p.billing === true ? theme.success("billing on") : p.billing === false ? theme.warning("no billing") : undefined,
+        }));
+        items.push({ label: theme.muted("Enter a project ID…"), value: "" });
+        const pick = (await app.showDialog(
+            new SelectDialog<string>({
+                title: "Which project should be billed?",
+                header: [theme.muted("Free-trial and other Cloud credits apply to the project's billing account.")],
+                items,
+                initial: Math.max(0, items.findIndex((i) => i.value === current?.project)),
+                searchable: projects.length > 8,
+            }),
+        )) as string | undefined;
+        if (pick === undefined) return;
+        project = pick || undefined;
+    }
+    if (!project) {
+        const typed = await app.showDialog(new InputDialog({ title: "Google Cloud project ID", placeholder: "my-project-123", validate: (v) => (validVertexProject(v.trim()) ? undefined : "Project IDs are lowercase letters, digits and hyphens, like my-project-123.") }));
+        if (!typed) return;
+        project = typed.trim();
+    }
+    const billing = projects.find((p) => p.projectId === project)?.billing;
+    if (billing === false) {
+        const ok = await confirm(app, `${project} has no billing account`, [theme.warning("Vertex AI won't answer until the project is linked to one (Cloud console → Billing)."), "", "Use this project anyway?"], "Use it anyway", "Cancel");
+        if (!ok) return;
+    }
+
+    const loc = (await app.showDialog(
+        new SelectDialog<string>({
+            title: "Where should requests go?",
+            items: [
+                { label: "global", value: "global", description: "recommended: Google picks where each request runs" },
+                { label: "A specific region…", value: "", description: "for data-residency needs, e.g. us-central1 or europe-west4" },
+            ],
+            initial: current && current.location !== "global" ? 1 : 0,
+            numbers: true,
+        }),
+    )) as string | undefined;
+    if (loc === undefined) return;
+    let location = loc;
+    if (!location) {
+        const typed = await app.showDialog(new InputDialog({ title: "Region", placeholder: current?.location !== "global" ? current?.location : "us-central1", validate: (v) => (validVertexLocation(v.trim()) ? undefined : "A region looks like us-central1 or europe-west4.") }));
+        if (!typed) return;
+        location = typed.trim();
+    }
+
+    const cfg: VertexConfig = { project, location, account };
+    const check = (label: string) => gcloudStep(app, [theme.permission(bold(label)), theme.muted(`Model catalog for ${project} (nothing is billed)`)], (s): Promise<VertexCheck> => checkVertex(cfg, s));
+    let res = await check(`Checking Vertex AI in ${project}…`);
+    if (!res) return;
+    if (!res.ok && res.apiDisabled) {
+        const on = await confirm(
+            app,
+            `Turn on the Vertex AI API in ${project}?`,
+            [theme.muted("It's off in this project. Turning it on is free; only model usage is billed."), theme.muted(`Runs: gcloud services enable aiplatform.googleapis.com --project=${project}`)],
+            "Turn it on",
+            "Cancel",
+        );
+        if (!on) return;
+        const done = await gcloudStep(app, [theme.permission(bold("Turning on the Vertex AI API…")), theme.muted("This can take a minute.")], (s) => enableVertexApi(account, project!, s).then(() => true));
+        if (!done) return;
+        // Google says it can take a few minutes to take effect.
+        res = await gcloudStep(app, [theme.permission(bold("Waiting for the Vertex AI API to come on…")), theme.muted("Google says this can take a few minutes.")], async (s) => {
+            for (let i = 0; ; i++) {
+                const r = await checkVertex(cfg, s);
+                if (r.ok || !r.apiDisabled || i >= 11 || s.aborted) return r;
+                await Bun.sleep(5000);
+            }
+        });
+        if (!res) return;
+        if (!res.ok && res.apiDisabled) res = { ok: false, reason: "The API is turned on, but Google hasn't finished switching it on yet.", definitive: false };
+    }
+    if (!res.ok) {
+        if (res.definitive) {
+            app.notice(`${redact(res.reason).replace(/[.\s]*$/, ".")} Nothing was saved.`, "error");
+            return;
+        }
+        const save = await confirm(app, "Couldn't check the setup", [theme.warning(redact(res.reason)), "", "Save it anyway?"], "Save anyway", "Cancel");
+        if (!save) return;
+    }
+    try {
+        saveVertexConfig(cfg);
+    } catch (e) {
+        app.notice(redact((e as Error).message), "error");
+        return;
+    }
+    forgetClient("vertex");
+    await app.keyChanged("vertex");
+    app.print([
+        "",
+        `${theme.success("✔")} ${bold(def.name)} set up: project ${bold(project)} (${location}), as ${account}`,
+        theme.muted(`  Usage is billed to ${project}. Tokens come from gcloud as needed; nothing secret is saved.`),
+    ]);
+    const listings = await withProgress(app, [theme.permission(bold(`Loading ${def.name} models…`))], () => app.refreshListings());
+    const l = listings?.find((x) => x.provider.id === "vertex");
+    if (l?.error) app.notice(`Couldn't list ${def.name} models: ${l.error}`, "warn");
+    else if (l) app.notice(`${l.models.length} ${def.name} model${l.models.length === 1 ? " is" : "s are"} now in /model.`);
+    const pick = defaultModelFrom(l ? [l] : []);
+    if (!pick) return;
+    if (!app.model) await app.setModel(modelRef(pick), { persist: true });
+    else if (app.model.provider !== "vertex" && (await confirm(app, `Switch to ${pick.id} on Vertex AI?`, [theme.muted(`Now: ${app.model.name ?? app.model.id} (${app.model.provider})`)], "Switch", "Keep the current model"))) {
+        await app.setModel(modelRef(pick), { persist: true });
     }
 }
 
@@ -413,8 +585,13 @@ function BUILTIN_PROVIDERS_IDS(): Set<string> {
 }
 
 async function logoutCommand(app: App, args: string) {
-    const rows: { id: string; name: string; source?: string; envVar?: string }[] = [];
-    for (const p of [...allProviders(), ...SEARCH_PROVIDERS.map((s) => ({ id: s.id, name: s.name }))]) {
+    const rows: { id: string; name: string; source?: string; envVar?: string; description?: string }[] = [];
+    for (const p of [...allProviders(), ...SEARCH_PROVIDERS.map((s) => ({ id: s.id, name: s.name, auth: undefined }))]) {
+        if (p.auth === "gcloud") {
+            const cfg = readVertexConfig();
+            if (cfg) rows.push({ id: p.id, name: p.name, source: "gcloud", description: `project ${cfg.project} as ${cfg.account} (gcloud stays signed in)` });
+            continue;
+        }
         const k = await getKey(p.id);
         if (k) rows.push({ id: p.id, name: p.name, source: k.source, envVar: k.envVar });
     }
@@ -427,7 +604,7 @@ async function logoutCommand(app: App, args: string) {
         id = (await app.showDialog(
             new SelectDialog<string>({
                 title: "Remove which key?",
-                items: rows.map((r) => ({ label: r.name, value: r.id, description: r.source === "env" ? `from $${r.envVar} (unset it in your shell)` : `stored in ${r.source}`, disabled: r.source === "env" })),
+                items: rows.map((r) => ({ label: r.name, value: r.id, description: r.description ?? (r.source === "env" ? `from $${r.envVar} (unset it in your shell)` : `stored in ${r.source}`), disabled: r.source === "env" })),
                 numbers: true,
             }),
         )) as string | undefined;
@@ -442,21 +619,35 @@ async function logoutCommand(app: App, args: string) {
         app.notice(`The ${row.name} key comes from $${row.envVar}. Unset it in your shell (and any .env loaded by ${APP_TITLE}) to remove it.`, "warn");
         return;
     }
-    await removeKey(id);
+    if (row.source === "gcloud") {
+        try {
+            removeVertexConfig();
+        } catch (e) {
+            app.notice(redact((e as Error).message), "error");
+            return;
+        }
+    } else await removeKey(id);
     forgetClient(id);
-    app.print(["", `${theme.success("✔")} Removed the ${bold(row.name)} key`]);
+    app.print(["", row.source === "gcloud" ? `${theme.success("✔")} Removed the ${bold(row.name)} setup ${theme.muted("(gcloud itself stays signed in; gcloud auth revoke signs it out)")}` : `${theme.success("✔")} Removed the ${bold(row.name)} key`]);
     const current = app.model?.provider === id ? app.model.id : undefined;
     await app.keyChanged(id);
-    if (current && !app.model) app.notice(`The current model (${current}) used this key; pick another with /model.`, "warn");
+    if (current && !app.model) app.notice(`The current model (${current}) used ${row.source === "gcloud" ? "this setup" : "this key"}; pick another with /model.`, "warn");
     void app.refreshListings();
 }
 
 async function providersCommand(app: App) {
     const lines = ["", heading("Providers")];
     for (const p of allProviders()) {
-        const k = p.requiresKey ? await getKey(p.id) : undefined;
         const l = app.listings.find((x) => x.provider.id === p.id);
-        const status = !p.requiresKey ? (l?.status === "offline" || !l ? theme.muted("local · not running") : theme.success(`local · ${l.models.length} models`)) : k ? theme.success(`✔ ${k.source === "env" ? `$${k.envVar}` : k.source}${l ? ` · ${l.status === "error" ? theme.error("error") : `${l.models.length} models`}` : ""}`) : theme.subtle("no key");
+        const count = l ? ` · ${l.status === "error" ? theme.error("error") : `${l.models.length} models`}` : "";
+        if (p.auth === "gcloud") {
+            const cfg = readVertexConfig();
+            const status = cfg ? theme.success(`✔ gcloud${count}`) : theme.subtle("not set up (/login vertex)");
+            lines.push(`  ${padEnd(bold(p.name), 22)}${padEnd(theme.muted(p.id), 14)}${padEnd(status, 34)}${theme.subtle(cfg ? `${cfg.project} (${cfg.location}) as ${cfg.account}` : resolveBaseUrl(p))}`);
+            continue;
+        }
+        const k = p.requiresKey ? await getKey(p.id) : undefined;
+        const status = !p.requiresKey ? (l?.status === "offline" || !l ? theme.muted("local · not running") : theme.success(`local · ${l.models.length} models`)) : k ? theme.success(`✔ ${k.source === "env" ? `$${k.envVar}` : k.source}${count}`) : theme.subtle("no key");
         lines.push(`  ${padEnd(bold(p.name), 22)}${padEnd(theme.muted(p.id), 14)}${padEnd(status, 34)}${theme.subtle(resolveBaseUrl(p))}`);
     }
     lines.push("", heading("Web search"));
@@ -648,7 +839,8 @@ function costCommand(app: App) {
 async function statusCommand(app: App) {
     const m = app.model;
     const def = m ? getProvider(m.provider) : undefined;
-    const key = def?.requiresKey ? await getKey(def.id) : undefined;
+    const vertex = def?.auth === "gcloud" ? readVertexConfig() : undefined;
+    const key = def?.requiresKey && !def.auth ? await getKey(def.id) : undefined;
     const servers = [...app.mcp.servers.values()];
     const memory = loadMemory(app.cwd);
     const lines = [
@@ -658,8 +850,10 @@ async function statusCommand(app: App) {
         kv("Directory", displayPath(app.cwd, process.env.HOME ?? "/") + (app.init.trusted ? "" : theme.warning(" (not trusted: project config ignored)"))),
         ...(app.settings.permissions?.additionalDirectories ?? []).map((d) => kv("", theme.muted(`+ ${d}`))),
         kv("Model", m ? `${m.name ?? m.id} ${theme.muted(`(${modelRef(m)})`)}` : theme.warning("none — run /login")),
-        kv("Provider", def ? `${def.name} · ${resolveBaseUrl(def)}` : "—"),
-        kv("API key", key ? `${maskKey(key.value)} ${theme.muted(`from ${key.source === "env" ? `$${key.envVar}` : key.source}`)}` : def?.requiresKey === false ? theme.muted("not needed") : "—"),
+        kv("Provider", def ? `${def.name} · ${vertex ? vertexBaseUrl(vertex) : resolveBaseUrl(def)}` : "—"),
+        vertex
+            ? kv("Credentials", `gcloud token for ${vertex.account} ${theme.muted(`· billed to project ${vertex.project}`)}`)
+            : kv("API key", key ? `${maskKey(key.value)} ${theme.muted(`from ${key.source === "env" ? `$${key.envVar}` : key.source}`)}` : def?.requiresKey === false ? theme.muted("not needed") : "—"),
         kv("Context window", m?.contextWindow ? formatTokens(m.contextWindow) : theme.muted("unknown")),
         kv("Effort", app.settings.effort ?? theme.muted("model default")),
         kv("Thinking text", app.settings.showThinking ? "shown" : theme.muted("hidden (summaries only)")),
@@ -1133,7 +1327,11 @@ const BUILTIN: Command[] = [
         description: "Show the latest compaction summary",
         whileBusy: true,
         hidden: true,
-        run: (app) => (app.lastSummary ? app.print(["", ...renderMarkdown(app.lastSummary, termCols() - 4).map((l) => "  " + l)]) : app.notice("No compaction has happened in this session.")),
+        run: (app) => {
+            const summary = app.lastSummary;
+            if (!summary) return app.notice("No compaction has happened in this session.");
+            app.print((cols) => ["", ...renderMarkdown(summary, cols - 4).map((l) => "  " + l)]);
+        },
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
@@ -1159,7 +1357,11 @@ const BUILTIN: Command[] = [
     { name: "mcp", description: "MCP servers: status, approval, tools, reconnect", run: mcpCommand },
     { name: "agents", description: "List sub-agents", whileBusy: true, run: (app) => agentsCommand(app) },
     { name: "hooks", description: "List configured hooks", whileBusy: true, run: (app) => hooksCommand(app) },
-    { name: "todos", description: "Show the current todo list", whileBusy: true, run: (app) => (app.toolState.todos.length ? app.print(["", heading("Todos"), ...renderTodos(app.toolState.todos, termCols())]) : app.notice("No todos.")) },
+    { name: "todos", description: "Show the current todo list", whileBusy: true, run: (app) => {
+            const todos = app.toolState.todos.map((t) => ({ ...t }));
+            if (!todos.length) return app.notice("No todos.");
+            app.print((cols) => ["", heading("Todos"), ...renderTodos(todos, cols)]);
+        } },
     { name: "bashes", description: "List and stop background shells", run: bashesCommand },
     { name: "add-dir", description: "Allow working in another directory", args: "<path>", run: addDirCommand },
     { name: "doctor", description: "Check the installation and providers", run: doctorCommand },
@@ -1216,12 +1418,16 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
 }
 
 function helpCommand(app: App) {
-    const cols = termCols();
-    const lines = ["", `${theme.accent("✻")} ${bold(APP_TITLE)} ${theme.muted(`v${APP_VERSION} · a coding agent for your terminal, with any model`)}`, "", heading("Commands")];
     const cmds = commandList(app);
+    const custom = app.customCommands.length;
+    app.print((cols) => helpLines(app, cmds, custom, cols));
+}
+
+function helpLines(app: App, cmds: ReturnType<typeof commandList>, custom: number, cols: number): string[] {
+    const lines = ["", `${theme.accent("✻")} ${bold(APP_TITLE)} ${theme.muted(`v${APP_VERSION} · a coding agent for your terminal, with any model`)}`, "", heading("Commands")];
     const w = Math.min(28, Math.max(...cmds.map((c) => width(c.name) + (c.args ? width(c.args) + 1 : 0))) + 4);
     for (const c of cmds) lines.push(truncate(`  ${padEnd(`/${c.name}${c.args ? " " + theme.subtle(c.args) : ""}`, w)}${theme.muted(c.description)}`, cols - 1));
-    if (!app.customCommands.length) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .harness/commands/`));
+    if (!custom) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .harness/commands/`));
     lines.push(
         "",
         heading("Input"),
@@ -1234,5 +1440,5 @@ function helpCommand(app: App) {
         heading("Permission modes"),
         ...PERMISSION_MODES.map((m) => `  ${padEnd(MODE_INFO[m].color(MODE_INFO[m].label), 22)}${theme.muted(truncate(MODE_INFO[m].description, cols - 26))}`),
     );
-    app.print(lines);
+    return lines;
 }
