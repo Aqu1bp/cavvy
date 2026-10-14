@@ -1,5 +1,5 @@
 import type { Message, ChatResponse } from "./types";
-import { runTool, tools } from "./tools";
+import { runTool, tools, needsPermission } from "./tools";
 
 const baseUrl = process.env.BASE_URL;
 const model = process.env.MODEL;
@@ -65,7 +65,12 @@ while (true) {
 
         for (const toolCall of message.tool_calls) {
             console.log(`[tool] ${toolCall.function.name} ${toolCall.function.arguments}`);
-            const result = await runTool(toolCall);
+            let result: string;
+            if (needsPermission(toolCall.function.name) && !confirm("Allow this?")) {
+                result = "The user denied permission for this tool call.";
+            } else {
+                result = await runTool(toolCall);
+            }
             messages.push({ role: "tool", tool_call_id: toolCall.id, content: result });
         }
     }

@@ -1,5 +1,6 @@
-import { readFile, readdir} from "fs/promises";
+import { readFile, readdir, writeFile, mkdir } from "fs/promises";
 import type { ToolCall } from "./types";
+import { dirname } from "path";
 
 export const tools = [
     {
@@ -36,7 +37,25 @@ export const tools = [
             },
         },
     },
+    {
+        type: "function",
+        function: {
+            name: "write_file",
+            description: "Write content to a file. Use this to create or modify files in the user's project. Creates new files if they don't exist, and overwrites existing files.",
+            parameters: {
+                type: "object",
+                properties: { path: { type: "string", description: "Path to the file, relative to the current folder" }, content: { type: "string", description: "Content to write to the file" } },
+                required: ["path", "content"],
+            },
+        },
+    },
 ];
+
+const toolsNeedingPermission = ["write_file", "edit_file", "run_bash"];
+
+export function needsPermission(name: string): boolean {
+    return toolsNeedingPermission.includes(name);
+}
 
 export async function runTool(toolCall: ToolCall): Promise<string> {
     const name = toolCall.function.name;
@@ -71,6 +90,16 @@ export async function runTool(toolCall: ToolCall): Promise<string> {
         }
         catch (error) {
             return `Error listing files: ${error}`;
+        }
+    }
+    else if (name === "write_file") {
+        try {
+            await mkdir(dirname(args.path), { recursive: true });
+            await writeFile(args.path, args.content, "utf-8");
+            return `Wrote ${args.content.length} characters to ${args.path}`;
+        }
+        catch (error) {
+            return `Error writing file: ${error}`;
         }
     }
 
