@@ -1,0 +1,156 @@
+# Harness
+
+A coding agent for your terminal that works with any model provider. It reads, edits and runs code in your project, asks before doing anything risky, and keeps your API keys out of everything it writes.
+
+```bash
+bun install
+bin/harness                 # interactive
+bin/harness -p "explain src/agent/agent.ts"   # one-shot
+```
+
+Put `bin/` on your `PATH` (or run `bun link`) to type `harness` anywhere. `bun run build` produces a standalone binary in `dist/harness`.
+
+## API keys
+
+Run `harness` and type `/login`, then paste a key. The provider is recognized from the key's format (you pick from a list when it's ambiguous), the key is checked with one cheap authenticated request, and then stored:
+
+- in the OS keychain (macOS Keychain, libsecret, Windows Credential Manager) via `Bun.secrets`, or
+- in `~/.harness/credentials.json` with mode 600 when no keychain is available.
+
+Supported: Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
+
+From a shell: `harness auth add [provider]` (hidden prompt, or pipe the key on stdin), `harness auth list`, `harness auth remove <provider>`. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) also work and take precedence.
+
+How keys are kept safe:
+
+- A key is only ever sent to its own provider's API host.
+- Keys are registered with a redactor, so they're masked in tool output, session transcripts, exports, and error messages. Nothing that's written to disk (sessions, history, settings, the model cache) contains a key.
+- Everything that enters the conversation is redacted before any model sees it: your prompts, tool results, memory files, and the model's own replies (so a key can't hop from one provider's transcript to another's when you switch models). The terminal and `-p` output are redacted too, and so is what hooks receive on stdin.
+- Every process the harness starts (shell commands, hooks, MCP servers, git, ripgrep, your editor) gets an environment with all provider keys removed. A settings `env` entry can't put one back; MCP servers' own `env` blocks are passed through as you wrote them.
+- The agent's file tools can't open the credential store at all. Reading `.env` files, `~/.ssh`, `~/.aws` and similar asks first, through the Read tool or a shell command. Shell commands are matched on their text, so this is a guard against fishing, not a sandbox.
+- A `.env` in the project you're working on is never loaded. Only the harness's own `.env` and `~/.harness/.env` are read, and only for known variables.
+- `bin/harness` starts Bun with `--no-env-file` and its own `--config`, because Bun otherwise reads `.env` and `bunfig.toml` from the current directory, and a repository's `bunfig.toml` can preload scripts.
+
+## Models
+
+`/model` shows one combined, searchable list of every model from every provider you have a key for, with context window and price (USD per million input/output tokens; `~` means the price comes from OpenRouter's catalog). Lists are cached for 12 hours; `ctrl+r` in the picker refreshes. Use `←`/`→` in the picker to set reasoning effort. Your choice is remembered.
+
+Shortcuts: `/model gpt-6.1-sol` (unique match), `--model anthropic:claude-opus-5-5`, `harness models` for the same list in the shell (`--json` for scripts).
+
+Model ids are `provider:model`. Wire formats: Anthropic Messages (with prompt caching and adaptive thinking), OpenAI Responses (stateless: output items are replayed each turn), and Chat Completions for everything else.
+
+## Permission modes
+
+`shift+tab` cycles modes; `/mode` picks one; `--permission-mode` sets it at startup.
+
+| Mode | What runs without asking |
+|---|---|
+| **Manual** (default) | Reads, searches and read-only shell commands inside the workspace. Everything else asks. |
+| **Accept edits** | The above, plus file edits inside the workspace. |
+| **Plan** | Read-only research. Edits and state-changing commands are refused until you approve the plan the model presents. |
+| **Auto** | Edits in the workspace, plus any action a reviewer model judges routine and in scope. Risky actions are shown to you with the reason. |
+| **Bypass permissions** | Everything. Only available when started with `--dangerously-skip-permissions` or `--permission-mode bypassPermissions`, or with `permissions.allowBypass` in your user settings. |
+
+Whatever the mode:
+
+- Deny rules always win.
+- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode.
+- Edits to the harness's own configuration, `.mcp.json` or `.git/` always ask, except in bypass mode.
+
+When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.harness/settings.local.json`), or decline and say what to do instead.
+
+Rules (`/permissions` to edit them):
+
+```jsonc
+{
+  "permissions": {
+    "allow": ["Bash(npm test:*)", "Edit(src/**)", "WebFetch(domain:docs.python.org)", "mcp__github"],
+    "ask":   ["Bash(git push:*)"],
+    "deny":  ["Read(./secrets/**)", "Bash(curl:*)"]
+  }
+}
+```
+
+## Using it
+
+- `@path` attaches a file (completion included); `!cmd` runs a shell command yourself; `#note` saves a memory; `/` opens commands.
+- `esc` interrupts; type while it works and your message is delivered at the next step; `ctrl+o` toggles verbose output; `ctrl+t` toggles the todo list; `ctrl+g` opens `$EDITOR`; `↑`/`↓` history.
+- Sessions are saved per project. Resume them with `-c` (latest), `-r` (picker) or `/resume`.
+
+Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rename /export /copy /init /review /memory /config /thinking /mcp /agents /hooks /todos /bashes /add-dir /doctor /exit`.
+
+Custom commands are markdown files in `~/.harness/commands/` or `.harness/commands/`. The body is the prompt; `$ARGUMENTS` and `$1`…`$9` are substituted; `commands/git/pr.md` becomes `/git:pr`.
+
+## Project files
+
+| File | Purpose |
+|---|---|
+| `HARNESS.md` (also reads `AGENTS.md`, `CLAUDE.md`) | Notes loaded into every session. `/init` writes one. |
+| `HARNESS.local.md` | Personal notes, git-ignored. |
+| `~/.harness/HARNESS.md` | Notes for all projects. |
+| `.harness/settings.json`, `.harness/settings.local.json`, `~/.harness/settings.json` | Settings: project, personal, user. |
+| `.mcp.json` | Shared MCP servers (each needs approval in `/mcp` the first time). |
+| `.harness/agents/*.md`, `~/.harness/agents/*.md` | Custom sub-agents (frontmatter: `name`, `description`, `tools`, `model`). |
+
+When a folder contains harness configuration, you're asked once whether you trust it. Until you do, its settings, hooks, MCP servers, commands and memory files (HARNESS.md, AGENTS.md, CLAUDE.md) are ignored, except deny/ask rules, which only add restrictions. Memory files are only read when they are markdown inside the project (a symlink pointing elsewhere is skipped), and the harness's own git calls run with `core.fsmonitor` disabled so an untrusted repo can't run code on startup.
+
+## MCP
+
+```bash
+harness mcp add github -- npx -y @modelcontextprotocol/server-github
+harness mcp add --transport http docs https://example.com/mcp -H "Authorization: Bearer …"
+harness mcp list
+```
+
+Both protocol generations are supported. The client probes with `server/discover` (the 2026-07-28 stateless protocol) and falls back to `initialize` for servers on 2025-11-25 and earlier. stdio and streamable HTTP transports are supported.
+
+## Hooks
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [{ "matcher": "Edit|Write", "command": "./scripts/check-paths.sh" }],
+    "PostToolUse": [{ "matcher": "Edit", "command": "npx prettier --write \"$(jq -r .tool_input.file_path)\"" }],
+    "Stop": [{ "command": "npm test --silent" }]
+  }
+}
+```
+
+Hooks get the event as JSON on stdin. Exit code 2 blocks the action and shows stderr to the model. JSON output can set `permissionDecision` (`allow` / `deny` / `ask`) or add `additionalContext`.
+
+## Status line
+
+```jsonc
+{ "statusLine": { "command": "~/.harness/statusline.sh" } }
+```
+
+The command gets `{session_id, cwd, model: {id, display_name}, permission_mode, cost_usd, context_tokens, context_window}` as JSON on stdin. The first line it prints replaces the right side of the footer. It runs at most every 2 seconds and is killed after 3. Colors are kept; any other escape sequence is stripped.
+
+## Headless
+
+```bash
+harness -p "fix the lint errors" --permission-mode acceptEdits --allowedTools "Bash(npm run lint:*)"
+git diff | harness -p "review this" --output-format json
+harness -p "…" --output-format stream-json     # one JSON event per line
+```
+
+In `-p` mode nothing can prompt you, so anything that would ask is denied. Allow it with `--allowedTools`, rules, or `--permission-mode`. The exit code is 0 on success and 1 on error or `--max-turns`.
+
+## Development
+
+```bash
+bun run typecheck
+bun run test
+```
+
+Layout:
+
+| Directory | Contents |
+|---|---|
+| `src/agent` | Loop, sessions, compaction, hooks, memory, sub-agents |
+| `src/providers` | Wire formats, model catalog, pricing |
+| `src/permissions` | Rules, shell-command analysis, the auto-mode classifier |
+| `src/tools` | Built-in tools |
+| `src/mcp` | MCP client |
+| `src/ui` | Terminal renderer, editor, markdown, dialogs |
+| `src/commands` | Slash commands |

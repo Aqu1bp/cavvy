@@ -1,0 +1,5 @@
+# Harness's own Bun config. bin/harness passes this file with --config, so a
+# bunfig.toml in the directory you run harness from is never read.
+
+[test]
+root = "./test"

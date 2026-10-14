@@ -1,0 +1,17 @@
+#!/bin/sh
+# Launcher. Bun reads .env and bunfig.toml from the *current directory* at
+# startup, and a repository's bunfig.toml can name "preload" scripts. Running
+# with --no-env-file and our own --config means opening harness inside an
+# untrusted repository can't run that repository's code before we start.
+set -e
+self="$0"
+# Resolve symlinks (bun link / global installs put a symlink on PATH).
+while [ -L "$self" ]; do
+    target="$(readlink "$self")"
+    case "$target" in
+        /*) self="$target" ;;
+        *) self="$(dirname "$self")/$target" ;;
+    esac
+done
+root="$(cd "$(dirname "$self")/.." && pwd)"
+exec bun --no-env-file --config="$root/bunfig.toml" "$root/src/index.ts" "$@"

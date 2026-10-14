@@ -1,0 +1,871 @@
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { isolate, FAKE } from "./helpers/isolate";
+
+const iso = isolate();
+const { OpenAICompatProvider, toOpenAIMessages, httpError } = await import("../src/providers/openai-compat");
+const { OpenAIResponsesProvider, toResponsesInput } = await import("../src/providers/openai-responses");
+const { toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
+const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+const { ProviderError } = await import("../src/providers/types");
+import type { ProviderDef } from "../src/providers/registry";
+import type { AssistantMessage, ChatRequest, Message, ModelInfo, StreamEvent } from "../src/providers/types";
+
+type Json = Record<string, any>;
+
+// ---------------------------------------------------------------------------
+// Mock server
+
+interface Seen {
+    path: string;
+    headers: Record<string, string>;
+    body: Json;
+}
+const seen: Seen[] = [];
+let respond: (path: string, body: Json) => Response | Promise<Response> = () => new Response("not configured", { status: 500 });
+
+const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(req) {
+        const headers: Record<string, string> = {};
+        req.headers.forEach((v, k) => (headers[k] = v));
+        const body = (await req.json().catch(() => null)) as Json;
+        const path = new URL(req.url).pathname;
+        seen.push({ path, headers, body });
+        return respond(path, body);
+    },
+});
+const BASE = `http://127.0.0.1:${server.port}/v1`;
+
+afterAll(() => {
+    server.stop(true);
+    iso.cleanup();
+});
+beforeEach(() => {
+    seen.length = 0;
+});
+
+/** SSE body; each item becomes one `data:` event. Strings are sent raw. */
+function sse(items: (Json | string)[], opts: { splitEvery?: number; pauseAfter?: number; pauseMs?: number } = {}): Response {
+    const enc = new TextEncoder();
+    let text = "";
+    const chunks: string[] = [];
+    items.forEach((it, i) => {
+        const ev = typeof it === "string" ? it : `data: ${JSON.stringify(it)}\n\n`;
+        text += ev;
+        if (opts.pauseAfter !== undefined && i === opts.pauseAfter) {
+            chunks.push(text);
+            text = "";
+        }
+    });
+    if (text) chunks.push(text);
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+        async start(c) {
+            for (let ci = 0; ci < chunks.length; ci++) {
+                let piece = chunks[ci]!;
+                // Split mid-event so the parser has to buffer partial lines.
+                const n = opts.splitEvery ?? piece.length;
+                for (let i = 0; i < piece.length; i += n) {
+                    if (cancelled) return;
+                    c.enqueue(enc.encode(piece.slice(i, i + n)));
+                    await Bun.sleep(1);
+                }
+                if (ci === 0 && opts.pauseMs) await Bun.sleep(opts.pauseMs);
+            }
+            if (!cancelled) c.close();
+        },
+        cancel() {
+            cancelled = true;
+        },
+    });
+    return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+}
+
+function builtin(id: string, over: Partial<ProviderDef> = {}): ProviderDef {
+    return { ...BUILTIN_PROVIDERS.find((p) => p.id === id)!, baseUrl: BASE, ...over };
+}
+
+const CUSTOM: ProviderDef = {
+    id: "custom-x",
+    name: "Custom X",
+    kind: "openai",
+    baseUrl: BASE,
+    envKeys: ["CUSTOM_X_API_KEY"],
+    requiresKey: true,
+    maxTokensField: "max_completion_tokens",
+    streamUsage: true,
+    custom: true,
+};
+
+function req(model: ModelInfo, messages: Message[], extra: Partial<ChatRequest> = {}): ChatRequest {
+    return {
+        model,
+        system: "You are a test.",
+        messages,
+        tools: [{ name: "read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }],
+        ...extra,
+    };
+}
+
+function collect(): { events: StreamEvent[]; on: (e: StreamEvent) => void } {
+    const events: StreamEvent[] = [];
+    return { events, on: (e) => events.push(e) };
+}
+
+const PNG = "iVBORw0KGgo=";
+
+// A transcript in the provider-neutral format, with a turn from another provider.
+const HISTORY: Message[] = [
+    { role: "user", content: [{ type: "text", text: "Look at this" }, { type: "image", mediaType: "image/png", data: PNG }], meta: { kind: "prompt" } },
+    {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-test",
+        content: [
+            { type: "thinking", text: "foreign reasoning", signature: "sig" },
+            { type: "text", text: "Reading it." },
+            { type: "tool_call", id: "toolu_01", name: "read_file", input: { path: "a.txt" } },
+            { type: "tool_call", id: "toolu_02", name: "read_file", input: { path: "b.txt" } },
+        ],
+        raw: { anthropic: [{ type: "text", text: "Reading it." }] },
+    },
+    {
+        role: "user",
+        content: [
+            { type: "tool_result", toolCallId: "toolu_01", toolName: "read_file", content: "file body", images: [{ type: "image", mediaType: "image/png", data: PNG }] },
+            { type: "tool_result", toolCallId: "toolu_02", toolName: "read_file", content: "not found", isError: true },
+        ],
+        meta: { kind: "tool_results" },
+    },
+    { role: "user", content: [{ type: "text", text: "Thanks" }] },
+];
+
+// ---------------------------------------------------------------------------
+
+describe("Chat Completions: message conversion", () => {
+    test("converts the neutral transcript", () => {
+        expect(toOpenAIMessages("SYS", HISTORY, CUSTOM)).toEqual([
+            { role: "system", content: "SYS" },
+            { role: "user", content: [{ type: "text", text: "Look at this" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }] },
+            {
+                role: "assistant",
+                content: "Reading it.",
+                tool_calls: [
+                    { id: "toolu_01", type: "function", function: { name: "read_file", arguments: '{"path":"a.txt"}' } },
+                    { id: "toolu_02", type: "function", function: { name: "read_file", arguments: '{"path":"b.txt"}' } },
+                ],
+            },
+            { role: "tool", tool_call_id: "toolu_01", content: "file body\n[1 image(s) attached in the next message]" },
+            { role: "tool", tool_call_id: "toolu_02", content: "Error: not found" },
+            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }] },
+            { role: "user", content: "Thanks" },
+        ]);
+    });
+
+    test("is deterministic", () => {
+        expect(JSON.stringify(toOpenAIMessages("S", HISTORY, CUSTOM))).toBe(JSON.stringify(toOpenAIMessages("S", HISTORY, CUSTOM)));
+    });
+
+    test("replays raw.openai verbatim only for the same provider", () => {
+        const raw = { role: "assistant", content: "exact bytes", tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{ \"a\" : 1 }" } }] };
+        const msg: AssistantMessage = { role: "assistant", provider: "custom-x", model: "m", content: [{ type: "text", text: "different" }], raw: { openai: raw } };
+        expect(toOpenAIMessages("", [msg], CUSTOM)).toEqual([raw]);
+        expect(toOpenAIMessages("", [{ ...msg, provider: "other" }], CUSTOM)).toEqual([{ role: "assistant", content: "different" }]);
+    });
+
+    test("assistant turns with only tool calls send content null; empty turns are skipped", () => {
+        const msgs: Message[] = [
+            { role: "assistant", provider: "x", model: "m", content: [{ type: "tool_call", id: "a", name: "t", input: {} }] },
+            { role: "assistant", provider: "x", model: "m", content: [{ type: "thinking", text: "only thinking" }] },
+        ];
+        const out = toOpenAIMessages("", msgs, CUSTOM);
+        expect(out).toHaveLength(1);
+        expect(out[0]!.content).toBeNull();
+    });
+
+    test("mistral: tool-call ids are mapped to 9 alphanumerics, consistently", () => {
+        const out = toOpenAIMessages("", HISTORY, builtin("mistral"));
+        const callIds = out.find((m) => m.role === "assistant")!.tool_calls.map((c: Json) => c.id);
+        const resultIds = out.filter((m) => m.role === "tool").map((m) => m.tool_call_id);
+        for (const id of callIds) expect(id).toMatch(/^[A-Za-z0-9]{9}$/);
+        expect(resultIds).toEqual(callIds);
+        expect(callIds[0]).not.toBe(callIds[1]);
+    });
+
+    test("gemini: foreign tool calls get the documented placeholder signature on the first call", () => {
+        const out = toOpenAIMessages("", HISTORY, builtin("gemini"));
+        const calls = out.find((m) => m.role === "assistant")!.tool_calls;
+        expect(calls[0].extra_content).toEqual({ google: { thought_signature: "skip_thought_signature_validator" } });
+        expect(calls[1].extra_content).toBeUndefined();
+    });
+
+    test("deepseek: reasoning_content is present on every assistant turn", () => {
+        const noThinking: AssistantMessage = { role: "assistant", provider: "openai", model: "gpt", content: [{ type: "text", text: "plain" }] };
+        const out = toOpenAIMessages("", [...HISTORY, noThinking], builtin("deepseek"));
+        const assistants = out.filter((m) => m.role === "assistant");
+        expect(assistants.map((a) => a.reasoning_content)).toEqual(["foreign reasoning", ""]);
+        // Other providers never get the field.
+        expect(toOpenAIMessages("", HISTORY, CUSTOM).find((m) => m.role === "assistant")).not.toHaveProperty("reasoning_content");
+    });
+});
+
+describe("Chat Completions: streaming", () => {
+    const model: ModelInfo = { provider: "custom-x", id: "test-model", maxOutput: 8000, supportsTools: true };
+
+    test("text deltas, a chunked tool call, finish_reason and usage", async () => {
+        respond = () =>
+            sse(
+                [
+                    { id: "c1", model: "test-model-0613", choices: [{ index: 0, delta: { role: "assistant", content: "Hel" } }] },
+                    { id: "c1", choices: [{ index: 0, delta: { content: "lo" } }] },
+                    { id: "c1", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_abc", type: "function", function: { name: "read_file", arguments: "" } }] } }] },
+                    { id: "c1", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"pa' } }] } }] },
+                    { id: "c1", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'th": "a' } }] } }] },
+                    { id: "c1", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '.txt"}' } }] } }] },
+                    // A second call without an index (some compat layers omit it).
+                    { id: "c1", choices: [{ index: 0, delta: { tool_calls: [{ id: "call_def", type: "function", function: { name: "read_file", arguments: '{"path":"b.txt"}' } }] } }] },
+                    { id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+                    { id: "c1", choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 30 }, completion_tokens_details: { reasoning_tokens: 5 } } },
+                    "data: [DONE]\n\n",
+                ],
+                { splitEvery: 37 },
+            );
+        const { events, on } = collect();
+        const p = new OpenAICompatProvider(CUSTOM, FAKE.openai);
+        const msg = await p.stream(req(model, HISTORY, { maxTokens: 16_000 }), on);
+
+        expect(msg.provider).toBe("custom-x");
+        expect(msg.model).toBe("test-model-0613");
+        expect(msg.stopReason).toBe("tool_use");
+        expect(msg.content).toEqual([
+            { type: "text", text: "Hello" },
+            { type: "tool_call", id: "call_abc", name: "read_file", input: { path: "a.txt" } },
+            { type: "tool_call", id: "call_def", name: "read_file", input: { path: "b.txt" } },
+        ]);
+        expect(msg.usage).toEqual({ inputTokens: 70, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 0, reasoningTokens: 5, cost: undefined });
+        expect(msg.raw?.openai).toEqual({
+            role: "assistant",
+            content: "Hello",
+            tool_calls: [
+                { id: "call_abc", type: "function", function: { name: "read_file", arguments: '{"path": "a.txt"}' } },
+                { id: "call_def", type: "function", function: { name: "read_file", arguments: '{"path":"b.txt"}' } },
+            ],
+        });
+
+        expect(events).toEqual([
+            { type: "text", text: "Hel" },
+            { type: "text", text: "lo" },
+            { type: "tool_call_start", id: "call_abc", name: "read_file" },
+            { type: "tool_call_delta", id: "call_abc", partial: '{"pa' },
+            { type: "tool_call_delta", id: "call_abc", partial: 'th": "a' },
+            { type: "tool_call_delta", id: "call_abc", partial: '.txt"}' },
+            { type: "tool_call_start", id: "call_def", name: "read_file" },
+            { type: "tool_call_delta", id: "call_def", partial: '{"path":"b.txt"}' },
+        ]);
+    });
+
+    test("request body: messages, tools, stream_options, max tokens field and auth", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] }, "data: [DONE]\n\n"]);
+        await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, HISTORY, { maxTokens: 16_000 }), () => {});
+        const r = seen[0]!;
+        expect(r.path).toBe("/v1/chat/completions");
+        expect(r.headers.authorization).toBe(`Bearer ${FAKE.openai}`);
+        expect(r.headers["content-type"]).toBe("application/json");
+        expect(r.body.model).toBe("test-model");
+        expect(r.body.stream).toBe(true);
+        expect(r.body.stream_options).toEqual({ include_usage: true });
+        // min(request maxTokens, model maxOutput), in the provider's field
+        expect(r.body.max_completion_tokens).toBe(8000);
+        expect(r.body.max_tokens).toBeUndefined();
+        expect(r.body.messages).toEqual(toOpenAIMessages("You are a test.", HISTORY, CUSTOM));
+        expect(r.body.tools).toEqual([
+            { type: "function", function: { name: "read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+        ]);
+        expect(r.body.reasoning_effort).toBeUndefined();
+    });
+
+    test("no tools -> no tools field; unknown maxOutput -> no limit field", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const msg = await new OpenAICompatProvider(builtin("groq"), "gsk_" + "x".repeat(40)).stream(
+            { model: { provider: "groq", id: "llama" }, system: "", messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }], tools: [] },
+            () => {},
+        );
+        expect(msg.content).toEqual([{ type: "text", text: "ok" }]);
+        expect(msg.stopReason).toBe("end_turn");
+        const b = seen[0]!.body;
+        expect(b.tools).toBeUndefined();
+        expect(b.max_tokens).toBeUndefined();
+        expect(b.messages).toEqual([{ role: "user", content: "hi" }]);
+    });
+
+    test("openrouter: no stream_options, reasoning object, attribution headers, reported cost", async () => {
+        respond = () =>
+            sse([
+                { choices: [{ index: 0, delta: { reasoning: "thinking...", reasoning_details: [{ type: "reasoning.text", index: 0, text: "thinking..." }] } }] },
+                { choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] },
+                { choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.0012 } },
+            ]);
+        const def = builtin("openrouter");
+        const m: ModelInfo = { provider: "openrouter", id: "vendor/model", supportsReasoning: true, maxOutput: 4000 };
+        const msg = await new OpenAICompatProvider(def, FAKE.openrouter).stream(req(m, [{ role: "user", content: [{ type: "text", text: "q" }] }], { effort: "high" }), () => {});
+        const r = seen[0]!;
+        expect(r.body.stream_options).toBeUndefined();
+        expect(r.body.reasoning).toEqual({ effort: "high" });
+        expect(r.body.reasoning_effort).toBeUndefined();
+        expect(r.body.max_tokens).toBe(4000);
+        expect(r.headers["http-referer"]).toBe("https://github.com/harness-cli");
+        expect(r.headers["x-title"]).toBe("Harness CLI");
+        expect(msg.usage?.cost).toBe(0.0012);
+        expect(msg.content[0]).toEqual({ type: "thinking", text: "thinking..." });
+        expect(msg.raw?.openai?.reasoning_details).toEqual([{ type: "reasoning.text", index: 0, text: "thinking..." }]);
+    });
+
+    test("deepseek: reasoning_content streamed, stored, and sent back on the next turn", async () => {
+        const def = builtin("deepseek");
+        const m: ModelInfo = { provider: "deepseek", id: "deepseek-reasoner", maxOutput: 32_000, supportsReasoning: true };
+        respond = () =>
+            sse([
+                { model: "deepseek-reasoner", choices: [{ index: 0, delta: { role: "assistant", content: null, reasoning_content: "Let me " } }] },
+                { choices: [{ index: 0, delta: { content: null, reasoning_content: "think." } }] },
+                { choices: [{ index: 0, delta: { content: "Answer." } }] },
+                { choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 50, completion_tokens: 9, prompt_cache_hit_tokens: 40, prompt_cache_miss_tokens: 10 } },
+                "data: [DONE]\n\n",
+            ]);
+        const { events, on } = collect();
+        const first: Message[] = [{ role: "user", content: [{ type: "text", text: "q1" }] }];
+        const a1 = await new OpenAICompatProvider(def, FAKE.deepseek).stream(req(m, first), on);
+        expect(a1.content).toEqual([
+            { type: "thinking", text: "Let me think." },
+            { type: "text", text: "Answer." },
+        ]);
+        expect(a1.raw?.openai).toEqual({ role: "assistant", content: "Answer.", reasoning_content: "Let me think." });
+        expect(a1.usage).toMatchObject({ inputTokens: 10, outputTokens: 9, cacheReadTokens: 40 });
+        expect(events.filter((e) => e.type === "thinking")).toEqual([
+            { type: "thinking", text: "Let me " },
+            { type: "thinking", text: "think." },
+        ]);
+
+        seen.length = 0;
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const foreign: AssistantMessage = { role: "assistant", provider: "anthropic", model: "c", content: [{ type: "thinking", text: "claude thoughts" }, { type: "text", text: "hi" }] };
+        await new OpenAICompatProvider(def, FAKE.deepseek).stream(req(m, [...first, a1, { role: "user", content: [{ type: "text", text: "q2" }] }, foreign, { role: "user", content: [{ type: "text", text: "q3" }] }]), () => {});
+        const assistants = seen[0]!.body.messages.filter((x: Json) => x.role === "assistant");
+        expect(assistants).toEqual([
+            { role: "assistant", content: "Answer.", reasoning_content: "Let me think." },
+            { role: "assistant", content: "hi", reasoning_content: "claude thoughts" },
+        ]);
+    });
+
+    test("malformed tool arguments are kept as __invalid_json; finish 'stop' with calls is tool_use", async () => {
+        respond = () =>
+            sse([
+                { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "c9", function: { name: "read_file", arguments: '{"path": ' } }] } }] },
+                { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+            ]);
+        const msg = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {});
+        expect(msg.content).toEqual([{ type: "tool_call", id: "c9", name: "read_file", input: { __invalid_json: '{"path": ' } }]);
+        expect(msg.stopReason).toBe("tool_use");
+    });
+
+    test("finish_reason length maps to max_tokens", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "cut" }, finish_reason: "length" }] }]);
+        const msg = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {});
+        expect(msg.stopReason).toBe("max_tokens");
+    });
+
+    test("an error chunk mid-stream becomes a ProviderError", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "par" } }] }, { error: { code: 429, message: "Rate limit exceeded" } }]);
+        const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.message).toBe("Custom X: Rate limit exceeded");
+        expect(err.status).toBe(429);
+        expect(err.retryable).toBe(true);
+    });
+
+    test("aborting mid-stream rejects with 'aborted' instead of returning partial text", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "partial " } }] }, { choices: [{ index: 0, delta: { content: "rest" }, finish_reason: "stop" }] }], { pauseAfter: 0, pauseMs: 3000 });
+        const ac = new AbortController();
+        const events: StreamEvent[] = [];
+        const t0 = Date.now();
+        const result = new OpenAICompatProvider(CUSTOM, FAKE.openai)
+            .stream(req(model, [], { signal: ac.signal }), (e) => {
+                events.push(e);
+                if (e.type === "text") ac.abort();
+            })
+            .then(
+                (m) => ({ resolved: m }),
+                (e) => ({ rejected: e }),
+            );
+        const r = (await result) as { resolved?: AssistantMessage; rejected?: InstanceType<typeof ProviderError> };
+        expect(r.resolved).toBeUndefined();
+        expect(r.rejected).toBeInstanceOf(ProviderError);
+        expect(r.rejected!.message).toBe("aborted");
+        expect(r.rejected!.retryable).toBe(false);
+        expect(events).toEqual([{ type: "text", text: "partial " }]);
+        expect(Date.now() - t0).toBeLessThan(2000);
+    });
+
+    test("aborting before the response arrives rejects with 'aborted'", async () => {
+        respond = async () => {
+            await Bun.sleep(1000);
+            return sse([{ choices: [{ index: 0, delta: { content: "late" }, finish_reason: "stop" }] }]);
+        };
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 30);
+        const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, [], { signal: ac.signal }), () => {}).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.message).toBe("aborted");
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("Responses API", () => {
+    const def = builtin("openai");
+    const model: ModelInfo = { provider: "openai", id: "gpt-6-sol", maxOutput: 128_000, supportsReasoning: true, effortLevels: ["low", "medium", "high"] };
+
+    const reasoningItem = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Thinking hard" }], encrypted_content: "ENCRYPTED==" };
+    const messageItem = { type: "message", id: "msg_1", role: "assistant", status: "completed", phase: "commentary", content: [{ type: "output_text", text: "Hi there", annotations: [] }] };
+    const callItem = { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" };
+
+    function stream1() {
+        return sse(
+            [
+                { type: "response.created", response: { id: "resp_1", status: "in_progress" } },
+                { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } },
+                { type: "response.reasoning_summary_part.added", item_id: "rs_1", output_index: 0, summary_index: 0 },
+                { type: "response.reasoning_summary_text.delta", item_id: "rs_1", output_index: 0, delta: "Thinking hard" },
+                { type: "response.output_item.done", output_index: 0, item: reasoningItem },
+                { type: "response.output_item.added", output_index: 1, item: { type: "message", id: "msg_1", role: "assistant", content: [] } },
+                { type: "response.output_text.delta", item_id: "msg_1", output_index: 1, content_index: 0, delta: "Hi " },
+                { type: "response.output_text.delta", item_id: "msg_1", output_index: 1, content_index: 0, delta: "there" },
+                { type: "response.output_item.done", output_index: 1, item: messageItem },
+                { type: "response.output_item.added", output_index: 2, item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: "" } },
+                { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 2, delta: '{"path":' },
+                { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 2, delta: '"a.txt"}' },
+                { type: "response.output_item.done", output_index: 2, item: callItem },
+                {
+                    type: "response.completed",
+                    response: {
+                        id: "resp_1",
+                        status: "completed",
+                        model: "gpt-6-sol",
+                        output: [reasoningItem, messageItem, callItem],
+                        usage: { input_tokens: 200, input_tokens_details: { cached_tokens: 50 }, output_tokens: 40, output_tokens_details: { reasoning_tokens: 10 } },
+                    },
+                },
+            ],
+            { splitEvery: 53 },
+        );
+    }
+
+    let first: AssistantMessage;
+    const prompt: Message = { role: "user", content: [{ type: "text", text: "list files" }, { type: "image", mediaType: "image/png", data: PNG }] };
+
+    test("streams reasoning, text and a function call; maps usage", async () => {
+        respond = () => stream1();
+        const { events, on } = collect();
+        first = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req(model, [prompt], { effort: "xhigh", showThinking: true, cacheKey: "sess-1", maxTokens: 64_000 }), on);
+        expect(first.content).toEqual([
+            { type: "thinking", text: "Thinking hard" },
+            { type: "text", text: "Hi there" },
+            { type: "tool_call", id: "call_1", name: "read_file", input: { path: "a.txt" } },
+        ]);
+        expect(first.stopReason).toBe("tool_use");
+        expect(first.model).toBe("gpt-6-sol");
+        expect(first.provider).toBe("openai");
+        expect(first.usage).toEqual({ inputTokens: 150, outputTokens: 40, cacheReadTokens: 50, cacheWriteTokens: 0, reasoningTokens: 10 });
+        expect(first.raw?.responses).toEqual([reasoningItem, messageItem, callItem]);
+        expect(events).toEqual([
+            { type: "thinking", text: "Thinking hard" },
+            { type: "text", text: "Hi " },
+            { type: "text", text: "there" },
+            { type: "tool_call_start", id: "call_1", name: "read_file" },
+            { type: "tool_call_delta", id: "call_1", partial: '{"path":' },
+            { type: "tool_call_delta", id: "call_1", partial: '"a.txt"}' },
+        ]);
+
+        const b = seen[0]!.body;
+        expect(seen[0]!.path).toBe("/v1/responses");
+        expect(seen[0]!.headers.authorization).toBe(`Bearer ${FAKE.openai}`);
+        expect(b.store).toBe(false);
+        expect(b.stream).toBe(true);
+        expect(b.instructions).toBe("You are a test.");
+        expect(b.input).toEqual([
+            { type: "message", role: "user", content: [{ type: "input_text", text: "list files" }, { type: "input_image", image_url: `data:image/png;base64,${PNG}`, detail: "auto" }] },
+        ]);
+        expect(b.tools).toEqual([{ type: "function", name: "read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] }, strict: false }]);
+        expect(b.tool_choice).toBe("auto");
+        expect(b.parallel_tool_calls).toBe(true);
+        expect(b.max_output_tokens).toBe(64_000);
+        // xhigh isn't offered by this model: nearest level is used
+        expect(b.reasoning).toEqual({ effort: "high", summary: "auto" });
+        expect(b.prompt_cache_key).toBe("sess-1");
+    });
+
+    test("next request replays output items verbatim (store:false) followed by tool output", async () => {
+        respond = () => sse([{ type: "response.completed", response: { status: "completed", model: "gpt-6-sol", output: [] } }]);
+        const results: Message = { role: "user", content: [{ type: "tool_result", toolCallId: "call_1", toolName: "read_file", content: "contents" }], meta: { kind: "tool_results" } };
+        const msg = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req(model, [prompt, first, results]), () => {});
+        expect(msg.content).toEqual([]);
+        expect(msg.stopReason).toBe("end_turn");
+        const input = seen[0]!.body.input;
+        expect(input.slice(1)).toEqual([reasoningItem, messageItem, callItem, { type: "function_call_output", call_id: "call_1", output: "contents" }]);
+        expect(seen[0]!.body.store).toBe(false);
+    });
+
+    test("reasoning items are dropped when the model changes", () => {
+        const items = toResponsesInput([prompt, first], def, "gpt-6-luna");
+        expect(items.slice(1)).toEqual([messageItem, callItem]);
+        expect(toResponsesInput([prompt, first], def, "gpt-6-sol").slice(1)).toEqual([reasoningItem, messageItem, callItem]);
+    });
+
+    test("turns from other providers become message / function_call items", () => {
+        const items = toResponsesInput(HISTORY, def, "gpt-6-sol");
+        expect(items).toEqual([
+            { type: "message", role: "user", content: [{ type: "input_text", text: "Look at this" }, { type: "input_image", image_url: `data:image/png;base64,${PNG}`, detail: "auto" }] },
+            { type: "message", role: "assistant", content: "Reading it." },
+            { type: "function_call", call_id: "toolu_01", name: "read_file", arguments: '{"path":"a.txt"}' },
+            { type: "function_call", call_id: "toolu_02", name: "read_file", arguments: '{"path":"b.txt"}' },
+            {
+                type: "function_call_output",
+                call_id: "toolu_01",
+                output: [
+                    { type: "input_text", text: "file body" },
+                    { type: "input_image", image_url: `data:image/png;base64,${PNG}`, detail: "auto" },
+                ],
+            },
+            { type: "function_call_output", call_id: "toolu_02", output: "Error: not found" },
+            { type: "message", role: "user", content: [{ type: "input_text", text: "Thanks" }] },
+        ]);
+    });
+
+    test("call ids are sanitized identically for calls and outputs", () => {
+        const msgs: Message[] = [
+            { role: "assistant", provider: "x", model: "m", content: [{ type: "tool_call", id: "weird:id/1", name: "t", input: {} }] },
+            { role: "user", content: [{ type: "tool_result", toolCallId: "weird:id/1", toolName: "t", content: "" }] },
+        ];
+        const items = toResponsesInput(msgs, def, "gpt-6-sol");
+        expect(items[0]!.call_id).toBe("weird_id_1");
+        expect(items[1]).toEqual({ type: "function_call_output", call_id: "weird_id_1", output: "(no output)" });
+    });
+
+    test("non-reasoning model ids get no reasoning block", async () => {
+        respond = () => sse([{ type: "response.completed", response: { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "x" }] }] } }]);
+        const msg = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req({ provider: "openai", id: "gpt-4.1" }, [prompt], { effort: "high" }), () => {});
+        expect(seen[0]!.body.reasoning).toBeUndefined();
+        // Falls back to response.output when no output_item.done events arrived
+        expect(msg.content).toEqual([{ type: "text", text: "x" }]);
+        expect(msg.model).toBe("gpt-4.1");
+    });
+
+    test("incomplete response: max_output_tokens maps to max_tokens", async () => {
+        respond = () => sse([{ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [] } }]);
+        const msg = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req(model, [prompt]), () => {});
+        expect(msg.stopReason).toBe("max_tokens");
+    });
+
+    test("refusal content maps to stopReason refusal", async () => {
+        respond = () => sse([{ type: "response.completed", response: { status: "completed", output: [{ type: "message", content: [{ type: "refusal", refusal: "I can't help with that." }] }] } }]);
+        const msg = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req(model, [prompt]), () => {});
+        expect(msg.stopReason).toBe("refusal");
+        expect(msg.content).toEqual([{ type: "text", text: "I can't help with that." }]);
+    });
+
+    test("response.failed and error events become ProviderErrors", async () => {
+        respond = () => sse([{ type: "response.failed", response: { error: { code: "server_error", message: "Something broke" } } }]);
+        const e1 = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req(model, [prompt]), () => {}).catch((e) => e);
+        expect(e1).toBeInstanceOf(ProviderError);
+        expect(e1.message).toBe("OpenAI: Something broke (server_error)");
+        expect(e1.retryable).toBe(true);
+
+        respond = () => sse([{ type: "error", code: "invalid_prompt", message: "Bad prompt" }]);
+        const e2 = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req(model, [prompt]), () => {}).catch((e) => e);
+        expect(e2.message).toBe("OpenAI: Bad prompt (invalid_prompt)");
+        expect(e2.retryable).toBe(false);
+    });
+
+    test("a stream that ends before response.completed is a retryable error", async () => {
+        respond = () => sse([{ type: "response.output_text.delta", delta: "half" }]);
+        const err = await new OpenAIResponsesProvider(def, FAKE.openai).stream(req(model, [prompt]), () => {}).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.retryable).toBe(true);
+        expect(err.message).toContain("stream ended before the response completed");
+    });
+
+    test("aborting mid-stream rejects with 'aborted' instead of returning partial output", async () => {
+        respond = () =>
+            sse(
+                [
+                    { type: "response.output_text.delta", output_index: 0, delta: "partial" },
+                    { type: "response.output_item.done", output_index: 0, item: { type: "message", content: [{ type: "output_text", text: "partial rest" }] } },
+                    { type: "response.completed", response: { status: "completed", output: [] } },
+                ],
+                { pauseAfter: 0, pauseMs: 3000 },
+            );
+        const ac = new AbortController();
+        const t0 = Date.now();
+        const r = await new OpenAIResponsesProvider(def, FAKE.openai)
+            .stream(req(model, [prompt], { signal: ac.signal }), (e) => {
+                if (e.type === "text") ac.abort();
+            })
+            .then(
+                (m) => ({ resolved: m, rejected: undefined }),
+                (e) => ({ resolved: undefined, rejected: e }),
+            );
+        expect(r.resolved).toBeUndefined();
+        expect(r.rejected).toBeInstanceOf(ProviderError);
+        expect(r.rejected.message).toBe("aborted");
+        expect(Date.now() - t0).toBeLessThan(2000);
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("HTTP errors", () => {
+    const model: ModelInfo = { provider: "custom-x", id: "m", maxOutput: 1000 };
+    const run = () => new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+
+    test("401 is not retryable and points at /login", async () => {
+        respond = () => Response.json({ error: { message: "Invalid API key", type: "invalid_request_error" } }, { status: 401 });
+        const err = await run();
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.status).toBe(401);
+        expect(err.retryable).toBe(false);
+        expect(err.retryAfterMs).toBeUndefined();
+        expect(err.message).toBe("Custom X: Invalid API key (401). Check the API key with /login.");
+        expect(err.body).toContain("Invalid API key");
+    });
+
+    test("429 is retryable and parses retry-after seconds", async () => {
+        respond = () => Response.json({ error: { message: "slow down" } }, { status: 429, headers: { "retry-after": "3" } });
+        const err = await run();
+        expect(err.status).toBe(429);
+        expect(err.retryable).toBe(true);
+        expect(err.retryAfterMs).toBe(3000);
+    });
+
+    test("503 with an HTTP-date retry-after", async () => {
+        const when = new Date(Date.now() + 6000).toUTCString();
+        respond = () => new Response("upstream unavailable", { status: 503, headers: { "retry-after": when } });
+        const err = await run();
+        expect(err.status).toBe(503);
+        expect(err.retryable).toBe(true);
+        expect(err.retryAfterMs).toBeGreaterThan(3000);
+        expect(err.retryAfterMs).toBeLessThanOrEqual(6000);
+        expect(err.message).toContain("upstream unavailable");
+    });
+
+    test("500 without retry-after is retryable with no delay hint", async () => {
+        respond = () => new Response("", { status: 500 });
+        const err = await run();
+        expect(err.retryable).toBe(true);
+        expect(err.retryAfterMs).toBeUndefined();
+    });
+
+    test("400 and 402 are not retryable", async () => {
+        respond = () => Response.json({ error: { message: "bad field" } }, { status: 400 });
+        expect((await run()).retryable).toBe(false);
+        respond = () => Response.json({ error: { message: "no money" } }, { status: 402 });
+        const e = await run();
+        expect(e.retryable).toBe(false);
+        expect(e.message).toContain("out of credits");
+    });
+
+    test("Responses provider uses the same mapping", async () => {
+        respond = () => Response.json({ error: { message: "Rate limited" } }, { status: 429, headers: { "retry-after": "1" } });
+        const err = await new OpenAIResponsesProvider(builtin("openai"), FAKE.openai).stream(req({ provider: "openai", id: "gpt-6-sol" }, []), () => {}).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.status).toBe(429);
+        expect(err.retryable).toBe(true);
+        expect(err.retryAfterMs).toBe(1000);
+        expect(err.message).toBe("OpenAI: Rate limited (429)");
+    });
+
+    test("connection refused is a retryable ProviderError", async () => {
+        const tmp = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("x") });
+        const port = tmp.port;
+        tmp.stop(true);
+        const p = new OpenAICompatProvider({ ...CUSTOM, baseUrl: `http://127.0.0.1:${port}/v1` }, FAKE.openai);
+        const err = await p.stream(req(model, []), () => {}).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.retryable).toBe(true);
+        expect(err.status).toBeUndefined();
+        expect(err.message).toMatch(/^Connection error to Custom X/);
+    });
+
+    test("httpError parses nested and top-level messages", () => {
+        expect(httpError(404, "Not Found", JSON.stringify({ message: "no such model" }), null, "P").message).toBe("P: no such model (404)");
+        expect(httpError(422, "Unprocessable", JSON.stringify({ detail: [{ msg: "x" }] }), null, "P").message).toBe('P: [{"msg":"x"}] (422)');
+        expect(httpError(400, "Bad Request", JSON.stringify([{ error: { message: "gemini style" } }]), null, "P").message).toBe("P: gemini style (400)");
+        expect(httpError(403, "Forbidden", "", null, "P").message).toBe("P API error 403 Forbidden. Check the API key with /login.");
+        expect(httpError(529, "Overloaded", "", "0", "P").retryAfterMs).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("Anthropic message conversion", () => {
+    test("consecutive user messages are merged so roles alternate", () => {
+        const out = toAnthropicMessages([
+            { role: "user", content: [{ type: "text", text: "one" }] },
+            { role: "user", content: [{ type: "text", text: "two" }], meta: { kind: "interrupt" } },
+            { role: "assistant", provider: "anthropic", model: "c", content: [{ type: "text", text: "reply" }] },
+            { role: "user", content: [{ type: "text", text: "" }] }, // empty: skipped
+            { role: "user", content: [{ type: "text", text: "three" }] },
+        ]);
+        expect(out).toEqual([
+            {
+                role: "user",
+                content: [
+                    { type: "text", text: "one" },
+                    { type: "text", text: "two" },
+                ],
+            },
+            { role: "assistant", content: [{ type: "text", text: "reply" }] },
+            { role: "user", content: [{ type: "text", text: "three" }] },
+        ]);
+    });
+
+    test("tool results become tool_result blocks; images become base64 image blocks", () => {
+        const out = toAnthropicMessages(HISTORY);
+        expect(out[0]).toEqual({
+            role: "user",
+            content: [
+                { type: "text", text: "Look at this" },
+                { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+            ],
+        });
+        // raw.anthropic is replayed verbatim
+        expect(out[1]).toEqual({ role: "assistant", content: [{ type: "text", text: "Reading it." }] });
+        // tool results and the following plain user turn are merged into one user message
+        expect(out[2]).toEqual({
+            role: "user",
+            content: [
+                {
+                    type: "tool_result",
+                    tool_use_id: "toolu_01",
+                    content: [
+                        { type: "text", text: "file body" },
+                        { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+                    ],
+                },
+                { type: "tool_result", tool_use_id: "toolu_02", content: "not found", is_error: true },
+                { type: "text", text: "Thanks" },
+            ],
+        });
+        expect(out).toHaveLength(3);
+    });
+
+    test("assistant turns without raw blocks: text + tool_use, foreign thinking dropped, ids sanitized", () => {
+        const out = toAnthropicMessages([
+            {
+                role: "assistant",
+                provider: "openai",
+                model: "gpt",
+                content: [
+                    { type: "thinking", text: "not replayable" },
+                    { type: "text", text: "Let me check." },
+                    { type: "tool_call", id: "call:1/x", name: "bash", input: { command: "ls" } },
+                ],
+            },
+            { role: "user", content: [{ type: "tool_result", toolCallId: "call:1/x", toolName: "bash", content: "" }] },
+        ]);
+        expect(out).toEqual([
+            {
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me check." },
+                    { type: "tool_use", id: "call_1_x", name: "bash", input: { command: "ls" } },
+                ],
+            },
+            { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1_x", content: "(no output)" }] },
+        ]);
+    });
+
+    test("stripThinking removes thinking blocks from raw replay", () => {
+        const raw = [
+            { type: "thinking", thinking: "t", signature: "s" },
+            { type: "redacted_thinking", data: "d" },
+            { type: "text", text: "answer" },
+        ];
+        const msg: AssistantMessage = { role: "assistant", provider: "anthropic", model: "c", content: [{ type: "text", text: "answer" }], raw: { anthropic: raw } };
+        expect(toAnthropicMessages([msg])[0]!.content as unknown).toEqual(raw);
+        expect(toAnthropicMessages([msg], true)[0]!.content).toEqual([{ type: "text", text: "answer" }]);
+        // The stored transcript is not modified.
+        expect(msg.raw!.anthropic).toHaveLength(3);
+    });
+
+    test("conversion is deterministic and does not mutate the input", () => {
+        const before = JSON.stringify(HISTORY);
+        const a = JSON.stringify(toAnthropicMessages(HISTORY));
+        const b = JSON.stringify(toAnthropicMessages(HISTORY));
+        expect(a).toBe(b);
+        expect(JSON.stringify(HISTORY)).toBe(before);
+    });
+
+    test("sanitizeToolId", () => {
+        expect(sanitizeToolId("toolu_01ABC-x")).toBe("toolu_01ABC-x");
+        expect(sanitizeToolId("a.b:c")).toBe("a_b_c");
+        expect(sanitizeToolId("")).toBe("tool");
+        expect(sanitizeToolId("x".repeat(100))).toHaveLength(64);
+    });
+});
+
+describe("stop reasons and cut-off streams", () => {
+    const rdef = builtin("openai");
+    const rmodel: ModelInfo = { provider: "openai", id: "gpt-6-sol", maxOutput: 128_000 };
+    const hi: Message = { role: "user", content: [{ type: "text", text: "hi" }] };
+    const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" };
+    const responses = () => new OpenAIResponsesProvider(rdef, FAKE.openai).stream(req(rmodel, [hi]), () => {});
+
+    test("Responses: a cut-off response is max_tokens even when it holds a complete function call", async () => {
+        respond = () => sse([{ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [call] } }]);
+        expect((await responses()).stopReason).toBe("max_tokens");
+    });
+
+    test("Responses: incomplete for any other reason never yields tool_use", async () => {
+        respond = () => sse([{ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "something_new" }, output: [call] } }]);
+        expect((await responses()).stopReason).toBe("max_tokens");
+        respond = () => sse([{ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "something_new" }, output: [] } }]);
+        expect((await responses()).stopReason).toBe("other");
+    });
+
+    test("Responses: a refusal outranks a function call", async () => {
+        respond = () => sse([{ type: "response.completed", response: { status: "completed", output: [{ type: "message", content: [{ type: "refusal", refusal: "No." }] }, call] } }]);
+        expect((await responses()).stopReason).toBe("refusal");
+        respond = () => sse([{ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "content_filter" }, output: [call] } }]);
+        expect((await responses()).stopReason).toBe("refusal");
+    });
+
+    test("Responses: a completed function call is still tool_use", async () => {
+        respond = () => sse([{ type: "response.completed", response: { status: "completed", output: [call] } }]);
+        expect((await responses()).stopReason).toBe("tool_use");
+    });
+
+    const cmodel: ModelInfo = { provider: "custom-x", id: "m1" };
+
+    test("Chat Completions: a body that ends with neither [DONE] nor finish_reason is a retryable error", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "half an ans" } }] }]);
+        const err = await new OpenAICompatProvider(CUSTOM, "k-123456789").stream(req(cmodel, [hi]), () => {}).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.retryable).toBe(true);
+        expect(err.message).toContain("stream ended before the response completed");
+    });
+
+    test("Chat Completions: [DONE] alone (no finish_reason) still completes", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "ok" } }] }, "data: [DONE]\n\n"]);
+        const msg = await new OpenAICompatProvider(CUSTOM, "k-123456789").stream(req(cmodel, [hi]), () => {});
+        expect(msg.content).toEqual([{ type: "text", text: "ok" }]);
+    });
+
+    test("Chat Completions: an explicit maxTokens is sent even when the model's limit is unknown", async () => {
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        await new OpenAICompatProvider(CUSTOM, "k-123456789").stream(req(cmodel, [hi], { maxTokens: 2048 }), () => {});
+        expect(seen[0]!.body.max_completion_tokens).toBe(2048);
+        seen.length = 0;
+        await new OpenAICompatProvider(CUSTOM, "k-123456789").stream(req(cmodel, [hi]), () => {});
+        expect(seen[0]!.body.max_completion_tokens).toBeUndefined();
+    });
+});

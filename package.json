@@ -1,14 +1,23 @@
 {
   "name": "my-own-harness",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "private": true,
+  "bin": {
+    "harness": "bin/harness"
+  },
   "scripts": {
-    "dev": "bun run src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "start": "bun --no-env-file --config=bunfig.toml src/index.ts",
+    "dev": "bun --no-env-file --config=bunfig.toml src/index.ts",
+    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/harness src/index.ts",
+    "test": "bun --no-env-file test",
+    "typecheck": "tsc --noEmit -p ."
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.133.0"
   }
 }
