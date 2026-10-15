@@ -16,11 +16,13 @@ import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PermissionMode } from "../permissions/modes";
+import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
+import { canonical } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type PermissionAnswer } from "./types";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 class Rpc {
@@ -197,6 +199,18 @@ function codexPolicyKey(m: PermissionMode): string {
 const PLAN_NOTE =
     "<system-reminder>\nPlan mode is active: the user wants a plan before anything changes. Research with read-only commands, don't modify files, and reply with your plan. Changes will be refused until the user approves it.\n</system-reminder>";
 
+// Codex tells its model the sandbox "only permits reading files", and it can take that as
+// the end of it. An approved change or command runs outside the sandbox (seen with 0.162).
+const MANUAL_NOTE =
+    "<system-reminder>\nThe sandbox is read-only, but you can still change files and run other commands: each one goes to the user for approval first and runs once they approve. Make the changes the task needs; don't stop because the sandbox is read-only.\n</system-reminder>";
+
+/** What a turn starts with for the mode: plan mode's rules, or (manual mode, an agent that may change things) that changes are asked about. */
+function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
+    if (mode === "plan") return PLAN_NOTE;
+    if (mode === "default" && !readOnly) return MANUAL_NOTE;
+    return undefined;
+}
+
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
 
@@ -234,14 +248,16 @@ export class CodexBackend implements AgentBackendClient {
         }
     }
 
-    private turn?: CodexTurn;
+    /** Turns running now: the main agent's, and sub-agents' on Codex. */
+    private turns = new Set<CodexTurn>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = (this.turn = new CodexTurn(this.def, t));
+        const turn = new CodexTurn(this.def, t);
+        this.turns.add(turn);
         try {
             return await turn.run();
         } finally {
-            if (this.turn === turn) this.turn = undefined;
+            this.turns.delete(turn);
         }
     }
 
@@ -251,9 +267,13 @@ export class CodexBackend implements AgentBackendClient {
         return new CodexTurn(this.def, { ...t, prompt: "", images: [] }).run({ compact: true });
     }
 
-    /** Codex takes its approval policy and sandbox per turn: a stricter mode restarts the running turn under it. */
-    setMode(m: PermissionMode) {
-        this.turn?.modeChanged(m);
+    /**
+     * Codex takes its approval policy and sandbox per turn: a stricter mode
+     * restarts a running turn under it. Each turn goes by its own agent's
+     * mode (a read-only sub-agent's stays read-only).
+     */
+    setMode(_m: PermissionMode) {
+        for (const turn of this.turns) turn.modeChanged(turn.agentMode());
     }
 }
 
@@ -317,6 +337,11 @@ class CodexTurn {
         return this.t.host;
     }
 
+    /** The mode of the agent running this turn, as it is now. */
+    agentMode(): PermissionMode {
+        return this.host.mode();
+    }
+
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
@@ -340,10 +365,29 @@ class CodexTurn {
             this.billedToPlan = account.type === "chatgpt";
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
-            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, developerInstructions: t.appendSystemPrompt || undefined };
+            const o = t.orchestrator;
+            const developerInstructions = [t.appendSystemPrompt, o?.instructions].filter(Boolean).join("\n\n") || undefined;
+            let config = o ? orchestratorConfig(o) : undefined;
+            if (t.readOnly) {
+                const off = await this.mcpServersOff(t.cwd);
+                if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
+                config = off;
+            }
+            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, developerInstructions, ...(config ? { config } : {}) };
+            // A Codex that won't take the delegation server's config still gets its thread, without it.
+            const thread = async (method: string, params: Record<string, unknown>) => {
+                try {
+                    return await this.rpc.request(method, params);
+                } catch (e) {
+                    if (this.aborted || !o) throw e;
+                    const r = await this.rpc.request(method, { ...params, config: undefined, developerInstructions: t.appendSystemPrompt || undefined });
+                    this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them.` });
+                    return r;
+                }
+            };
             if (t.resumeId) {
                 try {
-                    const r = await this.rpc.request("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
+                    const r = await thread("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
                     this.threadId = r?.thread?.id ?? t.resumeId;
                 } catch (e) {
                     // Stopped by esc: the thread is fine and is resumed next time.
@@ -351,7 +395,7 @@ class CodexTurn {
                     return { reason: "error", text: "", actions: [], error: `Couldn't resume the Codex thread: ${(e as Error).message}`, resumeFailed: true };
                 }
             } else {
-                const r = await this.rpc.request("thread/start", threadParams);
+                const r = await thread("thread/start", threadParams);
                 this.threadId = r?.thread?.id;
                 if (!this.threadId) throw new ProviderError("Codex didn't start a thread");
             }
@@ -365,7 +409,8 @@ class CodexTurn {
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.host.mode();
                     const policy = codexPolicy(mode, t.additionalDirectories);
-                    const input = this.input(mode === "plan" ? `${PLAN_NOTE}\n\n${text}` : text, images);
+                    const note = modeNote(mode, Boolean(t.readOnly));
+                    const input = this.input(note ? `${note}\n\n${text}` : text, images);
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
                     await this.waitFor(async () => {
@@ -513,7 +558,7 @@ class CodexTurn {
         let open: OpenItem | undefined;
         switch (item.type) {
             case "commandExecution": {
-                const command = innerCommand(item);
+                const { command } = shownCommand(item, this.t.cwd);
                 open = { name: "Bash", input: { command }, title: commandTitle(command), started: Date.now() };
                 break;
             }
@@ -604,20 +649,42 @@ class CodexTurn {
         this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: open.name, input: open.input }, result: { content, isError, display }, durationMs: Date.now() - open.started });
     }
 
+    /**
+     * For a read-only sub-agent: thread config that turns off the MCP
+     * servers in the user's Codex config (as seen from this folder), since
+     * Codex runs tools set to "approve" there without asking, and they may
+     * change things. Thread config is merged into the user's, so each is
+     * turned off by name. Why it can't, if Codex doesn't list them.
+     */
+    private async mcpServersOff(cwd: string): Promise<Record<string, unknown> | undefined | string> {
+        let servers: unknown;
+        try {
+            servers = (await this.rpc.request("config/read", { cwd }))?.config?.mcp_servers;
+        } catch (e) {
+            if (this.aborted) throw e;
+            return `Codex didn't list its MCP servers (${redact((e as Error).message).replace(/^Codex:\s*/, "")}), so a read-only task can't run on it: their tools couldn't be turned off.`;
+        }
+        const names = servers && typeof servers === "object" && !Array.isArray(servers) ? Object.keys(servers) : [];
+        return names.length ? { mcp_servers: Object.fromEntries(names.map((n) => [n, { enabled: false }])) } : undefined;
+    }
+
     private async onRequest(method: string, p: any): Promise<unknown> {
         switch (method) {
             case "item/commandExecution/requestApproval": {
-                const command = innerCommand(p);
+                const { command, elsewhere } = shownCommand(p, this.t.cwd);
                 const net = p.networkApprovalContext?.host ? ` It needs network access to ${String(p.networkApprovalContext.host)}.` : "";
-                const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined });
-                return { decision: this.decision(a, p.availableDecisions) };
+                // Codex 0.162 asks about every command in untrusted mode, `cat` included. One that wants
+                // the network says something, and one in another folder isn't checked where it runs.
+                const asksAlways = !net && !elsewhere && codexPolicy(this.turnMode ?? this.host.mode(), []).approvalPolicy === "untrusted";
+                const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways });
+                return { decision: this.decision(a) };
             }
             case "item/fileChange/requestApproval": {
                 const open = this.items.get(String(p.itemId ?? ""));
                 const changes = open?.changes ?? [];
                 if (!changes.length && typeof p.grantRoot === "string") {
                     const a = await this.host.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined });
-                    return { decision: this.decision(a, p.availableDecisions) };
+                    return { decision: this.decision(a) };
                 }
                 const first = changes[0];
                 const name = changes.length && changes.every((c) => c.kind === "add") ? "Write" : "Edit";
@@ -631,7 +698,7 @@ class CodexTurn {
                     preview: first ? changePreview(first, this.t.cwd) : undefined,
                     otherPaths: others,
                 });
-                return { decision: this.decision(a, p.availableDecisions) };
+                return { decision: this.decision(a) };
             }
             case "item/permissions/requestApproval": {
                 const want = requestedPaths(p.permissions, [this.t.cwd, ...this.t.additionalDirectories]);
@@ -670,41 +737,84 @@ class CodexTurn {
     /**
      * Codex's decision for the harness's answer. Refused by the user with
      * nothing to add: cancel (the turn stops, as with the harness's own
-     * tools). Refused by a rule, or with the user saying what to do instead:
-     * decline, so the turn goes on (with their words), where Codex offers
-     * that; where it doesn't (untrusted mode), cancel, and the user's words
-     * start the next turn.
+     * tools). Refused by a rule, a read-only agent or a non-interactive run,
+     * or with the user saying what to do instead: decline, so the turn goes
+     * on (with their words). In untrusted mode a command's availableDecisions
+     * leaves decline out, but Codex takes it anyway: the list is for its own
+     * UI, and it doesn't check the answer against it. Codex tells the model
+     * only "rejected by user", so the harness's reason goes into the turn too:
+     * without it the model gives up, or tries the next way of doing the same.
      */
-    private decision(a: PermissionAnswer, available?: unknown): string {
+    private decision(a: PermissionAnswer): string {
         if (a.allow) return "accept";
         this.refusal = a.message;
         if (a.stop) return "cancel";
-        const canDecline = !Array.isArray(available) || available.includes("decline");
-        if (canDecline) {
-            if (a.fromUser) this.steer(a.message);
-            return "decline";
-        }
-        if (a.fromUser) this.followUp = a.message;
-        return "cancel";
+        if (a.fromUser) this.steer(a.message);
+        else this.steer(`<system-reminder>\n${APP_TITLE} refused that: ${a.message}\n</system-reminder>`, false);
+        return "decline";
     }
 
-    /** Add the user's words to the running turn (turn/steer); if that fails, they start the next turn. */
-    private steer(text: string) {
+    /**
+     * Add text to the running turn (turn/steer). The user's words start the
+     * next turn if that fails; the harness's own notes (followUp false) don't.
+     */
+    private steer(text: string, followUp = true) {
         if (!this.threadId || !this.turnId) {
-            this.followUp = text;
+            if (followUp) this.followUp = text;
             return;
         }
-        void this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).catch(() => (this.followUp = text));
+        void this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).catch(() => {
+            if (followUp) this.followUp = text;
+        });
     }
 }
 
-/** The command a commandExecution runs, without Codex's `bash -lc '…'` wrapper. */
+/**
+ * The harness's MCP server as Codex config for the thread (sent over the
+ * app-server's stdin, never in arguments). Its tools run without Codex's
+ * approval prompt: what a delegated agent does is checked when it does it.
+ */
+export function orchestratorConfig(o: OrchestratorServer): Record<string, unknown> {
+    return {
+        mcp_servers: {
+            [o.name]: {
+                url: o.url,
+                http_headers: { Authorization: o.authorization },
+                tool_timeout_sec: o.toolTimeoutSec,
+                startup_timeout_sec: 30,
+                default_tools_approval_mode: "approve",
+                supports_parallel_tool_calls: true,
+            },
+        },
+    };
+}
+
+/**
+ * The command a commandExecution runs, out of its shell wrapper: what rules, the read-only
+ * check and the prompt see. Not Codex's parsed commandActions, which can
+ * leave parts out (a leading cd). Codex shows the wrapper shell-quoted
+ * (`/bin/zsh -lc "rg -g '"'!x'"'"`), so it's split as a shell would; one
+ * that would expand anything, or isn't one of Codex's shells, is left whole.
+ */
 function innerCommand(x: any): string {
-    const actions: any[] = Array.isArray(x?.commandActions) ? x.commandActions : [];
-    if (actions.length === 1 && typeof actions[0]?.command === "string") return actions[0].command;
     const cmd = String(x?.command ?? "");
-    const m = cmd.match(/^(?:\S*\/)?(?:ba|z)?sh -l?c '([\s\S]*)'$/);
-    return m ? m[1]!.replace(/'\\''/g, "'") : cmd;
+    const a = analyzeCommand(cmd);
+    const argv = a.commands.length === 1 && !a.hasSubstitution && !a.unsafeExpansion && !a.unparsable && !a.redirects.length ? a.commands[0]!.argv : [];
+    return argv.length === 3 && WRAPPER_SHELL.test(argv[0]!) && /^-l?c$/.test(argv[1]!) ? argv[2]! : cmd;
+}
+
+/** Shells Codex wraps commands in. The model can name another one (`./bash`), which could be anything. */
+const WRAPPER_SHELL = /^\/(?:bin|usr\/bin|usr\/local\/bin|opt\/homebrew\/bin)\/(?:ba|z)?sh$/;
+
+/**
+ * The command as rules, checks and the prompt see it. One the model runs in
+ * another folder (Codex takes a workdir) goes behind a cd to it.
+ */
+function shownCommand(x: any, cwd: string): { command: string; elsewhere: boolean } {
+    const inner = innerCommand(x);
+    const dir = typeof x?.cwd === "string" && x.cwd ? resolve(cwd, x.cwd) : cwd;
+    const elsewhere = canonical(dir) !== canonical(resolve(cwd));
+    return { command: elsewhere ? `cd '${dir.replace(/'/g, `'\\''`)}' && ${inner}` : inner, elsewhere };
 }
 
 function fileChanges(item: any): FileChange[] {

@@ -30,6 +30,14 @@ export interface BackendPermission {
      * never approved without asking.
      */
     widens?: { read: string[]; write: string[] };
+    /**
+     * The backend asks about every command (Codex in untrusted mode), so the
+     * ask says nothing of its own: a command the harness would run without
+     * asking for its own models is approved. False: it does say something.
+     * Left out, a read-only agent's asks count as saying nothing (they come
+     * from the harness's own rule).
+     */
+    asksAlways?: boolean;
 }
 
 export type PermissionAnswer =
@@ -85,8 +93,34 @@ export interface BackendTurn {
     maxTurns?: number;
     /** Continue this backend session (from an earlier turn). */
     resumeId?: string;
+    /**
+     * The harness's MCP server, with its tools for delegating to other
+     * providers' models (src/agent/delegation.ts). The backend attaches it
+     * for the turn without putting the token in its arguments or environment.
+     */
+    orchestrator?: OrchestratorServer;
+    /**
+     * A read-only sub-agent (explore). Its mode asks before any change and
+     * the harness refuses them; the backend also turns off what could change
+     * files without asking (Claude Code's edit tools, its user allow rules and
+     * sandbox auto-approval for commands, MCP servers from its own config).
+     */
+    readOnly?: boolean;
     signal: AbortSignal;
     host: BackendHost;
+}
+
+export interface OrchestratorServer {
+    /** The server's name, as the backend's tools see it (mcp__<name>__<tool>). */
+    name: string;
+    url: string;
+    /** The Authorization header (holds the token). */
+    authorization: string;
+    tools: string[];
+    /** For the backend's system prompt, where its MCP server instructions don't reach the model. */
+    instructions: string;
+    /** How long a call may take, in seconds (a delegate call can wait an hour). */
+    toolTimeoutSec: number;
 }
 
 export interface BackendResult {

@@ -220,6 +220,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState,
         nativeWebSearch,
+        listings: () => listings,
         maxTurns: o.maxTurns,
         appendSystemPrompt: o.appendSystemPrompt,
         host: {
@@ -288,7 +289,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
             Promise.race([sessionStarted, timedOut]).then(() => (deadline.aborted ? undefined : fireHooks(settings, "SessionEnd", { session_id: session.meta.id, reason: "exit" }, o.cwd, hookWarning, deadline))),
             timedOut,
         ]);
-        await Promise.all([ended, killAllShells({ state: toolState }), Promise.race([mcp.closeAll(), sleep(1500)])]);
+        // Delegated tasks still running end with the run.
+        await Promise.all([ended, agent.dispose(), killAllShells({ state: toolState }), Promise.race([mcp.closeAll(), sleep(1500)])]);
     }
 
     const isError = reason !== "done";

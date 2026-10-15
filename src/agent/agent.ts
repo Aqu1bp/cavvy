@@ -23,7 +23,7 @@ import type {
     UserContent,
     UserMessage,
 } from "../providers/types";
-import { ProviderError, modelRef, textOf, toolCallsOf } from "../providers/types";
+import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
 import type { Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
@@ -31,7 +31,7 @@ import type { Decision } from "../permissions/checker";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, type ReviewContext } from "../permissions/classifier";
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
-import { harnessHome } from "../config/paths";
+import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
@@ -45,8 +45,25 @@ import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { redact } from "../util/redact";
-import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type PermissionAnswer } from "../backends/types";
+import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
+import { cachedListings, type ProviderListing } from "../providers/models";
+import { registerTools, type Registration } from "../mcp/server";
+import {
+    DELEGATE_TOOL,
+    DELEGATION_LIMITS,
+    MCP_SERVER_NAME,
+    Delegations,
+    catalog,
+    delegationAvailable,
+    orchestrationInstructions,
+    orchestratorTitle,
+    orchestratorTools,
+    taskReport,
+    type ChildRequest,
+    type ChildResult,
+    type DelegatedTask,
+} from "./delegation";
 import { suggestBashRules } from "../permissions/bash-safety";
 import { trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
@@ -86,6 +103,8 @@ export interface PermissionRequest {
     agentLabel?: string;
     /** Why the auto-mode reviewer escalated. */
     classifierReason?: string;
+    /** Ends when the request no longer matters (its sub-agent was stopped): the prompt is withdrawn. */
+    signal?: AbortSignal;
 }
 
 export interface PermissionResponse {
@@ -155,6 +174,8 @@ export interface AgentOptions {
     parentRequests?: () => Pick<ReviewContext, "requests" | "summary">;
     /** Sub-agents: the task the parent gave it. */
     delegatedTask?: string;
+    /** The model catalog as the host last listed it (local servers aren't cached); the cache by default. */
+    listings?: () => ProviderListing[];
 }
 
 const MAX_RETRIES = 10;
@@ -176,6 +197,28 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
+/** The shared background-shell list, noting the ids of the shells added through it. */
+function trackShells<V>(shells: Map<string, V>, added: Set<string>): Map<string, V> {
+    return new Proxy(shells, {
+        get(target, p) {
+            if (p === "set") return (k: string, v: V) => (added.add(k), target.set(k, v));
+            const v = Reflect.get(target, p, target);
+            return typeof v === "function" ? v.bind(target) : v;
+        },
+    });
+}
+
+/** The promise's value, or `fallback` once the signal ends. */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal, fallback: T): Promise<T> {
+    if (signal.aborted) return Promise.resolve(fallback);
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<T>((r) => {
+        onAbort = () => r(fallback);
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return Promise.race([p, aborted]).finally(() => signal.removeEventListener("abort", onAbort!));
+}
+
 function isAbort(e: unknown, signal?: AbortSignal): boolean {
     if (signal?.aborted) return true;
     const err = e as { name?: string; message?: string };
@@ -186,6 +229,13 @@ function isContextOverflow(e: unknown): boolean {
     const err = e as ProviderError;
     const msg = String(err?.message ?? "") + String(err?.body ?? "");
     return (err?.status === 400 || err?.status === 413 || err?.status === undefined) && /prompt is too long|context.{0,20}(length|window|limit)|maximum context|too many (input )?tokens|input (is )?too long|exceeds the context|exceeds the maximum number of tokens/i.test(msg);
+}
+
+/** What a read-only agent hears when it tries to change something: for a command, which ones do run. */
+function readOnlyRefusal(toolName: string): string {
+    return toolName === "Bash"
+        ? "This is a read-only agent: only read-only commands run (plain commands such as cat, rg, wc or git log, and pipes of them; no loops, subshells, $(…) or > redirects). Report what should be changed instead."
+        : "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
 }
 
 function reminder(text: string): TextPart {
@@ -206,6 +256,14 @@ export class Agent {
     private lastUsageTotal = 0;
     /** The last few tool calls, for the auto-mode reviewer ("Bash: npm test"). */
     private recentActions: string[] = [];
+    /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
+    private delegations?: Delegations;
+    private registration?: Registration;
+    /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
+    private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
+    private disposed = false;
+    /** Sub-agents running now (Task, delegated tasks). */
+    private children = new Set<Agent>();
 
     constructor(private o: AgentOptions) {
         this.session = o.session;
@@ -241,8 +299,10 @@ export class Agent {
 
     noteModeChange(from: PermissionMode, to: PermissionMode) {
         if (from === to) return;
-        // A backend turn in progress takes the new mode now (where the backend can).
+        // A backend turn in progress takes the new mode now (where the backend can), and so do
+        // sub-agents running on Claude Code or Codex, each in its own mode (a read-only one stays read-only).
         if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
+        for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(to);
         if (to === "plan") {
             this.addReminder(
                 "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.",
@@ -290,9 +350,14 @@ export class Agent {
     async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
+        // Interrupting a turn stops the delegated tasks still running, those in the background too
+        // (delegated on an earlier turn, maybe before a switch to another model).
+        const onAbort = () => this.cancelTasks();
+        opts.signal.addEventListener("abort", onAbort, { once: true });
         try {
             return await this.runInner(content, opts);
         } finally {
+            opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
         }
     }
@@ -316,6 +381,8 @@ export class Agent {
             if (h?.additionalContext) this.addReminder(`Context from a UserPromptSubmit hook:\n${h.additionalContext}`);
         }
 
+        // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
+        this.deliverTasks(false);
         const parts: UserContent[] = [...content];
         for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r));
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
@@ -627,9 +694,132 @@ export class Agent {
             trusted: trustedByUser(this.state.cwd),
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
+            orchestrator: this.orchestrator(),
+            readOnly: this.o.readOnly,
             signal,
             host,
         };
+    }
+
+    // -----------------------------------------------------------------------
+    // Delegation (src/agent/delegation.ts): a backend main agent hands tasks
+    // to other providers' models through the harness's MCP tools.
+
+    /** The MCP server for this turn; none for sub-agents, when turned off, or with no other provider to delegate to. */
+    private orchestrator(): OrchestratorServer | undefined {
+        if (this.o.isSubagent || this.disposed || this.o.settings().delegation === false) return undefined;
+        const caller = this.model.provider;
+        if (!delegationAvailable(caller, this.listings())) return undefined;
+        const tasks = this.tasks();
+        const tools = orchestratorTools({
+            caller: () => this.model.provider,
+            listings: () => this.listings(),
+            projectRoot: () => this.state.projectRoot,
+            checkModel: (ref) => this.checkModel(ref),
+            claimCall: (args, meta) => this.claimDelegateCall(args, meta),
+            tasks,
+        });
+        // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
+        this.registration ??= registerTools(tools, () => (this.model.provider === "codex" ? undefined : orchestrationInstructions(this.model.provider, this.oneShot)));
+        return {
+            name: MCP_SERVER_NAME,
+            url: this.registration.url,
+            authorization: this.registration.authorization,
+            tools: tools.map((t) => t.name),
+            instructions: orchestrationInstructions(caller, this.oneShot),
+            // Above the longest wait, so the harness's own timeout is what ends a long call.
+            toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
+        };
+    }
+
+    private listings(): ProviderListing[] {
+        return this.o.listings?.() ?? cachedListings();
+    }
+
+    /** A non-interactive run (-p): it ends with this turn, and tasks still running end with it. */
+    private get oneShot(): boolean {
+        return !this.o.host.askPermission;
+    }
+
+    private tasks(): Delegations {
+        return (this.delegations ??= new Delegations(
+            (req, signal) => this.runChild(req.callId ?? "", req, signal),
+            (t) => this.taskSettled(t),
+        ));
+    }
+
+    /** A task finished while nothing was running: its result goes with the next prompt. */
+    private taskSettled(t: DelegatedTask) {
+        if (this.running || t.delivered || this.disposed) return;
+        this.deliverTasks();
+    }
+
+    /** Results the backend hasn't been given go with the next prompt (at turn end, or when they come in later). */
+    private deliverTasks(notify = true) {
+        const name = getProvider(this.model.provider)?.name ?? this.model.provider;
+        for (const t of this.delegations?.undelivered() ?? []) {
+            t.delivered = true;
+            this.addReminder(`A task you delegated (with the ${MCP_SERVER_NAME} delegate tool) has ended. Its result:\n\n${taskReport(t)}`);
+            if (notify) this.emit({ type: "notice", level: "info", message: `Delegated task ${t.id} "${t.description}" (${t.model}) ${t.status === "done" ? "finished" : t.status}. Its result goes to ${name} with your next message.` });
+        }
+    }
+
+    /** Stop the delegated tasks still running (the user interrupted the turn). */
+    private cancelTasks() {
+        const n = this.delegations?.cancelAll() ?? 0;
+        if (n) this.emit({ type: "notice", level: "info", message: `Stopped ${n} delegated task${n === 1 ? "" : "s"}.` });
+    }
+
+    /** Tasks delegated in this session (/tasks). */
+    get delegatedTasks(): DelegatedTask[] {
+        return this.delegations?.list() ?? [];
+    }
+
+    /** Stop one delegated task, or all of them; how many were running. */
+    stopDelegated(id?: string): number {
+        if (!this.delegations) return 0;
+        return id ? Number(this.delegations.cancel(id)) : this.delegations.cancelAll();
+    }
+
+    /** The session is done with this agent: stop its delegated tasks (waiting a moment for them) and revoke its MCP token. */
+    async dispose(graceMs = 3000): Promise<void> {
+        this.disposed = true;
+        this.registration?.close();
+        this.registration = undefined;
+        const running = this.delegations?.close() ?? [];
+        if (running.length) await Promise.race([Promise.all(running.map((t) => t.settled)), Bun.sleep(graceMs)]);
+    }
+
+    /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
+    private async checkModel(ref: string): Promise<string | { ok: true }> {
+        const p = parseModelRef(ref);
+        if (!p) return `"${ref}" isn't a model reference (provider:model).`;
+        const r = await this.o.helpers?.resolveModel?.(ref);
+        if (!r) return `${getProvider(p.provider)?.name ?? p.provider} isn't set up in ${APP_TITLE}, so ${ref} can't run here. Call models to see what can.`;
+        const listed = this.listings().find((l) => l.provider.id === p.provider)?.models;
+        if (listed?.length && !listed.some((m) => m.id === p.id)) return `${p.provider} has no model "${p.id}". Call models (with provider "${p.provider}") to see its models.`;
+        return { ok: true };
+    }
+
+    /**
+     * Which open delegate call of the backend's a request came from: Codex
+     * sends the call's id in _meta; otherwise the arguments tell. The call
+     * may not have been seen yet, so this waits a moment for it.
+     */
+    private async claimDelegateCall(args: Record<string, unknown>, meta: Record<string, unknown>): Promise<string | undefined> {
+        const id = typeof meta.callId === "string" ? meta.callId : undefined;
+        const same = (a: Record<string, unknown>) => ["task", "description", "model", "agent"].every((k) => a[k] === args[k]);
+        for (let i = 0; i < 40; i++) {
+            // By id when there is one; by the arguments otherwise (or if no call has that id after a moment).
+            const open = this.delegateCalls.filter((x) => !x.claimed);
+            const c = open.find((x) => id !== undefined && x.id === id) ?? (id === undefined || i >= 10 ? open.find((x) => same(x.input)) : undefined);
+            if (c) {
+                c.claimed = true;
+                return c.id;
+            }
+            await Bun.sleep(50);
+        }
+        return undefined;
     }
 
     /**
@@ -648,6 +838,14 @@ export class Agent {
     }
 
     private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
+        try {
+            return await this.runBackendTurn(backend, parts, signal);
+        } finally {
+            this.delegateCalls = [];
+        }
+    }
+
+    private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
         let promptIndex = this.session.messages.length - 1;
@@ -764,6 +962,13 @@ export class Agent {
 
     private endBackendTurn(provider: string, reason: TurnEndReason): TurnEndReason {
         this.syncBackend(provider);
+        this.deliverTasks();
+        const running = this.delegations?.running().length ?? 0;
+        if (running) {
+            const name = getProvider(provider)?.name ?? provider;
+            const then = this.oneShot ? `${running === 1 ? "It stops" : "They stop"} with this run.` : `${running === 1 ? "Its result goes" : "Their results go"} to ${name} with your next message (/tasks shows them, /tasks stop stops them).`;
+            this.emit({ type: "notice", level: "info", message: `${running} delegated task${running === 1 ? " is" : "s are"} still running. ${then}` });
+        }
         this.emit({ type: "turn_end", reason });
         return reason;
     }
@@ -806,7 +1011,14 @@ export class Agent {
             const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
             e = { ...e, result: { ...e.result, content: redact(e.result.content), display } };
         }
-        if (e.type === "tool_start" && !e.tool) {
+        if (e.type === "tool_start" || e.type === "tool_end") {
+            const call = e.call;
+            if (call.name === DELEGATE_TOOL && e.type === "tool_start") this.delegateCalls.push({ id: call.id, input: (call.input ?? {}) as Record<string, unknown>, claimed: false });
+            else if (call.name === DELEGATE_TOOL) this.delegateCalls = this.delegateCalls.filter((c) => c.id !== call.id);
+        }
+        const own = e.type === "tool_start" ? orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) : undefined;
+        if (own && e.type === "tool_start") e = { ...e, title: own };
+        else if (e.type === "tool_start" && !e.tool) {
             const tool = this.findTool(e.call.name);
             if (tool) {
                 let title = e.title;
@@ -835,13 +1047,21 @@ export class Agent {
      * to ask; the harness's rules then apply: deny rules (and the harness's
      * protected files) refuse it, an explicit allow rule approves it, and
      * anything else goes to the user. The harness's mode defaults never
-     * approve on the user's behalf what the backend wanted confirmed.
+     * approve on the user's behalf what the backend wanted confirmed, except
+     * where the ask says nothing of its own: Codex asking about every command,
+     * or a read-only agent asking because of the harness's own rule. There a
+     * read-only command the harness would run for its own models runs.
      */
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
         const mode = this.o.mode.get();
         const cwd = this.state.cwd;
+        // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
+        if (this.o.readOnly) {
+            const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name), stop: false };
+        }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
         let decision = this.o.checker.check(tool, input, mode, cwd);
@@ -852,6 +1072,9 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
+        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
+        // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
+        if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
         if (req.widens) {
             // More access for the backend's sandbox: never in plan mode, never past a deny rule, never without asking.
             if (mode === "plan") return { allow: false, message: "Plan mode is active: no extra permissions until the user approves a plan.", stop: false };
@@ -889,7 +1112,6 @@ export class Agent {
                 // preview is optional
             }
         }
-        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         const ask = {
             ...decision,
             behavior: "ask" as const,
@@ -935,6 +1157,7 @@ export class Agent {
             ui: this.o.host.ui,
             hidden: (toolName, abs) => this.o.checker.hiddenFromSearch(toolName, abs),
             runSubagent: this.o.isSubagent ? undefined : (opts, sig) => this.runSubagent(callId, opts, sig),
+            listModels: this.o.isSubagent ? undefined : (opts, sig) => catalog(this.state.projectRoot, { ...opts, listings: this.o.listings?.(), current: modelRef(this.model), signal: sig }),
             webSearch: this.o.helpers?.webSearch,
             summarize: this.o.helpers?.complete
                 ? (content, prompt, sig) =>
@@ -1033,7 +1256,7 @@ export class Agent {
         // Read-only agents (explore) never change anything.
         if (this.o.readOnly) {
             const writes = tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || tool.category === "mcp" && !isReadOnly(tool, input);
-            if (writes) return { result: this.errorResult(call, "This is a read-only agent: that action isn't allowed. Report what should be changed instead.") };
+            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name)) };
         }
 
         const settings = this.o.settings();
@@ -1186,22 +1409,42 @@ export class Agent {
     }
 
     // -----------------------------------------------------------------------
-    // Sub-agents (Task tool)
+    // Sub-agents (Task tool, and tasks a backend delegates)
 
-    private async runSubagent(callId: string, opts: { description: string; prompt: string; agentType?: string }, signal: AbortSignal): Promise<string> {
-        const type = opts.agentType || "general-purpose";
+    private async runSubagent(callId: string, opts: { description: string; prompt: string; agentType?: string; model?: string }, signal: AbortSignal): Promise<{ report: string; isError?: boolean; model?: string }> {
+        const r = await this.runChild(callId, { description: opts.description, prompt: opts.prompt, agent: opts.agentType || "general-purpose", model: opts.model }, signal);
+        if (r.status === "cancelled") return { report: "The sub-agent was interrupted by the user.", model: r.model };
+        if (r.status === "failed") return { report: r.report, isError: true, model: r.model };
+        return { report: r.report || "(The sub-agent finished without a report.)", model: r.model };
+    }
+
+    /**
+     * Run a sub-agent on its own fresh session: on the model asked for, the
+     * agent type's, or this agent's. It shares this agent's permission mode,
+     * rules and prompts (labeled with its task), and its spend is added to
+     * this session's.
+     */
+    private async runChild(callId: string, req: ChildRequest, signal: AbortSignal): Promise<ChildResult> {
+        const started = Date.now();
+        const fail = (report: string, model = req.model ?? modelRef(this.model)): ChildResult => ({ status: "failed", report, model, tokens: 0, durationMs: Date.now() - started });
+        const type = req.agent || "general-purpose";
         const defs = loadAgents(this.state.projectRoot);
         const def = defs.find((a) => a.name === type);
-        if (!def) return `Unknown agent type "${type}". Available: ${defs.map((d) => d.name).join(", ")}`;
+        if (!def) return fail(`Unknown agent type "${type}". Available: ${defs.map((d) => d.name).join(", ")}`);
 
         let model = this.model;
         let client = this.client;
-        if (def.model && this.o.helpers?.resolveModel) {
-            const r = await this.o.helpers.resolveModel(def.model);
+        const ref = req.model || def.model;
+        if (ref) {
+            const r = await this.o.helpers?.resolveModel?.(ref);
             if (r) ({ model, client } = r);
+            // An agent type's model that isn't set up falls back to this one; one asked for by name doesn't.
+            else if (req.model) return fail(`Can't run a sub-agent on ${req.model}: ${parseModelRef(req.model) ? "that provider isn't set up here, or the model isn't known" : "it isn't a provider:model reference"}. Call ListModels to see the models that can run.`);
         }
+        const backend = isAgentBackend(client);
+        const other = modelRef(model) !== modelRef(this.model);
 
-        const exclude = new Set(["Task", "TodoWrite", "AskUserQuestion", "ExitPlanMode"]);
+        const exclude = new Set(["Task", "ListModels", "TodoWrite", "AskUserQuestion", "ExitPlanMode"]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         if (def.readOnly) tools = tools.filter((t) => EXPLORE_TOOLS.has(t.name) || (t.category === "mcp" && t.readOnly === true));
         if (def.tools?.length) {
@@ -1217,8 +1460,13 @@ export class Agent {
             includeGit: false,
         });
         const session = Session.create(this.state.projectRoot, { persist: false, system });
-        const label = opts.description;
+        // Prompts and progress name the model when it isn't this agent's.
+        const label = other ? `${req.description} (${modelRef(model)})` : req.description;
         const parentHost = this.o.host;
+        let lastError: string | undefined;
+        const parentMode = this.o.mode;
+        /** Background shells it starts (in the shared list): stopped with it if it's stopped. */
+        const shellsStarted = new Set<string>();
         const child = new Agent({
             ...this.o,
             session,
@@ -1227,37 +1475,76 @@ export class Agent {
             tools,
             isSubagent: true,
             parentRequests: () => this.requestContext(),
-            delegatedTask: opts.prompt,
-            subagent: { type, description: label, parentSessionId: this.session.meta.id },
+            delegatedTask: req.prompt,
+            subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
+            // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and the harness refuses).
+            mode: backend && def.readOnly ? { get: () => (parentMode.get() === "plan" ? "plan" : "default"), set: () => {} } : this.o.mode,
             maxTurns: 200,
-            appendSystemPrompt: undefined,
+            // Claude Code and Codex use their own system prompts: this goes on top.
+            appendSystemPrompt: backend ? [BACKEND_SUBAGENT, def.prompt, def.readOnly ? BACKEND_READ_ONLY : ""].filter(Boolean).join("\n\n") : undefined,
             nativeWebSearch: this.o.nativeWebSearch && model.provider === this.model.provider,
             toolState: {
                 cwd: this.state.cwd,
                 projectRoot: this.state.projectRoot,
                 fileState: new Map(this.state.fileState),
                 todos: [],
-                shells: this.state.shells,
+                shells: trackShells(this.state.shells, shellsStarted),
                 fileHistory: this.state.fileHistory,
             },
             host: {
-                emit: (e) => parentHost.emit({ type: "subagent", parentId: callId, label, event: e }),
-                askPermission: parentHost.askPermission ? (req) => parentHost.askPermission!({ ...req, agentLabel: label }) : undefined,
+                emit: (e) => {
+                    if (e.type === "notice" && e.level === "error") lastError = e.message;
+                    parentHost.emit({ type: "subagent", parentId: callId, label, event: e });
+                },
+                // A stopped sub-agent's prompt is withdrawn (declined), so it can stop rather than wait for an answer.
+                askPermission: parentHost.askPermission ? (p) => untilAborted(parentHost.askPermission!({ ...p, agentLabel: label, signal }), signal, { allow: false }) : undefined,
                 saveRules: parentHost.saveRules,
                 ui: {},
             },
         });
-        const reason = await child.run([{ type: "text", text: opts.prompt }], { signal });
+        let reason: TurnEndReason;
+        this.children.add(child);
+        try {
+            reason = await child.run([{ type: "text", text: req.prompt }], { signal });
+        } catch (e) {
+            reason = signal.aborted ? "aborted" : "error";
+            lastError ??= redact((e as Error).message ?? String(e));
+        } finally {
+            this.children.delete(child);
+        }
+        // Stopped: so is what it left running (a watcher writing files, say), even where the shell itself has exited.
+        if (signal.aborted) await Promise.all([...shellsStarted].map((id) => this.state.shells.get(id)?.kill().catch(() => undefined)));
         // Fold the child's spend into the parent session's totals.
-        for (const [m, u] of session.usageByModel) this.session.recordUsage(m, u.usage, u.cost);
-        if (reason === "aborted") return "The sub-agent was interrupted by the user.";
+        let tokens = 0;
+        let cost = 0;
+        for (const [m, u] of session.usageByModel) {
+            this.session.recordUsage(m, u.usage, u.cost);
+            tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
+            cost += u.cost;
+        }
         const last = [...session.messages].reverse().find((m) => m.role === "assistant");
-        const report = last ? textOf(last).trim() : "";
-        if (reason === "error") return `The sub-agent stopped with an error.${report ? ` Its last message:\n${report}` : ""}`;
-        return report || "(The sub-agent finished without a report.)";
+        // A backend's turn is its text, then what it did ("[Codex used: …]"), as separate parts.
+        const report = !last ? "" : backend ? last.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n").trim() : textOf(last).trim();
+        const result = (status: ChildResult["status"], text: string): ChildResult => ({ status, report: text, model: modelRef(model), tokens, cost: cost || undefined, durationMs: Date.now() - started });
+        switch (reason) {
+            case "aborted":
+                return result("cancelled", report ? `It was stopped. Its last message:\n${report}` : "It was stopped before it reported anything.");
+            case "error":
+            case "blocked":
+                return result("failed", `The sub-agent stopped with an error${lastError ? `: ${lastError}` : "."}${report ? `\nIts last message:\n${report}` : ""}`);
+            case "denied":
+                return result("failed", `The user declined one of its actions, which stopped it.${report ? ` Its last message:\n${report}` : ""}`);
+            case "max_turns":
+                return result("done", `${report}\n\n(It stopped at its limit of 200 model turns.)`.trim());
+            default:
+                return result("done", report);
+        }
     }
 }
+
+const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: another agent gave you one self-contained task. Complete it, then reply with a final report. The other agent sees only your last message, so make it complete: findings, file paths with line numbers, what you changed (if anything), and anything left unresolved. Don't commit, push or make changes outside the task's scope.`;
+const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files; changes will be refused. Report what should be changed instead.";
 
 /** Stands in for a backend tool the harness has no tool of its own for (rules still match its name). */
 function backendTool(name: string, title?: string): Tool<any> {
