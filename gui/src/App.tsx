@@ -11,6 +11,7 @@ import { Header } from "./components/Header";
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { InteractionDock } from "./components/InteractionDock";
+import { AgentsBar } from "./components/Agents";
 import { RightPanel } from "./components/RightPanel";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
@@ -141,6 +142,7 @@ export function App() {
                                 <div class="bottom">
                                     <div class="bottom-col">
                                         <InteractionDock sessionId={h.id} items={h.view.state.interactions} />
+                                        <AgentsBar handle={h} />
                                         <Composer sessionId={h.id} />
                                     </div>
                                 </div>

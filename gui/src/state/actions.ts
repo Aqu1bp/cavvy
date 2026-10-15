@@ -5,7 +5,7 @@ import { RpcError } from "../lib/rpc";
 import { copyText, pickFolder } from "../lib/platform";
 import { activate, app, createSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setRewindOpen, setSettingsTab } from "./ui";
+import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setRewindOpen, setSettingsTab } from "./ui";
 
 export interface Attachment {
     name: string;
@@ -69,8 +69,36 @@ function clientCommand(id: string | undefined, text: string): boolean {
         case "export":
             if (id) void exportSession(id);
             return true;
+        case "tasks": {
+            const [verb, task] = args.trim().split(/\s+/);
+            if (verb === "stop" && id) {
+                // By task id (task-1), as in the terminal, or every one still running.
+                const agent = task ? handleFor(id)?.view.agents.find((a) => a.taskId === task || a.id === task) : undefined;
+                if (task && !agent) toast(`No delegated task ${task}`, "error");
+                else void stopAgent(id, agent?.id);
+                return true;
+            }
+            openAgents();
+            return true;
+        }
         default:
             return false;
+    }
+}
+
+/** Show a sub-agent's activity in the side panel, or the list of them. */
+export function openAgents(agentId?: string) {
+    setAgentFocus(agentId);
+    setPrefs({ panel: true, panelTab: "agents" });
+}
+
+/** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */
+export async function stopAgent(sessionId: string, agentId?: string) {
+    try {
+        const { stopped } = await rpc.call("session.stopAgent", { id: sessionId, agentId });
+        toast(stopped ? `Stopping ${stopped === 1 ? "the task" : `${stopped} tasks`}` : "Nothing was running");
+    } catch (e) {
+        reportError(e);
     }
 }
 

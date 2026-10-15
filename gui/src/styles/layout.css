@@ -1075,3 +1075,137 @@ button.header-title:hover {
         padding: 0 12px 12px;
     }
 }
+
+/* ---- A sub-agent in the side panel --------------------------------------- */
+
+.agent-back {
+    display: flex;
+    width: fit-content;
+    align-items: center;
+    gap: 2px;
+    margin: -4px 0 14px -3px;
+    font-size: 0.893rem;
+    color: var(--fg-muted);
+}
+
+.agent-back:hover {
+    color: var(--fg);
+}
+
+.status-chip.stopped {
+    color: var(--fg-muted);
+}
+
+.agent-detail .overview-title {
+    font-size: 1.5rem;
+}
+
+.agent-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.agent-waiting {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.893rem;
+    color: var(--warning);
+}
+
+.agent-task {
+    position: relative;
+    max-height: 9.5em;
+    overflow: hidden;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: var(--bg-subtle);
+    box-shadow: 0 0 0 1px var(--border);
+}
+
+.agent-task.full {
+    max-height: none;
+}
+
+.agent-task:not(.full)::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2.4em;
+    background: linear-gradient(to bottom, transparent, var(--bg-panel));
+    pointer-events: none;
+}
+
+.agent-task + .link-btn {
+    margin-top: 6px;
+}
+
+.agent-activity {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.agent-dropped {
+    margin-bottom: 8px;
+}
+
+.agent-report {
+    padding: 12px 16px;
+    border-radius: 12px;
+    background: var(--bg-subtle);
+    box-shadow: 0 0 0 1px var(--border);
+}
+
+.agent-list {
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 0 0 1px var(--border);
+}
+
+.agent-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 11px 14px;
+    min-width: 0;
+}
+
+.agent-row + .agent-row {
+    border-top: 1px solid var(--border);
+}
+
+.agent-row:hover {
+    background: var(--bg-hover);
+}
+
+.agent-row-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.agent-row-name {
+    font-weight: 500;
+    font-size: 0.964rem;
+}
+
+.agent-row-sub {
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.agent-row-time {
+    flex: none;
+    font-size: 0.857rem;
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+}

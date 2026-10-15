@@ -3,11 +3,19 @@
 // a Solid store's produce(), so only what changed re-renders). Pure: no Bun,
 // Node or DOM imports.
 
-import type { Block, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
+import type { AgentRun, Block, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
 
 export interface SessionView {
     state: SessionState;
     turns: Turn[];
+    agents: AgentRun[];
+}
+
+/** A sub-agent's activity keeps this many blocks (the rest are counted in `dropped`). */
+export const AGENT_BLOCKS = 300;
+
+function findAgent(view: SessionView, id: string): AgentRun | undefined {
+    return view.agents.find((a) => a.id === id);
 }
 
 /** Live output kept per running tool (the tail). */
@@ -107,7 +115,47 @@ export function applyOp(view: SessionView, op: SessionOp): void {
         }
         case "reset":
             view.turns = op.turns;
+            if (op.agents) view.agents = op.agents;
             return;
+        case "agent": {
+            const i = view.agents.findIndex((a) => a.id === op.agent.id);
+            if (i >= 0) view.agents[i] = op.agent;
+            else view.agents.push(op.agent);
+            return;
+        }
+        case "agent.patch": {
+            const a = findAgent(view, op.id);
+            if (a) assign(a, op.patch);
+            return;
+        }
+        case "agent.block": {
+            const a = findAgent(view, op.id);
+            if (!a) return;
+            const i = a.blocks.findIndex((b) => b.id === op.block.id);
+            if (i >= 0) a.blocks[i] = op.block;
+            else {
+                a.blocks.push(op.block);
+                if (a.blocks.length > AGENT_BLOCKS) {
+                    const n = a.blocks.length - AGENT_BLOCKS;
+                    a.blocks.splice(0, n);
+                    a.dropped = (a.dropped ?? 0) + n;
+                }
+            }
+            return;
+        }
+        case "agent.block.patch": {
+            const b = findAgent(view, op.id)?.blocks.find((x) => x.id === op.blockId);
+            if (b) assign(b, op.patch as Partial<Block>);
+            return;
+        }
+        case "agent.append": {
+            const b = findAgent(view, op.id)?.blocks.find((x) => x.id === op.blockId);
+            if (!b) return;
+            const rec = b as unknown as Record<string, unknown>;
+            const next = String(rec[op.field] ?? "") + op.text;
+            rec[op.field] = op.field === "progress" ? tail(next, PROGRESS_LIMIT) : next;
+            return;
+        }
     }
 }
 
@@ -118,6 +166,10 @@ export function coalesce(ops: SessionOp[]): SessionOp[] {
         const last = out[out.length - 1];
         if (op.op === "append" && last?.op === "append" && last.turnId === op.turnId && last.blockId === op.blockId && last.field === op.field) {
             out[out.length - 1] = { ...last, text: last.text + op.text };
+        } else if (op.op === "agent.append" && last?.op === "agent.append" && last.id === op.id && last.blockId === op.blockId && last.field === op.field) {
+            out[out.length - 1] = { ...last, text: last.text + op.text };
+        } else if (op.op === "agent.patch" && last?.op === "agent.patch" && last.id === op.id) {
+            out[out.length - 1] = { ...last, patch: { ...last.patch, ...op.patch } };
         } else if (op.op === "state" && last?.op === "state") {
             out[out.length - 1] = { op: "state", patch: { ...last.patch, ...op.patch } };
         } else out.push(op);

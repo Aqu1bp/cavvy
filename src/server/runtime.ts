@@ -31,8 +31,9 @@ import { displayPath } from "../util/files";
 import { gitSnapshot } from "../util/git";
 import { redact } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
-import { promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, type ToolMeta } from "./history";
+import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, type ToolMeta } from "./history";
 import type {
+    AgentRun,
     Block,
     ChangesInfo,
     EffortLevel,
@@ -126,6 +127,9 @@ export class Runtime {
     /** Tool call id -> the turn its block is in. */
     private toolTurn = new Map<string, string>();
     private subs = new Map<string, SubagentInfo>();
+    /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
+    private agentLabels = new Map<string, string>();
+    private agentText = new Map<string, string>();
 
     constructor(
         private engine: Engine,
@@ -145,7 +149,7 @@ export class Runtime {
         const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
         this.segment = segments.length - 1;
         const turns = opts.resumed ? replay({ segments, current: session.messages, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
-        this.view = { state: this.initialState(), turns };
+        this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model) };
         this.ready = this.track(this.initModel());
         void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
     }
@@ -231,7 +235,7 @@ export class Runtime {
 
     snapshot(): SessionSnapshot {
         this.flush();
-        return { state: structuredClone(this.view.state), turns: structuredClone(this.view.turns), seq: this.batch };
+        return { state: structuredClone(this.view.state), turns: structuredClone(this.view.turns), agents: structuredClone(this.view.agents), seq: this.batch };
     }
 
     private op(o: SessionOp) {
@@ -357,6 +361,8 @@ export class Runtime {
         } catch {
             this.model = undefined;
             this.client = undefined;
+            // What it delegated stops with it.
+            void this.agent?.dispose();
             this.agent = undefined;
             this.setState({ model: undefined });
             await this.track(this.initModel());
@@ -421,6 +427,8 @@ export class Runtime {
 
     private makeAgent() {
         if (!this.model || !this.client) return;
+        // Tasks the old one delegated stop with it.
+        void this.agent?.dispose();
         this.agent = new Agent({
             session: this.session,
             model: this.model,
@@ -432,6 +440,8 @@ export class Runtime {
             mode: { get: () => this.mode, set: (m) => this.setMode(m, { fromAgent: true }) },
             toolState: this.toolState,
             nativeWebSearch: this.nativeSearch(),
+            // Which models Claude Code and Codex can delegate to.
+            listings: () => this.engine.listings,
             host: {
                 emit: (e) => this.onEvent(e),
                 askPermission: (req) => this.askPermission(req),
@@ -585,7 +595,7 @@ export class Runtime {
             case "tool_call_start": {
                 this.closeOpen();
                 const meta = this.toolMeta({ type: "tool_call", id: e.id, name: e.name, input: {} });
-                const turnId = this.addBlock({ t: "tool", id: e.id, name: e.name, title: e.name, category: meta.category, status: "streaming", receiving: 0 });
+                const turnId = this.addBlock({ t: "tool", id: e.id, name: e.name, title: e.name, category: meta.category, status: "streaming", receiving: 0, ...(runsAgent(e.name) ? { agent: true } : {}) });
                 this.toolTurn.set(e.id, turnId);
                 this.responseBlocks.push(e.id);
                 this.activity(`Writing ${e.name}`);
@@ -626,7 +636,9 @@ export class Runtime {
                     const b = toolBlockFromCall(e.call, this.toolMeta(e.call));
                     this.toolTurn.set(e.call.id, this.addBlock({ ...b, ...patch } as ToolBlock));
                 }
-                this.activity(e.title);
+                // A sub-agent's call reads as what it's doing, not as Task(…).
+                if (runsAgent(e.call.name)) this.activity("Agent working", String((e.call.input as { description?: unknown })?.description ?? ""));
+                else this.activity(e.title);
                 break;
             }
             case "tool_progress": {
@@ -710,6 +722,8 @@ export class Runtime {
         const b = this.blockIn(this.toolTurn.get(call.id), call.id) as ToolBlock | undefined;
         this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, at: Date.now() });
         if (call.name === "TodoWrite") this.setState({ todos: this.toolState.todos.map((t) => ({ ...t })) });
+        // A Task's result is its sub-agent's report (a delegated task's comes when it settles).
+        if (call.name === "Task" && this.view.agents.some((a) => a.id === call.id)) this.agentPatch(call.id, { report: redact(result.content) });
         if (patch.diff || b?.category === "edit") this.setState({ filesChanged: this.filesChanged() });
         this.syncShells();
     }
@@ -734,6 +748,7 @@ export class Runtime {
     }
 
     private subagentEvent(parentId: string, label: string, e: AgentEvent) {
+        this.trackAgent(parentId, label, e);
         const turnId = this.toolTurn.get(parentId);
         if (!turnId) return;
         let sub = this.subs.get(parentId);
@@ -757,6 +772,120 @@ export class Runtime {
             changed = true;
         }
         if (changed) this.patchBlock(parentId, { sub: structuredClone(sub) }, turnId);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sub-agents: the bar above the input and each one's activity
+
+    private agentPatch(id: string, patch: Partial<Omit<AgentRun, "id" | "blocks">>) {
+        this.op({ op: "agent.patch", id, patch });
+    }
+
+    private trackAgent(id: string, label: string, e: AgentEvent) {
+        let a = this.view.agents.find((x) => x.id === id);
+        if (!a || a.replayed) {
+            const turnId = this.toolTurn.get(id);
+            const call = turnId ? this.blockIn(turnId, id) : undefined;
+            if (!turnId || call?.t !== "tool") return;
+            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, this.model && modelRef(this.model)), startedAt: Date.now() } });
+            a = this.view.agents.find((x) => x.id === id)!;
+        }
+        this.agentLabels.set(id, label);
+        if (!a.taskId) {
+            const task = this.agent?.delegatedTasks.find((t) => t.callId === id);
+            if (task) this.agentPatch(id, { taskId: task.id, ...(a.model || !this.model || task.model === modelRef(this.model) ? {} : { model: task.model }) });
+        }
+        switch (e.type) {
+            case "request_start":
+            case "thinking":
+                if (a.activity !== "Thinking" && a.status === "running") this.agentPatch(id, { activity: "Thinking" });
+                break;
+            case "text": {
+                let blockId = this.agentText.get(id);
+                if (!blockId) {
+                    blockId = this.newId();
+                    this.agentText.set(id, blockId);
+                    this.op({ op: "agent.block", id, block: { t: "text", id: blockId, text: "" } });
+                }
+                this.op({ op: "agent.append", id, blockId, field: "text", text: redact(e.text) });
+                if (a.activity !== "Writing") this.agentPatch(id, { activity: "Writing" });
+                break;
+            }
+            case "tool_call_start":
+                this.agentText.delete(id);
+                this.agentPatch(id, { activity: `Preparing ${e.name}` });
+                break;
+            case "tool_start": {
+                this.agentText.delete(id);
+                const block: ToolBlock = { ...toolBlockFromCall(e.call, { title: e.title, category: e.tool?.category as ToolCategoryId | undefined }), startedAt: Date.now() };
+                this.op({ op: "agent.block", id, block });
+                this.agentPatch(id, { toolCount: a.toolCount + 1, activity: e.title });
+                break;
+            }
+            case "tool_progress":
+                this.op({ op: "agent.append", id, blockId: e.id, field: "progress", text: redact(e.text) });
+                break;
+            case "tool_approved":
+                this.op({ op: "agent.block.patch", id, blockId: e.id, patch: { approval: e.reason, sandboxed: e.sandboxed } });
+                break;
+            case "tool_end": {
+                const d = e.result.display;
+                const shown = d?.body !== undefined ? d.body : e.result.content;
+                const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (e.result.isError ? e.result.content : "")), e.result.isError), durationMs: e.durationMs, progress: undefined };
+                if (d?.summary) patch.summary = d.summary;
+                if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
+                this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
+                break;
+            }
+            case "notice":
+                this.agentText.delete(id);
+                this.op({ op: "agent.block", id, block: { t: "notice", id: this.newId(), level: e.level, text: redact(e.message) } });
+                break;
+            case "retry":
+                this.agentPatch(id, { activity: `Retrying: ${redact(e.reason)}` });
+                break;
+            case "usage":
+                this.agentPatch(id, { tokens: a.tokens + e.usage.inputTokens + e.usage.outputTokens + (e.usage.cacheReadTokens ?? 0) });
+                break;
+            case "turn_end":
+                this.agentEnded(id, e.reason);
+                break;
+        }
+    }
+
+    private agentEnded(id: string, reason: TurnEndReason) {
+        this.agentText.delete(id);
+        const a = this.view.agents.find((x) => x.id === id);
+        if (!a) return;
+        const said = [...a.blocks].reverse().find((b) => b.t === "text" && b.text.trim());
+        const status: AgentRun["status"] = reason === "aborted" ? "stopped" : reason === "done" || reason === "max_turns" ? "done" : "failed";
+        this.agentPatch(id, { status, endedAt: Date.now(), activity: undefined, ...(a.report === undefined && said?.t === "text" ? { report: said.text } : {}) });
+        // A delegated task's result (its report, and why it ended) comes once it settles.
+        const task = a.taskId ? this.agent?.delegatedTasks.find((t) => t.id === a.taskId) : undefined;
+        if (task)
+            void task.settled.then(() => {
+                if (!task.result) return;
+                this.agentPatch(id, { report: redact(task.result.report), status: task.status === "cancelled" ? "stopped" : task.status === "failed" ? "failed" : "done" });
+            });
+    }
+
+    /** The running sub-agent a permission request comes from: by its tool call, or by the label it asks with. */
+    private agentAsking(req: PermissionRequest): AgentRun | undefined {
+        const live = this.view.agents.filter((a) => a.status === "running" || a.status === "waiting");
+        if (req.callId) {
+            const byCall = live.find((a) => a.blocks.some((b) => b.id === req.callId));
+            if (byCall) return byCall;
+        }
+        return req.agentLabel ? live.find((a) => this.agentLabels.get(a.id) === req.agentLabel) : undefined;
+    }
+
+    /** Stop a delegated task by its sub-agent's id, or every one still running. Task sub-agents stop with the turn. */
+    stopAgent(agentId?: string): number {
+        if (!this.agent) return 0;
+        if (!agentId) return this.agent.stopDelegated();
+        const a = this.view.agents.find((x) => x.id === agentId);
+        if (!a?.taskId) throw new Error(a ? "This sub-agent stops with the turn: interrupt it (Esc) to stop it." : "No such sub-agent.");
+        return this.agent.stopDelegated(a.taskId);
     }
 
     private endTurn(reason: TurnEndReason) {
@@ -809,8 +938,14 @@ export class Runtime {
         p.resolve(r);
     }
 
-    private cancelInteractions() {
-        for (const id of [...this.pending.keys()]) this.settle(id, undefined);
+    /** Answer what's pending with nothing. At a turn's end, a delegated task still running keeps asking: it outlives the turn. */
+    private cancelInteractions(opts: { keepDelegated?: boolean } = {}) {
+        for (const [id, p] of [...this.pending]) {
+            const agentId = p.interaction.kind === "permission" ? p.interaction.agentId : undefined;
+            const agent = agentId ? this.view.agents.find((a) => a.id === agentId) : undefined;
+            if (opts.keepDelegated && agent?.taskId && (agent.status === "running" || agent.status === "waiting")) continue;
+            this.settle(id, undefined);
+        }
     }
 
     private async askPermission(req: PermissionRequest): Promise<PermissionResponse> {
@@ -866,8 +1001,20 @@ export class Runtime {
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${tool.name} in ${projectName}` });
         }
         it.options.push({ id: "no", label: "Deny" });
+        // A sub-agent stopped while this was put together asks nothing.
+        if (req.signal?.aborted) return { allow: false };
         if (req.callId && this.blockIn(this.toolTurn.get(req.callId), req.callId)) this.patchBlock(req.callId, { status: "awaiting" });
-        const answer = await this.interact(it);
+        const asking = this.agentAsking(req);
+        if (asking) {
+            it.agentId = asking.id;
+            this.agentPatch(asking.id, { status: "waiting", activity: "Waiting for approval" });
+        }
+        // Withdrawn when its sub-agent is stopped.
+        const withdraw = () => this.settle(it.id, undefined);
+        req.signal?.addEventListener("abort", withdraw, { once: true });
+        const answer = await this.interact(it).finally(() => req.signal?.removeEventListener("abort", withdraw));
+        if (asking && this.view.agents.find((a) => a.id === asking.id)?.status === "waiting") this.agentPatch(asking.id, { status: "running", activity: req.title });
+        if (req.signal?.aborted) return { allow: false };
         const choice = answer?.kind === "permission" ? answer.choice : "no";
         if (req.callId && this.blockIn(this.toolTurn.get(req.callId), req.callId)) this.patchBlock(req.callId, { status: choice === "no" ? "denied" : "running" });
         switch (choice) {
@@ -1011,11 +1158,11 @@ export class Runtime {
         } finally {
             this.busy = false;
             this.abort = undefined;
-            this.cancelInteractions();
+            this.cancelInteractions({ keepDelegated: true });
             this.closeOpen();
             this.turnId = undefined;
             this.setState({ busy: false, activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
-            this.setStatus(reason === "error" ? "error" : "idle");
+            this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             this.flush();
             this.engine.sessionChanged(this);
         }
@@ -1224,7 +1371,12 @@ export class Runtime {
     private rebuild() {
         const segments = readSegments(this.session.path);
         const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
-        this.op({ op: "reset", turns });
+        // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
+        const agents = agentsFromTurns(turns, this.model && modelRef(this.model)).map((r) => {
+            const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
+            return live ? { ...live, turnId: r.turnId } : r;
+        });
+        this.op({ op: "reset", turns, agents });
     }
 
     changes(): ChangesInfo {
@@ -1330,6 +1482,7 @@ export class Runtime {
         this.cancelInteractions();
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
-        await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), killAllShells({ state: this.toolState })]);
+        // Delegated tasks still running stop with the session.
+        await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
     }
 }

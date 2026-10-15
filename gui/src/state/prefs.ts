@@ -39,7 +39,7 @@ export interface Prefs {
     fontSize: number;
     sidebar: boolean;
     panel: boolean;
-    panelTab: "changes" | "plan" | "context";
+    panelTab: "changes" | "plan" | "agents" | "context";
     groupBy: "date" | "project";
     /** Enter sends (shift+enter for a newline); otherwise mod+enter sends. */
     enterSends: boolean;

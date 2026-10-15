@@ -102,6 +102,42 @@ export interface ToolBlock {
     approval?: string;
     sandboxed?: boolean;
     sub?: SubagentInfo;
+    /** It runs a sub-agent: a Task call, or a task Claude Code or Codex delegated to another model. */
+    agent?: boolean;
+}
+
+/**
+ * A sub-agent of the session, for the bar above the input and its activity
+ * view: a Task call, or a task Claude Code or Codex delegated to another
+ * provider's model. Its id is the call that started it.
+ */
+export interface AgentRun {
+    id: string;
+    /** The turn the call is in. */
+    turnId: string;
+    /** A delegated task's id (task-1): what stops it. Task sub-agents stop with the turn. */
+    taskId?: string;
+    description: string;
+    /** "general-purpose", "explore", or a custom agent type. */
+    agentType: string;
+    /** provider:model, when it isn't the session's own. */
+    model?: string;
+    /** The instructions it was given (cut when long). */
+    prompt?: string;
+    status: "running" | "waiting" | "done" | "failed" | "stopped";
+    startedAt: number;
+    endedAt?: number;
+    toolCount: number;
+    tokens: number;
+    /** What it's doing now: a tool's title, "Thinking", "Writing". */
+    activity?: string;
+    /** What it said and did, oldest first: its text, tool calls and notices (the most recent ones). */
+    blocks: Block[];
+    /** How many earlier blocks were dropped to keep the list short. */
+    dropped?: number;
+    report?: string;
+    /** From before the session was reopened: only the call and its result are known. */
+    replayed?: boolean;
 }
 
 export interface NoticeBlock {
@@ -181,6 +217,8 @@ export interface PermissionInteraction {
     reason?: string;
     classifierReason?: string;
     agentLabel?: string;
+    /** The sub-agent asking (an AgentRun id), when one is. */
+    agentId?: string;
     options: PermissionOption[];
 }
 
@@ -277,6 +315,7 @@ export interface SessionState {
 export interface SessionSnapshot {
     state: SessionState;
     turns: Turn[];
+    agents: AgentRun[];
     seq: number;
 }
 
@@ -289,7 +328,14 @@ export type SessionOp =
     | { op: "block.patch"; turnId: string; blockId: string; patch: Partial<Block>; parent?: string }
     | { op: "block.remove"; turnId: string; blockId: string }
     | { op: "append"; turnId: string; blockId: string; field: "text" | "progress" | "output"; text: string }
-    | { op: "reset"; turns: Turn[] };
+    | { op: "reset"; turns: Turn[]; agents?: AgentRun[] }
+    /** A sub-agent started (or replaced, with the same id). */
+    | { op: "agent"; agent: AgentRun }
+    | { op: "agent.patch"; id: string; patch: Partial<Omit<AgentRun, "id" | "blocks">> }
+    /** Adds a block to a sub-agent's activity, or replaces the one with that id. */
+    | { op: "agent.block"; id: string; block: Block }
+    | { op: "agent.block.patch"; id: string; blockId: string; patch: Partial<Block> }
+    | { op: "agent.append"; id: string; blockId: string; field: "text" | "progress"; text: string };
 
 // ---------------------------------------------------------------------------
 // Sidebar
@@ -442,6 +488,8 @@ export interface Methods {
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
+    /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */
+    "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };
     "session.export": { params: { id: string }; result: { markdown: string } };
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
     "session.dequeue": { params: { id: string; index: number }; result: null };

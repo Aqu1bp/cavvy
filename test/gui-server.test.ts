@@ -4,7 +4,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
@@ -12,7 +12,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { Block, InteractionResponse, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, InteractionResponse, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 
 const TOKEN = "test-token-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
@@ -43,12 +43,12 @@ class Client {
     ws: WebSocket;
     private next = 1;
     private waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-    views = new Map<string, { state: SessionState; turns: Turn[]; seq: number }>();
+    views = new Map<string, { state: SessionState; turns: Turn[]; agents: AgentRun[]; seq: number }>();
     events: ServerEvent[] = [];
     private listeners = new Set<() => void>();
 
-    constructor(token = TOKEN, headers: Record<string, string> = {}) {
-        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["harness.v1", `auth.${token}`], headers } as any);
+    constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port) {
+        this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`], headers } as any);
         this.ws.onmessage = (m) => {
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
@@ -86,7 +86,7 @@ class Client {
 
     async open(method: "session.create" | "session.open", params: Record<string, unknown>): Promise<string> {
         const snap = await this.call<SessionSnapshot>(method, params);
-        this.views.set(snap.state.id, { state: snap.state, turns: snap.turns, seq: snap.seq });
+        this.views.set(snap.state.id, { state: snap.state, turns: snap.turns, agents: snap.agents, seq: snap.seq });
         return snap.state.id;
     }
 
@@ -130,6 +130,15 @@ class Client {
     close() {
         this.ws.close();
     }
+}
+
+/** A fake `claude` (test/fixtures) in a folder of its own, with none of other test files' FAKE_* settings. */
+function fakeClaude(): string {
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+    const bin = tempDir("harness-gui-cli-");
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
+    chmodSync(join(bin, "claude"), 0o755);
+    return join(bin, "claude");
 }
 
 async function client(): Promise<Client> {
@@ -347,9 +356,10 @@ describe("sessions", () => {
 
 describe("using a plan through an installed CLI", () => {
     // A fake `claude` (test/fixtures) on PATH, as an installed Claude Code would be.
-    const bin = tempDir("harness-gui-cli-");
-    writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
-    chmodSync(join(bin, "claude"), 0o755);
+    let bin = "";
+    beforeAll(() => {
+        bin = dirname(fakeClaude());
+    });
     const PATH = process.env.PATH;
     const claudeCode = async (c: Client) => (await c.call<any[]>("providers.list")).find((p) => p.id === "claude-code");
 
@@ -390,4 +400,123 @@ describe("using a plan through an installed CLI", () => {
         process.env.PATH = PATH;
         c.close();
     });
+});
+
+describe("sub-agents", () => {
+    const byName = (v: { agents: AgentRun[] }) => [...v.agents].sort((a, b) => a.description.localeCompare(b.description));
+
+    test("each Task sub-agent shows with its model, activity and report", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "Use agents to review the auth module and its tests" });
+        await c.until(id, done, 20_000);
+        const v = c.view(id);
+        const [tests, auth] = byName(v);
+        expect([auth, tests].map((a) => [a!.description, a!.agentType, a!.model, a!.status, a!.taskId])).toEqual([
+            ["Map the auth module", "explore", "mock:mock-haiku", "done", undefined],
+            ["Find gaps in sign-in tests", "explore", "mock:mock-sonnet", "done", undefined],
+        ]);
+        // What it said and did, in order, with each tool's result.
+        expect(auth!.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text.split("\n")[0] : b.t))).toEqual([
+            "I'll start with the auth module.",
+            "Glob:ok",
+            "Read:ok",
+            "Read:ok",
+            "Grep:ok",
+            "Sign-in strategies are registered in one list:",
+        ]);
+        expect(auth!.toolCount).toBe(4);
+        expect(auth!.tokens).toBeGreaterThan(0);
+        expect(auth!.prompt).toContain("Subtask: read src/auth");
+        expect(auth!.report).toStartWith("Sign-in strategies are registered");
+        expect(tests!.report).toStartWith("Only email sign-in is tested");
+        expect(auth!.endedAt).toBeGreaterThanOrEqual(auth!.startedAt);
+        // The calls in the turn are marked as sub-agents.
+        expect(tools(lastTurn(v)).filter((b) => b.agent).map((b) => b.name)).toEqual(["Task", "Task"]);
+
+        // Only delegated tasks can be stopped on their own; a Task stops with the turn.
+        await expect(c.call("session.stopAgent", { id, agentId: auth!.id })).rejects.toThrow(/stops with the turn/);
+        expect(await c.call("session.stopAgent", { id })).toEqual({ stopped: 0 });
+
+        // After a restart they come back from their calls: the report, not the activity.
+        const restarted = await startServer({ token: TOKEN });
+        try {
+            const c2 = new Client(TOKEN, {}, restarted.port);
+            await c2.opened();
+            const snap = await c2.call<SessionSnapshot>("session.open", { id });
+            expect([...snap.agents].sort((a, b) => a.description.localeCompare(b.description)).map((a) => [a.description, a.status, a.replayed, a.blocks.length, a.report?.slice(0, 20)])).toEqual([
+                ["Find gaps in sign-in tests", "done", true, 0, "Only email sign-in i"],
+                ["Map the auth module", "done", true, 0, "Sign-in strategies a"],
+            ]);
+            c2.close();
+        } finally {
+            await restarted.stop();
+        }
+        c.close();
+    }, 30_000);
+
+    test("a task Claude Code delegates to another model shows as an agent, with the id that stops it", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const { DELEGATE_TOOL } = await import("../src/agent/delegation");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_MCP_CALLS = JSON.stringify([{ tool: "delegate", args: { task: "Subtask: read src/auth and report how sign-in strategies are registered.", description: "Map auth", model: "mock:mock-haiku", agent: "explore" } }]);
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "map the auth module" });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            expect(v.agents).toHaveLength(1);
+            const a = v.agents[0]!;
+            expect(a).toMatchObject({ taskId: "task-1", description: "Map auth", agentType: "explore", model: "mock:mock-haiku", status: "done" });
+            expect(a.report).toStartWith("Sign-in strategies are registered");
+            expect(a.blocks.filter((b) => b.t === "tool").map((b) => (b as ToolBlock).name)).toEqual(["Glob", "Read", "Read", "Grep"]);
+            expect(tools(lastTurn(v)).find((b) => b.name === DELEGATE_TOOL)?.agent).toBe(true);
+            // It's over, so there's nothing left to stop.
+            expect(await c.call("session.stopAgent", { id, agentId: a.id })).toEqual({ stopped: 0 });
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_MCP_CALLS;
+            removeAgentConfig("claude-code");
+        }
+    }, 45_000);
+
+    test("a delegated agent working past the turn keeps asking; stopping it withdraws the request", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "mcp";
+        // In the background, then a while waiting on it: the task asks during Claude Code's turn, which ends while it goes on.
+        process.env.FAKE_MCP_CALLS = JSON.stringify([
+            { tool: "delegate", args: { task: "Subtask: write a note in NOTES.md.", description: "Write a note", model: "mock:mock-haiku", wait: false } },
+            { tool: "task_status", args: { task_id: "task-1", wait_seconds: 2 } },
+        ]);
+        try {
+            const c = await client();
+            const dir = project();
+            const id = await c.open("session.create", { cwd: dir });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "get a note written" });
+            // Its Write asks (Manual mode), naming it, and it shows as waiting, after the turn is over.
+            await c.until(id, (v) => done(v) && v.state.interactions.length > 0 && v.agents[0]?.status === "waiting", 20_000);
+            await Bun.sleep(200);
+            const v = c.view(id);
+            expect(v.state.status).toBe("waiting");
+            const ask = v.state.interactions[0]!;
+            expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(["Write", "Write a note (mock:mock-haiku)", v.agents[0]!.id]);
+            expect(v.agents[0]!.activity).toBe("Waiting for approval");
+
+            expect(await c.call("session.stopAgent", { id, agentId: v.agents[0]!.id })).toEqual({ stopped: 1 });
+            await c.until(id, (x) => x.state.interactions.length === 0 && x.agents[0]?.status === "stopped", 10_000);
+            expect(existsSync(join(dir, "NOTES.md"))).toBe(false);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_MCP_CALLS;
+            removeAgentConfig("claude-code");
+        }
+    }, 45_000);
 });

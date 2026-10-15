@@ -7,20 +7,120 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { applyOp, coalesce, tail, wireReplacer, PROGRESS_LIMIT } = await import("../src/server/timeline");
+const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
-const { replay, UiLog } = await import("../src/server/history");
+const { agentsFromTurns, replay, runsAgent, UiLog } = await import("../src/server/history");
+const { DELEGATE_TOOL } = await import("../src/agent/delegation");
 const { mergePath } = await import("../src/server/login-env");
 const { Session, listAllSessions, findSessionAnywhere } = await import("../src/agent/session");
 const { Engine } = await import("../src/server/engine");
-import type { SessionState, Turn } from "../src/server/protocol";
+import type { AgentRun, SessionState, Turn } from "../src/server/protocol";
 import type { Message } from "../src/providers/types";
 
 afterAll(() => iso.cleanup());
 
 function view() {
-    return { state: { id: "s", busy: false, queued: [] } as unknown as SessionState, turns: [] as Turn[] };
+    return { state: { id: "s", busy: false, queued: [] } as unknown as SessionState, turns: [] as Turn[], agents: [] as AgentRun[] };
 }
+
+const agent = (id: string): AgentRun => ({ id, turnId: "t1", description: "Review auth", agentType: "explore", model: "gemini:gemini-3", status: "running", startedAt: 1, toolCount: 0, tokens: 0, blocks: [] });
+
+describe("sub-agent ops", () => {
+    test("an agent's activity: text streams in, tools start and finish, and it ends", () => {
+        const v = view();
+        applyOp(v, { op: "agent", agent: agent("call_1") });
+        applyOp(v, { op: "agent.block", id: "call_1", block: { t: "text", id: "x1", text: "" } });
+        applyOp(v, { op: "agent.append", id: "call_1", blockId: "x1", field: "text", text: "Looking " });
+        applyOp(v, { op: "agent.append", id: "call_1", blockId: "x1", field: "text", text: "around." });
+        applyOp(v, { op: "agent.block", id: "call_1", block: { t: "tool", id: "r1", name: "Read", title: "Read(a.ts)", status: "running" } });
+        applyOp(v, { op: "agent.patch", id: "call_1", patch: { toolCount: 1, activity: "Read(a.ts)" } });
+        applyOp(v, { op: "agent.block.patch", id: "call_1", blockId: "r1", patch: { status: "ok", summary: "Read 8 lines" } });
+        applyOp(v, { op: "agent.patch", id: "call_1", patch: { status: "done", activity: null as unknown as undefined, report: "All good." } });
+        const a = v.agents[0]!;
+        expect(a.blocks).toEqual([
+            { t: "text", id: "x1", text: "Looking around." },
+            { t: "tool", id: "r1", name: "Read", title: "Read(a.ts)", status: "ok", summary: "Read 8 lines" },
+        ]);
+        expect(a).toMatchObject({ status: "done", toolCount: 1, report: "All good." });
+        // Cleared on the wire (null), so no stale "Reading…" once it's done.
+        expect(a.activity).toBeUndefined();
+        // Ops for an agent that isn't there change nothing.
+        applyOp(v, { op: "agent.patch", id: "nope", patch: { status: "failed" } });
+        expect(v.agents).toHaveLength(1);
+    });
+
+    test("an agent with the same id replaces the old one; a block with the same id replaces it", () => {
+        const v = view();
+        applyOp(v, { op: "agent", agent: { ...agent("c"), replayed: true } });
+        applyOp(v, { op: "agent", agent: agent("c") });
+        expect(v.agents).toHaveLength(1);
+        expect(v.agents[0]!.replayed).toBeUndefined();
+        applyOp(v, { op: "agent.block", id: "c", block: { t: "notice", id: "n", level: "warn", text: "one" } });
+        applyOp(v, { op: "agent.block", id: "c", block: { t: "notice", id: "n", level: "warn", text: "two" } });
+        expect(v.agents[0]!.blocks).toEqual([{ t: "notice", id: "n", level: "warn", text: "two" }]);
+    });
+
+    test("a long run keeps its latest blocks and counts the rest; live output keeps its tail", () => {
+        const v = view();
+        applyOp(v, { op: "agent", agent: agent("c") });
+        for (let i = 0; i < AGENT_BLOCKS + 5; i++) applyOp(v, { op: "agent.block", id: "c", block: { t: "tool", id: `t${i}`, name: "Read", title: "Read", status: "ok" } });
+        expect(v.agents[0]!.blocks).toHaveLength(AGENT_BLOCKS);
+        expect(v.agents[0]!.blocks[0]!.id).toBe("t5");
+        expect(v.agents[0]!.dropped).toBe(5);
+        const last = `t${AGENT_BLOCKS + 4}`;
+        applyOp(v, { op: "agent.append", id: "c", blockId: last, field: "progress", text: "x".repeat(PROGRESS_LIMIT + 500) });
+        expect(((v.agents[0]!.blocks.at(-1) as { progress?: string }).progress ?? "").length).toBeLessThanOrEqual(PROGRESS_LIMIT);
+    });
+
+    test("an agent's bursts coalesce; reset can replace the agents", () => {
+        const ops = coalesce([
+            { op: "agent.append", id: "c", blockId: "x", field: "text", text: "a" },
+            { op: "agent.append", id: "c", blockId: "x", field: "text", text: "b" },
+            { op: "agent.patch", id: "c", patch: { tokens: 10 } },
+            { op: "agent.patch", id: "c", patch: { tokens: 20, activity: "Writing" } },
+            { op: "agent.patch", id: "d", patch: { tokens: 1 } },
+        ]);
+        expect(ops).toEqual([
+            { op: "agent.append", id: "c", blockId: "x", field: "text", text: "ab" },
+            { op: "agent.patch", id: "c", patch: { tokens: 20, activity: "Writing" } },
+            { op: "agent.patch", id: "d", patch: { tokens: 1 } },
+        ]);
+        const v = view();
+        applyOp(v, { op: "agent", agent: agent("c") });
+        applyOp(v, { op: "reset", turns: [] });
+        expect(v.agents).toHaveLength(1);
+        applyOp(v, { op: "reset", turns: [], agents: [] });
+        expect(v.agents).toHaveLength(0);
+    });
+
+    test("a reopened session's sub-agents come from their calls: Task and a backend's delegate", () => {
+        expect(runsAgent("Task")).toBe(true);
+        expect(runsAgent(DELEGATE_TOOL)).toBe(true);
+        expect(runsAgent("Read")).toBe(false);
+        const turns: Turn[] = [
+            {
+                id: "t1",
+                prompt: { text: "review" },
+                status: "done",
+                startedAt: 5,
+                blocks: [
+                    { t: "tool", id: "a", name: "Task", title: "Task(x)", status: "ok", agent: true, input: { description: "Map auth", prompt: "Read src/auth", subagent_type: "explore", model: "mock:mock-haiku" }, output: "Strategies are in one list." },
+                    { t: "tool", id: "b", name: DELEGATE_TOOL, title: "Delegate", status: "error", agent: true, input: { description: "Gemini review", task: "Review it", model: "gemini:g" }, output: "It failed." },
+                    { t: "tool", id: "c", name: "Task", title: "Task(y)", status: "running", agent: true, input: { description: "Own model", prompt: "p", model: "mock:mock-opus" } },
+                    { t: "tool", id: "d", name: "Read", title: "Read", status: "ok" },
+                ],
+            },
+        ];
+        const agents = agentsFromTurns(turns, "mock:mock-opus");
+        expect(agents.map((a) => [a.id, a.description, a.agentType, a.model, a.prompt, a.status, a.report, a.replayed])).toEqual([
+            ["a", "Map auth", "explore", "mock:mock-haiku", "Read src/auth", "done", "Strategies are in one list.", true],
+            ["b", "Gemini review", "general-purpose", "gemini:g", "Review it", "failed", "It failed.", true],
+            // Its own model isn't named; a call that never got a result was stopped.
+            ["c", "Own model", "general-purpose", undefined, "p", "stopped", undefined, true],
+        ]);
+        expect(agents.every((a) => a.turnId === "t1" && a.startedAt === 5 && a.blocks.length === 0)).toBe(true);
+    });
+});
 
 describe("timeline ops", () => {
     test("append, patch and remove build a turn", () => {

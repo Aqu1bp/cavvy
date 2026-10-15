@@ -409,3 +409,101 @@
 .composer textarea:focus-visible {
     outline: none;
 }
+
+/* ---- Sub-agents above the input: one chip each -------------------------- */
+
+.agents-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 4px;
+    animation: rise 220ms var(--ease-out);
+}
+
+.agents-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 4px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+    white-space: nowrap;
+}
+
+.agent-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 30px;
+    max-width: 340px;
+    min-width: 0;
+    padding: 0 12px 0 10px;
+    border-radius: 999px;
+    background: var(--bg-card);
+    box-shadow: var(--shadow-card);
+    font-size: 0.893rem;
+    color: var(--fg);
+    transition: box-shadow var(--dur-fast), transform var(--dur-fast);
+}
+
+.agent-chip:hover {
+    box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-md);
+}
+
+.agent-chip:active {
+    transform: translateY(0.5px);
+}
+
+.agent-chip.st-waiting {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 50%, transparent), var(--shadow-card);
+}
+
+.agent-chip.on {
+    box-shadow: 0 0 0 1.5px var(--fg), var(--shadow-md);
+}
+
+.agent-chip.more {
+    color: var(--fg-muted);
+    padding: 0 12px;
+}
+
+.agent-chip-name {
+    min-width: 0;
+    font-weight: 500;
+}
+
+.agent-chip.st-done .agent-chip-name,
+.agent-chip.st-stopped .agent-chip-name {
+    color: var(--fg-muted);
+}
+
+.agent-chip-model {
+    flex: 0 0 auto;
+    max-width: 130px;
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+}
+
+.agent-st {
+    display: grid;
+    place-items: center;
+    flex: none;
+    color: var(--fg-subtle);
+}
+
+.agent-st.st-running {
+    color: var(--accent);
+}
+
+.agent-st.st-waiting {
+    color: var(--warning);
+}
+
+.agent-st.st-done {
+    color: var(--success);
+}
+
+.agent-st.st-failed {
+    color: var(--danger);
+}

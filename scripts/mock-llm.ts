@@ -7,6 +7,7 @@
 //   "plan"           presents a plan for approval
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
+//   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -54,8 +55,50 @@ export function requireSso(org: Org): boolean {
 
 Existing email login keeps working for everyone, and admins keep a recovery path even when SSO is enforced.`;
 
+const AUTH_REPORT = `Sign-in strategies are registered in one list:
+
+- \`src/auth/index.ts\` exports \`strategies\`, currently \`[emailStrategy]\`
+- \`src/auth/email.ts\` implements \`Strategy\` from \`src/auth/types.ts\`
+- \`loadSamlConfig()\` already reads \`SAML_ENTRY\`, so an SSO strategy can be appended to \`strategies\` without other changes.`;
+
+const TESTS_REPORT = `Only email sign-in is tested (\`test/auth.test.ts\`, one case). Missing:
+
+1. A rejected password (\`authenticate\` returning \`null\`)
+2. The order of \`strategies\`
+3. Anything for SSO: assertion checks and the \`requireSso\` gate`;
+
 function scenario(prompt: string, toolRounds: number, lastResult: string): Step | undefined {
     const p = prompt.toLowerCase();
+    // A sub-agent's task (from "agents"): look around, then report.
+    if (/^subtask:/.test(p)) {
+        // One that changes something (asks permission in Manual mode).
+        if (/\bnote\b/.test(p)) return [{ text: "Writing the note.", calls: [{ name: "Write", args: { file_path: "NOTES.md", content: "# Notes\n" } }] }, { text: "Wrote NOTES.md." }][toolRounds];
+        const tests = /\btests?\b/.test(p);
+        const steps: Step[] = [
+            {
+                reasoning: tests ? "I need the test files first, then what each one covers. ".repeat(4) : "Start from the auth module's entry point and follow the imports. ".repeat(4),
+                text: tests ? "I'll find the tests first." : "I'll start with the auth module.",
+                calls: tests ? [{ name: "Glob", args: { pattern: "test/**/*.ts" } }] : [{ name: "Glob", args: { pattern: "src/auth/*.ts" } }, { name: "Read", args: { file_path: "src/auth/index.ts" } }],
+            },
+            {
+                reasoning: "Now the details. ".repeat(6),
+                calls: tests ? [{ name: "Read", args: { file_path: "test/auth.test.ts" } }, { name: "Grep", args: { pattern: "authenticate", path: "src" } }] : [{ name: "Read", args: { file_path: "src/auth/email.ts" } }, { name: "Grep", args: { pattern: "strategies", path: "src" } }],
+            },
+            { text: tests ? TESTS_REPORT : AUTH_REPORT },
+        ];
+        return steps[toolRounds];
+    }
+    if (/\bagents?\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "I'll split this into two reviews and run them in parallel.",
+                calls: [
+                    { name: "Task", args: { description: "Map the auth module", prompt: "Subtask: read src/auth and report how sign-in strategies are registered, with file paths.", subagent_type: "explore", model: "mock:mock-haiku" } },
+                    { name: "Task", args: { description: "Find gaps in sign-in tests", prompt: "Subtask: check which tests cover sign-in and list what's missing.", subagent_type: "explore", model: "mock:mock-sonnet" } },
+                ],
+            };
+        return { text: "Both reviews are back.\n\n- **Auth:** strategies live in one list in `src/auth/index.ts`, so SSO can be appended there.\n- **Tests:** only the happy path of email sign-in is covered; SSO and failures need tests." };
+    }
     if (/\b(sso|demo)\b/.test(p)) {
         const steps: Step[] = [
             {
@@ -127,6 +170,7 @@ function titleFor(prompt: string): string {
     if (/\bplan\b/.test(p)) return "Plan the SSO rollout";
     if (/\bquestion\b/.test(p)) return "Choose an identity protocol";
     if (/\btodo\b/.test(p)) return "Track SSO tasks";
+    if (/\bagents?\b/.test(p)) return "Review auth with agents";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 

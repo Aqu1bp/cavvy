@@ -6,7 +6,7 @@
 import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AlertTriangle, Bot, ClipboardList, FilePen, Globe, MessageCircleQuestion, Plug, ShieldAlert, SquareTerminal, Zap } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction } from "@shared/protocol";
-import { respond } from "../state/actions";
+import { openAgents, respond } from "../state/actions";
 import { CodeBlock } from "./blocks/CodeBlock";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
@@ -108,7 +108,12 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     <div class="dock-title">{p.it.heading}</div>
                     <Show when={p.it.agentLabel}>
                         <div class="dock-sub">
-                            <Bot size={12} /> Requested by sub-agent · {p.it.agentLabel}
+                            <Bot size={12} /> Requested by sub-agent ·{" "}
+                            <Show when={p.it.agentId} fallback={p.it.agentLabel}>
+                                <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
+                                    {p.it.agentLabel}
+                                </button>
+                            </Show>
                         </div>
                     </Show>
                 </div>

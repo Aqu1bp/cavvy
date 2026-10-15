@@ -28,6 +28,7 @@ import type { Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protoco
 import { duration, plural, splitTitle, stripAnsi, tokens } from "../../lib/format";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
+import { openAgents } from "../../state/actions";
 import { Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
 import { DiffStat, DiffView } from "./DiffView";
@@ -104,7 +105,19 @@ const RUNNING: Record<string, string> = {
     ExitPlanMode: "Waiting for plan review",
 };
 
+/** "Gemini 3 Pro" style: the model part of provider:model. */
+export function shortModelRef(ref?: string): string | undefined {
+    return ref?.slice(ref.indexOf(":") + 1);
+}
+
 export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
+    // A sub-agent: its task, and the model when it's another one.
+    if (t.agent) {
+        const i = t.input ?? {};
+        const model = shortModelRef(typeof i.model === "string" ? i.model : undefined);
+        const what = String(i.description ?? splitTitle(t.title).arg ?? "");
+        return { verb: t.name === "Task" ? "Agent" : "Delegate", arg: [what, model].filter(Boolean).join(" · ") || undefined };
+    }
     if (t.name.startsWith("mcp__")) {
         const { verb, arg } = splitTitle(t.title);
         return { verb, arg };
@@ -119,10 +132,11 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     return { verb: VERBS[t.name] ?? t.name, arg: a || undefined };
 }
 
-export function ToolIcon(p: { name: string; size?: number }) {
+export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
     const s = () => p.size ?? 15;
     return (
         <Switch fallback={<Wrench size={s()} />}>
+            <Match when={p.agent}><Bot size={s()} /></Match>
             <Match when={p.name === "Read"}><FileText size={s()} /></Match>
             <Match when={p.name === "Grep" || p.name === "Glob"}><Search size={s()} /></Match>
             <Match when={p.name === "LS"}><FolderTree size={s()} /></Match>
@@ -151,6 +165,10 @@ function summarize(tools: ToolBlock[]): string {
     let mcp = 0;
     const misc: string[] = [];
     for (const t of tools) {
+        if (t.agent) {
+            agents++;
+            continue;
+        }
         const i = t.input ?? {};
         const path = String(i.file_path ?? i.notebook_path ?? i.path ?? t.title);
         switch (t.name) {
@@ -247,6 +265,7 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
         if (r.status === "awaiting") return r.name === "AskUserQuestion" || r.name === "ExitPlanMode" ? RUNNING[r.name] : "Waiting for approval";
         if (r.status === "streaming") return `Preparing ${VERBS[r.name]?.toLowerCase() ?? r.name}${r.receiving ? ` · ${tokens(r.receiving)} chars` : ""}`;
         const { arg } = toolLabel(r);
+        if (r.agent) return `${r.name === "Task" ? RUNNING.Task : "Delegated agent working"}${arg ? `: ${arg}` : ""}`;
         return `${RUNNING[r.name] ?? `Running ${r.name}`}${arg ? ` ${arg}` : ""}`;
     };
     const tail = () => {
@@ -340,7 +359,7 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
         <div class={`tool ${open() ? "open" : ""} st-${p.tool.status}`}>
             <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
                 <span class="tool-icon">
-                    <ToolIcon name={p.tool.name} />
+                    <ToolIcon name={p.tool.name} agent={p.tool.agent} />
                 </span>
                 <span class="tool-verb">{label().verb}</span>
                 <Show when={label().arg}>
@@ -498,7 +517,10 @@ function ToolDetails(p: { tool: ToolBlock }) {
                         </Section>
                     </Show>
                 </Match>
-                <Match when={t().name === "Task"}>
+                <Match when={t().agent}>
+                    <button class="link-btn" onClick={() => openAgents(t().id)}>
+                        <Bot size={13} /> View its activity
+                    </button>
                     <Show when={t().sub}>
                         <Section label={`${t().sub!.label} · ${plural(t().sub!.toolCount, "tool use")} · ${tokens(t().sub!.tokens)} tokens`}>
                             <div class="sub-rows">

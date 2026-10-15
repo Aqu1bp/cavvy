@@ -11,6 +11,8 @@ export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (pat
 /** Opened from the keyboard or a slash command; the composer's pickers watch these. */
 export const [modelPickerOpen, setModelPickerOpen] = createSignal(false);
 export const [modePickerOpen, setModePickerOpen] = createSignal(false);
+/** The sub-agent the side panel shows (an AgentRun id); none for the session itself. */
+export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);

@@ -133,13 +133,13 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     const id = snap.state.id;
     const existing = handles.get(id);
     if (existing) {
-        existing.set(reconcile({ state: snap.state, turns: snap.turns }, { key: "id", merge: false }));
+        existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
         existing.seq = snap.seq;
         existing.queue = [];
         return existing;
     }
     const h = createRoot(() => {
-        const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns });
+        const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
         const [draft, setDraft] = createSignal<string | undefined>();
         return { id, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, lastUsed: Date.now() };
     });

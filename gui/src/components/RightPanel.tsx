@@ -10,6 +10,8 @@ import { now } from "../lib/clock";
 import { DiffStat, DiffView, FileIcon } from "./blocks/DiffView";
 import { Ring, Segmented, Spinner } from "./ui/bits";
 import { MODE_LABELS } from "@shared/protocol";
+import { agentFocus } from "../state/ui";
+import { AgentDetail, AgentsList } from "./Agents";
 
 function ChangeFile(p: { file: FileDiff; cwd: string; open: boolean; toggle: () => void }) {
     return (
@@ -277,6 +279,8 @@ export function RightPanel(p: { handle: SessionHandle }) {
         window.addEventListener("pointerup", up);
     };
     const todos = () => p.handle.view.state.todos;
+    const agents = () => p.handle.view.agents;
+    const focused = () => (prefs.panelTab === "agents" ? agents().find((a) => a.id === agentFocus()) : undefined);
     const [changes, { refetch }] = createResource(
         () => ({ id: p.handle.id, n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy }),
         async ({ id }) => rpc.call("session.changes", { id }).catch((e): ChangesInfo => (reportError(e), { files: [], added: 0, removed: 0, tracked: true })),
@@ -289,26 +293,35 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     <X size={17} />
                 </button>
                 <div class="panel-scroll">
-                    <Overview handle={p.handle} changes={changes()} />
-                    <div class="panel-tabs">
-                        <Segmented
-                            value={prefs.panelTab}
-                            onChange={(v) => setPrefs("panelTab", v)}
-                            options={[
-                                { value: "changes", label: <>Changes{p.handle.view.state.filesChanged ? <span class="tab-count">{p.handle.view.state.filesChanged}</span> : null}</> },
-                                { value: "plan", label: <>Plan{todos().length ? <span class="tab-count">{todos().filter((t) => t.status === "completed").length}/{todos().length}</span> : null}</> },
-                                { value: "context", label: "Context" },
-                            ]}
-                        />
-                    </div>
-                    <Show when={prefs.panelTab === "changes"}>
-                        <Changes handle={p.handle} data={changes} refetch={() => void refetch()} />
+                    <Show when={focused()} keyed>
+                        {(a) => <AgentDetail handle={p.handle} agent={a} />}
                     </Show>
-                    <Show when={prefs.panelTab === "plan"}>
-                        <Plan todos={todos()} />
-                    </Show>
-                    <Show when={prefs.panelTab === "context"}>
-                        <Context handle={p.handle} />
+                    <Show when={!focused()}>
+                        <Overview handle={p.handle} changes={changes()} />
+                        <div class="panel-tabs">
+                            <Segmented
+                                value={prefs.panelTab}
+                                onChange={(v) => setPrefs("panelTab", v)}
+                                options={[
+                                    { value: "changes", label: <>Changes{p.handle.view.state.filesChanged ? <span class="tab-count">{p.handle.view.state.filesChanged}</span> : null}</> },
+                                    { value: "plan", label: <>Plan{todos().length ? <span class="tab-count">{todos().filter((t) => t.status === "completed").length}/{todos().length}</span> : null}</> },
+                                    ...(agents().length || prefs.panelTab === "agents" ? [{ value: "agents" as const, label: <>Agents{agents().length ? <span class="tab-count">{agents().length}</span> : null}</> }] : []),
+                                    { value: "context", label: "Context" },
+                                ]}
+                            />
+                        </div>
+                        <Show when={prefs.panelTab === "changes"}>
+                            <Changes handle={p.handle} data={changes} refetch={() => void refetch()} />
+                        </Show>
+                        <Show when={prefs.panelTab === "plan"}>
+                            <Plan todos={todos()} />
+                        </Show>
+                        <Show when={prefs.panelTab === "agents"}>
+                            <AgentsList handle={p.handle} />
+                        </Show>
+                        <Show when={prefs.panelTab === "context"}>
+                            <Context handle={p.handle} />
+                        </Show>
                     </Show>
                 </div>
             </div>

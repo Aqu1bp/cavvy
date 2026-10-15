@@ -539,6 +539,7 @@ export class Engine {
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
+            { name: "tasks", description: "Sub-agents and tasks delegated to other models (/tasks stop stops them)", args: "[stop [task-id]]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
@@ -648,6 +649,12 @@ export class Engine {
             case "session.killShell":
                 await this.runtime(p.id).killShell(str(p.shellId, "shellId"));
                 return null;
+            case "session.stopAgent":
+                try {
+                    return { stopped: this.runtime(p.id).stopAgent(optStr(p.agentId)) };
+                } catch (e) {
+                    throw new RpcError((e as Error).message);
+                }
             case "session.export":
                 return { markdown: this.runtime(p.id).exportMarkdown() };
             case "models.list":

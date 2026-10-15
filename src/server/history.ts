@@ -9,7 +9,8 @@ import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../prov
 import { textOf } from "../providers/types";
 import { redactedJson } from "../util/redact";
 import { fileDiff, trimInput, truncateText } from "./diffs";
-import type { Block, FileDiff, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
+import type { AgentRun, Block, FileDiff, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
+import { DELEGATE_TOOL } from "../agent/delegation";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
 export const INLINE_OUTPUT = 4000;
@@ -159,7 +160,46 @@ export function resultPatch(text: string, isError: boolean | undefined): Partial
 }
 
 export function toolBlockFromCall(call: ToolCallPart, meta: ToolMeta): ToolBlock {
-    return { t: "tool", id: call.id, name: call.name, title: meta.title, category: meta.category, input: trimInput(call.input), status: "running" };
+    return { t: "tool", id: call.id, name: call.name, title: meta.title, category: meta.category, input: trimInput(call.input), status: "running", ...(runsAgent(call.name) ? { agent: true } : {}) };
+}
+
+/** A call that runs a sub-agent: Task, or Claude Code's or Codex's delegate. */
+export function runsAgent(toolName: string): boolean {
+    return toolName === "Task" || toolName === DELEGATE_TOOL;
+}
+
+const text = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+
+/** A sub-agent as its call shows it, before any of its activity is known. */
+export function agentFromCall(b: ToolBlock, turnId: string, ownModel?: string): AgentRun {
+    const i = b.input ?? {};
+    const model = text(i.model);
+    return {
+        id: b.id,
+        turnId,
+        description: text(i.description) ?? b.title,
+        agentType: text(i.subagent_type) ?? text(i.agent) ?? "general-purpose",
+        model: model && model !== ownModel ? model : undefined,
+        prompt: text(i.prompt) ?? text(i.task),
+        status: "running",
+        startedAt: b.startedAt ?? Date.now(),
+        toolCount: 0,
+        tokens: 0,
+        blocks: [],
+    };
+}
+
+/** A reopened session's sub-agents: their calls and results (what they did along the way isn't kept). */
+export function agentsFromTurns(turns: Turn[], ownModel?: string): AgentRun[] {
+    const out: AgentRun[] = [];
+    for (const t of turns) {
+        for (const b of t.blocks) {
+            if (b.t !== "tool" || !b.agent) continue;
+            const status = b.status === "ok" ? "done" : b.status === "error" || b.status === "denied" ? "failed" : "stopped";
+            out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt: b.startedAt ?? t.startedAt ?? 0, report: b.output, replayed: true });
+        }
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
