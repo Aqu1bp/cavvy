@@ -54,7 +54,7 @@ beforeEach(() => {
     symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START"]) delete process.env[k];
+    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -400,7 +400,7 @@ describe("Codex backend", () => {
         expect(received().find((m) => m.result?.decision)?.result.decision).toBe("accept");
         const p = turnStarts()[0];
         expect(p).toMatchObject({ threadId: "thr-new", model: "gpt-test", approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly", networkAccess: false } });
-        expect(p.input[0].text).toBe("make x");
+        expect(p.input[0].text).toEndWith("</system-reminder>\n\nmake x");
         expect(session.backends.get("codex")?.id).toBe("thr-new");
         expect(session.cost).toBe(0);
         const said = session.messages.at(-1)!.content.map((x) => (x as any).text).join("\n");
@@ -416,11 +416,28 @@ describe("Codex backend", () => {
         expect(codexPolicy("bypassPermissions", [])).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access" });
     });
 
-    test("headless: the command is refused with the reason, and the turn ends", async () => {
-        const { run, events } = await makeAgent({ provider: "codex" });
+    test("headless: the command is declined with the reason, and the turn goes on", async () => {
+        const { run, events, session } = await makeAgent({ provider: "codex" });
         expect(await run("make x")).toBe("done");
+        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("decline");
         expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true, content: expect.stringMatching(/not granted \(non-interactive session\)/) });
+        expect(session.messages.at(-1)!.content.map((x) => (x as any).text).join("\n")).toContain("Finished.");
         expect(turnStarts()).toHaveLength(1);
+        // Codex tells its model only "rejected by user": the reason goes into the turn.
+        expect(received().find((m) => m.method === "turn/steer")?.params.input[0].text).toMatch(/^<system-reminder>\nHarness refused that: Permission to use Bash was not granted \(non-interactive session\)/);
+    });
+
+    test("the harness's reason is only steered in: when the turn is over, it doesn't start another (the user's words do)", async () => {
+        process.env.FAKE_STEER_FAIL = "1";
+        const headless = await makeAgent({ provider: "codex" });
+        expect(await headless.run("make x")).toBe("done");
+        expect(received().filter((m) => m.method === "turn/steer")).toHaveLength(1);
+        expect(turnStarts()).toHaveLength(1);
+
+        const user = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "use y instead" }) });
+        expect(await user.run("make x")).toBe("done");
+        expect(turnStarts().length).toBeGreaterThanOrEqual(3);
+        expect(JSON.stringify(turnStarts()[2])).toContain("use y instead");
     });
 
     test("declining with feedback: steered into the turn where Codex offers decline", async () => {
@@ -433,13 +450,74 @@ describe("Codex backend", () => {
         expect(turnStarts()).toHaveLength(1);
     });
 
-    test("declining with feedback where it can only cancel: the feedback starts the next turn", async () => {
-        let n = 0;
-        const { run } = await makeAgent({ provider: "codex", ask: () => (n++ === 0 ? { allow: false, feedback: "use y instead" } : { allow: true }) });
+    test("declining with feedback where Codex lists only cancel (untrusted mode): still declined and steered", async () => {
+        const { run } = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "use y instead" }) });
         await run("make x");
-        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("cancel");
-        expect(turnStarts()).toHaveLength(2);
-        expect(turnStarts()[1].input[0].text).toContain("use y instead");
+        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("decline");
+        expect(received().find((m) => m.method === "turn/steer")?.params.input[0].text).toContain("use y instead");
+        expect(turnStarts()).toHaveLength(1);
+    });
+
+    test("untrusted mode asks about every command: one the harness runs for its own models runs without asking", async () => {
+        process.env.FAKE_COMMAND = "cat greet.py";
+        const { run, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+        expect(await run("read it")).toBe("done");
+        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("accept");
+        expect(asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "cat greet.py" });
+    });
+
+    test("the command comes out of Codex's quoted shell wrapper as a shell would read it", async () => {
+        // As Codex 0.162 showed it: double quotes, with the ! part in single quotes.
+        process.env.FAKE_COMMAND_RAW = `/bin/zsh -lc "rg --files -g 'greet.py' -g '"'!**/.git/**'"'"`;
+        const { run, asked, events } = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+        expect(await run("find it")).toBe("done");
+        expect(asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true });
+        expect(events.find((e) => e.type === "tool_start")).toMatchObject({ call: { input: { command: "rg --files -g 'greet.py' -g '!**/.git/**'" } } });
+
+        // A wrapper with more around it stays whole (and isn't read-only).
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND_RAW = `/bin/zsh -lc 'cat a' && rm -rf b`;
+        const second = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+        await second.run("go");
+        expect(second.asked.map((a) => a.input.command)).toEqual([`/bin/zsh -lc 'cat a' && rm -rf b`]);
+    });
+
+    test("a shell the model named, or a folder it picked, isn't taken on trust: the prompt shows them", async () => {
+        const cases: [Record<string, string>, string][] = [
+            [{ FAKE_COMMAND_RAW: "./bash -lc 'cat greet.py'" }, "./bash -lc 'cat greet.py'"],
+            [{ FAKE_COMMAND_RAW: "/tmp/x/zsh -lc 'cat greet.py'" }, "/tmp/x/zsh -lc 'cat greet.py'"],
+            [{ FAKE_COMMAND: "cat credentials.json", FAKE_COMMAND_CWD: "/tmp/elsewhere" }, "cd '/tmp/elsewhere' && cat credentials.json"],
+        ];
+        for (const [vars, shown] of cases) {
+            rmSync(LOG, { force: true });
+            for (const k of ["FAKE_COMMAND", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD"]) delete process.env[k];
+            Object.assign(process.env, vars);
+            const { run, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+            await run("read it");
+            expect(asked.map((a) => a.input.command)).toEqual([shown]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        }
+    });
+
+    test("...but not past an ask rule, near credentials, or where the parsed command leaves something out", async () => {
+        const cases: [Record<string, string>, any][] = [
+            [{ FAKE_COMMAND: "cat notes.txt" }, { permissions: { ask: ["Bash(cat:*)"] } }],
+            [{ FAKE_COMMAND: "cat .env" }, {}],
+            [{ FAKE_COMMAND: "cat notes.txt", FAKE_COMMAND_SCRIPT: "rm -rf build; cat notes.txt" }, {}],
+        ];
+        for (const [vars, settings] of cases) {
+            rmSync(LOG, { force: true });
+            Object.assign(process.env, vars);
+            const { run, asked } = await makeAgent({ provider: "codex", settings, ask: () => ({ allow: false, feedback: "no" }) });
+            await run("read it");
+            expect(asked).toHaveLength(1);
+            // The prompt shows the whole command, not Codex's parsed version of it.
+            expect(asked[0]!.input.command).toBe(vars.FAKE_COMMAND_SCRIPT ?? vars.FAKE_COMMAND);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+            delete process.env.FAKE_COMMAND_SCRIPT;
+        }
     });
 
     test("declining without feedback cancels and ends the turn", async () => {
@@ -634,7 +712,8 @@ describe("review findings (PR #1)", () => {
         a.setMode("default");
         await done;
         const [, second] = turnStarts();
-        expect(second.input[0].text).toBe("and then this");
+        // Manual mode: Codex is told its changes are asked about, not stopped by the read-only sandbox.
+        expect(second.input[0].text).toMatch(/^<system-reminder>\nThe sandbox is read-only, but you can still change files and run other commands: each one goes to the user for approval first[\s\S]*\n\nand then this$/);
         expect(second).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly" } });
     });
 

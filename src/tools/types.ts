@@ -82,8 +82,10 @@ export interface ToolContext {
     /** Streams live progress text (e.g. command output) to the UI. */
     onProgress?: (text: string) => void;
     ui: UiBridge;
-    /** Runs a sub-agent (Task tool). */
-    runSubagent?: (opts: { description: string; prompt: string; agentType?: string }, signal: AbortSignal) => Promise<string>;
+    /** Runs a sub-agent (Task tool), on `model` (provider:model) when given. */
+    runSubagent?: (opts: { description: string; prompt: string; agentType?: string; model?: string }, signal: AbortSignal) => Promise<{ report: string; isError?: boolean; model?: string }>;
+    /** The agent types and models a sub-agent can run on (ListModels tool). */
+    listModels?: (opts: { provider?: string; query?: string }, signal: AbortSignal) => Promise<string>;
     /** Model-facing web search (WebSearch tool). */
     webSearch?: (query: string, signal: AbortSignal) => Promise<string>;
     /** Small-model helper for WebFetch prompts. */

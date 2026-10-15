@@ -12,13 +12,17 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang
+// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp
+// FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
+// FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
+// FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error, like a CLI without it
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
+import { callTool, connect, type McpServerRef } from "./mcp-call";
 
 const log = (o: unknown) => {
     if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
@@ -112,6 +116,8 @@ function selfApproved(tool: string, input: any): boolean {
 }
 
 const sessionId = resume ?? `sess-${Math.random().toString(36).slice(2, 10)}`;
+/** Servers added with mcp_set_servers, and the tools each lets run without asking. */
+const mcpServers = new Map<string, McpServerRef & { allowed: Set<string> }>();
 const pending = new Map<string, (r: any) => void>();
 let interrupted = false;
 let wake: (() => void) | undefined;
@@ -208,8 +214,39 @@ async function turn(content: any[]) {
     else if (scenario === "write-config") go = await use("toolu_c", "Write", { file_path: join(cwd, ".claude", "settings.json"), content: "{}" });
     else if (scenario === "read-secret") go = await use("toolu_r", "Read", { file_path: join(cwd, "secret.txt") });
     else if (scenario === "rm") go = await use("toolu_rm", "Bash", { command: "rm victim.txt", description: "Remove it" });
-    else if (scenario === "bash") go = await use("toolu_b", "Bash", { command: "npm test", description: "Run tests" });
+    else if (scenario === "bash") go = await use("toolu_b", "Bash", { command: process.env.FAKE_COMMAND ?? "npm test", description: "Run tests" });
     else if (scenario === "leak") go = await use("toolu_l", "Bash", { command: "cat secret.txt" });
+    else if (scenario === "mcp") {
+        const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
+        const results: string[] = [];
+        for (const [i, c] of calls.entries()) {
+            const name = c.server ?? [...mcpServers.keys()][0] ?? "none";
+            const s = mcpServers.get(name);
+            const id = `toolu_m${prompts}_${i}`;
+            const tool = `mcp__${name}__${c.tool}`;
+            toolUse(id, tool, c.args);
+            if (!s) {
+                toolResult(id, `No such tool available: ${tool}`, true);
+                results.push(`(no ${tool})`);
+                continue;
+            }
+            // Its policy for the server's tools: always_allow runs without asking.
+            if (!s.allowed.has(c.tool)) {
+                const r = await ask(tool, c.args, id);
+                if (r.behavior !== "allow") {
+                    toolResult(id, String(r.message), true);
+                    results.push(`(denied ${tool})`);
+                    continue;
+                }
+            }
+            const r = await callTool(s, c.tool, c.args);
+            log({ mcpResult: { tool: c.tool, ...r } });
+            toolResult(id, r.text, r.isError);
+            results.push(r.text);
+        }
+        text(results.join("\n---\n"));
+        return result("success", { result: results.join("\n---\n") });
+    }
     else if (scenario === "ask") {
         const input = { questions: [{ question: "Which color?", header: "Color", options: [{ label: "Red", description: "warm" }, { label: "Blue", description: "cool" }], multiSelect: false }] };
         toolUse("toolu_q", "AskUserQuestion", input);
@@ -257,6 +294,25 @@ for await (const chunk of Bun.stdin.stream()) {
                         },
                     },
                 });
+            } else if (sub === "mcp_set_servers") {
+                if (process.env.FAKE_MCP_REFUSE === "1") {
+                    out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "Unsupported control request subtype: mcp_set_servers" } });
+                    continue;
+                }
+                // Like the CLI: connect to each, then answer.
+                const errors: Record<string, string> = {};
+                for (const [name, cfg] of Object.entries<any>(m.request.servers ?? {})) {
+                    if (cfg.type !== "http") continue;
+                    const s = { url: cfg.url, headers: cfg.headers ?? {}, allowed: new Set<string>((cfg.tools ?? []).filter((t: any) => t.permission_policy === "always_allow").map((t: any) => t.name)) };
+                    try {
+                        const c = await connect(s);
+                        mcpServers.set(name, s);
+                        log({ mcpConnected: name, instructions: c.instructions, tools: c.tools.map((t: any) => t.name) });
+                    } catch (e) {
+                        errors[name] = (e as Error).message;
+                    }
+                }
+                out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { added: [...mcpServers.keys()], removed: [], errors } } });
             } else if (sub === "interrupt") {
                 if (process.env.FAKE_IGNORE_STOP === "1") continue;
                 interrupted = true;

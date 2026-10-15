@@ -14,6 +14,7 @@ import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs
 import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
@@ -222,6 +223,7 @@ export class App {
         if (this.exiting) return;
         this.exiting = true;
         this.abort?.abort();
+        const disposed = this.agent?.dispose();
         for (const d of this.dialogs) d.cancel();
         this.stopTicker();
         this.screen.setLive([]);
@@ -231,7 +233,7 @@ export class App {
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         this.screen.stop();
         this.exitResolve?.();
         process.exit(code);
@@ -408,6 +410,7 @@ export class App {
         } catch {
             this.model = undefined;
             this.client = undefined;
+            void this.agent?.dispose();
             this.agent = undefined;
         }
         this.updateHelpers();
@@ -466,6 +469,8 @@ export class App {
 
     makeAgent() {
         if (!this.model || !this.client) return;
+        // Tasks the old one delegated stop with it.
+        void this.agent?.dispose();
         this.agent = new Agent({
             session: this.session,
             model: this.model,
@@ -477,6 +482,7 @@ export class App {
             mode: { get: () => this.mode, set: (m) => this.setMode(m, { fromAgent: true }) },
             toolState: this.toolState,
             nativeWebSearch: this.nativeSearch(),
+            listings: () => this.listings,
             maxTurns: this.init.maxTurns,
             appendSystemPrompt: this.init.appendSystemPrompt,
             host: {
@@ -842,7 +848,7 @@ export class App {
             const out: string[] = ["", toolLine(displayTitle(title, tool), state)];
             if (sandboxed && autoReason === "sandboxed") out.push(theme.subtle("  ⎿  ran in the sandbox"));
             else if (autoReason && autoReason !== "hook") out.push(theme.subtle(`  ⎿  auto-approved${sandboxed ? " (sandboxed)" : ""}: ${truncate(autoReason, cols - 34)}`));
-            if (call.name === "Task" && sub) {
+            if ((call.name === "Task" || call.name === DELEGATE_TOOL) && sub) {
                 out.push(theme.muted(`  ⎿  ${result.isError ? "Failed" : "Done"} (${sub.count} tool use${sub.count === 1 ? "" : "s"} · ${formatTokens(sub.tokens)} tokens · ${formatDuration(durationMs)})`));
                 if (verbose) out.push(...resultLines(result.content, cols, 40));
             } else if (denied) {
@@ -898,8 +904,8 @@ export class App {
     }
 
     private askPermission(req: PermissionRequest): Promise<PermissionResponse> {
-        // One prompt at a time, even with parallel sub-agents.
-        const run = async () => this.permissionDialog(req);
+        // One prompt at a time, even with parallel sub-agents. A stopped sub-agent's prompt isn't shown.
+        const run = async (): Promise<PermissionResponse> => (req.signal?.aborted ? { allow: false } : this.permissionDialog(req));
         const p = this.permissionQueue.then(run, run);
         this.permissionQueue = p.catch(() => undefined);
         return p;
@@ -968,6 +974,8 @@ export class App {
         if (req.classifierReason) header.push("", theme.autoMode(`Auto mode asked you because: ${req.classifierReason}`));
         header.push("", "Do you want to proceed?");
         items.push({ label: `No, and tell ${APP_TITLE} what to do differently ${theme.muted("(esc)")}`, value: "no" });
+        // Its sub-agent was stopped while this was put together.
+        if (req.signal?.aborted) return { allow: false };
 
         const d = new SelectDialog<Choice>({
             title,
@@ -985,7 +993,11 @@ export class App {
             },
         });
         void this.notifier.notify("permission");
-        const choice = ((await this.showDialog(d)) as Choice | undefined) ?? "no";
+        // Withdrawn when its sub-agent is stopped.
+        const withdraw = () => d.cancel();
+        req.signal?.addEventListener("abort", withdraw, { once: true });
+        const choice = ((await this.showDialog(d).finally(() => req.signal?.removeEventListener("abort", withdraw))) as Choice | undefined) ?? "no";
+        if (req.signal?.aborted) return { allow: false };
         switch (choice) {
             case "yes":
                 return { allow: true };

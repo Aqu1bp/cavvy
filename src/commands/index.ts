@@ -954,6 +954,28 @@ function costCommand(app: App) {
     app.print(lines);
 }
 
+/** /tasks: what Claude Code or Codex delegated to other models; /tasks stop [id] stops them. */
+function tasksCommand(app: App, args: string) {
+    const agent = app.agent;
+    const tasks = agent?.delegatedTasks ?? [];
+    const [verb, id] = args.trim().split(/\s+/);
+    if (verb === "stop") {
+        const n = agent?.stopDelegated(id) ?? 0;
+        return app.notice(n ? `Stopping ${n} delegated task${n === 1 ? "" : "s"}.` : id ? `No running task ${id}.` : "No delegated tasks are running.");
+    }
+    if (verb) return app.notice("Usage: /tasks, or /tasks stop [task-id]", "error");
+    if (!tasks.length) return app.notice("No tasks were delegated in this session. Claude Code and Codex can hand tasks to other providers' models; ask them to.");
+    const lines = ["", heading("Delegated tasks")];
+    for (const t of tasks) {
+        const r = t.result;
+        const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
+        const spend = r ? theme.muted(` · ${formatTokens(r.tokens)} tokens${r.cost ? ` · ${formatUsd(r.cost)}` : ""} · ${formatDuration(r.durationMs)}`) : "";
+        lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}`)}  ${state}${spend}`);
+    }
+    if (tasks.some((t) => t.status === "running")) lines.push(theme.subtle("  /tasks stop stops them all; /tasks stop <id> stops one."));
+    app.print(lines);
+}
+
 async function statusCommand(app: App) {
     const m = app.model;
     const def = m ? getProvider(m.provider) : undefined;
@@ -1467,6 +1489,7 @@ const BUILTIN: Command[] = [
         },
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
+    { name: "tasks", description: "Tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },

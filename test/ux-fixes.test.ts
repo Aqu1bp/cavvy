@@ -639,12 +639,15 @@ describe("TUI input handling", () => {
         const { removeKey } = await import("../src/auth/credentials");
         const { forgetClient } = await import("../src/providers/models");
         app.model = { provider: "openai", id: "gpt-5.5" } as any;
-        app.agent = { setModel() {} } as any;
+        let disposed = false;
+        app.agent = { setModel() {}, dispose: async () => void (disposed = true) } as any;
         await removeKey("openai");
         forgetClient("openai");
         await app.keyChanged("openai");
         expect(app.model).toBeUndefined();
         expect(app.agent).toBeUndefined();
+        // The agent it drops stops what it delegated.
+        expect(disposed).toBe(true);
     });
 });
 

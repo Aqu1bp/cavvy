@@ -119,7 +119,7 @@ export const AskUserQuestionTool: Tool<{ question: string; options: { label: str
     },
 };
 
-export const TaskTool: Tool<{ description: string; prompt: string; subagent_type?: string }> = {
+export const TaskTool: Tool<{ description: string; prompt: string; subagent_type?: string; model?: string }> = {
     name: "Task",
     category: "meta",
     readOnly: false,
@@ -130,6 +130,8 @@ Agent types:
 - "explore": read-only (Read, Glob, Grep, LS, WebFetch, WebSearch) for searching a codebase broadly and reporting findings.
 - Custom agents defined in .harness/agents/*.md are also available by name.
 
+Models: a sub-agent runs on your model unless its agent type sets one or you pass model. That can be any model set up in this harness, from any provider (API models, and Claude Code or Codex when they're turned on): for a second opinion, a review, or a task another model is better at. Call ListModels to see the agent types and models.
+
 Use it to keep large searches or independent subtasks out of the main context, and launch several in parallel (in one response) when tasks are independent. Don't use it for a simple lookup you can do with one or two tool calls.`,
     parameters: {
         type: "object",
@@ -137,13 +139,35 @@ Use it to keep large searches or independent subtasks out of the main context, a
             description: { type: "string", description: "Short (3-5 word) description of the task" },
             prompt: { type: "string", description: "Complete instructions for the sub-agent" },
             subagent_type: { type: "string", description: 'Agent type: "general-purpose" (default), "explore", or a custom agent name' },
+            model: { type: "string", description: "Run it on this model, as provider:model from ListModels (default: the agent type's model, else yours)" },
         },
         required: ["description", "prompt"],
     },
-    title: (i) => `Task(${i.description ?? ""})`,
+    title: (i) => `Task(${[i.description ?? "", i.model ?? ""].filter(Boolean).join(" · ")})`,
     async run(input, ctx) {
         if (!ctx.runSubagent) return { content: "Sub-agents are not available here.", isError: true };
-        const report = await ctx.runSubagent({ description: input.description, prompt: input.prompt, agentType: input.subagent_type }, ctx.signal);
-        return { content: report, display: { summary: "Done" } };
+        const r = await ctx.runSubagent({ description: input.description, prompt: input.prompt, agentType: input.subagent_type, model: input.model?.trim() || undefined }, ctx.signal);
+        return { content: r.report, isError: r.isError, display: { summary: r.isError ? "Failed" : "Done" } };
+    },
+};
+
+export const ListModelsTool: Tool<{ provider?: string; query?: string }> = {
+    name: "ListModels",
+    category: "meta",
+    readOnly: true,
+    description:
+        "Lists the agent types and the models the Task tool can run a sub-agent on: every model provider set up in this harness (API providers, and Claude Code or Codex when they're turned on), with how each is billed. Without arguments it shows a few models per provider.",
+    parameters: {
+        type: "object",
+        properties: {
+            provider: { type: "string", description: "Show every model of this provider (its id, e.g. gemini)" },
+            query: { type: "string", description: "Only models whose id or name contains this" },
+        },
+    },
+    title: (i) => `ListModels(${i.provider ?? i.query ?? ""})`,
+    async run(input, ctx) {
+        if (!ctx.listModels) return { content: "Model listing isn't available here.", isError: true };
+        const text = await ctx.listModels({ provider: input.provider?.trim() || undefined, query: input.query?.trim() || undefined }, ctx.signal);
+        return { content: text, display: { summary: "Listed agent types and models" } };
     },
 };

@@ -4,8 +4,8 @@
 // network.
 //
 // Like the real CLI (checked against Codex 0.162.1), it asks for approval
-// only where its approval policy says so: under "untrusted" for commands
-// other than read-only ones and for edits outside a writable sandbox; under
+// only where its approval policy says so: under "untrusted" for every
+// command (`cat` included) and for edits outside a writable sandbox; under
 // "on-request" with a workspace-write sandbox it runs commands itself; under
 // "never" it asks for nothing. With FAKE_CODEX_TRUSTS=1 it trusts the project
 // and loads .codex/config.toml (its model), unless -c projects=… marks the
@@ -14,13 +14,21 @@
 // FAKE_LOG            each line: what it was started with, and what it received
 // FAKE_ACCOUNT        chatgpt (default) | apikey | none
 // FAKE_DECLINE=1      offer "decline" among the command's availableDecisions
-// FAKE_SCENARIO       cmd (default) | rename | perms | slow
+// FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
+//                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
+//                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
+// FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp
+// FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
+// FAKE_REJECT_CONFIG=1  thread/start and thread/resume fail when given config, like a Codex that can't parse it
 // FAKE_HANG_INIT=1    never answers initialize, and ignores SIGTERM
 // FAKE_PERMS          the permissions the "perms" scenario asks for (JSON)
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
+// FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
+// FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 
 import { appendFileSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { callTool, connect, type McpServerRef } from "./mcp-call";
 
 const log = (o: unknown) => {
     if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
@@ -43,12 +51,28 @@ function projectModel(): string | undefined {
     return existsSync(f) ? readFileSync(f, "utf-8").match(/model\s*=\s*"([^"]+)"/)?.[1] : undefined;
 }
 
-const scenario = process.env.FAKE_SCENARIO ?? "cmd";
+const scenario = process.env.FAKE_CODEX_SCENARIO ?? process.env.FAKE_SCENARIO ?? "cmd";
 const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
 const pending = new Map<number, (r: any) => void>();
 let serverSeq = 100;
 let turnSeq = 0;
 let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void } | undefined;
+/** MCP servers from the thread's config, connected at thread start. */
+const mcpServers = new Map<string, McpServerRef>();
+
+async function startMcp(config: any) {
+    for (const [name, cfg] of Object.entries<any>(config?.mcp_servers ?? {})) {
+        if (!cfg?.url) continue;
+        const s = { url: cfg.url, headers: cfg.http_headers ?? {} };
+        try {
+            const c = await connect(s);
+            mcpServers.set(name, s);
+            log({ mcpConnected: name, instructions: c.instructions, tools: c.tools.map((t: any) => t.name), approvalMode: cfg.default_tools_approval_mode, toolTimeoutSec: cfg.tool_timeout_sec });
+        } catch (e) {
+            log({ mcpFailed: name, error: (e as Error).message });
+        }
+    }
+}
 
 function serverRequest(method: string, params: unknown): Promise<any> {
     const id = ++serverSeq;
@@ -72,6 +96,29 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         return finish(t.interrupted ? "interrupted" : "completed");
     }
     let decision: string | undefined = "accept";
+    if (scenario === "mcp") {
+        const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
+        const results: string[] = [];
+        for (const [i, c] of calls.entries()) {
+            const server = c.server ?? [...mcpServers.keys()][0] ?? "none";
+            const s = mcpServers.get(server);
+            const item = { type: "mcpToolCall", id: `mcp-${turnId}-${i}`, server, tool: c.tool, arguments: c.args, status: "inProgress", result: null, error: null };
+            notify("item/started", { threadId, turnId, item });
+            if (!s) {
+                notify("item/completed", { threadId, turnId, item: { ...item, status: "failed", error: { message: `unknown MCP server ${server}` } } });
+                results.push(`(no server ${server})`);
+                continue;
+            }
+            // Codex sends the call's id in the request's _meta.
+            const r = await callTool(s, c.tool, c.args, { callId: item.id });
+            log({ mcpResult: { tool: c.tool, ...r } });
+            notify("item/completed", { threadId, turnId, item: { ...item, status: r.isError ? "failed" : "completed", result: { content: [{ type: "text", text: r.text }], isError: r.isError } } });
+            results.push(r.text);
+            if (t.interrupted) return finish("interrupted");
+        }
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: results.join("\n---\n") } });
+        return finish("completed");
+    }
     if (scenario === "rename") {
         const change = { type: "fileChange", id: `fc-${turnId}`, changes: [{ path: join(cwd, "a.txt"), kind: { type: "update", move_path: join(cwd, "secrets", "a.txt") }, diff: "" }], status: "inProgress" };
         notify("item/started", { threadId, turnId, item: change });
@@ -82,7 +129,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const r = await serverRequest("item/permissions/requestApproval", { threadId, turnId, itemId: `p-${turnId}`, cwd, reason: "needs to write there", permissions });
         log({ granted: r });
     } else {
-        const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: "/bin/bash -lc 'touch x'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch x" }], aggregatedOutput: null, exitCode: null };
+        const shown = process.env.FAKE_COMMAND ?? "touch x";
+        const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: process.env.FAKE_COMMAND_RAW ?? `/bin/zsh -lc '${process.env.FAKE_COMMAND_SCRIPT ?? shown}'`, cwd: process.env.FAKE_COMMAND_CWD ?? cwd, status: "inProgress", commandActions: [{ type: "unknown", command: shown }], aggregatedOutput: null, exitCode: null };
         notify("item/started", { threadId, turnId, item: cmd });
         // Its own policy: in a workspace-write sandbox with on-request, or never, it just runs it.
         const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
@@ -94,11 +142,12 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
                 command: cmd.command,
                 cwd: cmd.cwd,
                 commandActions: cmd.commandActions,
-                availableDecisions: process.env.FAKE_DECLINE === "1" ? ["accept", "acceptForSession", "decline", "cancel"] : ["accept", "cancel"],
+                // What Codex 0.162 offers in untrusted mode. Like Codex, the answer isn't checked against it.
+                availableDecisions: process.env.FAKE_DECLINE === "1" ? ["accept", "acceptForSession", "decline", "cancel"] : ["accept", { acceptWithExecpolicyAmendment: { execpolicy_amendment: shown.split(" ") } }, "cancel"],
             });
             decision = r?.decision;
         }
-        log({ ran: decision === "accept", command: "touch x" });
+        log({ ran: decision === "accept", command: shown });
         if (decision === "accept") notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
         else notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
     }
@@ -119,10 +168,14 @@ async function handle(m: any) {
     const reply = (result: unknown) => out({ id: m.id, result });
     const fail = (message: string) => out({ id: m.id, error: { code: -32600, message } });
     const p = m.params ?? {};
+    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
     switch (m.method) {
         case "initialize":
             if (process.env.FAKE_HANG_INIT === "1") return;
             return reply({ userAgent: "fake-codex/0.0.1", codexHome: "/tmp/none", platformFamily: "unix", platformOs: "linux" });
+        case "config/read":
+            if (process.env.FAKE_NO_CONFIG_READ === "1") return fail("config/read failed: invalid configuration");
+            return reply({ config: { model: null, ...(process.env.FAKE_USER_MCP ? { mcp_servers: JSON.parse(process.env.FAKE_USER_MCP) } : {}) }, origins: {} });
         case "initialized":
             return;
         case "account/read": {
@@ -139,10 +192,12 @@ async function handle(m: any) {
                 nextCursor: null,
             });
         case "thread/start":
+            await startMcp(p.config);
             return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test" });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
+            await startMcp(p.config);
             return reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test" });
         case "turn/start": {
             const turnId = `turn-${++turnSeq}`;
@@ -158,6 +213,8 @@ async function handle(m: any) {
             }
             return reply({});
         case "turn/steer":
+            // FAKE_STEER_FAIL: the turn has already ended.
+            if (process.env.FAKE_STEER_FAIL) return fail("no active turn to steer");
             return reply({ turnId: p.expectedTurnId });
         case "thread/compact/start":
             reply({});
