@@ -88,6 +88,33 @@ describe("NotebookEdit", () => {
         expect(r.display.diff).toEqual({ path: "analysis.ipynb", before: "import pandas as pd\ndf = pd.read_csv('x.csv')", after: "import polars as pl\ndf = pl.read_csv('x.csv')" });
     });
 
+    test("numbers elsewhere in the file keep how Python wrote them (1.0, 1e-05, -0.0, integers past 2^53)", async () => {
+        // JSON.stringify would write these as 1, 0.00001, 0 and 12345678901234567000.
+        const RAW: Record<string, string> = { __A__: "1.0", __B__: "1e-05", __C__: "-0.0", __D__: "12345678901234567890" };
+        const python = (nb: object) => jupyter(nb).replace(/"(__[A-D]__)"/g, (_m, k: string) => RAW[k]!);
+        const nb = () => {
+            const n = BASE();
+            n.cells[2] = { ...n.cells[2]!, outputs: [{ output_type: "execute_result", execution_count: 3, data: { "application/json": { x: ["__A__", "__B__", "__C__"] } }, metadata: {} }] } as any;
+            (n.metadata as any).widget_id = "__D__";
+            return n;
+        };
+        const { file, ctx } = await setup(nb(), python(nb()));
+        const r: any = await edit(ctx, { notebook_path: file, cell_id: "intro", new_source: "# New title\n" });
+        expect(r.isError).toBeUndefined();
+        const want = nb();
+        want.cells[0] = { ...want.cells[0]!, source: ["# New title\n"] };
+        expect(readFileSync(file, "utf-8")).toBe(python(want));
+    });
+
+    test("version numbers written as floats (4.0, 5.0) still work", async () => {
+        const text = jupyter(BASE()).replace('"nbformat": 4,', '"nbformat": 4.0,').replace('"nbformat_minor": 5', '"nbformat_minor": 5.0');
+        expect(text).toContain('"nbformat": 4.0,');
+        const { file, ctx } = await setup(BASE(), text);
+        const r: any = await edit(ctx, { notebook_path: file, cell_id: "intro", edit_mode: "insert", cell_type: "markdown", new_source: "More" });
+        expect(r.isError).toBeUndefined();
+        expect(JSON.parse(readFileSync(file, "utf-8")).cells.length).toBe(4);
+    });
+
     test("replace with cell_type changes the cell's type", async () => {
         const { file, ctx } = await setup(BASE());
         await edit(ctx, { notebook_path: file, cell_id: "plot", new_source: "Plot it.", cell_type: "markdown" });

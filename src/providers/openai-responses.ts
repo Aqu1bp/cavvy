@@ -7,7 +7,7 @@
 
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
-import { parseSse } from "./sse";
+import { parseSse, stallMessage, stallTimer } from "./sse";
 import { httpError } from "./openai-compat";
 import {
     ProviderError,
@@ -142,80 +142,91 @@ export class OpenAIResponsesProvider implements ProviderClient {
         }
         if (req.cacheKey && !req.lightweight) body.prompt_cache_key = req.cacheKey;
 
-        const res = await fetch(`${this.base}/responses`, {
-            method: "POST",
-            headers: this.headers(),
-            body: JSON.stringify(body),
-            signal: req.signal,
-        }).catch((e: Error) => {
-            if (req.signal?.aborted) throw new ProviderError("aborted");
-            throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
-        });
-        if (!res.ok || !res.body) {
-            const text = await res.text().catch(() => "");
-            throw httpError(res.status, res.statusText, text, res.headers.get("retry-after"), def.name);
-        }
-
         const items: Json[] = [];
         // Argument deltas carry item_id, not call_id: map from output_item.added.
         const calls = new Map<string, { callId: string; name: string }>();
         let final: Json | undefined;
         let summaryParts = 0;
+        // A request that stops sending anything is retried instead of waited on forever.
+        const stall = stallTimer(req.signal);
         try {
-            for await (const ev of parseSse(res.body, req.signal)) {
-                if (ev.data === "[DONE]") break;
-                let e: Json;
-                try {
-                    e = JSON.parse(ev.data);
-                } catch {
-                    continue;
-                }
-                switch (e.type) {
-                    case "response.output_item.added": {
-                        const it = e.item ?? {};
-                        if (it.type === "function_call") {
-                            calls.set(it.id ?? `idx_${e.output_index}`, { callId: it.call_id, name: it.name });
-                            onEvent({ type: "tool_call_start", id: it.call_id, name: it.name });
-                        }
-                        break;
-                    }
-                    case "response.output_text.delta":
-                        if (e.delta) onEvent({ type: "text", text: e.delta });
-                        break;
-                    case "response.reasoning_summary_part.added":
-                        if (summaryParts++ > 0) onEvent({ type: "thinking", text: "\n\n" });
-                        break;
-                    case "response.reasoning_summary_text.delta":
-                    case "response.reasoning_text.delta":
-                        if (e.delta) onEvent({ type: "thinking", text: e.delta });
-                        break;
-                    case "response.function_call_arguments.delta": {
-                        const c = calls.get(e.item_id) ?? calls.get(`idx_${e.output_index}`);
-                        if (c && e.delta) onEvent({ type: "tool_call_delta", id: c.callId, partial: e.delta });
-                        break;
-                    }
-                    case "response.output_item.done":
-                        if (e.item) items[typeof e.output_index === "number" ? e.output_index : items.length] = e.item;
-                        break;
-                    case "response.completed":
-                    case "response.incomplete":
-                        final = e.response;
-                        break;
-                    case "response.failed": {
-                        const err = e.response?.error ?? {};
-                        throw new ProviderError(`${def.name}: ${err.message ?? "response failed"}${err.code ? ` (${err.code})` : ""}`, undefined, /server_error|overloaded|rate_limit/i.test(String(err.code ?? "")));
-                    }
-                    case "error": {
-                        const code = String(e.code ?? e.error?.code ?? "");
-                        const msg = e.message ?? e.error?.message ?? "stream error";
-                        throw new ProviderError(`${def.name}: ${msg}${code ? ` (${code})` : ""}`, undefined, /server_error|overloaded|rate_limit|timeout/i.test(code));
-                    }
-                }
+            const res = await fetch(`${this.base}/responses`, {
+                method: "POST",
+                headers: this.headers(),
+                body: JSON.stringify(body),
+                signal: stall.signal,
+            }).catch((e: Error) => {
+                if (req.signal?.aborted) throw new ProviderError("aborted");
+                if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
+                throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
+            });
+            stall.touch();
+            if (!res.ok || !res.body) {
+                const text = await res.text().catch(() => "");
+                if (req.signal?.aborted) throw new ProviderError("aborted");
+                if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
+                throw httpError(res.status, res.statusText, text, res.headers.get("retry-after"), def.name);
             }
-        } catch (e) {
-            if (req.signal?.aborted) throw new ProviderError("aborted");
-            if (e instanceof ProviderError) throw e;
-            throw new ProviderError(`Stream from ${def.name} failed: ${(e as Error).message}`, undefined, true);
+
+            try {
+                for await (const ev of parseSse(res.body, stall.signal, stall.touch)) {
+                    if (ev.data === "[DONE]") break;
+                    let e: Json;
+                    try {
+                        e = JSON.parse(ev.data);
+                    } catch {
+                        continue;
+                    }
+                    switch (e.type) {
+                        case "response.output_item.added": {
+                            const it = e.item ?? {};
+                            if (it.type === "function_call") {
+                                calls.set(it.id ?? `idx_${e.output_index}`, { callId: it.call_id, name: it.name });
+                                onEvent({ type: "tool_call_start", id: it.call_id, name: it.name });
+                            }
+                            break;
+                        }
+                        case "response.output_text.delta":
+                            if (e.delta) onEvent({ type: "text", text: e.delta });
+                            break;
+                        case "response.reasoning_summary_part.added":
+                            if (summaryParts++ > 0) onEvent({ type: "thinking", text: "\n\n" });
+                            break;
+                        case "response.reasoning_summary_text.delta":
+                        case "response.reasoning_text.delta":
+                            if (e.delta) onEvent({ type: "thinking", text: e.delta });
+                            break;
+                        case "response.function_call_arguments.delta": {
+                            const c = calls.get(e.item_id) ?? calls.get(`idx_${e.output_index}`);
+                            if (c && e.delta) onEvent({ type: "tool_call_delta", id: c.callId, partial: e.delta });
+                            break;
+                        }
+                        case "response.output_item.done":
+                            if (e.item) items[typeof e.output_index === "number" ? e.output_index : items.length] = e.item;
+                            break;
+                        case "response.completed":
+                        case "response.incomplete":
+                            final = e.response;
+                            break;
+                        case "response.failed": {
+                            const err = e.response?.error ?? {};
+                            throw new ProviderError(`${def.name}: ${err.message ?? "response failed"}${err.code ? ` (${err.code})` : ""}`, undefined, /server_error|overloaded|rate_limit/i.test(String(err.code ?? "")));
+                        }
+                        case "error": {
+                            const code = String(e.code ?? e.error?.code ?? "");
+                            const msg = e.message ?? e.error?.message ?? "stream error";
+                            throw new ProviderError(`${def.name}: ${msg}${code ? ` (${code})` : ""}`, undefined, /server_error|overloaded|rate_limit|timeout/i.test(code));
+                        }
+                    }
+                }
+            } catch (e) {
+                if (req.signal?.aborted) throw new ProviderError("aborted");
+                if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
+                if (e instanceof ProviderError) throw e;
+                throw new ProviderError(`Stream from ${def.name} failed: ${(e as Error).message}`, undefined, true);
+            }
+        } finally {
+            stall.stop();
         }
         if (!final) throw new ProviderError(`${def.name}: stream ended before the response completed`, undefined, true);
 

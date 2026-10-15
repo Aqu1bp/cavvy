@@ -5,7 +5,36 @@ export interface SseEvent {
     data: string;
 }
 
-export async function* parseSse(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<SseEvent> {
+/**
+ * How long a request may go without a byte from the server before it counts
+ * as stalled. Generous on purpose: some endpoints (Vertex) send no headers
+ * until the model's first token, and thinking can take minutes.
+ */
+export const stall = { ms: 5 * 60_000 };
+
+/** A signal that aborts when `parent` does, or when `touch` isn't called for `stall.ms`. */
+export function stallTimer(parent: AbortSignal | undefined) {
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const touch = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => ac.abort(), stall.ms);
+    };
+    touch();
+    return {
+        signal: parent ? AbortSignal.any([parent, ac.signal]) : ac.signal,
+        touch,
+        stalled: () => ac.signal.aborted && !parent?.aborted,
+        stop: () => clearTimeout(timer),
+    };
+}
+
+export function stallMessage(provider: string): string {
+    const s = Math.round(stall.ms / 1000);
+    return `No response from ${provider} for ${s >= 60 ? `${Math.round(s / 60)} minutes` : `${s}s`}`;
+}
+
+export async function* parseSse(body: ReadableStream<Uint8Array>, signal?: AbortSignal, onData?: () => void): AsyncGenerator<SseEvent> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -20,6 +49,7 @@ export async function* parseSse(body: ReadableStream<Uint8Array>, signal?: Abort
             // must not mistake a cut-off response for a complete one.
             if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
             if (done) break;
+            onData?.();
             buf += decoder.decode(value, { stream: true });
             let nl: number;
             while ((nl = buf.search(/\r?\n/)) >= 0) {

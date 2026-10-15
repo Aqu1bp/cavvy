@@ -7,6 +7,7 @@ const { OpenAIResponsesProvider, toResponsesInput } = await import("../src/provi
 const { toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
 const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 const { ProviderError } = await import("../src/providers/types");
+const { stall } = await import("../src/providers/sse");
 import type { ProviderDef } from "../src/providers/registry";
 import type { AssistantMessage, ChatRequest, Message, ModelInfo, StreamEvent } from "../src/providers/types";
 
@@ -416,6 +417,90 @@ describe("Chat Completions: streaming", () => {
         const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, [], { signal: ac.signal }), () => {}).catch((e) => e);
         expect(err).toBeInstanceOf(ProviderError);
         expect(err.message).toBe("aborted");
+    });
+
+    describe("a server that stops sending is a retryable error, not a hang", () => {
+        const prev = stall.ms;
+        beforeEach(() => void (stall.ms = 150));
+        afterAll(() => void (stall.ms = prev));
+
+        test("no response at all", async () => {
+            respond = async () => {
+                await Bun.sleep(1500);
+                return sse([{ choices: [{ index: 0, delta: { content: "late" }, finish_reason: "stop" }] }]);
+            };
+            const t0 = Date.now();
+            const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+            expect(err).toBeInstanceOf(ProviderError);
+            expect(err.message).toBe("No response from Custom X for 0s");
+            expect(err.retryable).toBe(true);
+            expect(Date.now() - t0).toBeLessThan(1000);
+        });
+
+        test("silence partway through the body", async () => {
+            respond = () => sse([{ choices: [{ index: 0, delta: { content: "par" } }] }, { choices: [{ index: 0, delta: { content: "t" }, finish_reason: "stop" }] }], { pauseAfter: 0, pauseMs: 1500 });
+            const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+            expect(err).toBeInstanceOf(ProviderError);
+            expect(err.message).toBe("No response from Custom X for 0s");
+            expect(err.retryable).toBe(true);
+        });
+
+        test("an error status whose body never finishes", async () => {
+            respond = () =>
+                new Response(
+                    new ReadableStream({
+                        async start(ctl) {
+                            ctl.enqueue(new TextEncoder().encode('{"error":'));
+                            await Bun.sleep(1500);
+                            ctl.close();
+                        },
+                    }),
+                    { status: 400 },
+                );
+            const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+            expect(err.message).toBe("No response from Custom X for 0s");
+            expect(err.retryable).toBe(true);
+            const ac = new AbortController();
+            setTimeout(() => ac.abort(), 50);
+            const aborted = await new OpenAIResponsesProvider(builtin("openai"), FAKE.openai)
+                .stream(req({ provider: "openai", id: "gpt-6-sol" }, [], { signal: ac.signal }), () => {})
+                .catch((e) => e);
+            expect(aborted.message).toBe("aborted");
+        });
+
+        test("steady chunks keep the request alive past the limit", async () => {
+            const items = Array.from({ length: 6 }, (_, i) => ({ choices: [{ index: 0, delta: { content: String(i) }, ...(i === 5 ? { finish_reason: "stop" } : {}) }] }));
+            respond = () => {
+                const enc = new TextEncoder();
+                return new Response(
+                    new ReadableStream({
+                        async start(ctl) {
+                            for (const it of items) {
+                                ctl.enqueue(enc.encode(`data: ${JSON.stringify(it)}\n\n`));
+                                await Bun.sleep(60);
+                            }
+                            ctl.close();
+                        },
+                    }),
+                    { headers: { "Content-Type": "text/event-stream" } },
+                );
+            };
+            const msg = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {});
+            expect(msg.content).toEqual([{ type: "text", text: "012345" }]);
+        });
+
+        test("the Responses API too", async () => {
+            respond = async () => {
+                await Bun.sleep(1500);
+                return new Response("late");
+            };
+            const err = await new OpenAIResponsesProvider(builtin("openai"), FAKE.openai)
+                .stream(req({ provider: "openai", id: "gpt-6-sol" }, []), () => {})
+                .catch((e) => e);
+            expect(err).toBeInstanceOf(ProviderError);
+            expect(err.message).toBe("No response from OpenAI for 0s");
+            expect(err.retryable).toBe(true);
+        });
     });
 });
 

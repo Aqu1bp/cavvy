@@ -4,7 +4,7 @@
 
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
-import { parseSse } from "./sse";
+import { parseSse, stallMessage, stallTimer } from "./sse";
 import {
     ProviderError,
     type AssistantContent,
@@ -193,24 +193,40 @@ export class OpenAICompatProvider implements ProviderClient {
         }
 
         const payload = JSON.stringify(body);
+        // A request that stops sending anything is retried instead of waited on forever.
+        const stall = stallTimer(req.signal);
         const post = async (fresh: boolean) =>
             fetch(`${this.base}/chat/completions`, {
                 method: "POST",
                 headers: await this.headers(fresh),
                 body: payload,
-                signal: req.signal,
+                signal: stall.signal,
             }).catch((e: Error) => {
                 if (req.signal?.aborted) throw new ProviderError("aborted");
+                if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
                 throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
             });
-        let res = await post(false);
+        try {
+            return await this.read(req, await post(false), post, stall, onEvent);
+        } finally {
+            stall.stop();
+        }
+    }
+
+    private async read(req: ChatRequest, res: Response, post: (fresh: boolean) => Promise<Response>, stall: ReturnType<typeof stallTimer>, onEvent: (e: StreamEvent) => void): Promise<AssistantMessage> {
+        const def = this.def;
+        const m = req.model;
+        stall.touch();
         // An expired token: get a new one and try once more.
         if (res.status === 401 && this.canRefresh()) {
             await res.body?.cancel().catch(() => {});
             res = await post(true);
+            stall.touch();
         }
         if (!res.ok || !res.body) {
             const text = await res.text().catch(() => "");
+            if (req.signal?.aborted) throw new ProviderError("aborted");
+            if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
             throw this.apiError(res.status, res.statusText, text, res.headers.get("retry-after"));
         }
 
@@ -223,7 +239,7 @@ export class OpenAICompatProvider implements ProviderClient {
         let usage: Usage | undefined;
         let model = m.id;
         try {
-            for await (const ev of parseSse(res.body, req.signal)) {
+            for await (const ev of parseSse(res.body, stall.signal, stall.touch)) {
                 if (ev.data === "[DONE]") {
                     done = true;
                     break;
@@ -286,6 +302,7 @@ export class OpenAICompatProvider implements ProviderClient {
             }
         } catch (e) {
             if (req.signal?.aborted) throw new ProviderError("aborted");
+            if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
             if (e instanceof ProviderError) throw e;
             throw new ProviderError(`Stream from ${def.name} failed: ${(e as Error).message}`, undefined, true);
         }

@@ -63,6 +63,8 @@ function codepointKey(cp: number, m: number): Key {
         case 32:
             return md.ctrl || md.meta ? { name: "space", ...md } : { name: "text", text: " " };
     }
+    // Not a key: e.g. CSI ? flags u, a kitty terminal reporting its keyboard flags.
+    if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return { name: "unknown" };
     const ch = String.fromCodePoint(cp);
     if (md.ctrl || md.meta) return { name: ch.toLowerCase(), ...md };
     return { name: "text", text: md.shift ? ch.toUpperCase() : ch };

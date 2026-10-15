@@ -97,7 +97,6 @@ export class App {
     customCommands: CustomCommand[] = [];
     verbose = false;
     lastResponse = "";
-    lastSummary = "";
 
     private dialogs: Dialog[] = [];
     busy = false;
@@ -534,10 +533,12 @@ export class App {
             this.session = Session.load(file);
         } catch (e) {
             this.notice(`Could not resume: ${(e as Error).message}`, "error");
-            this.session = Session.create(this.cwd);
+            // Stay in the current conversation; at startup there's none yet.
+            if (!prev) this.session = Session.create(this.cwd);
             return;
         }
         this.toolState.fileState.clear();
+        this.toolState.todos = [];
         if (this.agent) this.makeAgent();
         this.replayTranscript();
         // At startup, run() fires SessionStart.
@@ -750,7 +751,6 @@ export class App {
                 this.verb = "Compacting conversation";
                 break;
             case "compact_end":
-                this.lastSummary = e.summary;
                 this.screen.print(["", theme.muted(`✻ Conversation compacted · ${this.verbose ? "summary below" : "/summary to view the summary"}`)]);
                 if (this.verbose) {
                     const summary = e.summary;

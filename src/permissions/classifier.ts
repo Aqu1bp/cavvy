@@ -93,6 +93,9 @@ export function parseVerdict(text: string): ClassifierVerdict | undefined {
 /** Larger actions are escalated to the user rather than shown to the reviewer in part. */
 export const MAX_ACTION_CHARS = 20_000;
 
+/** Per model: a reviewer that hangs falls back to the main model, then to the user. */
+export const reviewTimeout = { ms: 60_000 };
+
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + "…" : s);
 /** Keep text from closing the block it's quoted in. */
 const quote = (s: string) => s.replace(/<(\/?)(developer|summary|agent-task|recent-actions|action)\b/gi, "<​$1$2");
@@ -150,8 +153,9 @@ export class AutoClassifier {
         // The small model first; if it fails or answers nonsense, the main model.
         let failure = "";
         for (const main of [false, true]) {
+            const timeout = AbortSignal.timeout(reviewTimeout.ms);
             try {
-                const verdict = parseVerdict(await this.complete(SYSTEM, prompt, signal, { main }));
+                const verdict = parseVerdict(await this.complete(SYSTEM, prompt, signal ? AbortSignal.any([signal, timeout]) : timeout, { main }));
                 if (verdict) {
                     if (main && !this.warned) {
                         this.warned = true;
@@ -163,7 +167,7 @@ export class AutoClassifier {
                 failure = "unreadable answer";
             } catch (e) {
                 if (signal?.aborted) throw e;
-                failure = (e as Error).message.slice(0, 120);
+                failure = timeout.aborted ? `no answer in ${Math.round(reviewTimeout.ms / 1000)}s` : (e as Error).message.slice(0, 120);
             }
         }
         return { decision: "escalate", reason: `Reviewer unavailable (${failure})` };

@@ -246,7 +246,8 @@ export class Agent {
         }
     }
 
-    private systemPrompt(): string {
+    /** The system prompt as sent: the session's, plus --append-system-prompt. */
+    systemPrompt(): string {
         const base = this.session.meta.system ?? "";
         const append = this.o.appendSystemPrompt;
         // Sessions frozen by older versions may end with it already, as its own paragraph.

@@ -79,6 +79,8 @@ export class Session {
     messages: Message[] = [];
     model?: string;
     title?: string;
+    /** The latest compaction summary (/summary). */
+    summary?: string;
     /** USD spent in this session (estimates included). */
     cost = 0;
     usageByModel = new Map<string, { usage: Usage; cost: number }>();
@@ -184,6 +186,7 @@ export class Session {
     /** Replace history with a compacted version. */
     compact(summary: string, messages: Message[]) {
         this.messages = [];
+        this.summary = summary;
         this.write({ t: "compact", summary });
         for (const m of messages) this.push(m);
     }
@@ -216,7 +219,10 @@ export class Session {
         s.started = true;
         for (const l of lines) {
             if (l.t === "msg") s.messages.push(l.m);
-            else if (l.t === "compact") s.messages = [];
+            else if (l.t === "compact") {
+                s.messages = [];
+                s.summary = l.summary;
+            }
             else if (l.t === "rewind") s.messages = s.messages.slice(0, l.count);
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "title") s.title = l.title;
@@ -243,50 +249,73 @@ function repairTail(s: Session) {
     });
 }
 
-const HEAD_BYTES = 256 * 1024;
+const CHUNK_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
+/** Enough of a line to see its record type. */
+const PREFIX_BYTES = 32;
+const MSG_PREFIX = '{"t":"msg"';
 
 interface SessionHead {
     cwd?: string;
     title?: string;
     first?: string;
-    /** Messages seen in the part that was read. */
+    /** The index of the message `first` came from; -1 once a compaction keeps it as the title. */
+    firstAt?: number;
+    /** Messages after rewinds and compactions, as load() would have them. */
     count: number;
 }
 
 /**
- * The session's cwd, title and first prompt, reading only the head of the
- * file (sessions can be large). Past the head it reads on until the first
- * message is complete: one with a pasted screenshot can be bigger than the head.
+ * The session's cwd, title, first prompt and message count, without loading
+ * it (sessions can be large). Every line is scanned, so later renames,
+ * rewinds and compactions count, but only those records, the meta line and
+ * messages up to the first prompt are parsed; other messages are only counted.
  */
 function sessionHead(file: string): SessionHead {
     const head: SessionHead = { count: 0 };
     const fd = openSync(file, "r");
     try {
-        const chunk = Buffer.alloc(HEAD_BYTES);
-        let partial: Buffer[] = [];
-        let partialLen = 0;
-        let pos = 0;
-        while (!(pos >= HEAD_BYTES && head.count > 0)) {
-            const n = readSync(fd, chunk, 0, chunk.length, pos);
-            if (n <= 0) break; // a torn last line is ignored, as load() does
-            pos += n;
+        const chunk = Buffer.alloc(CHUNK_BYTES);
+        let parts: Buffer[] = [];
+        let len = 0;
+        // The line's last two bytes: a whole message record ends with "}}".
+        let end = "";
+        // Whether the current line is parsed; undefined until its record type is visible.
+        let wanted: boolean | undefined;
+        const decide = () => {
+            const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
+            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|model)"/.test(prefix);
+            if (!wanted) parts = [Buffer.from(prefix, "latin1")];
+        };
+        for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
             const c = chunk.subarray(0, n);
-            let start = 0;
-            for (let nl = c.indexOf(10); nl >= 0; nl = c.indexOf(10, start)) {
-                const piece = c.subarray(start, nl);
-                const line = partialLen ? Buffer.concat([...partial, piece]) : piece;
-                partial = [];
-                partialLen = 0;
+            for (let start = 0; start < n; ) {
+                const nl = c.indexOf(10, start);
+                const piece = c.subarray(start, nl < 0 ? n : nl);
+                end = (end + piece.subarray(Math.max(0, piece.length - 2)).toString("latin1")).slice(-2);
+                if (wanted !== false) {
+                    parts.push(Buffer.from(piece)); // chunk is reused
+                    len += piece.length;
+                }
+                if (wanted === undefined && len >= PREFIX_BYTES) decide();
+                // Too big to parse: still counted if it's a message.
+                if (wanted && len > MAX_LINE_BYTES) {
+                    parts = [Buffer.concat(parts).subarray(0, PREFIX_BYTES)];
+                    wanted = false;
+                }
+                if (nl < 0) break;
+                if (wanted === undefined) decide();
+                if (wanted) readHeadLine(Buffer.concat(parts).toString("utf-8"), head);
+                // A torn line, which load() skipped (and ended), isn't counted.
+                else if (end === "}}" && Buffer.concat(parts).toString("latin1").startsWith(MSG_PREFIX)) head.count++;
+                parts = [];
+                len = 0;
+                end = "";
+                wanted = undefined;
                 start = nl + 1;
-                readHeadLine(line.toString("utf-8"), head);
-            }
-            if (start < n) {
-                partial.push(Buffer.from(c.subarray(start))); // chunk is reused
-                partialLen += n - start;
-                if (partialLen > MAX_LINE_BYTES) break;
             }
         }
+        // A torn last line (no newline yet) is ignored, as load() does.
     } finally {
         closeSync(fd);
     }
@@ -304,8 +333,18 @@ function readHeadLine(raw: string, head: SessionHead) {
     if (l.t === "meta") head.cwd = l.cwd;
     else if (l.t === "title") head.title = l.title;
     else if (l.t === "msg") {
+        if (!head.first && l.m.role === "user" && (l.m.meta?.kind ?? "prompt") === "prompt") {
+            head.first = l.m.meta?.display ?? textOf(l.m);
+            head.firstAt = head.count;
+        }
         head.count++;
-        if (!head.first && l.m.role === "user" && (l.m.meta?.kind ?? "prompt") === "prompt") head.first = l.m.meta?.display ?? textOf(l.m);
+    } else if (l.t === "rewind") {
+        head.count = Math.min(head.count, l.count);
+        if (head.firstAt !== undefined && head.firstAt >= l.count) head.first = head.firstAt = undefined;
+    } else if (l.t === "compact") {
+        head.count = 0;
+        // The conversation's opening prompt still names it after a compaction.
+        if (head.first !== undefined) head.firstAt = -1;
     }
 }
 
@@ -317,20 +356,31 @@ function sameProject(head: SessionHead, cwd: string): boolean {
 export function listSessions(cwd: string, limit = 50): SessionSummary[] {
     const dir = projectStateDir(cwd);
     if (!existsSync(dir)) return [];
-    const out: SessionSummary[] = [];
+    const files: { f: string; file: string; mtimeMs: number; createdAt: number }[] = [];
     for (const f of readdirSync(dir)) {
         if (!f.endsWith(".jsonl")) continue;
         const file = join(dir, f);
         try {
             const st = statSync(file);
+            files.push({ f, file, mtimeMs: st.mtimeMs, createdAt: st.birthtimeMs || st.ctimeMs });
+        } catch {
+            // vanished or unreadable
+        }
+    }
+    // Newest first, so only as many files are read as are listed.
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const out: SessionSummary[] = [];
+    for (const { f, file, mtimeMs, createdAt } of files) {
+        if (out.length >= limit) break;
+        try {
             const head = sessionHead(file);
             if (!head.count || !sameProject(head, cwd)) continue;
             out.push({
                 id: f.replace(/\.jsonl$/, ""),
                 file,
                 cwd,
-                createdAt: st.birthtimeMs || st.ctimeMs,
-                updatedAt: st.mtimeMs,
+                createdAt,
+                updatedAt: mtimeMs,
                 title: (head.title ?? head.first ?? "(untitled)").replace(/\s+/g, " ").trim().slice(0, 120),
                 messages: head.count,
             });

@@ -9,7 +9,7 @@ const prevHarnessHome = process.env.HARNESS_HOME;
 const HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-test-"));
 process.env.HARNESS_HOME = HARNESS_HOME;
 
-const { parseVerdict, AutoClassifier, MAX_ACTION_CHARS } = await import("../src/permissions/classifier");
+const { parseVerdict, AutoClassifier, MAX_ACTION_CHARS, reviewTimeout } = await import("../src/permissions/classifier");
 
 afterAll(() => {
     if (prevHarnessHome === undefined) delete process.env.HARNESS_HOME;
@@ -203,6 +203,20 @@ describe("AutoClassifier", () => {
         expect(n).toBe(3);
     });
 
+    test("a reviewer that never answers times out and the main model reviews", async () => {
+        const prev = reviewTimeout.ms;
+        reviewTimeout.ms = 50;
+        try {
+            const fn: CompleteFn = (_s, _p, sig, opts) =>
+                opts?.main ? Promise.resolve(ALLOW) : new Promise((_r, reject) => sig!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+            const v = await new AutoClassifier(fn).classify(input());
+            expect(v).toMatchObject({ decision: "allow", reason: "routine" });
+            expect(v.warning).toMatch(/reviewer model failed \(no answer in 0s\)/);
+        } finally {
+            reviewTimeout.ms = prev;
+        }
+    });
+
     test("the fallback warning is given once", async () => {
         const { fn } = fakeComplete((_p, main) => {
             if (!main) throw new Error("402 out of credits");
@@ -226,11 +240,13 @@ describe("AutoClassifier", () => {
         expect(n).toBe(1);
     });
 
-    test("the signal is passed to the model call", async () => {
+    test("aborting the caller's signal aborts the model call", async () => {
         const { fn, calls } = fakeComplete(ALLOW);
         const ac = new AbortController();
         await new AutoClassifier(fn).classify(input(), ac.signal);
-        expect(calls[0]!.signal).toBe(ac.signal);
+        expect(calls[0]!.signal!.aborted).toBe(false);
+        ac.abort();
+        expect(calls[0]!.signal!.aborted).toBe(true);
     });
 
     test("setComplete swaps the model and clears the cache", async () => {

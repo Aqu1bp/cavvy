@@ -873,7 +873,7 @@ async function statusCommand(app: App) {
 function contextCommand(app: App) {
     const m = app.model;
     const win = m?.contextWindow;
-    const sys = Math.ceil((app.session.meta.system?.length ?? 0) / 3.5);
+    const sys = Math.ceil((app.agent?.systemPrompt() ?? app.session.meta.system ?? "").length / 3.5);
     const tools = Math.ceil(JSON.stringify(app.tools().map(toSchema)).length / 3.5);
     const msgs = estimateTokens(app.session.messages);
     const measured = app.agent?.contextTokens ?? 0;
@@ -1345,7 +1345,7 @@ const BUILTIN: Command[] = [
         whileBusy: true,
         hidden: true,
         run: (app) => {
-            const summary = app.lastSummary;
+            const summary = app.session.summary;
             if (!summary) return app.notice("No compaction has happened in this session.");
             app.print((cols) => ["", ...renderMarkdown(summary, cols - 4).map((l) => "  " + l)]);
         },

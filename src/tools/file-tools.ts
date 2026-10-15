@@ -458,11 +458,27 @@ interface NotebookChange {
     message: string;
 }
 
-/** Apply a NotebookEdit to the notebook's JSON, keeping its indentation and line endings. */
+/**
+ * JSON.parse, except numbers written in a form JSON.stringify wouldn't give
+ * back (1.0, 1e-05, integers past 2^53) are kept as written, so saving the
+ * notebook doesn't rewrite outputs and metadata the edit never touched.
+ */
+function parseKeepingNumbers(raw: string): unknown {
+    const J = JSON as unknown as { rawJSON?: (text: string) => unknown };
+    if (!J.rawJSON) return JSON.parse(raw);
+    const keep = J.rawJSON;
+    return JSON.parse(raw, function (key: string, value: unknown, ctx?: { source?: string }) {
+        // The version numbers are compared below; a raw value would throw there.
+        if (key === "nbformat" || key === "nbformat_minor") return value;
+        return typeof value === "number" && ctx?.source !== undefined && ctx.source !== String(value) ? keep(ctx.source) : value;
+    } as (key: string, value: unknown) => unknown);
+}
+
+/** Apply a NotebookEdit to the notebook's JSON, keeping its indentation, line endings and number formatting. */
 function editNotebook(raw: string, input: NotebookEditInput, label: string): NotebookChange | { error: string } {
     let nb: Notebook;
     try {
-        nb = JSON.parse(raw) as Notebook;
+        nb = parseKeepingNumbers(raw) as Notebook;
     } catch (e) {
         return { error: `${label} isn't valid notebook JSON: ${(e as Error).message}` };
     }
