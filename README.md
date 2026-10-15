@@ -311,7 +311,10 @@ The desktop app wraps the same GUI in a native window ([Tauri](https://tauri.app
 ```bash
 bun run desktop:dev        # hot-reloading GUI, server from source
 bun run desktop:build      # installers in desktop/src-tauri/target/release/bundle
+bun run desktop:install    # macOS: this checkout's app into /Applications, restarted
 ```
+
+`desktop:install` is for trying a change in the real app: it builds whatever branch or worktree you run it in, quits Harness if it's open (its sessions close as on any quit), replaces the installed app and opens it. `--no-restart` installs without touching a running Harness.
 
 Building it needs Rust ([rustup](https://rustup.rs)) and, on Linux, the WebKitGTK headers (`libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` on Debian and Ubuntu). To distribute it on macOS, sign and notarize the app, sidecar included.
 

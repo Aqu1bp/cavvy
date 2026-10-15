@@ -1,5 +1,5 @@
 node_modules/
 src-tauri/target/
 src-tauri/gen/
-# Built by scripts/build-sidecar.ts
-src-tauri/binaries/harness-*
+# Built by scripts/build-sidecar.ts (Bun writes a source map beside it)
+src-tauri/binaries/
