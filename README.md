@@ -59,7 +59,7 @@ How keys are kept safe:
 A Claude plan (Pro, Max, Team, Enterprise) or a ChatGPT plan can be used through the official CLI you already have installed. The harness runs Claude Code or Codex itself, the way editor integrations and apps like T3 Code do, rather than calling the API with your plan's credentials.
 
 1. Install [Claude Code](https://code.claude.com/docs/en/setup) or the [Codex CLI](https://developers.openai.com/codex/cli), and sign in there: `claude auth login`, or `codex login`. That's Anthropic's or OpenAI's own sign-in.
-2. In the harness, `/login claude-code` or `/login codex` (`harness auth add claude-code` from a shell). This asks the CLI whether it's signed in (`claude auth status`; Codex's `account/read`) and turns it on. On first run with nothing set up, the harness offers whichever of the two is installed.
+2. In the harness, `/login claude-code` or `/login codex` (`harness auth add claude-code` from a shell, or **Use my Claude subscription** / **Use my ChatGPT plan** in the desktop app's Settings → Providers). This asks the CLI whether it's signed in (`claude auth status`; Codex's `account/read`) and turns it on. On first run with nothing set up, the harness offers whichever of the two is installed.
 3. Pick a model in `/model`: `claude-code:default`, `claude-code:sonnet`, `codex:gpt-6.1-sol`, …. The list comes from the CLI.
 
 How it works:
@@ -308,7 +308,7 @@ Using it:
 - In the input: `@` mentions a file, `/` lists commands (`/compact`, `/init`, `/review`, `/rewind`, custom commands…), `!` runs a shell command yourself, paste or drop images, `↑` recalls a prompt, `shift+tab` cycles the permission mode, `Esc` interrupts. Messages sent while it works are queued; remove them before they go, and after an interrupt they come back to the input.
 - Approvals: `1` `2` `3` choose, `Esc` denies (with a note for the model if you type one). The buttons never take focus on their own, so an Enter meant for the input can't approve anything.
 - Hover a prompt to copy it or rewind to before it (files, conversation, or both, as with `/rewind`).
-- Themes: Light, Paper, Dark, Midnight, Dusk and High contrast, or follow the system; nine accent colors, text size and density. Settings → Providers adds API keys (validated, then stored in the OS keychain, like `/login`).
+- Themes: Light, Paper, Dark, Midnight, Dusk and High contrast, or follow the system; nine accent colors, text size and density. Settings → Providers adds API keys (validated, then stored in the OS keychain, like `/login`) or turns on Claude Code or Codex to use your own Claude subscription or ChatGPT plan.
 - A session that finishes or needs you while you're elsewhere sends a notification; the window title counts the sessions waiting for you.
 
 How it fits together:
