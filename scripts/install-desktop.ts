@@ -10,7 +10,7 @@
 // rebuilt.
 
 import { accessSync, constants, existsSync, readdirSync, rmSync } from "fs";
-import { homedir } from "os";
+import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
 
 if (process.platform !== "darwin") {
@@ -55,8 +55,13 @@ run(["bun", "install"], desktop);
 // Just the app (desktop:build also makes a .dmg). Building it builds the GUI and the sidecar first.
 run(["bun", "run", "tauri", "build", "--bundles", "app"], desktop);
 
-const target = env.CARGO_TARGET_DIR ? resolve(tauri, env.CARGO_TARGET_DIR) : join(tauri, "target");
-const built = join(target, "release", "bundle", "macos", `${productName}.app`);
+/** Where cargo builds to, as it works it out: CARGO_TARGET_DIR, build.target-dir in a Cargo config, or the default. */
+function targetDir(): string {
+    const r = Bun.spawnSync(["cargo", "metadata", "--format-version", "1", "--no-deps"], { cwd: tauri, env, stdout: "pipe", stderr: "inherit" });
+    if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);
+    return (JSON.parse(r.stdout.toString()) as { target_directory: string }).target_directory;
+}
+const built = join(targetDir(), "release", "bundle", "macos", `${productName}.app`);
 if (!existsSync(built)) {
     console.error(`The build finished, but there's no ${built}`);
     process.exit(1);
@@ -72,10 +77,10 @@ function writable(dir: string): boolean {
 }
 const dest = join(writable("/Applications") ? "/Applications" : join(homedir(), "Applications"), `${productName}.app`);
 
-/** Running copies, wherever they were opened from: the app, and the server each started. */
+/** Your running copies, wherever they were opened from: the app, and the server each started. (Not another account's.) */
 function running(): { app: number[]; server: number[] } {
     const find = (pattern: string) =>
-        Bun.spawnSync(["pgrep", "-f", pattern])
+        Bun.spawnSync(["pgrep", "-U", String(userInfo().uid), "-f", pattern])
             .stdout.toString()
             .split("\n")
             .filter(Boolean)
@@ -83,14 +88,16 @@ function running(): { app: number[]; server: number[] } {
     return { app: find(`/${productName}.app/Contents/MacOS/harness-desktop`), server: find(`/${productName}.app/Contents/MacOS/harness serve`) };
 }
 
-function alive(pid: number): boolean {
+/** Sends sig to pid; false if it's gone (or isn't yours). */
+function signal(pid: number, sig: NodeJS.Signals | 0): boolean {
     try {
-        process.kill(pid, 0);
+        process.kill(pid, sig);
         return true;
     } catch {
         return false;
     }
 }
+const alive = (pid: number) => signal(pid, 0);
 
 if (restart) {
     const { app, server } = running();
@@ -98,14 +105,14 @@ if (restart) {
         console.log(`Quitting ${productName} (anything running in it stops; sessions are saved)…`);
         // Its server closes the sessions when the app goes (SessionEnd hooks run, session locks are released), then exits.
         // It's the app that's stopped: it would start a new server in place of one stopped on its own.
-        for (const pid of app) process.kill(pid, "SIGTERM");
+        for (const pid of app) signal(pid, "SIGTERM");
         const all = [...app, ...server];
         const until = Date.now() + 15_000;
         while (all.some(alive) && Date.now() < until) await Bun.sleep(100);
         const stuck = all.filter(alive);
         if (stuck.length) {
             console.warn(`${productName} didn't quit within 15 seconds; stopping it.`);
-            for (const pid of stuck) process.kill(pid, "SIGKILL");
+            for (const pid of stuck) signal(pid, "SIGKILL");
         }
     }
 }
