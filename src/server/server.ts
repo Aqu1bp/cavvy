@@ -223,7 +223,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 if (ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
             },
             close(ws: ServerWebSocket<Conn>) {
-                engine.clients.delete(ws.data.client);
+                engine.dropClient(ws.data.client);
             },
         },
     });

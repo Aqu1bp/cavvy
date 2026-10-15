@@ -70,7 +70,7 @@ export function RewindDialog() {
         setBusy(true);
         try {
             const r = await rpc.call("session.rewind", { id: sid, index: p.index, planId: p.planId, code, conversation });
-            if (conversation && !r.failed.length) handleFor(sid)?.setDraft(r.text);
+            if (conversation && !r.failed.length) handleFor(sid)?.setDraft({ text: r.text });
             for (const f of r.failed) toast(`Couldn't restore ${f.path}: ${f.error}`, "error");
             toast(code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation ? " and the conversation" : ""}` : "Rewound the conversation; the prompt is back in the input box", "success");
             close();

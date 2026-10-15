@@ -110,6 +110,12 @@ export function isUnread(s: SessionSummary): boolean {
 // ---------------------------------------------------------------------------
 // Open sessions
 
+/** What the server hands back to the input box. */
+export interface Draft {
+    text: string;
+    images?: { mediaType: string; data: string }[];
+}
+
 export interface SessionHandle {
     id: string;
     view: SessionView;
@@ -117,8 +123,8 @@ export interface SessionHandle {
     seq: number;
     queue: SessionOp[];
     scheduled: boolean;
-    draft: () => string | undefined;
-    setDraft: (t: string | undefined) => void;
+    draft: () => Draft | undefined;
+    setDraft: (d: Draft | undefined) => void;
     lastUsed: number;
 }
 
@@ -142,7 +148,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     }
     const h = createRoot(() => {
         const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
-        const [draft, setDraft] = createSignal<string | undefined>();
+        const [draft, setDraft] = createSignal<Draft | undefined>();
         return { id, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
@@ -302,7 +308,7 @@ function onEvent(ev: ServerEvent) {
             setApp("sessions", (l) => l.filter((s) => s.id !== ev.id));
             return;
         case "draft":
-            handles.get(ev.sessionId)?.setDraft(ev.text);
+            handles.get(ev.sessionId)?.setDraft({ text: ev.text, images: ev.images });
             return;
         case "toast":
             toast(ev.message, ev.level);

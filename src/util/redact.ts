@@ -49,6 +49,16 @@ export function redact(text: string): string {
     return out;
 }
 
+/**
+ * For output shown as it arrives: a key split between two pieces gets past
+ * redact() in each. Keys don't span lines, so redact up to the last line
+ * break and keep the rest (`[ready, rest]`) until more arrives or it ends.
+ */
+export function wholeLines(text: string): [string, string] {
+    const cut = Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
+    return [text.slice(0, cut), text.slice(cut)];
+}
+
 export function containsSecret(text: string): boolean {
     return redact(text) !== text;
 }

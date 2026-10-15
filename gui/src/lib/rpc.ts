@@ -60,6 +60,8 @@ export class Rpc {
         try {
             creds = await this.credentials();
         } catch {
+            // The desktop app's server isn't up yet (a slow first start, a restart): ask again.
+            if (this.retriesCredentials) return this.retry();
             creds = undefined;
         }
         if (!creds) {
@@ -87,11 +89,16 @@ export class Rpc {
                 this.setState("unauthorized");
                 return;
             }
-            this.attempt++;
-            this.setState(this.attempt > 8 ? "unavailable" : "reconnecting");
-            const delay = Math.min(10_000, 250 * 2 ** Math.min(this.attempt, 6)) * (0.8 + Math.random() * 0.4);
-            setTimeout(() => void this.connect(), delay);
+            this.retry();
         };
+    }
+
+    private retry() {
+        if (this.closed) return;
+        this.attempt++;
+        this.setState(this.attempt > 8 ? "unavailable" : "reconnecting");
+        const delay = Math.min(10_000, 250 * 2 ** Math.min(this.attempt, 6)) * (0.8 + Math.random() * 0.4);
+        setTimeout(() => void this.connect(), delay);
     }
 
     /** The desktop app asks the sidecar for credentials each time, so a stale token is never the problem there. */

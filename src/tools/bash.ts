@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { BackgroundShell, Tool, ToolContext } from "./types";
 import { stripAnsi } from "../ui/ansi";
-import { redact } from "../util/redact";
+import { redact, wholeLines } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
@@ -219,11 +219,12 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
                 onData: (chunk) => {
                     pending += chunk;
                     const now = Date.now();
-                    if (now - lastProgress > 100) {
-                        ctx.onProgress?.(redact(stripAnsi(pending)));
-                        pending = "";
-                        lastProgress = now;
-                    }
+                    if (now - lastProgress <= 100) return;
+                    const [ready, rest] = wholeLines(pending);
+                    if (!ready) return;
+                    ctx.onProgress?.(redact(stripAnsi(ready)));
+                    pending = rest;
+                    lastProgress = now;
                 },
             });
         } finally {

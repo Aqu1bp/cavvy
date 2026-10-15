@@ -32,6 +32,7 @@ function Row(p: { label: string; hint?: string; children: any }) {
     );
 }
 
+/** "" clears a model (undefined wouldn't reach the server: JSON leaves it out). */
 async function update(patch: GuiSettings) {
     try {
         setApp("settings", await rpc.call("settings.update", { patch }));
@@ -61,10 +62,10 @@ function General() {
         <>
             <div class="set-group">Defaults for new sessions</div>
             <Row label="Model" hint="Also changes when you pick a model in a session.">
-                <ModelSelect value={s().model} empty="Automatic" onChange={(v) => void update({ model: v || undefined })} />
+                <ModelSelect value={s().model} empty="Automatic" onChange={(v) => void update({ model: v })} />
             </Row>
             <Row label="Small model" hint="For the auto-mode reviewer, session titles and page summaries.">
-                <ModelSelect value={s().smallModel} empty="Provider's small default" onChange={(v) => void update({ smallModel: v || undefined })} />
+                <ModelSelect value={s().smallModel} empty="Provider's small default" onChange={(v) => void update({ smallModel: v })} />
             </Row>
             <Row label="Permission mode">
                 <select class="select" value={s().defaultMode ?? "default"} onChange={(e) => void update({ defaultMode: e.currentTarget.value as PermissionModeId })}>

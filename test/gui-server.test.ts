@@ -29,7 +29,7 @@ function project(): string {
 }
 
 beforeAll(async () => {
-    srv = await startServer({ token: TOKEN });
+    srv = await startServer({ token: TOKEN, unloadAfterMs: 300 });
 });
 
 afterAll(async () => {
@@ -192,6 +192,14 @@ describe("connecting", () => {
             p.kill();
         }
     }, 20_000);
+
+    test("once it's stopping, it takes on no new work (it would outlive the server)", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine();
+        const stopped = engine.stop();
+        await expect(engine.handle({ subs: new Set(), send() {} }, "session.create", { cwd: project() })).rejects.toThrow(/stopping/);
+        await stopped;
+    });
 
     test("a short HARNESS_GUI_TOKEN is refused", () => {
         const r = Bun.spawnSync([process.execPath, "--no-env-file", join(import.meta.dir, "..", "src", "index.ts"), "serve", "--handshake"], { env: { ...process.env, HARNESS_GUI_TOKEN: "dev" } as Record<string, string>, stdin: "ignore" });
@@ -380,14 +388,50 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("a rewind shown before another turn isn't carried out", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project(), mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        const [t] = await c.call("session.rewindTargets", { id });
+        const plan = await c.call("session.rewindPlan", { id, index: t.index });
+        // Its files may have changed in ways the plan doesn't know about.
+        await c.call("session.send", { id, text: "second prompt" });
+        await c.until(id, (v) => done(v) && v.turns.filter((x) => x.prompt).length === 2);
+        await expect(c.call("session.rewind", { id, index: t.index, planId: plan.planId, code: true, conversation: true })).rejects.toThrow(/changed since this was shown/);
+        expect((await c.call("session.rewindTargets", { id })).length).toBe(2);
+        c.close();
+    }, 30_000);
+
+    test("a key a !command prints in two pieces isn't shown as it streams", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: `!printf '${TOKEN.slice(0, 11)}'; sleep 0.4; printf '${TOKEN.slice(11)}\\nmore\\n'` });
+        await c.until(id, done, 15_000);
+        const streamed = c.events
+            .flatMap((e) => (e.type === "session.ops" && e.sessionId === id ? e.ops : []))
+            .flatMap((op) => (op.op === "append" && op.field === "output" ? [op.text] : []))
+            .join("");
+        expect(streamed).toContain("[REDACTED gui-token]");
+        expect(streamed).not.toContain(TOKEN.slice(0, 11));
+        const shell = lastTurn(c.view(id)).blocks.find((b) => b.t === "shell") as Extract<Block, { t: "shell" }>;
+        expect(shell.output).toBe("[REDACTED gui-token]\nmore");
+        c.close();
+    }, 30_000);
+
     test("stopping a !command puts what was sent meanwhile back in the input box", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });
         await c.call("session.send", { id, text: "!sleep 20" });
         await c.until(id, (v) => v.state.busy);
         expect((await c.call("session.send", { id, text: "after the command" })).queued).toBe(true);
+        // A screenshot on its own, queued too.
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        expect((await c.call("session.send", { id, text: "", images: [{ mediaType: "image/png", data: png }] })).queued).toBe(true);
         await c.call("session.interrupt", { id });
         await c.until(id, () => c.events.some((e) => e.type === "draft" && e.sessionId === id && e.text === "after the command"));
+        const draft = c.events.find((e) => e.type === "draft" && e.sessionId === id) as Extract<ServerEvent, { type: "draft" }>;
+        expect(draft.images).toEqual([{ mediaType: "image/png", data: png }]);
         await c.until(id, (v) => done(v) && !v.state.queued.length);
         await Bun.sleep(200);
         expect(c.view(id).turns.some((t) => t.prompt?.text === "after the command")).toBe(false);
@@ -447,6 +491,48 @@ describe("sessions", () => {
         const again = await c.call("session.open", { id: busy });
         expect(again.state.interactions.length).toBe(1);
         await c.call("session.interrupt", { id: busy });
+        c.close();
+    }, 30_000);
+
+    test("one closed while it's waiting is closed once it's done, and so is one whose window went away", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "demo" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        const lock = `${findSessionAnywhere(id)}.lock`;
+        await c.call("session.close", { id });
+        await Bun.sleep(600);
+        expect(existsSync(lock)).toBe(true);
+        await c.call("session.interrupt", { id });
+        for (let i = 0; i < 50 && existsSync(lock); i++) await Bun.sleep(100);
+        expect(existsSync(lock)).toBe(false);
+
+        const other = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id: other, text: "first prompt" });
+        await c.until(other, done);
+        const otherLock = `${findSessionAnywhere(other)}.lock`;
+        c.close();
+        for (let i = 0; i < 50 && existsSync(otherLock); i++) await Bun.sleep(100);
+        expect(existsSync(otherLock)).toBe(false);
+    }, 30_000);
+
+    test("a session that isn't open can be renamed from the sidebar", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        const lock = `${findSessionAnywhere(id)}.lock`;
+        await c.call("session.close", { id });
+        for (let i = 0; i < 50 && existsSync(lock); i++) await Bun.sleep(100);
+        expect(existsSync(lock)).toBe(false);
+        await c.call("session.rename", { id, title: "  Renamed   from the sidebar " });
+        expect(c.events.some((e) => e.type === "sessions.upsert" && e.session.id === id && e.session.title === "Renamed from the sidebar")).toBe(true);
+        const list = await c.call("sessions.list", { limit: 300 });
+        expect(list.find((s: { id: string }) => s.id === id)?.title).toBe("Renamed from the sidebar");
+        // Still not open, and nothing holds it.
+        expect(existsSync(lock)).toBe(false);
         c.close();
     }, 30_000);
 

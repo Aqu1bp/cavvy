@@ -1,6 +1,6 @@
 // Regression tests for permission and terminal hardening that goes beyond
 // the original bug reports: nested shells, substitutions, glob expansion,
-// symlinks, and terminal-escape sanitising.
+// symlinks, terminal-escape sanitising, and keys in streamed output.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "fs";
@@ -12,8 +12,29 @@ const { dangerousReason, isReadOnlyCommand, sensitiveTarget, substitutionBodies 
 const { bashRuleMatches, matchPath } = await import("../src/permissions/rules");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { sanitizeLine, wrapLine, truncate, width, stripAnsi } = await import("../src/ui/ansi");
+const { BashTool } = await import("../src/tools/bash");
+const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 
 afterAll(cleanup);
+
+describe("Bash progress", () => {
+    test("a key printed in two pieces isn't shown while the command runs", async () => {
+        const key = "streamed-secret-0123456789";
+        registerSecret(key, "test");
+        try {
+            const dir = tempDir();
+            const progress: string[] = [];
+            const state = { cwd: dir, projectRoot: dir, fileState: new Map(), todos: [], shells: new Map() };
+            const ctx = { state, settings: {}, signal: new AbortController().signal, mode: () => "default", setMode() {}, ui: {}, onProgress: (t: string) => progress.push(t) } as any;
+            const r = await BashTool.run({ command: `printf 'start\\n${key.slice(0, 12)}'; sleep 0.3; printf '${key.slice(12)}\\n'; sleep 0.3; echo end` }, ctx);
+            expect(progress.join("")).toContain("[REDACTED test]");
+            expect(progress.join("")).not.toContain(key.slice(0, 12));
+            expect(JSON.stringify(r)).not.toContain(key);
+        } finally {
+            unregisterSecret(key);
+        }
+    });
+});
 
 describe("dangerousReason looks inside nested commands", () => {
     for (const cmd of [

@@ -449,8 +449,8 @@ export type ServerEvent =
     | { type: "sessions.remove"; id: string }
     | { type: "notify"; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
-    /** Text that goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
-    | { type: "draft"; sessionId: string; text: string }
+    /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
+    | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[] }
     | { type: "models.changed" };
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitSnapshot } from "../util/git";
-import { redact } from "../util/redact";
+import { redact, wholeLines } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, type ToolMeta } from "./history";
 import type {
@@ -66,6 +66,11 @@ interface Pending {
 interface Queued {
     text: string;
     images?: ImagePart[];
+}
+
+/** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
+export function cleanTitle(title: string): string {
+    return title.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
 export function modelSummary(m: ModelInfo): ModelSummary {
@@ -117,7 +122,7 @@ export class Runtime {
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
-    private rewindShown?: { id: string; index: number; message: Message; plan?: RestoreItem[] };
+    private rewindShown?: { id: string; index: number; message: Message; count: number; plan?: RestoreItem[] };
 
     // What the current turn is building
     private turnId?: string;
@@ -299,6 +304,16 @@ export class Runtime {
         }
         if (pick && (await this.setModel(modelRef(pick), { quiet: true }))) return;
         this.setState({ model: undefined });
+    }
+
+    /** The user picked a model: a prompt sent while it's being set up waits, and starts with it. */
+    switchModel(ref: string, opts: { persist?: boolean } = {}): Promise<boolean> {
+        // After the one under way (the session's own, as it opens), so this one has the last word.
+        const before = this.switching;
+        return this.track((async () => {
+            if (before) await before.catch(() => undefined);
+            return this.setModel(ref, opts);
+        })());
     }
 
     /** Switch models. Returns false when the provider can't be used. */
@@ -506,7 +521,7 @@ export class Runtime {
     }
 
     rename(title: string) {
-        const t = title.replace(/\s+/g, " ").trim().slice(0, 120);
+        const t = cleanTitle(title);
         if (!t) return;
         this.session.setTitle(t);
         this.setState({ title: t });
@@ -1082,7 +1097,8 @@ export class Runtime {
 
     /** A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy. */
     async send(text: string, images?: ImagePart[]): Promise<{ queued: boolean }> {
-        if (this.switching) await this.switching.catch(() => undefined);
+        // Another switch can start while it waits for one.
+        while (this.switching) await this.switching.catch(() => undefined);
         const trimmed = text.trim();
         if (!trimmed && !images?.length) return { queued: false };
         if (this.busy) {
@@ -1189,7 +1205,8 @@ export class Runtime {
     /** After an interrupt, unsent messages go back to the input box instead of running. */
     private returnQueued() {
         if (!this.queued.length) return;
-        this.engine.draft(this, this.queued.map((q) => q.text).join("\n\n"));
+        const text = this.queued.map((q) => q.text).filter((t) => t.trim()).join("\n\n");
+        this.engine.draft(this, text, this.queued.flatMap((q) => q.images ?? []));
         this.queued = [];
         this.setState({ queued: [] });
     }
@@ -1254,6 +1271,7 @@ export class Runtime {
         this.op({ op: "block", turnId: turn.id, block: { t: "shell", id: blockId, command, output: "", running: true } });
         this.setState({ busy: true, status: "running", activity: { label: "Running", since: Date.now(), detail: command.slice(0, 80) } });
         let status: TurnStatus = "done";
+        let pending = "";
         try {
             const res = await runShell({
                 command,
@@ -1261,7 +1279,12 @@ export class Runtime {
                 timeoutMs: 120_000,
                 signal: ac.signal,
                 env: childEnv(this.settings().env),
-                onData: (chunk) => this.op({ op: "append", turnId: turn.id, blockId, field: "output", text: redact(chunk) }),
+                // Line by line (the rest comes with the full output at the end).
+                onData: (chunk) => {
+                    const [ready, rest] = wholeLines(pending + chunk);
+                    pending = rest;
+                    if (ready) this.op({ op: "append", turnId: turn.id, blockId, field: "output", text: redact(ready) });
+                },
             });
             const out = redact(res.output.replace(/\s+$/, ""));
             this.op({ op: "block.patch", turnId: turn.id, blockId, patch: { output: out.slice(-24_000) || "(no output)", exitCode: res.exitCode, running: false } });
@@ -1328,7 +1351,7 @@ export class Runtime {
         const root = canonical(this.ws.cwd);
         const rel = (p: string) => displayPath(p, root);
         const planId = this.newId();
-        this.rewindShown = { id: planId, index, message: this.session.messages[index]!, plan };
+        this.rewindShown = { id: planId, index, message: this.session.messages[index]!, count: this.session.messages.length, plan };
         return {
             index,
             planId,
@@ -1347,7 +1370,8 @@ export class Runtime {
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         const t = this.target(index);
         const shown = this.rewindShown;
-        if (!shown || shown.id !== planId || shown.index !== index || this.session.messages[index] !== shown.message) {
+        // A turn since (one running when it was shown, say) may have changed files the plan doesn't know about.
+        if (!shown || shown.id !== planId || shown.index !== index || this.session.messages[index] !== shown.message || this.session.messages.length !== shown.count) {
             throw new Error("The conversation changed since this was shown; nothing was rewound. Open Rewind again.");
         }
         this.rewindShown = undefined;
@@ -1515,7 +1539,10 @@ export class Runtime {
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
         // Delegated tasks still running stop with the session.
-        await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
-        this.session.release();
+        try {
+            await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
+        } finally {
+            this.session.release();
+        }
     }
 }

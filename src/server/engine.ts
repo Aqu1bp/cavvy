@@ -23,7 +23,7 @@ import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitSnapshot } from "../util/git";
 import { maskKey, redact } from "../util/redact";
-import { modelSummary, Runtime } from "./runtime";
+import { cleanTitle, modelSummary, Runtime } from "./runtime";
 import type {
     CommandInfo,
     EffortLevel,
@@ -53,7 +53,12 @@ export interface EngineOptions {
     fallbackModel?: string;
     /** Lists every provider's models (tests replace it). */
     listModels?: typeof listAllModels;
+    /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
+    unloadAfterMs?: number;
 }
+
+/** Long enough for a window that reloads (or reconnects) to open its sessions again. */
+const UNLOAD_AFTER_MS = 30_000;
 
 export interface EngineClient {
     send(ev: ServerEvent): void;
@@ -157,6 +162,9 @@ export class Engine {
     private refreshing?: Promise<ProviderListing[]>;
     /** Folders whose configuration the user chose not to trust (this run). */
     private declined = new Set<string>();
+    private unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    /** Closing everything: no new work is taken on, as it would outlive the server. */
+    private stopping = false;
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -167,6 +175,9 @@ export class Engine {
     }
 
     async stop() {
+        this.stopping = true;
+        for (const t of this.unloadTimers.values()) clearTimeout(t);
+        this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)));
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
     }
@@ -182,8 +193,9 @@ export class Engine {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "session.ops", sessionId, seq, ops });
     }
 
-    draft(rt: Runtime, text: string) {
-        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text });
+    draft(rt: Runtime, text: string, images?: ImagePart[]) {
+        const back = images?.length ? images.map((i) => ({ mediaType: i.mediaType, data: i.data })) : undefined;
+        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, images: back });
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
@@ -376,18 +388,21 @@ export class Engine {
         return rt;
     }
 
-    openSession(id: string): Runtime {
-        const live = this.runtimes.get(id);
-        if (live) return live;
+    private loadSession(id: string): Session {
         const file = findSessionAnywhere(id);
         if (!file) throw new RpcError(`No session ${id}`, "not_found");
-        let session: Session;
         try {
-            session = Session.load(file);
+            return Session.load(file);
         } catch (e) {
             if (e instanceof SessionInUseError) throw new RpcError(e.message, "in_use");
             throw new RpcError(`Could not open the session: ${redact((e as Error).message)}`);
         }
+    }
+
+    openSession(id: string): Runtime {
+        const live = this.runtimes.get(id);
+        if (live) return live;
+        const session = this.loadSession(id);
         let rt: Runtime;
         try {
             const ws = this.workspaceFor(session.meta.cwd);
@@ -401,12 +416,33 @@ export class Engine {
         return rt;
     }
 
-    /** A session no window shows and that has nothing running is closed, as quitting a terminal would, so a terminal can resume it. */
+    /**
+     * A session no window shows is closed once it has nothing running or
+     * waiting, as quitting a terminal would, so a terminal can resume it.
+     * One still working is checked again later.
+     */
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
-        if (!rt?.idle || [...this.clients].some((c) => c.subs.has(id))) return;
+        if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        if (!rt.idle) return this.unloadLater(id);
         this.runtimes.delete(id);
         void rt.close().catch(() => undefined);
+    }
+
+    private unloadLater(id: string) {
+        if (this.stopping || this.unloadTimers.has(id)) return;
+        const t = setTimeout(() => {
+            this.unloadTimers.delete(id);
+            this.unloadIfUnused(id);
+        }, this.o.unloadAfterMs ?? UNLOAD_AFTER_MS);
+        t.unref?.();
+        this.unloadTimers.set(id, t);
+    }
+
+    /** A window went away (closed, reloading, or lost its connection). */
+    dropClient(client: EngineClient) {
+        this.clients.delete(client);
+        for (const id of client.subs) this.unloadLater(id);
     }
 
     private runtime(id: unknown): Runtime {
@@ -570,6 +606,7 @@ export class Engine {
     // Requests
 
     async handle<M extends Method>(client: EngineClient, method: M, raw: unknown): Promise<Methods[M]["result"]> {
+        if (this.stopping) throw new RpcError("The harness server is stopping.", "stopping");
         const p = (raw ?? {}) as Record<string, any>;
         const r = await this.dispatch(client, method, p);
         return r as Methods[M]["result"];
@@ -621,7 +658,7 @@ export class Engine {
                 const rt = this.runtime(p.id);
                 // As in the terminal: the turn in progress keeps its model (Claude Code and Codex can't take over half way).
                 if (rt.busy) throw new RpcError("Switch models once this response is done, or interrupt it first.", "busy");
-                if (!(await rt.setModel(str(p.ref, "ref"), { persist: p.persist !== false }))) throw new RpcError(`Couldn't switch to ${p.ref}`);
+                if (!(await rt.switchModel(str(p.ref, "ref"), { persist: p.persist !== false }))) throw new RpcError(`Couldn't switch to ${p.ref}`);
                 return null;
             }
             case "session.setMode":
@@ -632,9 +669,24 @@ export class Engine {
                 if (!EFFORT_LEVELS.includes(p.effort)) throw new RpcError("Unknown effort level");
                 this.runtime(p.id).setEffort(p.effort as EffortLevel);
                 return null;
-            case "session.rename":
-                this.runtime(p.id).rename(str(p.title, "title"));
+            case "session.rename": {
+                const id = str(p.id, "id");
+                const title = cleanTitle(str(p.title, "title"));
+                const rt = this.runtimes.get(id);
+                if (rt) rt.rename(title);
+                else if (title) {
+                    // From the sidebar, one that isn't open: just the title line, without opening it.
+                    const session = this.loadSession(id);
+                    try {
+                        session.setTitle(title);
+                    } finally {
+                        session.release();
+                    }
+                    const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
+                    if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
+                }
                 return null;
+            }
             case "session.compact":
                 await this.runtime(p.id).compact(optStr(p.instructions));
                 return null;

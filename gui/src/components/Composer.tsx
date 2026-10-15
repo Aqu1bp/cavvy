@@ -62,12 +62,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }),
     );
     onCleanup(() => keepDraft(draftKey()));
-    // Text the server hands back (interrupted queue, rewound prompt).
+    // What the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();
         if (d === undefined) return;
         h()!.setDraft(undefined);
-        setText((t) => (t.trim() ? `${d}\n${t}` : d));
+        if (d.text) setText((t) => (t.trim() ? `${d.text}\n${t}` : d.text));
+        if (d.images?.length) setAttachments((a) => [...a, ...d.images!.map((i) => ({ name: "image", mediaType: i.mediaType, data: i.data, preview: `data:${i.mediaType};base64,${i.data}` }))]);
         requestAnimationFrame(() => {
             resize();
             ta?.focus();
