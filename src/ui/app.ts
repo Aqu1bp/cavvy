@@ -122,6 +122,12 @@ export class App {
     private turnStart = 0;
     private turnTokens = 0;
     private streamChars = 0;
+    /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
+    private thinkingNow = false;
+    /** When the agent last said anything, to tell a slow model from a stuck one. */
+    private lastEventAt = 0;
+    /** The busy work is the agent's (a `!` command isn't), so silence means waiting on the model. */
+    private agentWork = false;
     private verb = "Thinking";
     private status?: string;
     private showTodos = true;
@@ -687,11 +693,15 @@ export class App {
     // Agent events
 
     private onAgentEvent(e: AgentEvent) {
+        this.lastEventAt = Date.now();
+        this.agentWork = true;
         switch (e.type) {
             case "request_start":
                 this.status = undefined;
+                this.thinkingNow = false;
                 break;
             case "text": {
+                this.thinkingNow = false;
                 if (this.thinking) this.flushThinking();
                 if (!this.md) {
                     this.mdCols = termCols();
@@ -704,10 +714,12 @@ export class App {
                 break;
             }
             case "thinking":
+                this.thinkingNow = true;
                 this.thinking += e.text;
                 this.streamChars += e.text.length;
                 break;
             case "tool_call_start":
+                this.thinkingNow = false;
                 this.flushStream();
                 this.receiving.set(e.id, { name: e.name, chars: 0 });
                 break;
@@ -718,6 +730,7 @@ export class App {
                 break;
             }
             case "server_tool":
+                this.thinkingNow = false;
                 this.flushStream();
                 if (e.name === "web_search") this.screen.print(["", toolLine("Web Search", "ok")]);
                 else if (e.name === "web_search_result") {
@@ -764,12 +777,14 @@ export class App {
                 this.mdEntries = [];
                 this.mdSource = "";
                 this.thinking = "";
+                this.thinkingNow = false;
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
                 break;
             case "usage":
                 this.turnTokens += e.usage.outputTokens;
                 this.streamChars = 0;
+                this.thinkingNow = false;
                 break;
             case "compact_start":
                 this.verb = "Compacting conversation";
@@ -1274,6 +1289,9 @@ export class App {
         this.turnStart = Date.now();
         this.turnTokens = 0;
         this.streamChars = 0;
+        this.thinkingNow = false;
+        this.lastEventAt = this.turnStart;
+        this.agentWork = true;
         this.verb = SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!;
         this.status = undefined;
         this.startTicker();
@@ -1319,6 +1337,9 @@ export class App {
         this.turnStart = Date.now();
         this.turnTokens = 0;
         this.streamChars = 0;
+        this.thinkingNow = false;
+        this.lastEventAt = this.turnStart;
+        this.agentWork = false;
         this.verb = verb;
         this.status = undefined;
         this.startTicker();
@@ -1493,7 +1514,15 @@ export class App {
         const glyph = SPINNER_FRAMES[this.frame % SPINNER_FRAMES.length]!;
         if (!waitingForUser) {
             const label = this.status ?? `${this.verb}…`;
-            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""} · esc to interrupt)`)}`);
+            // Some models send nothing until a whole step is ready (Gemini on Vertex, or thinking that
+            // isn't streamed): after a while say what's being waited on, so it doesn't look stuck.
+            const quiet = Date.now() - this.lastEventAt;
+            const waiting = this.thinkingNow
+                ? ` · thinking${quiet >= 10_000 ? ` ${formatDuration(quiet)}` : ""}`
+                : quiet >= 10_000 && this.agentWork && this.model && !this.status && !this.active.size && !this.receiving.size
+                  ? ` · waiting for ${shortModel(this.model)} ${formatDuration(quiet)}`
+                  : "";
+            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting} · esc to interrupt)`)}`);
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));

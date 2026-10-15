@@ -82,6 +82,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     let argv: string[] = [];
     let word = "";
     let wordStarted = false;
+    /** Some of the word was quoted or escaped (so `''2>x`'s 2 is an argument, not an fd). */
+    let wordQuoted = false;
     let text = "";
     let quote: "'" | '"' | null = null;
 
@@ -89,6 +91,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         if (wordStarted) argv.push(word);
         word = "";
         wordStarted = false;
+        wordQuoted = false;
     };
     const endCommand = () => {
         endWord();
@@ -129,6 +132,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             }
             word += n;
             wordStarted = true;
+            wordQuoted = true;
             text += c + n;
             i++;
             continue;
@@ -140,6 +144,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             const [decoded, end] = ansiC(cmd, i + 2);
             word += decoded;
             wordStarted = true;
+            wordQuoted = true;
             unsafeExpansion = true;
             text += cmd.slice(i, end + 1);
             if (end >= cmd.length) quote = "'";
@@ -154,6 +159,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         if (c === "'" || c === '"') {
             quote = c;
             wordStarted = true;
+            wordQuoted = true;
             text += c;
             continue;
         }
@@ -162,8 +168,9 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         }
         if (c === "$" && (n === "[" || (n === "{" && !plainBraceParam(cmd, i)))) unsafeExpansion = true;
         if (c === "(" || c === ")") unsafeExpansion = true;
-        if (c === "{" && /^\{[^\s;|&{}]*(,|\.\.)[^\s;|&{}]*\}/.test(cmd.slice(i))) unsafeExpansion = true;
-        if (c === "#" && !wordStarted && (i === 0 || /\s/.test(cmd[i - 1]!))) {
+        // Only space, tab and newline separate words: to the shell `\r`, `\v` and Unicode spaces are letters.
+        if (c === "{" && /^\{[^ \t\n;|&{}]*(,|\.\.)[^ \t\n;|&{}]*\}/.test(cmd.slice(i))) unsafeExpansion = true;
+        if (c === "#" && !wordStarted && (i === 0 || /[ \t\n]/.test(cmd[i - 1]!))) {
             // comment to end of line
             while (i < cmd.length && cmd[i] !== "\n") i++;
             endCommand();
@@ -181,29 +188,41 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             continue;
         }
         if (c === ">" || c === "<") {
+            // `2>`, `2>>`, `0<`: an unquoted digit right before the operator is the fd, not an argument.
+            // Only one digit: zsh passes `10>x`'s 10 to the command (bash takes it as fd 10).
+            if (/^\d$/.test(word) && !wordQuoted) {
+                word = "";
+                wordStarted = false;
+            }
+            endWord();
+            // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
+            let end = i;
             if (c === ">") {
                 // Look at the redirection target.
                 let j = i + 1;
                 if (cmd[j] === ">" || cmd[j] === "|") j++;
-                if (cmd[j] === "&" && /^(\d+|-)(?=$|[\s;|&)])/.test(cmd.slice(j + 1))) {
+                const fd = cmd[j] === "&" ? /^(\d+|-)(?=$|[ \t\n;|&)<>])/.exec(cmd.slice(j + 1)) : null;
+                if (fd) {
                     // >&2 / >&- style: fd duplication or close, harmless
+                    end = j + fd[0].length;
                 } else {
                     if (cmd[j] === "&") j++; // `>&file` sends stdout and stderr to a file
-                    while (cmd[j] === " ") j++;
-                    const rest = cmd.slice(j);
+                    while (cmd[j] === " " || cmd[j] === "\t") j++;
                     // The whole word, however its pieces are quoted: `"src"/../../out` is one target.
-                    const target = (rest.match(/^(?:"[^"]*"|'[^']*'|[^\s;|&<>"'])+/)?.[0] ?? "").replace(/["']/g, "");
-                    if (!/^\/dev\/(null|stdout|stderr)$/.test(target)) {
+                    const raw = cmd.slice(j).match(/^(?:"[^"]*"|'[^']*'|[^ \t\n;|&<>"'])+/)?.[0] ?? "";
+                    const target = raw.replace(/["']/g, "");
+                    if (/^\/dev\/(null|stdout|stderr)$/.test(target)) end = j + raw.length - 1;
+                    else {
                         writesFiles = true;
                         redirects.push(target);
                     }
                 }
             }
-            endWord();
-            text += c;
+            text += cmd.slice(i, end + 1);
+            i = end;
             continue;
         }
-        if (/\s/.test(c)) {
+        if (c === " " || c === "\t") {
             endWord();
             text += c;
             continue;

@@ -84,6 +84,10 @@ describe("allow rules and where output goes", () => {
         expect(configTarget("git config core.pager less")).toBeTruthy();
         expect(configTarget("git config user.name x")).toBeUndefined();
     });
+    test("reading harness config next to a quieted version check doesn't ask", () => {
+        expect(configTarget("cat .harness/settings.local.json; echo ---; which node npm python3 2>/dev/null; node -v 2>/dev/null")).toBeUndefined();
+        expect(configTarget("cat x 2>/dev/null > .harness/settings.json")).toBeTruthy();
+    });
 });
 
 describe("plan mode and MCP", () => {

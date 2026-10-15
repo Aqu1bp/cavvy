@@ -294,6 +294,14 @@ describe("pushesDefaultBranch", () => {
         expect(pushesDefaultBranch("git push", parent)).toBeUndefined();
     });
 
+    test("a redirection after the push doesn't read as a remote or branch", () => {
+        const repo = real(tempDir());
+        mkdirSync(join(repo, ".git"));
+        writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+        for (const cmd of ["git push 2>&1", "git push origin 2>/dev/null", "git push >/dev/null 2>&1 | tail -1"]) expect(pushesDefaultBranch(cmd, repo)).toBe("git push from main");
+        expect(pushesDefaultBranch("git push origin feat 2>&1", repo)).toBeUndefined();
+    });
+
     test("a HEAD that isn't a regular file (a FIFO would block) is ignored, not read", () => {
         const repo = real(tempDir());
         mkdirSync(join(repo, ".git"));

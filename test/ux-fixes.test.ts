@@ -684,6 +684,69 @@ describe("live region layout", () => {
         expect(lines[0]).toBe("  second half");
     });
 
+    test("the spinner says the model is thinking until its reply starts", () => {
+        const app = busyApp();
+        const spinner = () => liveOf(app).lines.find((l) => l.includes("esc to interrupt"))!;
+        expect(spinner()).not.toContain("thinking");
+        // Thinking that isn't streamed arrives as one empty event, then nothing until the reply.
+        app.onAgentEvent({ type: "thinking", text: "" });
+        expect(spinner()).toContain(" · thinking · esc to interrupt");
+        app.onAgentEvent({ type: "tool_call_start", id: "t1", name: "Write" });
+        expect(spinner()).not.toContain("thinking");
+        app.onAgentEvent({ type: "thinking", text: "" });
+        app.onAgentEvent({ type: "usage", usage: { inputTokens: 1, outputTokens: 2 } });
+        expect(spinner()).not.toContain("thinking");
+        // A web search the server runs isn't thinking either.
+        app.onAgentEvent({ type: "thinking", text: "" });
+        app.onAgentEvent({ type: "server_tool", name: "web_search", detail: "" });
+        expect(spinner()).not.toContain("thinking");
+    });
+
+    test("a model that has been silent a while is named as what's being waited on", () => {
+        const app = busyApp();
+        app.model = { provider: "vertex", id: "google/gemini-4-argon", name: "gemini-4-argon" };
+        app.agentWork = true; // a chat turn
+        const spinner = () => liveOf(app).lines.find((l) => l.includes("esc to interrupt"))!;
+        app.lastEventAt = Date.now() - 5_000;
+        expect(spinner()).not.toContain("waiting");
+        app.lastEventAt = Date.now() - 75_000;
+        expect(spinner()).toContain(" · waiting for gemini-4-argon 1m 15s · esc to interrupt");
+        // Not while a tool runs, a call streams in, or something else is said (a retry).
+        app.active.set("a", tool("npm test"));
+        expect(spinner()).not.toContain("waiting");
+        app.active.clear();
+        app.receiving.set("t1", { name: "Write", chars: 0 });
+        expect(spinner()).not.toContain("waiting");
+        app.receiving.clear();
+        app.status = "overloaded · retrying in 4s (attempt 1)";
+        expect(spinner()).not.toContain("waiting");
+        app.status = undefined;
+        // Any event resets it; thinking says how long it has been thinking.
+        app.onAgentEvent({ type: "thinking", text: "" });
+        expect(spinner()).toContain(" · thinking · esc to interrupt");
+        app.lastEventAt = Date.now() - 12_000;
+        expect(spinner()).toContain(" · thinking 12s · esc to interrupt");
+    });
+
+    test("a slow `!` command isn't called waiting for the model; /compact is", async () => {
+        const { app } = testApp();
+        (app as any).model = { provider: "vertex", id: "google/gemini-4-argon", name: "gemini-4-argon" };
+        const spinner = () => liveOf(app).lines.find((l) => l.includes("esc to interrupt"))!;
+        let open!: () => void;
+        const task = app.runTask("Running", () => new Promise<void>((r) => (open = r)));
+        (app as any).lastEventAt = Date.now() - 30_000;
+        expect(spinner()).not.toContain("waiting");
+        open();
+        await task;
+        // /compact runs as a task too, but the agent reports it, and it does wait on the model.
+        const compact = app.runTask("Compacting conversation", () => new Promise<void>((r) => (open = r)));
+        (app as any).onAgentEvent({ type: "compact_start", auto: false });
+        (app as any).lastEventAt = Date.now() - 30_000;
+        expect(spinner()).toContain(" · waiting for gemini-4-argon 30s");
+        open();
+        await compact;
+    });
+
     test("when idle, only the prompt is shown, all of it on the bottom rows", () => {
         const { app } = testApp();
         const { lines, flow } = liveOf(app);

@@ -10,27 +10,46 @@ export interface SseEvent {
  * as stalled. Generous on purpose: some endpoints (Vertex) send no headers
  * until the model's first token, and thinking can take minutes.
  */
-export const stall = { ms: 5 * 60_000 };
+export const stall = {
+    ms: 5 * 60_000,
+    /**
+     * The first byte, from an endpoint that holds the whole reply until it's
+     * ready (Vertex: no headers before the first token, and a tool call comes
+     * in one piece). A 32k-token file at Gemini's ~90 tokens/s is ~6 minutes,
+     * after up to a few minutes before the first token.
+     */
+    firstByteMs: 10 * 60_000,
+};
 
-/** A signal that aborts when `parent` does, or when `touch` isn't called for `stall.ms`. */
-export function stallTimer(parent: AbortSignal | undefined) {
+/**
+ * A signal that aborts when `parent` does, or when `touch` isn't called for
+ * `stall.ms` (`stall.firstByteMs` before the first touch, if `holdsReply`).
+ */
+export function stallTimer(parent: AbortSignal | undefined, holdsReply = false) {
     const ac = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const touch = () => {
+    let limit = 0;
+    const arm = (ms: number) => {
         clearTimeout(timer);
-        timer = setTimeout(() => ac.abort(), stall.ms);
+        limit = ms;
+        timer = setTimeout(() => ac.abort(), ms);
     };
-    touch();
+    const first = () => arm(holdsReply ? Math.max(stall.ms, stall.firstByteMs) : stall.ms);
+    first();
     return {
         signal: parent ? AbortSignal.any([parent, ac.signal]) : ac.signal,
-        touch,
+        touch: () => arm(stall.ms),
+        /** A new request on the same timer (a retry after a refreshed token): wait for its first byte again. */
+        restart: first,
         stalled: () => ac.signal.aborted && !parent?.aborted,
+        /** How long it waits now, for the message when it gives up. */
+        limit: () => limit,
         stop: () => clearTimeout(timer),
     };
 }
 
-export function stallMessage(provider: string): string {
-    const s = Math.round(stall.ms / 1000);
+export function stallMessage(provider: string, ms = stall.ms): string {
+    const s = Math.round(ms / 1000);
     return `No response from ${provider} for ${s >= 60 ? `${Math.round(s / 60)} minutes` : `${s}s`}`;
 }
 
