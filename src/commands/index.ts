@@ -12,7 +12,7 @@ import { renderMarkdown } from "../ui/markdown";
 import { notificationMode, notifyAfterMs } from "../ui/notify";
 import { APP_TITLE, APP_VERSION, paths } from "../config/paths";
 import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, type Effort, type SettingsScope, type Settings } from "../config/settings";
-import { isTrusted } from "../config/trust";
+import { agentProjectConfig, isTrusted, trustedByUser, trustFolder } from "../config/trust";
 import { MODE_INFO, PERMISSION_MODES, parseMode, type PermissionMode } from "../permissions/modes";
 import { parseRule } from "../permissions/rules";
 import { sandboxEnabled, sandboxKind } from "../permissions/sandbox";
@@ -422,6 +422,30 @@ async function agentLogin(app: App, providerId: string) {
         theme.muted(`  Its sign-in stays in ${def.name}: ${APP_TITLE} never reads or stores it.`),
     ]);
     if (st.apiKey) app.notice(`${def.name} is signed in with an API key, so its usage is billed to that key, not a subscription. \`${st.signIn}\` switches it to your account.`, "warn");
+    // It loads this folder's own configuration (hooks, skills, MCP servers) only if you trust the folder.
+    const projectConfig = [...agentProjectConfig(app.cwd, providerId as "claude-code" | "codex"), ...(providerId === "claude-code" && existsSync(paths.projectMcp(app.cwd)) ? [".mcp.json"] : [])];
+    if (projectConfig.length && !trustedByUser(app.cwd)) {
+        const trust = await confirm(
+            app,
+            `Trust this folder's ${def.name} configuration?`,
+            [
+                bold(app.cwd),
+                "",
+                `${def.name} would load ${projectConfig.join(", ")} from this folder.`,
+                theme.muted("Hooks, MCP servers and skills there can run commands on your machine; permission rules there can approve actions."),
+                theme.muted(`Until you trust the folder, ${def.name} runs without them.`),
+            ],
+            "Yes, trust this folder",
+            "No, run without them",
+        );
+        if (trust) {
+            try {
+                trustFolder(app.cwd);
+            } catch (e) {
+                app.notice(`Trusted for this session only. ${redact((e as Error).message)}`, "warn");
+            }
+        }
+    }
     const listings = await withProgress(app, [theme.permission(bold(`Loading ${def.name} models…`))], () => app.refreshListings());
     const l = listings?.find((x) => x.provider.id === providerId);
     if (l?.error) app.notice(`Couldn't list ${def.name} models: ${l.error}`, "warn");

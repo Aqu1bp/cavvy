@@ -24,6 +24,12 @@ export interface BackendPermission {
     preview?: ToolDisplay;
     /** More files the same change writes: deny rules for any of them refuse it, and only rules covering all of them approve it. */
     otherPaths?: string[];
+    /**
+     * Access the request would open up (Codex's extra permissions): a deny
+     * rule for any of these paths refuses it, plan mode refuses it, and it's
+     * never approved without asking.
+     */
+    widens?: { read: string[]; write: string[] };
 }
 
 export type PermissionAnswer =
@@ -46,6 +52,8 @@ export interface BackendQuestion {
 
 export interface BackendHost {
     emit(e: AgentEvent): void;
+    /** The harness's permission mode now (it can change during a turn). */
+    mode(): PermissionMode;
     permission(req: BackendPermission): Promise<PermissionAnswer>;
     /** One answer list per question; undefined when the user dismissed them. */
     askQuestions(questions: BackendQuestion[]): Promise<string[][] | undefined>;
@@ -71,6 +79,8 @@ export interface BackendTurn {
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
+    /** The harness's deny and ask rules, and the root their paths are relative to. */
+    rules: { deny: string[]; ask: string[]; root: string };
     /** Stop after this many model turns (Claude Code). */
     maxTurns?: number;
     /** Continue this backend session (from an earlier turn). */

@@ -23,16 +23,23 @@ import type { ProviderDef } from "../providers/registry";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
+import { parseRule, pathPattern } from "../permissions/rules";
+import { paths } from "../config/paths";
 import { redact } from "../util/redact";
-import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli } from "./cli";
+import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 
 const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
-/** Claude Code's names for the harness's permission modes. */
+/**
+ * Claude Code's modes for the harness's. Not acceptEdits for acceptEdits:
+ * Claude Code's own also runs file commands (rm, mv, sed) without asking,
+ * where the harness's still asks for shell commands. It runs in default mode
+ * instead, and the harness approves its edits inside the workspace itself.
+ */
 const MODES: Record<PermissionMode, string> = {
     default: "default",
-    acceptEdits: "acceptEdits",
+    acceptEdits: "default",
     plan: "plan",
     auto: "auto",
     bypassPermissions: "bypassPermissions",
@@ -94,7 +101,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         // No settings, MCP servers or session file: this only asks for the list.
         const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir() });
-        const kill = () => proc.kill();
+        const kill = () => void proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, 30_000);
         try {
@@ -116,7 +123,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         } finally {
             clearTimeout(timer);
             signal?.removeEventListener("abort", kill);
-            proc.kill();
+            void proc.kill();
         }
     }
 
@@ -186,8 +193,10 @@ class ClaudeTurn {
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
         if (t.appendSystemPrompt) a.push("--append-system-prompt", t.appendSystemPrompt);
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
-        // An untrusted folder's Claude Code settings (hooks, permission rules) and .mcp.json stay off.
+        // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
         if (!t.trusted) a.push("--setting-sources", "user", "--strict-mcp-config");
+        // The harness's deny and ask rules also cover what Claude Code would do without asking.
+        a.push("--settings", JSON.stringify({ permissions: claudePermissions(t.rules) }));
         return a;
     }
 
@@ -207,8 +216,8 @@ class ClaudeTurn {
         const onAbort = () => {
             this.aborted = true;
             this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "interrupt" } });
-            // It answers an interrupt with a result; if it doesn't, stop it.
-            killTimer = setTimeout(() => this.proc.kill(), 8000);
+            // It answers an interrupt with a result; if it doesn't, stop it (SIGKILL if need be).
+            killTimer = setTimeout(() => void this.proc.kill(), stopTiming.interruptMs);
         };
         signal.addEventListener("abort", onAbort, { once: true });
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
@@ -221,6 +230,9 @@ class ClaudeTurn {
                     this.onResult(m);
                     const queued = this.aborted ? [] : this.host.drainQueued();
                     if (queued.length) {
+                        // The turn now ends with the queued prompt's result; without one, it failed.
+                        gotResult = false;
+                        this.reason = undefined;
                         this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
                         continue;
                     }
@@ -453,6 +465,40 @@ class ClaudeTurn {
         if (a.allow) return { behavior: "allow", updatedInput: raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
+}
+
+const PATH_RULE: Record<string, "Read" | "Edit"> = { Read: "Read", Glob: "Read", Grep: "Read", LS: "Read", Edit: "Edit", Write: "Edit", MultiEdit: "Edit", NotebookEdit: "Edit" };
+
+/**
+ * One harness rule as Claude Code permission rules, or none when Claude Code
+ * has no equivalent (those still apply to whatever it asks about). Paths are
+ * resolved the way the harness resolves them and passed as absolute (//…)
+ * patterns, plus everything under them for a plain path, as the harness
+ * matches; edit and read rules widen to all of Claude Code's edit or read
+ * tools, which only makes a deny or ask rule stricter.
+ */
+export function claudeRule(raw: string, root: string): string[] {
+    const { tool, spec } = parseRule(raw);
+    const kind = PATH_RULE[tool];
+    if (kind) {
+        if (!spec) return [kind];
+        const abs = pathPattern(spec, root);
+        const rules = [`${kind}(/${abs})`];
+        if (!/[*?]/.test(spec)) rules.push(`${kind}(/${abs.replace(/\/+$/, "")}/**)`);
+        return rules;
+    }
+    if (tool === "Bash" || tool === "WebSearch") return [spec ? `${tool}(${spec})` : tool];
+    if (tool === "WebFetch") return !spec ? ["WebFetch"] : /^domain:/.test(spec) ? [`WebFetch(${spec})`] : [];
+    if (tool === "Task") return [spec ? `Agent(${spec})` : "Agent"];
+    if (tool.startsWith("mcp__")) return [tool];
+    return [];
+}
+
+/** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
+export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
+    const store = [paths.credentialsFile(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
+    return { deny: [...map(r.deny), ...store], ask: map(r.ask) };
 }
 
 /** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */

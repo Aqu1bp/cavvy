@@ -11,14 +11,15 @@
 
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { isAbsolute, join } from "path";
+import { dirname, isAbsolute, join, resolve } from "path";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PermissionMode } from "../permissions/modes";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
-import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli } from "./cli";
+import { gitRoot } from "../util/git";
+import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type PermissionAnswer } from "./types";
 
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
@@ -77,12 +78,50 @@ class Rpc {
     }
 }
 
-/** Start app-server and do the handshake. */
-async function connect(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>): Promise<Rpc> {
+/**
+ * In a folder the user hasn't trusted, Codex must not load the project's own
+ * config (.codex/), even if Codex itself was told to trust the project. Codex
+ * looks trust up by the git root (and, to be safe, any folder above), so all
+ * of them are marked untrusted for this run.
+ */
+export function untrustedArgs(cwd: string): string[] {
+    const dirs = new Set<string>();
+    for (let d = resolve(cwd); ; d = dirname(d)) {
+        dirs.add(d);
+        if (dirname(d) === d) break;
+    }
+    const root = gitRoot(cwd);
+    if (root) dirs.add(resolve(root));
+    return ["-c", `projects={${[...dirs].map((d) => `${JSON.stringify(d)}={trust_level="untrusted"}`).join(",")}}`];
+}
+
+/** Start app-server (no handshake yet). */
+function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
-    const rpc = new Rpc(new JsonLinesProcess(bin, ["app-server", ...extraArgs(providerId)], { cwd }), onNotification, onRequest);
+    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : [])];
+    return new Rpc(new JsonLinesProcess(bin, args, { cwd }), onNotification, onRequest);
+}
+
+async function handshake(rpc: Rpc) {
     await rpc.request("initialize", { clientInfo: { name: `${APP_NAME}_cli`, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
     rpc.notify("initialized");
+}
+
+/** Start app-server and do the handshake; the signal (or the timeout) stops it at any point. */
+async function connect(providerId: string, cwd: string, signal?: AbortSignal): Promise<Rpc> {
+    const rpc = spawnRpc(providerId, cwd, () => {}, async () => {
+        throw new Error("not supported");
+    });
+    const kill = () => void rpc.proc.kill();
+    signal?.addEventListener("abort", kill, { once: true });
+    try {
+        await withTimeout(handshake(rpc), 30_000, "Codex didn't start (no answer to initialize)");
+    } catch (e) {
+        void rpc.proc.kill();
+        throw e;
+    } finally {
+        signal?.removeEventListener("abort", kill);
+    }
     return rpc;
 }
 
@@ -109,16 +148,14 @@ export function describeCodexAuth(a: CodexAccount): string {
 
 /** How Codex is signed in (account/read), from Codex itself. */
 export async function codexAccount(providerId = "codex", signal?: AbortSignal): Promise<CodexAccount> {
-    const rpc = await connect(providerId, homedir(), () => {}, async () => {
-        throw new Error("not supported");
-    });
-    const kill = () => rpc.proc.kill();
+    const rpc = await connect(providerId, homedir(), signal);
+    const kill = () => void rpc.proc.kill();
     signal?.addEventListener("abort", kill, { once: true });
     try {
         return parseAccount(await withTimeout(rpc.request("account/read", {}), 20_000, "Codex didn't answer account/read"));
     } finally {
         signal?.removeEventListener("abort", kill);
-        rpc.proc.kill();
+        void rpc.proc.kill();
     }
 }
 
@@ -135,17 +172,26 @@ interface Policy {
 
 /** The harness's permission mode as Codex's approval policy and sandbox. */
 export function codexPolicy(mode: PermissionMode, additionalDirectories: string[]): Policy {
+    const workspaceWrite = { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
     switch (mode) {
         case "acceptEdits":
+            // Edits inside the workspace; commands other than known read-only ones still ask (the harness approves the edits).
+            return { approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: workspaceWrite };
         case "auto":
             // Edits and commands inside the workspace run in Codex's sandbox; it asks to go beyond it.
-            return { approvalPolicy: "on-request", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } };
+            return { approvalPolicy: "on-request", sandbox: "workspace-write", sandboxPolicy: workspaceWrite };
         case "bypassPermissions":
             return { approvalPolicy: "never", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" } };
         default:
             // Manual and plan: commands other than known read-only ones, and every edit, ask.
             return { approvalPolicy: "untrusted", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false } };
     }
+}
+
+/** Modes with the same Codex policy (plan adds instructions on top). */
+function codexPolicyKey(m: PermissionMode): string {
+    const p = codexPolicy(m, []);
+    return `${p.approvalPolicy}|${p.sandbox}`;
 }
 
 const PLAN_NOTE =
@@ -162,10 +208,8 @@ export class CodexBackend implements AgentBackendClient {
 
     /** Codex's model catalog (model/list), the default model first. */
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
-        const rpc = await connect(this.def.id, homedir(), () => {}, async () => {
-            throw new Error("not supported");
-        });
-        const kill = () => rpc.proc.kill();
+        const rpc = await connect(this.def.id, homedir(), signal);
+        const kill = () => void rpc.proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         try {
             const all: any[] = [];
@@ -186,12 +230,19 @@ export class CodexBackend implements AgentBackendClient {
             );
         } finally {
             signal?.removeEventListener("abort", kill);
-            rpc.proc.kill();
+            void rpc.proc.kill();
         }
     }
 
+    private turn?: CodexTurn;
+
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        return new CodexTurn(this.def, t).run();
+        const turn = (this.turn = new CodexTurn(this.def, t));
+        try {
+            return await turn.run();
+        } finally {
+            if (this.turn === turn) this.turn = undefined;
+        }
     }
 
     /** Codex's own compaction of the thread. */
@@ -200,16 +251,29 @@ export class CodexBackend implements AgentBackendClient {
         return new CodexTurn(this.def, { ...t, prompt: "", images: [] }).run({ compact: true });
     }
 
-    /** Codex takes the approval policy per turn; a change applies from the next one. */
-    setMode(_m: PermissionMode) {}
+    /** Codex takes its approval policy and sandbox per turn: a stricter mode restarts the running turn under it. */
+    setMode(m: PermissionMode) {
+        this.turn?.modeChanged(m);
+    }
 }
+
+/** How much a mode lets Codex do on its own; switching to a higher one mid-turn can't wait for the next turn. */
+const STRICTNESS: Record<PermissionMode, number> = { bypassPermissions: 0, auto: 1, acceptEdits: 2, default: 3, plan: 4 };
 
 interface OpenItem {
     name: string;
     input: Record<string, unknown>;
     title: string;
     started: number;
-    changes?: { path: string; kind: string; diff: string }[];
+    changes?: FileChange[];
+}
+
+interface FileChange {
+    path: string;
+    kind: string;
+    diff: string;
+    /** A rename's destination. */
+    movePath?: string;
 }
 
 class CodexTurn {
@@ -231,11 +295,23 @@ class CodexTurn {
     /** Why the last approval was refused, for the item's result. */
     private refusal?: string;
     private turnDone?: () => void;
+    /** The mode the running turn's policy came from. */
+    private turnMode?: PermissionMode;
+    /** The user switched to a stricter mode mid-turn: the turn was interrupted to go on under it. */
+    private restartFor?: PermissionMode;
 
     constructor(
         private def: ProviderDef,
         private t: BackendTurn,
     ) {}
+
+    modeChanged(m: PermissionMode) {
+        if (!this.turnId || this.turnMode === undefined || this.aborted) return;
+        if (STRICTNESS[m] > STRICTNESS[this.turnMode] && codexPolicyKey(m) !== codexPolicyKey(this.turnMode) || (m === "plan" && this.turnMode !== "plan")) {
+            this.restartFor = m;
+            this.interrupt();
+        }
+    }
 
     private get host(): BackendHost {
         return this.t.host;
@@ -244,23 +320,25 @@ class CodexTurn {
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.rpc = await connect(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p));
+        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
-            if (this.threadId && this.turnId) this.interrupt();
-            else this.turnDone?.();
-            // It answers an interrupt with turn/completed; don't wait forever if it doesn't.
-            abortTimer = setTimeout(() => this.turnDone?.(), 8000);
+            if (this.threadId && this.turnId) {
+                this.interrupt();
+                // It answers an interrupt with turn/completed; if it doesn't, stop it.
+                abortTimer = setTimeout(() => void this.rpc.proc.kill(), stopTiming.interruptMs);
+            } else void this.rpc.proc.kill(); // still starting: nothing to interrupt
         };
         t.signal.addEventListener("abort", onAbort, { once: true });
         try {
+            await withTimeout(handshake(this.rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
                 return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.` };
             }
             this.billedToPlan = account.type === "chatgpt";
-            const policy = codexPolicy(t.mode, t.additionalDirectories);
+            const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
             const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, developerInstructions: t.appendSystemPrompt || undefined };
             if (t.resumeId) {
@@ -279,19 +357,33 @@ class CodexTurn {
             if (opts.compact) {
                 await this.waitFor(() => this.rpc.request("thread/compact/start", { threadId: this.threadId }));
             } else {
-                let input = this.input(t.mode === "plan" ? `${PLAN_NOTE}\n\n${t.prompt}` : t.prompt, t.images);
+                let text = t.prompt;
+                let images = t.images;
                 while (true) {
+                    // The policy for the mode as it is now: it may have changed since the last turn.
+                    const mode = this.host.mode();
+                    const policy = codexPolicy(mode, t.additionalDirectories);
+                    const input = this.input(mode === "plan" ? `${PLAN_NOTE}\n\n${text}` : text, images);
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
+                    this.turnMode = mode;
                     await this.waitFor(async () => {
                         const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, summary: "auto" });
                         this.turnId = r?.turn?.id;
                     });
+                    this.turnId = undefined;
                     if (this.aborted || this.status === "failed") break;
+                    images = [];
+                    const restart = this.restartFor;
+                    this.restartFor = undefined;
+                    if (restart) {
+                        text = `<system-reminder>\nThe user switched the permission mode to ${restart === "plan" ? "plan mode" : `"${restart}"`} while you were working, so your turn was stopped and resumes under it. Continue from where you were, within the new mode.\n</system-reminder>`;
+                        continue;
+                    }
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
                     const next = followUp ? [followUp] : this.host.drainQueued();
                     if (!next.length) break;
-                    input = this.input(next.join("\n\n"), []);
+                    text = next.join("\n\n");
                 }
             }
         } catch (e) {
@@ -423,9 +515,10 @@ class CodexTurn {
             }
             case "fileChange": {
                 const changes = fileChanges(item);
-                const first = changes[0]?.path ?? "";
+                const first = changes[0];
                 const name = changes.length && changes.every((c) => c.kind === "add") ? "Write" : "Edit";
-                open = { name, input: { file_path: first }, title: `${name}(${first}${changes.length > 1 ? ` +${changes.length - 1} more` : ""})`, started: Date.now(), changes };
+                const what = first ? (first.movePath ? `${first.path} → ${first.movePath}` : first.path) : "";
+                open = { name, input: { file_path: first?.path ?? "" }, title: `${name}(${what}${changes.length > 1 ? ` +${changes.length - 1} more` : ""})`, started: Date.now(), changes };
                 break;
             }
             case "mcpToolCall": {
@@ -524,19 +617,28 @@ class CodexTurn {
                 }
                 const first = changes[0];
                 const name = changes.length && changes.every((c) => c.kind === "add") ? "Write" : "Edit";
-                const others = changes.slice(1).map((c) => c.path);
+                // Each file it writes, a rename's destination included, is checked against the rules.
+                const others = writtenPaths(changes).slice(1);
                 const a = await this.host.permission({
                     toolName: name,
                     input: { file_path: first?.path ?? "" },
                     title: open?.title,
-                    reason: [typeof p.reason === "string" ? p.reason : "", others.length ? `This change also touches ${others.join(", ")}.` : ""].filter(Boolean).join(" ") || undefined,
+                    reason: [typeof p.reason === "string" ? p.reason : "", others.length ? `This change also writes ${others.join(", ")}.` : ""].filter(Boolean).join(" ") || undefined,
                     preview: first ? changePreview(first, this.t.cwd) : undefined,
                     otherPaths: others,
                 });
                 return { decision: this.decision(a, p.availableDecisions) };
             }
             case "item/permissions/requestApproval": {
-                const a = await this.host.permission({ toolName: "Codex permissions", input: { permissions: p.permissions ?? {} }, title: "Codex asks for more permissions", reason: [p.reason, JSON.stringify(p.permissions ?? {})].filter(Boolean).join(" ") });
+                const want = requestedPaths(p.permissions);
+                const asks = [...want.write.map((x) => `write ${x}`), ...want.read.map((x) => `read ${x}`), ...(want.network ? ["network access"] : [])];
+                const a = await this.host.permission({
+                    toolName: "Codex permissions",
+                    input: { permissions: p.permissions ?? {} },
+                    title: "Codex asks for more permissions",
+                    reason: [typeof p.reason === "string" ? p.reason : "", asks.length ? `It wants: ${asks.join(", ")}.` : JSON.stringify(p.permissions ?? {})].filter(Boolean).join(" "),
+                    widens: { read: want.read, write: want.write },
+                });
                 // Granting nothing lets the turn go on without them; what the user said goes in with it.
                 if (!a.allow && a.fromUser) this.steer(a.message);
                 if (!a.allow && a.stop) this.interrupt();
@@ -596,9 +698,34 @@ function innerCommand(x: any): string {
     return m ? m[1]!.replace(/'\\''/g, "'") : cmd;
 }
 
-function fileChanges(item: any): { path: string; kind: string; diff: string }[] {
+function fileChanges(item: any): FileChange[] {
     const changes: any[] = Array.isArray(item?.changes) ? item.changes : [];
-    return changes.map((c) => ({ path: String(c?.path ?? ""), kind: String(c?.kind?.type ?? "update"), diff: String(c?.diff ?? "") }));
+    return changes.map((c) => ({
+        path: String(c?.path ?? ""),
+        kind: String(c?.kind?.type ?? "update"),
+        diff: String(c?.diff ?? ""),
+        movePath: typeof c?.kind?.move_path === "string" && c.kind.move_path ? c.kind.move_path : undefined,
+    }));
+}
+
+/** Every path a change writes: sources, and renames' destinations. */
+function writtenPaths(changes: FileChange[]): string[] {
+    return [...new Set(changes.flatMap((c) => (c.movePath ? [c.path, c.movePath] : [c.path])))];
+}
+
+/** The folders a permissions request asks Codex's sandbox to open, for reading and writing. */
+export function requestedPaths(permissions: any): { read: string[]; write: string[]; network: boolean } {
+    const fs = permissions?.fileSystem ?? {};
+    const list = (x: unknown) => (Array.isArray(x) ? x.filter((p): p is string => typeof p === "string") : []);
+    const read = list(fs.read);
+    const write = list(fs.write);
+    for (const e of Array.isArray(fs.entries) ? fs.entries : []) {
+        const p = e?.path?.type === "path" ? e.path.path : e?.path?.type === "glob_pattern" ? e.path.pattern : undefined;
+        if (typeof p !== "string") continue;
+        if (e.access === "write") write.push(p);
+        else if (e.access === "read") read.push(p);
+    }
+    return { read, write, network: permissions?.network?.enabled === true };
 }
 
 function mcpText(result: any): string {

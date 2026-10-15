@@ -11,7 +11,7 @@
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
 import { analyzeCommand, effectiveArgv, onlySafeAssignments, substitutionBodies } from "./bash-safety";
-import { canonical } from "../util/files";
+import { canonical, isInside } from "../util/files";
 
 /** macOS and Windows filesystems are case-insensitive by default. */
 const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
@@ -77,7 +77,7 @@ function globToRegex(glob: string): RegExp {
 }
 
 /** Resolve a path pattern relative to the project root (gitignore-ish anchoring). */
-function pathPattern(spec: string, root: string): string {
+export function pathPattern(spec: string, root: string): string {
     if (spec.startsWith("//")) return spec.slice(1);
     if (spec.startsWith("~/")) return join(homedir(), spec.slice(2));
     if (spec.startsWith("/")) return join(root, spec.slice(1));
@@ -220,6 +220,28 @@ export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode:
     }
     if (t.toolName === "Task") return rule.spec === t.agentType;
     return false;
+}
+
+/**
+ * For a grant of a whole folder (a sandbox asking to read or write it): the
+ * first deny rule that applies to anything in it, or to the folder itself. A
+ * write grant is checked against read rules too, since writing a folder
+ * exposes it. Rules for other tools don't count.
+ */
+export function deniedWithin(rules: string[], dir: string, root: string, access: "read" | "write"): string | undefined {
+    for (const raw of rules) {
+        const r = parseRule(raw);
+        const kinds = r.tool === "*" ? ["Edit", "Read"] : EDIT_TOOLS.has(r.tool) ? ["Edit"] : READ_TOOLS.has(r.tool) ? ["Read"] : [];
+        if (!kinds.includes("Read") && !(access === "write" && kinds.includes("Edit"))) continue;
+        if (!r.spec) return raw;
+        if (matchPath(r.spec, dir, root, true) || matchPath(r.spec, join(dir, "*"), root, true)) return raw;
+        // Or the rule names something inside the folder.
+        const segs = pathPattern(r.spec, root).split("/");
+        const firstGlob = segs.findIndex((s) => /[*?]/.test(s));
+        const literal = (firstGlob < 0 ? segs : segs.slice(0, firstGlob)).join("/") || "/";
+        if (isInside(literal, dir)) return raw;
+    }
+    return undefined;
 }
 
 export function findMatch(rules: string[], t: RuleTarget, root: string, mode: "allow" | "deny"): string | undefined {

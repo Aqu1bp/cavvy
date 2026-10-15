@@ -479,7 +479,6 @@ export class App {
             nativeWebSearch: this.nativeSearch(),
             maxTurns: this.init.maxTurns,
             appendSystemPrompt: this.init.appendSystemPrompt,
-            trusted: this.init.trusted,
             host: {
                 emit: (e) => this.onAgentEvent(e),
                 askPermission: (req) => this.askPermission(req),

@@ -91,16 +91,28 @@ export function cliMessage(text: string): string {
 
 const STDERR_TAIL = 16_000;
 
+/** How long to wait on a CLI that's asked to stop (changeable for tests). */
+export const stopTiming = {
+    /** After an interrupt request, before terminating it. */
+    interruptMs: 8000,
+    /** After SIGTERM, before SIGKILL; and after that, before no longer reading its output. */
+    killMs: 2000,
+};
+
 /** A long-running CLI speaking JSON lines on stdin/stdout. */
 export class JsonLinesProcess {
     private proc: Subprocess<"pipe", "pipe", "pipe">;
     private err = "";
     private closed = false;
+    private gone = false;
+    private killing = false;
+    private reader?: { cancel(): Promise<void> };
     readonly exited: Promise<number>;
 
     constructor(bin: string, args: string[], opts: { cwd: string }) {
         this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: childEnv(), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
+        void this.exited.then(() => (this.gone = true));
         void this.drainStderr();
     }
 
@@ -139,12 +151,20 @@ export class JsonLinesProcess {
         }
     }
 
-    /** Each line of stdout that is a JSON object; other lines go with stderr. */
+    /** Each line of stdout that is a JSON object; other lines go with stderr. Ends when stdout does, or after kill(). */
     async *messages(): AsyncGenerator<Record<string, any>> {
         const d = new TextDecoder();
         let buf = "";
-        for await (const chunk of this.proc.stdout) {
-            buf += d.decode(chunk, { stream: true });
+        const reader = (this.reader = this.proc.stdout.getReader());
+        while (true) {
+            let r: Awaited<ReturnType<typeof reader.read>>;
+            try {
+                r = await reader.read();
+            } catch {
+                break;
+            }
+            if (r.done) break;
+            buf += d.decode(r.value, { stream: true });
             let i: number;
             while ((i = buf.indexOf("\n")) >= 0) {
                 const line = buf.slice(0, i).trim();
@@ -166,15 +186,23 @@ export class JsonLinesProcess {
     async stop(graceMs = 3000): Promise<void> {
         this.end();
         const gone = await Promise.race([this.exited.then(() => true), Bun.sleep(graceMs).then(() => false)]);
-        if (gone) return;
-        this.proc.kill("SIGTERM");
-        const dead = await Promise.race([this.exited.then(() => true), Bun.sleep(2000).then(() => false)]);
-        if (!dead) this.proc.kill("SIGKILL");
+        if (!gone) await this.kill();
     }
 
-    kill() {
+    /**
+     * SIGTERM; SIGKILL if it's still running after a grace period; and if its
+     * output still hasn't ended (a child of it holds the pipe), stop reading
+     * it, so nothing waiting on it hangs.
+     */
+    async kill(): Promise<void> {
         this.closed = true;
-        this.proc.kill("SIGTERM");
+        if (this.killing) return;
+        this.killing = true;
+        if (!this.gone) this.proc.kill("SIGTERM");
+        const exited = () => Promise.race([this.exited.then(() => true), Bun.sleep(stopTiming.killMs).then(() => false)]);
+        if (!(await exited())) this.proc.kill("SIGKILL");
+        await exited();
+        await this.reader?.cancel().catch(() => {});
     }
 }
 

@@ -280,6 +280,13 @@ export class PermissionChecker {
         });
     }
 
+    /** A folder that is, or holds, the harness's credential store (for grants of whole folders). */
+    isProtectedArea(dir: string): boolean {
+        const forms = pathForms(dir);
+        const store = [paths.credentialsFile(), paths.providers()].flatMap(pathForms);
+        return store.some((f) => forms.some((d) => isInside(f, d)));
+    }
+
     private isProtected(p: string, toolName: string): boolean {
         const forms = pathForms(p);
         const store = [paths.credentialsFile(), paths.providers()].flatMap(pathForms);
@@ -297,7 +304,8 @@ export class PermissionChecker {
         const home = pathForms(harnessHome());
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
-        return forms.some((c) => /(^|\/)\.harness\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
+        // .claude/ and .codex/ configure the agent CLIs the harness can run (hooks, skills, rules).
+        return forms.some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
     }
 
     private isSensitive(p: string): boolean {

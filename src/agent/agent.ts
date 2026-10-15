@@ -48,6 +48,9 @@ import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
 import { suggestBashRules } from "../permissions/bash-safety";
+import { trustedByUser } from "../config/trust";
+import { deniedWithin } from "../permissions/rules";
+import { expandPath } from "../util/files";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -152,8 +155,6 @@ export interface AgentOptions {
     parentRequests?: () => Pick<ReviewContext, "requests" | "summary">;
     /** Sub-agents: the task the parent gave it. */
     delegatedTask?: string;
-    /** The user trusts this folder's configuration (agent backends load their own project config only then). */
-    trusted?: boolean;
 }
 
 const MAX_RETRIES = 10;
@@ -622,7 +623,9 @@ export class Agent {
             effort: s.effort,
             appendSystemPrompt: this.o.appendSystemPrompt,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
-            trusted: this.o.trusted ?? true,
+            // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.
+            trusted: trustedByUser(this.state.cwd),
+            rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
             signal,
             host,
@@ -653,6 +656,7 @@ export class Agent {
         let declined = false;
         const host: BackendHost = {
             emit: (e) => this.emitFromBackend(e),
+            mode: () => this.o.mode.get(),
             permission: async (req) => {
                 const a = await this.backendPermission(req, signal);
                 if (!a.allow && a.stop) declined = true;
@@ -773,6 +777,7 @@ export class Agent {
             emit: (e) => {
                 if (e.type === "notice" || e.type === "retry") this.emit(e);
             },
+            mode: () => this.o.mode.get(),
             permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),
             askQuestions: async () => undefined,
             approvePlan: async () => ({ approved: false }),
@@ -837,13 +842,33 @@ export class Agent {
         const input = req.input;
         const mode = this.o.mode.get();
         const cwd = this.state.cwd;
+        // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
+        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
         let decision = this.o.checker.check(tool, input, mode, cwd);
-        let ruled = decision.behavior === "allow" && Boolean(decision.rule);
+        let ruled = approves(decision);
         for (const p of req.otherPaths ?? []) {
             if (decision.behavior === "deny") break;
             const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd);
             if (d.behavior === "deny") decision = d;
-            else if (!(d.behavior === "allow" && d.rule)) ruled = false;
+            else if (!approves(d)) ruled = false;
+        }
+        if (req.widens) {
+            // More access for the backend's sandbox: never in plan mode, never past a deny rule, never without asking.
+            if (mode === "plan") return { allow: false, message: "Plan mode is active: no extra permissions until the user approves a plan.", stop: false };
+            const deny = this.o.settings().permissions?.deny ?? [];
+            const access: ["read" | "write", string[]][] = [
+                ["read", req.widens.read],
+                ["write", req.widens.write],
+            ];
+            for (const [kind, list] of access) {
+                for (const p of list) {
+                    const abs = expandPath(p, cwd);
+                    const rule = deniedWithin(deny, abs, this.state.projectRoot, kind);
+                    if (rule) return { allow: false, message: `Denied: the permission rule ${rule} covers ${abs}.`, stop: false };
+                    if (this.o.checker.isProtectedArea(abs)) return { allow: false, message: `Denied: ${abs} holds the harness's credential store.`, stop: false };
+                }
+            }
+            ruled = false;
         }
         if (decision.behavior === "deny") return { allow: false, message: decision.reason ?? "Denied by a permission rule.", stop: false };
         let title = req.title ?? tool.name;

@@ -222,7 +222,6 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         nativeWebSearch,
         maxTurns: o.maxTurns,
         appendSystemPrompt: o.appendSystemPrompt,
-        trusted: o.trusted,
         host: {
             emit,
             ui: {

@@ -65,16 +65,22 @@ A Claude plan (Pro, Max, Team, Enterprise) or a ChatGPT plan can be used through
 How it works:
 
 - Each prompt runs as one turn in the CLI: `claude -p` with stream-json input and output (the protocol the Agent SDK uses), or `codex app-server` (JSON-RPC). The CLI uses its own system prompt, tools, sandbox, context management and memory (CLAUDE.md, AGENTS.md, its own settings, skills and MCP servers). The harness streams what it does into the transcript.
-- When the CLI wants permission, the harness answers with its own rules and dialog. Deny rules (and the harness's credential store) refuse without asking. An explicit allow rule (`Bash(npm test:*)`, `Write`, `--allowedTools`) approves. Anything else asks you, with the same diff previews as the harness's own tools, and "don't ask again" saves a harness rule. In `-p` mode, anything that would ask is refused. Claude Code's `AskUserQuestion` and `ExitPlanMode`, and Codex's questions to the user, use the harness's question and plan dialogs.
+- When the CLI asks for permission, the harness answers with its own rules and dialog. Deny rules refuse without asking. An explicit allow rule (`Bash(npm test:*)`, `Write`, `--allowedTools`) approves. In Accept edits, so does an edit inside the workspace. Anything else asks you, with the same diff previews as the harness's own tools, and "don't ask again" saves a harness rule. In `-p` mode, anything that would ask is refused. Claude Code's `AskUserQuestion` and `ExitPlanMode`, and Codex's questions to the user, use the harness's question and plan dialogs.
+- What the CLI does without asking never reaches the harness, so the harness's rules have to be in the CLI itself to cover it:
+  - Claude Code gets the harness's deny and ask rules as its own permission rules (`--settings`, with paths made absolute the way the harness resolves them), plus a deny rule for the harness's credential store. They then also cover what it would otherwise do on its own, like reading a file in the project. A rule with no Claude Code equivalent (`*`) only covers what it asks about.
+  - Codex can't take them. Deny rules cover only what Codex asks approval for. In Manual, Plan and Accept edits, that's every edit and every command except ones Codex considers read-only (`cat`, `ls`, `rg`, …), which it runs itself. So a `Read` deny rule doesn't stop Codex from reading a file. In Auto and Bypass it asks much less.
 - The harness's permission mode maps to the CLI's:
 
   | Harness | Claude Code | Codex (approval policy, sandbox) |
   |---|---|---|
   | Manual | `default` | `untrusted`, read-only |
-  | Accept edits | `acceptEdits` | `on-request`, workspace-write |
-  | Plan | `plan` | `untrusted`, read-only, told to only plan |
-  | Auto | `auto` (Claude Code's own auto mode) | `on-request`, workspace-write |
+  | Accept edits | `default`; the harness approves edits inside the workspace | `untrusted`, workspace-write; the harness approves edits inside the workspace |
+  | Plan | `plan` | `untrusted`, read-only, told to only plan; requests for more permissions are refused |
+  | Auto | `auto` (Claude Code's own auto mode) | `on-request`, workspace-write: commands and edits inside the sandbox run without asking |
   | Bypass permissions | `bypassPermissions` | `never`, no sandbox |
+
+  Neither CLI's own accept-edits behavior is used, because both are looser than the harness's: Claude Code's `acceptEdits` also runs file commands (`rm`, `mv`, `sed`) without asking, and Codex's `on-request` runs any command inside its sandbox. Edits to `.claude/`, `.codex/`, `.harness/`, `.mcp.json` and `.git/` always ask. Codex's requests to widen its sandbox are checked against your deny rules for every folder they name, and they always ask.
+- Changing the mode during a turn: Claude Code switches immediately. Codex can't change its approval policy mid-turn, so switching to a stricter mode stops its turn and resumes it under the new one. A looser mode applies from the next turn, as do prompts you queue.
 
 - The next prompt continues the same Claude Code session (`--resume`) or Codex thread (`thread/resume`), also after `-c`/`-r`. Each turn is also saved in the harness session as text (what was said, and which tools ran). If you switch to another model and back, the CLI gets what the other model said in between; if its session is gone, a new one starts with the conversation so far.
 - Usage is recorded in tokens. On a plan the cost shows as $0. If the CLI is signed in with an API key instead, Claude Code's reported cost counts, and `/login` warns you.
@@ -84,7 +90,7 @@ What's different from the harness's own models:
 
 - The harness's tools, MCP servers, PreToolUse/PostToolUse hooks and auto-mode sandbox don't apply. The CLI's own do, and the harness only sees the permission prompts the CLI raises. UserPromptSubmit and Stop hooks still run.
 - `/rewind` rewinds the conversation, but restores only files the harness's own tools changed. Use git for the CLI's edits.
-- In a folder you haven't trusted, Claude Code runs without the project's Claude Code settings and MCP servers (`--setting-sources user --strict-mcp-config`). While Claude Code is turned on, a project's `.claude/settings.json` and `.claude/settings.local.json` also trigger the trust prompt.
+- A project's own configuration for the CLIs can run commands: hooks, skills, sub-agents and permission rules in `.claude/`, MCP servers in `.mcp.json`, and config in `.codex/`. And `claude -p` shows no trust prompt of its own. So the CLIs get that configuration only in a folder you've told the harness you trust. A folder the harness trusts only because it had nothing to protect at startup doesn't count. Otherwise, Claude Code runs with `--setting-sources user --strict-mcp-config`, and Codex is told the folder, its git root and the folders above are untrusted, even if you trusted the project in Codex itself. While a CLI is on, the startup trust prompt lists that configuration. `/login claude-code` and `/login codex` offer to trust a folder that has some.
 - One-off helper requests can't go to a CLI (auto-mode reviews and WebFetch summaries are for the harness's own tools anyway). Set `smallModel` to another provider's model if you use those.
 
 What the harness never does: read, copy or store the CLI's credentials (its keychain entry, `~/.claude/.credentials.json`, `~/.codex/auth.json`), sign in on its behalf, send its tokens anywhere, or modify the binary. The CLIs get the same environment as any child process, minus the harness's own provider keys. That way Claude Code uses your plan rather than an `ANTHROPIC_API_KEY` you gave the harness. Only `providers.json` records that a CLI is on, and optionally `path` (a CLI that isn't on `PATH`) and `args` (extra arguments):
@@ -119,7 +125,7 @@ Whatever the mode:
 
 - Deny rules always win.
 - Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode.
-- Edits to the harness's own configuration, `.mcp.json` or `.git/` always ask, except in bypass mode.
+- Edits to the harness's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/` and `.codex/` always ask, except in bypass mode.
 
 When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.harness/settings.local.json`), or decline and say what to do instead.
 
