@@ -1007,12 +1007,7 @@ export class Agent {
      * redact theirs (keys in a file the backend read, say).
      */
     private emitFromBackend(e: AgentEvent) {
-        if (e.type === "tool_progress") e = { ...e, text: redact(e.text) };
-        else if (e.type === "tool_end") {
-            const d = e.result.display;
-            const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
-            e = { ...e, result: { ...e.result, content: redact(e.result.content), display } };
-        }
+        e = redactBackendEvent(e);
         if (e.type === "tool_start" || e.type === "tool_end") {
             const call = e.call;
             if (call.name === DELEGATE_TOOL && e.type === "tool_start") this.delegateCalls.push({ id: call.id, input: (call.input ?? {}) as Record<string, unknown>, claimed: false });
@@ -1559,4 +1554,20 @@ function backendTool(name: string, title?: string): Tool<any> {
         title: () => title ?? name,
         run: async () => ({ content: "" }),
     };
+}
+
+/**
+ * A backend's event with its output redacted, as the harness's own tools
+ * redact theirs (keys in a file the backend read, say): its sub-agents'
+ * tool output and what they say too.
+ */
+function redactBackendEvent(e: AgentEvent): AgentEvent {
+    if (e.type === "tool_progress") return { ...e, text: redact(e.text) };
+    if (e.type === "tool_end") {
+        const d = e.result.display;
+        const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
+        return { ...e, result: { ...e.result, content: redact(e.result.content), display } };
+    }
+    if (e.type === "subagent") return { ...e, event: e.event.type === "text" ? { ...e.event, text: redact(e.event.text) } : redactBackendEvent(e.event) };
+    return e;
 }

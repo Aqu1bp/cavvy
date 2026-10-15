@@ -28,6 +28,7 @@ import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
+import type { TurnEndReason } from "../agent/agent";
 
 /** How long Claude Code may take to connect to the harness's MCP server before the prompt goes without it (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
@@ -172,6 +173,13 @@ class ClaudeTurn {
     private streamingTools = new Map<number, string>();
     /** Agent tool calls: their description labels the sub-agent's activity. */
     private agentLabels = new Map<string, string>();
+    /** Agent calls whose sub-agent has started and hasn't finished, and those that have finished (and how). */
+    private liveAgents = new Set<string>();
+    private endedAgents = new Map<string, TurnEndReason>();
+    /** Sub-agents' tool calls still waiting for their result, with the Agent call they're under. */
+    private subTools = new Map<string, PendingTool & { parent: string }>();
+    /** What each sub-agent handed back (its SubagentHandback message), by Agent call. */
+    private reports = new Map<string, string>();
     private texts: string[] = [];
     private actions: string[] = [];
     private sessionId?: string;
@@ -313,7 +321,8 @@ class ClaudeTurn {
             await this.proc.stop(this.aborted ? 1000 : 3000);
             if (killTimer) clearTimeout(killTimer);
         }
-        // Anything still open never got a result.
+        // Anything still open never got a result. Sub-agents still working (in the background) stopped with Claude Code.
+        for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
         if (this.aborted) return { reason: "aborted", text, actions: this.actions };
@@ -349,6 +358,7 @@ class ClaudeTurn {
                 break;
             case "user":
                 if (!m.parent_tool_use_id) this.onToolResults(m);
+                else this.onSubToolResults(m);
                 break;
             case "rate_limit_event":
                 this.onRateLimit(m.rate_limit_info ?? {});
@@ -375,6 +385,19 @@ class ClaudeTurn {
             case "compact_boundary":
                 this.host.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
                 break;
+            case "task_started":
+                this.agentStarted(String(m.tool_use_id ?? ""));
+                break;
+            case "task_notification": {
+                // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
+                // ran even if nothing of it showed. A later one replaces what this one said (the report it
+                // was waiting on, or how it ended).
+                const id = String(m.tool_use_id ?? "");
+                const report = typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined;
+                this.agentStarted(id);
+                this.endAgent(id, m.status === "completed" ? "done" : m.status === "failed" ? "error" : "aborted", report);
+                break;
+            }
             case "informational":
                 if (typeof m.content === "string" && m.content.trim()) this.host.emit({ type: "notice", level: m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info", message: m.content });
                 break;
@@ -412,10 +435,24 @@ class ClaudeTurn {
         if (parent) {
             // A sub-agent's step: show its tool calls under the Agent call.
             const label = this.agentLabels.get(parent) ?? "sub-agent";
+            this.agentStarted(parent);
+            // One Claude Code said has finished shows no more steps (they'd never be closed), only its report.
+            const over = this.endedAgents.has(parent);
             for (const b of blocks) {
                 if (b?.type !== "tool_use") continue;
+                // Its report to the main agent: what it says last, not a tool of its own.
+                if (b.name === "SubagentHandback") {
+                    const fresh = typeof b.input?.message === "string" && this.report(parent, b.input.message);
+                    // One that ended before it (waiting on work of its own) takes it as its report: it ends again, as it did.
+                    const was = this.endedAgents.get(parent);
+                    if (fresh && over && was !== undefined) this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "turn_end", reason: was } });
+                    continue;
+                }
+                if (over) continue;
                 const { name, input } = toHarness(b.name, b.input ?? {});
-                this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title: titleFor(name, input) } });
+                const title = titleFor(name, input);
+                this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
+                this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
             }
             return;
         }
@@ -452,10 +489,75 @@ class ClaudeTurn {
         for (const b of blocks) {
             const p = this.tools.get(b.tool_use_id);
             if (!p) continue;
+            let content = resultText(b.content);
+            if (p.name === "Task") {
+                // A sub-agent in the background goes on after this; one in the foreground is over.
+                const background = m.tool_use_result?.status === "async_launched";
+                // Once Claude Code has said how it ended, the result only brings its report.
+                const report = handedBack(m);
+                if (!background && !this.endedAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? "error" : "done", report);
+                else if (!background && report) this.report(b.tool_use_id, report, true);
+                // Its report came as a handback: the result only says where to find it.
+                content = (!background && this.reports.get(b.tool_use_id)) || content;
+            }
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
-            this.endTool(b.tool_use_id, p, resultText(b.content), Boolean(b.is_error), structured);
+            this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
         }
+    }
+
+    /** A sub-agent's tool results: its tool calls under the Agent call finish. */
+    private onSubToolResults(m: Record<string, any>) {
+        this.agentStarted(String(m.parent_tool_use_id));
+        const blocks: any[] = (Array.isArray(m.message?.content) ? m.message.content : []).filter((b: any) => b?.type === "tool_result");
+        for (const b of blocks) {
+            const p = this.subTools.get(b.tool_use_id);
+            if (!p) continue;
+            // A sub-agent's own Agent call: its report rather than where it went, as at the top level.
+            const content = (p.name === "Task" && (this.reports.get(b.tool_use_id) || (blocks.length === 1 && handedBack(m)))) || resultText(b.content);
+            const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
+            this.endSubTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
+        }
+    }
+
+    private endSubTool(id: string, p: PendingTool & { parent: string }, content: string, isError: boolean, display?: ToolDisplay) {
+        this.subTools.delete(id);
+        const label = this.agentLabels.get(p.parent) ?? "sub-agent";
+        this.host.emit({ type: "subagent", parentId: p.parent, label, event: { type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started } });
+    }
+
+    /**
+     * A sub-agent's report, shown as the last thing it says; whether it's new.
+     * Claude Code's word on it (a notification, the call's result) replaces an
+     * earlier one; its own SubagentHandback calls don't (a second is turned down).
+     */
+    private report(parent: string, text: string, replace = false): boolean {
+        const had = this.reports.get(parent);
+        if (!text.trim() || (had !== undefined && (!replace || had.trim() === text.trim()))) return false;
+        this.reports.set(parent, text);
+        // Only on a sub-agent that has a chip: one that never started would get one that never ends.
+        if (this.liveAgents.has(parent) || this.endedAgents.has(parent)) this.host.emit({ type: "subagent", parentId: parent, label: this.agentLabels.get(parent) ?? "sub-agent", event: { type: "text", text } });
+        return true;
+    }
+
+    private agentStarted(id: string) {
+        if (this.agentLabels.has(id) && !this.endedAgents.has(id)) this.liveAgents.add(id);
+    }
+
+    /** A sub-agent is over (or Claude Code says again how it ended): its open tool calls with it, and its chip says how. */
+    private endAgent(id: string, reason: TurnEndReason, report?: string) {
+        const live = this.liveAgents.delete(id);
+        const was = this.endedAgents.get(id);
+        if (!live && was === undefined) {
+            // One that never showed has no chip: its report is for its Agent call's result.
+            if (report) this.report(id, report, true);
+            return;
+        }
+        this.endedAgents.set(id, reason);
+        const reported = report ? this.report(id, report, true) : false;
+        if (!live && !reported && reason === was) return;
+        for (const [sub, p] of this.subTools) if (p.parent === id) this.endSubTool(sub, p, reason === "done" ? "Claude Code didn't report a result for this." : "Stopped with the sub-agent.", true);
+        this.host.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "turn_end", reason } });
     }
 
     private endTool(id: string, p: PendingTool, content: string, isError: boolean, display?: ToolDisplay) {
@@ -541,6 +643,12 @@ class ClaudeTurn {
         if (a.allow) return { behavior: "allow", updatedInput: raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
+}
+
+/** The report a sub-agent handed back, as its Agent call's structured result carries it. */
+function handedBack(m: Record<string, any>): string | undefined {
+    const text = m.tool_use_result?.handbackReport?.text;
+    return typeof text === "string" ? text : undefined;
 }
 
 const PATH_RULE: Record<string, "Read" | "Edit"> = { Read: "Read", Glob: "Read", Grep: "Read", LS: "Read", Edit: "Edit", Write: "Edit", MultiEdit: "Edit", NotebookEdit: "Edit" };

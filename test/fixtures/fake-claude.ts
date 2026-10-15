@@ -12,7 +12,7 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp
+// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp | agent | agent-background | agent-background-late | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-hands-back-late
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
@@ -157,6 +157,110 @@ function toolResult(id: string, content: string, isError: boolean, structured?: 
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: isError }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: structured });
 }
 
+/** A sub-agent's message: tagged with the Agent call it runs under. */
+function sub(parent: string, role: "assistant" | "user", content: unknown[], extra: Record<string, unknown> = {}) {
+    out({ type: role, message: { role, content }, parent_tool_use_id: parent, session_id: sessionId, agent_id: "agent-1", subagent_type: "general-purpose", ...extra });
+}
+
+const REPORT = "src/auth registers sign-in strategies in one list.";
+const NESTED_REPORT = "Only email sign-in is tested.";
+/** A token in what the sub-agent writes (redacted by its pattern). */
+const SUB_TOKEN = "ya29.subagentWroteThisToken1234567890";
+
+/**
+ * An Agent call, as Claude Code 2.1.293 streams it: task_started, the
+ * sub-agent's own tool calls and results, its SubagentHandback, then
+ * task_notification. In the foreground the Agent call's result comes last
+ * and only says where the report went; in the background it comes first
+ * ("async_launched") or, with `late`, after the sub-agent's first step, and
+ * the sub-agent (here) never finishes before the turn does.
+ */
+function agentCall(background: boolean, late = false) {
+    const id = "toolu_agent";
+    const input = { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose", ...(background ? { run_in_background: true } : {}) };
+    const launched = () =>
+        out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "Async agent launched successfully. (This tool result is internal metadata.)\nagentId: agent-1" }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { isAsync: true, status: "async_launched", agentId: "agent-1" } });
+    toolUse(id, "Agent", input);
+    out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: input.description, is_backgrounded: background, session_id: sessionId });
+    if (background && !late) launched();
+    sub(id, "user", [{ type: "text", text: input.prompt }]);
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
+    sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "export const strategies = [];", is_error: false }]);
+    if (background && late) launched();
+    if (!background) {
+        // A file it writes (the diff shows), and an agent of its own, whose report goes to it.
+        const note = join(cwd, "notes.txt");
+        const content = `token = ${SUB_TOKEN}\n`;
+        sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_write", name: "Write", input: { file_path: note, content } }]);
+        sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_write", content: `File created successfully at: ${note}`, is_error: false }], { tool_use_result: { type: "create", filePath: note, content, originalFile: null } });
+        sub(id, "assistant", [{ type: "tool_use", id: "toolu_nested", name: "Agent", input: { description: "Check tests", prompt: "Which sign-ins are tested?", subagent_type: "general-purpose" } }]);
+        sub("toolu_nested", "assistant", [{ type: "tool_use", id: "toolu_nested_handback", name: "SubagentHandback", input: { message: NESTED_REPORT } }]);
+        sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_nested", content: [{ type: "text", text: 'This agent\'s report was delivered to you as a message from "agent-2".' }] }]);
+    }
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_glob", name: "Glob", input: { pattern: "src/auth/**" } }]);
+    if (background) return;
+    // The Glob never gets a result: it's left open when the sub-agent ends.
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_handback", name: "SubagentHandback", input: { message: REPORT } }]);
+    sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_handback", content: [{ type: "text", text: '{"success":true,"message":"Report delivered to your caller."}' }] }]);
+    out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: 'This agent\'s report was delivered to you as a message from "agent-1".', handback: "send", handback_report: { text: REPORT }, session_id: sessionId });
+    const pointer = 'This agent\'s report was delivered to you as a message from "agent-1" (its SubagentHandback call). Read it there; it is not repeated here.';
+    out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: pointer }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { status: "completed", agentId: "agent-1", handback: "send", handbackReport: { text: REPORT } } });
+}
+
+/**
+ * A sub-agent nothing of which shows before Claude Code says it finished: no
+ * task_started, no steps of its own. The report is only in the notification.
+ */
+function agentQuiet() {
+    const id = "toolu_agent";
+    toolUse(id, "Agent", { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose" });
+    out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: "", handback: "send", handback_report: { text: REPORT }, session_id: sessionId });
+    out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: 'This agent\'s report was delivered to you as a message from "agent-1".' }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { status: "completed", agentId: "agent-1" } });
+}
+
+/**
+ * A sub-agent Claude Code first says has finished while it still waits on work
+ * of its own (no report yet): a step of its own after that, then a second
+ * notification with the report, which its Agent call's result doesn't carry.
+ * An agent of its own hands its report back only in its result.
+ */
+function agentWaits() {
+    const id = "toolu_agent";
+    toolUse(id, "Agent", { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose" });
+    out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "Map auth", is_backgrounded: false, session_id: sessionId });
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
+    sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "export const strategies = [];", is_error: false }]);
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_nested", name: "Agent", input: { description: "Check tests", prompt: "Which sign-ins are tested?", subagent_type: "general-purpose" } }]);
+    sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_nested", content: [{ type: "text", text: 'This agent\'s report was delivered to you as a message from "agent-2".' }] }], { tool_use_result: { status: "completed", agentId: "agent-2", handback: "send", handbackReport: { text: NESTED_REPORT } } });
+    const notify = (extra: Record<string, unknown>) => out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: "Waiting on its own background work.", ...extra, session_id: sessionId });
+    notify({});
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_glob", name: "Glob", input: { pattern: "src/auth/**" } }]);
+    notify({ handback: "send", handback_report: { text: REPORT } });
+    out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: 'This agent\'s report was delivered to you as a message from "agent-1".' }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { status: "completed", agentId: "agent-1" } });
+}
+
+/**
+ * A sub-agent in the background Claude Code says more than once how it ended,
+ * each time replacing what it said before. First it's finished while it waits
+ * on work of its own (no report); then it failed, or it's finished with a first
+ * report and then the one that replaces it, or it hands its report back itself
+ * (after it was said to be finished) and then is said to be finished with it.
+ */
+function agentRenotified(how: "replaced" | "failed" | "handed-back") {
+    const id = "toolu_agent";
+    toolUse(id, "Agent", { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose", run_in_background: true });
+    out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "Map auth", is_backgrounded: true, session_id: sessionId });
+    out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "Async agent launched successfully.\nagentId: agent-1" }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { isAsync: true, status: "async_launched", agentId: "agent-1" } });
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
+    sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "export const strategies = [];", is_error: false }]);
+    const notify = (status: string, report?: string) => out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status, summary: "", ...(report ? { handback: "send", handback_report: { text: report } } : {}), session_id: sessionId });
+    notify("completed");
+    if (how === "failed") return notify("failed");
+    if (how === "handed-back") sub(id, "assistant", [{ type: "tool_use", id: "toolu_handback", name: "SubagentHandback", input: { message: REPORT } }]);
+    else notify("completed", "A first look: one list of strategies.");
+    notify("completed", REPORT);
+}
+
 /** What running the call does (only what the scenarios need). */
 function execute(tool: string, input: any): { content: string; structured?: unknown } {
     if (tool === "Write") {
@@ -216,6 +320,12 @@ async function turn(content: any[]) {
     else if (scenario === "rm") go = await use("toolu_rm", "Bash", { command: "rm victim.txt", description: "Remove it" });
     else if (scenario === "bash") go = await use("toolu_b", "Bash", { command: process.env.FAKE_COMMAND ?? "npm test", description: "Run tests" });
     else if (scenario === "leak") go = await use("toolu_l", "Bash", { command: "cat secret.txt" });
+    else if (scenario === "agent-quiet") agentQuiet();
+    else if (scenario === "agent-waits") agentWaits();
+    else if (scenario === "agent-renotified") agentRenotified("replaced");
+    else if (scenario === "agent-fails-later") agentRenotified("failed");
+    else if (scenario === "agent-hands-back-late") agentRenotified("handed-back");
+    else if (scenario.startsWith("agent")) agentCall(scenario !== "agent", scenario === "agent-background-late");
     else if (scenario === "mcp") {
         const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
         const results: string[] = [];
