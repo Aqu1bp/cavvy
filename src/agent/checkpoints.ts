@@ -249,6 +249,26 @@ export class FileHistory {
         return p;
     }
 
+    /**
+     * Every file this session changed, as it was before the first change:
+     * `hash` null means it didn't exist; a skip record means no copy was saved.
+     */
+    originals(): { path: string; hash: string | null; skipped?: string }[] {
+        this.load();
+        return [...this.since(0)].map(([path, r]) => (r.t === "skip" ? { path, hash: null, skipped: r.reason } : { path, hash: r.hash }));
+    }
+
+    /** A saved copy's content, if it's there and intact. */
+    savedCopy(hash: string): Buffer | undefined {
+        if (!HEX.test(hash)) return undefined;
+        try {
+            const buf = readFileSync(this.blob(hash));
+            return sha256(buf) === hash ? buf : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
     /** Files first changed in checkpoint `cp`. */
     filesIn(cp: number): string[] {
         this.load();

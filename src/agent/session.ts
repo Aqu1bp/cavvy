@@ -392,6 +392,80 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
     return out.slice(0, limit);
 }
 
+/**
+ * Sessions from every project, newest first (the GUI's sidebar). Each
+ * session records its own folder, so the lossy folder names under
+ * ~/.harness/projects/ don't matter. Only the newest `limit` files are read.
+ */
+export function listAllSessions(limit = 200): SessionSummary[] {
+    const root = paths.projectsDir();
+    if (!existsSync(root)) return [];
+    const files: { f: string; file: string; mtimeMs: number; createdAt: number }[] = [];
+    let dirs: string[] = [];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return [];
+    }
+    for (const d of dirs) {
+        const dir = join(root, d);
+        let names: string[];
+        try {
+            names = readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl")) continue;
+            const file = join(dir, f);
+            try {
+                const st = statSync(file);
+                if (st.isFile()) files.push({ f, file, mtimeMs: st.mtimeMs, createdAt: st.birthtimeMs || st.ctimeMs });
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const out: SessionSummary[] = [];
+    for (const { f, file, mtimeMs, createdAt } of files) {
+        if (out.length >= limit) break;
+        try {
+            const head = sessionHead(file);
+            if (!head.count || !head.cwd) continue;
+            out.push({
+                id: f.replace(/\.jsonl$/, ""),
+                file,
+                cwd: head.cwd,
+                createdAt,
+                updatedAt: mtimeMs,
+                title: (head.title ?? head.first ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim().slice(0, 120),
+                messages: head.count,
+            });
+        } catch {
+            // skip unreadable files
+        }
+    }
+    return out;
+}
+
+/** A session file by id, in any project (ids are unique: timestamp and random suffix). */
+export function findSessionAnywhere(id: string): string | undefined {
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) return undefined;
+    const root = paths.projectsDir();
+    let dirs: string[] = [];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return undefined;
+    }
+    for (const d of dirs) {
+        const file = join(root, d, `${id}.jsonl`);
+        if (existsSync(file)) return file;
+    }
+    return undefined;
+}
+
 export function findSession(cwd: string, idOrPrefix: string): string | undefined {
     if (/^[A-Za-z0-9_-]+$/.test(idOrPrefix)) {
         const exact = join(projectStateDir(cwd), `${idOrPrefix}.jsonl`);

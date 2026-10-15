@@ -1,0 +1,148 @@
+// Where the GUI runs: the desktop app (Tauri) or a browser tab opened by
+// `harness gui`. Everything that differs between the two lives here.
+
+import type { Credentials } from "./rpc";
+
+export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+export type Os = "macos" | "windows" | "linux" | "other";
+export const os: Os = (() => {
+    const p = `${navigator.platform} ${navigator.userAgent}`.toLowerCase();
+    if (p.includes("mac")) return "macos";
+    if (p.includes("win")) return "windows";
+    if (p.includes("linux") || p.includes("x11")) return "linux";
+    return "other";
+})();
+
+export const mod = os === "macos" ? "⌘" : "Ctrl";
+export const isMod = (e: KeyboardEvent | MouseEvent) => (os === "macos" ? e.metaKey : e.ctrlKey);
+
+const TOKEN_KEY = "harness.token";
+
+async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<T>(cmd, args);
+}
+
+/** How to reach the server: ask the desktop app, use the dev server's settings, or trade the link's code. */
+export async function credentials(): Promise<Credentials | undefined> {
+    if (isTauri) {
+        const info = await tauriInvoke<{ port: number; token: string }>("sidecar_info");
+        return { url: `ws://127.0.0.1:${info.port}/ws`, token: info.token };
+    }
+    const devUrl = import.meta.env.VITE_HARNESS_URL as string | undefined;
+    const devToken = import.meta.env.VITE_HARNESS_TOKEN as string | undefined;
+    if (devUrl && devToken) return { url: devUrl, token: devToken };
+
+    const hash = new URLSearchParams(location.hash.slice(1));
+    const code = hash.get("code");
+    const direct = hash.get("token");
+    if (code || direct) history.replaceState(null, "", location.pathname + location.search);
+    if (direct) storeToken(direct);
+    if (code) {
+        const res = await fetch("./auth/exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+        const body = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
+        if (body.token) storeToken(body.token);
+        else throw new Error(body.error ?? "This link has expired.");
+    }
+    const token = readToken();
+    if (!token) return undefined;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return { url: `${proto}//${location.host}/ws`, token };
+}
+
+function storeToken(t: string) {
+    try {
+        sessionStorage.setItem(TOKEN_KEY, t);
+    } catch {
+        memoryToken = t;
+    }
+}
+
+let memoryToken: string | undefined;
+function readToken(): string | undefined {
+    try {
+        return sessionStorage.getItem(TOKEN_KEY) ?? memoryToken;
+    } catch {
+        return memoryToken;
+    }
+}
+
+export function forgetToken() {
+    try {
+        sessionStorage.removeItem(TOKEN_KEY);
+    } catch {
+        memoryToken = undefined;
+    }
+}
+
+/** A native folder picker; undefined when there's none (the browser), so the GUI shows its own. */
+export async function pickFolder(defaultPath?: string): Promise<string | null | undefined> {
+    if (!isTauri) return undefined;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const r = await open({ directory: true, multiple: false, defaultPath, title: "Open a project folder" });
+    return typeof r === "string" ? r : null;
+}
+
+export async function openExternal(url: string) {
+    if (!/^(https?:|mailto:)/i.test(url)) return;
+    if (isTauri) {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(url);
+    } else window.open(url, "_blank", "noopener,noreferrer");
+}
+
+export async function revealPath(path: string) {
+    if (!isTauri) return;
+    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+    await revealItemInDir(path);
+}
+
+export const canReveal = isTauri;
+
+export async function copyText(text: string): Promise<boolean> {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+    }
+}
+
+let notifyAllowed: boolean | undefined;
+
+/** A system notification, if the user allows them. */
+export async function notify(title: string, body: string, onClick?: () => void) {
+    if (isTauri) {
+        try {
+            const n = await import("@tauri-apps/plugin-notification");
+            if (notifyAllowed === undefined) notifyAllowed = (await n.isPermissionGranted()) || (await n.requestPermission()) === "granted";
+            if (notifyAllowed) n.sendNotification({ title, body });
+        } catch {
+            // notifications unavailable
+        }
+        return;
+    }
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "default") await Notification.requestPermission().catch(() => undefined);
+    if (Notification.permission !== "granted") return;
+    const note = new Notification(title, { body, silent: false });
+    note.onclick = () => {
+        window.focus();
+        onClick?.();
+        note.close();
+    };
+}
+
+/** The app window has focus (for deciding whether to notify). */
+export function focused(): boolean {
+    return document.visibilityState === "visible" && document.hasFocus();
+}

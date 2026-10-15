@@ -1272,7 +1272,7 @@ async function addDirCommand(app: App, args: string) {
 // ---------------------------------------------------------------------------
 // Prompts
 
-const INIT_PROMPT = `Please analyze this codebase and create a HARNESS.md file at the repository root. It will be loaded into your context in future sessions in this repository.
+export const INIT_PROMPT = `Please analyze this codebase and create a HARNESS.md file at the repository root. It will be loaded into your context in future sessions in this repository.
 
 What to include:
 1. Commands that are commonly used: how to build, lint, run the tests, and run a single test.
@@ -1286,7 +1286,7 @@ Guidelines:
 - Don't make up information that isn't backed by the files you read.
 - Start the file with a one-line title and a short note that this file guides coding agents working in this repository.`;
 
-function reviewPrompt(args: string): string {
+export function reviewPrompt(args: string): string {
     if (/^#?\d+$/.test(args.trim())) {
         const n = args.trim().replace("#", "");
         return `Review pull request #${n}. Use \`gh pr view ${n}\` and \`gh pr diff ${n}\` to read it. Look for bugs, security problems, missing error handling, behavior changes the description doesn't mention, and missing tests. For each finding give the file and line, why it's a problem, and a concrete fix. Verify each finding against the code before reporting it; leave out style nits. Do not modify any files.`;

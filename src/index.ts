@@ -7,6 +7,7 @@
 //   harness auth add|list|remove manage API keys
 //   harness models               combined model list from every provider
 //   harness mcp list|add|remove  manage MCP servers
+//   harness gui | serve          the desktop/browser GUI (see src/server/)
 
 import { basename, dirname, join, resolve } from "path";
 import { existsSync, readFileSync } from "fs";
@@ -43,6 +44,8 @@ ${bold("Usage")}
   ${APP_NAME} mcp add [opts] <name> -- <command> [args…]
   ${APP_NAME} mcp add --transport http [opts] <name> <url>
   ${APP_NAME} mcp remove <name> [--scope s]
+  ${APP_NAME} gui                          open the GUI in your browser (${APP_NAME} gui --help)
+  ${APP_NAME} serve                        run the GUI server without opening a browser
 
 ${bold("Options")}
   -p, --print                    non-interactive: print the response and exit
@@ -583,6 +586,10 @@ async function main() {
     if (sub === "auth") process.exit(await authCommand(argv.slice(1)));
     if (sub === "models") process.exit(await modelsCommand(argv.slice(1)));
     if (sub === "mcp") process.exit(await mcpCli(argv.slice(1), cwd));
+    if (sub === "gui" || sub === "serve") {
+        const { serveCommand } = await import("./server/cli");
+        return serveCommand(sub, argv.slice(1), { fallbackModel: env.legacyModel, notes: env.notes });
+    }
 
     const f = parseFlags(argv);
     const interactive = !f.print && Boolean(process.stdin.isTTY && process.stdout.isTTY);
