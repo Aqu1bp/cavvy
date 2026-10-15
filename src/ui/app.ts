@@ -38,6 +38,7 @@ import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { formatTokens, formatUsd } from "../providers/pricing";
 import { configuredProviders, storageDescription } from "../auth/credentials";
+import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { displayPath } from "../util/files";
@@ -303,6 +304,27 @@ export class App {
         const providers = await configuredProviders();
         if (providers.some((p) => !p.local)) {
             this.screen.print(["", `${theme.warning("!")} No model is selected and none could be listed. Pick one with ${bold("/model")} or start with ${bold("--model provider:model")}.`]);
+            return;
+        }
+        // A Claude Code or Codex already on this machine can be used with the user's own plan.
+        const clis = (["claude-code", "codex"] as const).filter((id) => findCli(id, id === "codex" ? CODEX_CLI : CLAUDE_CLI));
+        if (clis.length) {
+            this.screen.print(["", `${theme.warning("!")} No model is set up yet.`]);
+            const choice = (await this.showDialog(
+                new SelectDialog<string>({
+                    title: "How do you want to connect a model?",
+                    items: [
+                        ...clis.map((id) =>
+                            id === "codex"
+                                ? { label: "Use my ChatGPT plan", value: "/login codex", description: "through your installed Codex CLI" }
+                                : { label: "Use my Claude subscription", value: "/login claude-code", description: "through your installed Claude Code" },
+                        ),
+                        { label: "Paste an API key", value: "/login", description: `stored in ${await storageDescription()}` },
+                    ],
+                    numbers: true,
+                }),
+            )) as string | undefined;
+            if (choice) await runCommand(this, choice);
             return;
         }
         this.screen.print(["", `${theme.warning("!")} No API key configured yet. Let's add one; it will be stored in ${await storageDescription()}.`]);
@@ -647,8 +669,9 @@ export class App {
 
     private shouldShowThinking(): boolean {
         if (this.settings.showThinking) return true;
-        // Anthropic "updates" display: short progress notes, always shown.
-        return getProvider(this.model?.provider ?? "")?.kind === "anthropic";
+        // Anthropic "updates" display: short progress notes, always shown (Claude Code's too).
+        const provider = this.model?.provider ?? "";
+        return getProvider(provider)?.kind === "anthropic" || provider === "claude-code";
     }
 
     private flushThinking() {

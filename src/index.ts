@@ -16,7 +16,8 @@ import { detectKeyProvider, validateKey } from "./auth/detect";
 import { EFFORT_LEVELS, loadScope, loadSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, type PermissionMode } from "./permissions/modes";
-import { allProviders, getProvider, readVertexConfig, removeVertexConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
+import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
+import { checkAgentCli, vendorOf } from "./backends/index";
 import { checkVertex, gcloudAccounts } from "./auth/gcloud";
 import { listAllModels, forgetClient } from "./providers/models";
 import { formatPrice, formatTokens } from "./providers/pricing";
@@ -35,6 +36,7 @@ ${bold("Usage")}
   ${APP_NAME} -p [options] "prompt"       run one prompt and print the result
   ${APP_NAME} auth add [provider]          add an API key (read from stdin or a hidden prompt)
   ${APP_NAME} auth add vertex --project <id> [--location global] [--account <email>]
+  ${APP_NAME} auth add claude-code|codex     use your Claude / ChatGPT plan through your installed CLI
                                          use Gemini on Google Cloud through gcloud (no key)
   ${APP_NAME} auth list                    show which providers have keys (values never shown)
   ${APP_NAME} auth remove <provider>       delete a stored key
@@ -280,6 +282,41 @@ async function readHidden(prompt: string): Promise<string> {
     });
 }
 
+/**
+ * `auth add claude-code|codex`: turn on the user's own agent CLI after
+ * checking it's installed and signed in (by asking the CLI). Signing in is
+ * the CLI's own business; nothing secret is saved.
+ */
+async function addAgentCli(providerId: string): Promise<number> {
+    const def = getProvider(providerId)!;
+    process.stderr.write(`Checking ${def.name}… `);
+    let st;
+    try {
+        st = await checkAgentCli(providerId);
+    } catch (e) {
+        process.stderr.write(theme.error("failed\n"));
+        die(redact((e as Error).message));
+    }
+    if (!st.installed) {
+        process.stderr.write(theme.error("not installed\n"));
+        die(`${st.installHint}, sign in with \`${st.signIn}\`, then run this again.`);
+    }
+    if (!st.signedIn) {
+        process.stderr.write(theme.error("not signed in\n"));
+        die(`run \`${st.signIn}\` (${vendorOf(providerId)}'s own sign-in), then run this again.`);
+    }
+    process.stderr.write(theme.success(`${st.description}\n`));
+    try {
+        saveAgentConfig(providerId);
+    } catch (e) {
+        die(redact((e as Error).message));
+    }
+    forgetClient(providerId);
+    process.stdout.write(`Turned on ${def.name} (${st.path}). Its sign-in stays in ${def.name}; nothing secret is stored. Pick a model with: ${APP_NAME} models ${providerId}\n`);
+    if (st.apiKey) process.stderr.write(`note: ${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.\n`);
+    return 0;
+}
+
 /** `auth add vertex`: save a gcloud-based setup after checking it. */
 async function addVertexCli(args: string[]): Promise<number> {
     const flag = (name: string) => {
@@ -329,12 +366,29 @@ async function authCommand(args: string[]): Promise<number> {
                 process.stdout.write(`  ${padEnd(p.name, 22)}${padEnd(p.id, 14)}${cfg ? theme.success(`✔ gcloud  (${cfg.project}, ${cfg.location}, as ${cfg.account})`) : theme.subtle("—")}\n`);
                 continue;
             }
+            if ("auth" in p && p.auth === "cli") {
+                process.stdout.write(`  ${padEnd(p.name, 22)}${padEnd(p.id, 14)}${readAgentConfig(p.id) ? theme.success(`✔ on  (signed in through ${p.name} itself)`) : theme.subtle("—")}\n`);
+                continue;
+            }
             const k = await getKey(p.id);
             process.stdout.write(`  ${padEnd(p.name, 22)}${padEnd(p.id, 14)}${k ? theme.success(`✔ ${maskKey(k.value)}  (${k.source === "env" ? `$${k.envVar}` : k.source})`) : theme.subtle("—")}\n`);
         }
         return 0;
     }
     if (sub === "add" && arg?.toLowerCase() === "vertex") return addVertexCli(args.slice(2));
+    if (sub === "add" && arg && getProvider(arg.toLowerCase())?.auth === "cli") return addAgentCli(arg.toLowerCase());
+    if ((sub === "remove" || sub === "rm" || sub === "logout") && arg && getProvider(arg.toLowerCase())?.auth === "cli") {
+        const id = arg.toLowerCase();
+        let removed = false;
+        try {
+            removed = removeAgentConfig(id);
+        } catch (e) {
+            die(redact((e as Error).message));
+        }
+        forgetClient(id);
+        process.stdout.write(removed ? `Turned off ${getProvider(id)!.name} (it stays signed in; ${id === "codex" ? "codex logout" : "claude auth logout"} signs it out)\n` : `${getProvider(id)!.name} isn't turned on\n`);
+        return removed ? 0 : 1;
+    }
     if ((sub === "remove" || sub === "rm" || sub === "logout") && arg?.toLowerCase() === "vertex") {
         let removed = false;
         try {
@@ -537,7 +591,7 @@ async function askTrust(cwd: string, found: string[]): Promise<boolean> {
         header: [
             bold(cwd),
             "",
-            `This folder has ${APP_TITLE} configuration: ${found.join(", ")}.`,
+            `This folder has configuration ${APP_TITLE} would use: ${found.join(", ")}.`,
             theme.muted("Project settings can define hooks and MCP servers that run commands on your machine,"),
             theme.muted("and permission rules that let the model act without asking."),
             "",

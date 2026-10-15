@@ -6,10 +6,13 @@ import { paths } from "../config/paths";
 /** anthropic = Messages API; openai = Chat Completions; responses = OpenAI Responses API. */
 export type WireKind = "anthropic" | "openai" | "responses";
 
+/** A wire format, or "agent": a coding agent CLI that runs whole turns itself (src/backends). */
+export type ProviderKind = WireKind | "agent";
+
 export interface ProviderDef {
     id: string;
     name: string;
-    kind: WireKind;
+    kind: ProviderKind;
     baseUrl: string;
     /** Environment variables checked for a key, in order. */
     envKeys: string[];
@@ -34,8 +37,12 @@ export interface ProviderDef {
     reasoning?: "openai" | "openrouter" | "none";
     /** Gemini's Chat Completions dialect: tool calls carry thought signatures. */
     geminiCompat?: boolean;
-    /** No API key: short-lived tokens from the gcloud CLI, for the account set up with /login. */
-    auth?: "gcloud";
+    /**
+     * No API key. gcloud: short-lived tokens from the gcloud CLI, for the
+     * account set up with /login. cli: the user's own agent CLI, signed in
+     * through that CLI; the harness never handles its credentials.
+     */
+    auth?: "gcloud" | "cli";
     /** The model listing already comes newest first. */
     sorted?: boolean;
     custom?: boolean;
@@ -103,6 +110,34 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         streamUsage: true,
         reasoning: "openai",
         geminiCompat: true,
+        sorted: true,
+    },
+    {
+        // A Claude subscription (Pro, Max, Team, Enterprise) through the user's
+        // own installed Claude Code, which runs each turn with its own tools.
+        // Anthropic's terms allow signing in to the unmodified Claude Code
+        // binary with your own plan; they don't allow other programs to use
+        // its sign-in, so the harness never touches it (src/backends).
+        id: "claude-code",
+        name: "Claude Code",
+        kind: "agent",
+        baseUrl: "",
+        envKeys: [],
+        keyUrl: "https://code.claude.com/docs/en/setup",
+        requiresKey: true,
+        auth: "cli",
+        sorted: true,
+    },
+    {
+        // A ChatGPT plan through the user's own Codex CLI (codex app-server).
+        id: "codex",
+        name: "Codex",
+        kind: "agent",
+        baseUrl: "",
+        envKeys: [],
+        keyUrl: "https://developers.openai.com/codex/cli",
+        requiresKey: true,
+        auth: "cli",
         sorted: true,
     },
     {
@@ -255,11 +290,23 @@ export interface VertexConfig {
     account: string;
 }
 
+/**
+ * An agent CLI turned on with /login claude-code or /login codex. Nothing
+ * secret: the CLI keeps its own sign-in.
+ */
+export interface AgentCliConfig {
+    /** The CLI's path, when it isn't the one on PATH. */
+    path?: string;
+    /** Extra arguments, placed before the harness's own. */
+    args?: string[];
+}
+
 interface ProvidersFile {
     custom?: CustomProviderEntry[];
     /** Providers whose key is in the OS keychain (keychain has no "list"). */
     keychain?: string[];
     vertex?: VertexConfig;
+    agents?: Record<string, AgentCliConfig>;
 }
 
 export function readProvidersFile(): ProvidersFile {
@@ -302,6 +349,31 @@ export function removeVertexConfig(): boolean {
     const pf = readProvidersFileForUpdate();
     if (!pf.vertex) return false;
     delete pf.vertex;
+    writeProvidersFile(pf);
+    return true;
+}
+
+/** The saved setup of an agent CLI (claude-code, codex), if it was turned on. */
+export function readAgentConfig(id: string): AgentCliConfig | undefined {
+    const a = readProvidersFile().agents?.[id];
+    if (!a || typeof a !== "object" || Array.isArray(a)) return undefined;
+    const out: AgentCliConfig = {};
+    if (typeof a.path === "string" && a.path.trim()) out.path = a.path.trim();
+    if (Array.isArray(a.args)) out.args = a.args.filter((x): x is string => typeof x === "string");
+    return out;
+}
+
+export function saveAgentConfig(id: string, cfg: AgentCliConfig = {}) {
+    const pf = readProvidersFileForUpdate();
+    const cur = pf.agents?.[id];
+    (pf.agents ??= {})[id] = { ...(cur && typeof cur === "object" ? cur : {}), ...cfg };
+    writeProvidersFile(pf);
+}
+
+export function removeAgentConfig(id: string): boolean {
+    const pf = readProvidersFileForUpdate();
+    if (!pf.agents?.[id]) return false;
+    delete pf.agents[id];
     writeProvidersFile(pf);
     return true;
 }
