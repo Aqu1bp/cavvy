@@ -11,7 +11,7 @@
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
 import { analyzeCommand, effectiveArgv, onlySafeAssignments, substitutionBodies } from "./bash-safety";
-import { canonical, isInside } from "../util/files";
+import { canonical } from "../util/files";
 
 /** macOS and Windows filesystems are case-insensitive by default. */
 const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
@@ -223,23 +223,40 @@ export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode:
 }
 
 /**
+ * Could a pattern (absolute, "/"-separated, ** spanning any number of
+ * folders) match the folder or anything inside it? Walks both segment by
+ * segment: once the folder's segments run out, whatever is left of the
+ * pattern can still name something inside it.
+ */
+function couldMatchWithin(pattern: string[], dir: string[]): boolean {
+    if (!dir.length) return true;
+    if (!pattern.length) return false;
+    const [p, ...restP] = pattern;
+    if (p === "**") return couldMatchWithin(restP, dir) || couldMatchWithin(pattern, dir.slice(1));
+    return globToRegex(p!).test(dir[0]!) && couldMatchWithin(restP, dir.slice(1));
+}
+
+/**
  * For a grant of a whole folder (a sandbox asking to read or write it): the
- * first deny rule that applies to anything in it, or to the folder itself. A
- * write grant is checked against read rules too, since writing a folder
- * exposes it. Rules for other tools don't count.
+ * first deny rule that could match the folder or anything in it. Paths are
+ * compared as written and with symlinks resolved, on both sides. A write
+ * grant is checked against read rules too, since writing a folder exposes
+ * it. Rules for other tools don't count.
  */
 export function deniedWithin(rules: string[], dir: string, root: string, access: "read" | "write"): string | undefined {
+    const fold = (p: string) => (CASE_INSENSITIVE_FS ? p.toLowerCase() : p);
+    // "/a/b" -> ["", "a", "b"]; the root itself is just [""].
+    const segments = (p: string) => fold(p.replace(/\/+$/, "")).split("/");
+    const dirs = [...new Set([dir, canonical(dir)])].map(segments);
     for (const raw of rules) {
         const r = parseRule(raw);
         const kinds = r.tool === "*" ? ["Edit", "Read"] : EDIT_TOOLS.has(r.tool) ? ["Edit"] : READ_TOOLS.has(r.tool) ? ["Read"] : [];
         if (!kinds.includes("Read") && !(access === "write" && kinds.includes("Edit"))) continue;
         if (!r.spec) return raw;
-        if (matchPath(r.spec, dir, root, true) || matchPath(r.spec, join(dir, "*"), root, true)) return raw;
-        // Or the rule names something inside the folder.
-        const segs = pathPattern(r.spec, root).split("/");
-        const firstGlob = segs.findIndex((s) => /[*?]/.test(s));
-        const literal = (firstGlob < 0 ? segs : segs.slice(0, firstGlob)).join("/") || "/";
-        if (isInside(literal, dir)) return raw;
+        const pat = pathPattern(r.spec, root);
+        // A plain path also covers everything under it, as matchPath has it.
+        const pats = [pat, resolvedPattern(pat)].flatMap((x) => (/[*?]/.test(r.spec!) ? [x] : [x, `${x.replace(/\/+$/, "")}/**`]));
+        if (pats.some((x) => dirs.some((d) => couldMatchWithin(segments(x), d)))) return raw;
     }
     return undefined;
 }

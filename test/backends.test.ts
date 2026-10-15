@@ -3,7 +3,7 @@
 // Nothing here runs the real CLIs or touches the network.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
@@ -20,6 +20,7 @@ const { applyHunks, codexPolicy, changePreview } = await import("../src/backends
 const trust = await import("../src/config/trust");
 const { claudeRule, claudePermissions } = await import("../src/backends/claude-code");
 const { untrustedArgs, requestedPaths } = await import("../src/backends/codex");
+const { deniedWithin } = await import("../src/permissions/rules");
 const { stopTiming } = await import("../src/backends/cli");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
@@ -47,10 +48,13 @@ afterAll(() => {
 
 let cwd: string;
 beforeEach(() => {
-    cwd = tempDir("backend-proj-");
+    // Reached through a symlink, as macOS's temp folder is (/var -> /private/var): the CLIs see the real path.
+    const real = tempDir("backend-proj-");
+    cwd = `${real}-link`;
+    symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS"]) delete process.env[k];
+    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -536,10 +540,15 @@ describe("review findings (PR #1)", () => {
         expect(claudeRule("Write(//etc/hosts)", root)).toEqual(["Edit(//etc/hosts)", "Edit(//etc/hosts/**)"]);
         expect(claudeRule("Grep(./docs/)", root)).toEqual(["Read(//proj/docs/)", "Read(//proj/docs/**)"]);
         expect(claudeRule("Bash(git push:*)", root)).toEqual(["Bash(git push:*)"]);
-        expect(claudeRule("WebFetch(domain:example.com)", root)).toEqual(["WebFetch(domain:example.com)"]);
+        // The harness's domain rule covers subdomains; Claude Code's needs *. for those.
+        expect(claudeRule("WebFetch(domain:example.com)", root)).toEqual(["WebFetch(domain:example.com)", "WebFetch(domain:*.example.com)"]);
+        expect(claudeRule("WebFetch(domain:*.example.com)", root)).toEqual(["WebFetch(domain:*.example.com)"]);
         expect(claudeRule("Task(explore)", root)).toEqual(["Agent(explore)"]);
         expect(claudeRule("mcp__github", root)).toEqual(["mcp__github"]);
-        expect(claudeRule("*", root)).toEqual([]);
+        // Every tool: bare, or for a path every reading and editing tool.
+        expect(claudeRule("*", root)).toEqual(["*"]);
+        expect(claudeRule("*(secrets/**)", root)).toEqual(["Read(//proj/secrets/**)", "Edit(//proj/secrets/**)"]);
+        expect(claudeRule("*(domain:evil.com)", root)).toEqual(["WebFetch(domain:evil.com)", "WebFetch(domain:*.evil.com)"]);
         const p = claudePermissions({ deny: ["Bash(rm:*)"], ask: ["Edit(src/**)"], root });
         expect(p.ask).toEqual(["Edit(//proj/src/**)"]);
         // The harness's credential store is always denied.
@@ -578,7 +587,8 @@ describe("review findings (PR #1)", () => {
         await a.run("move it");
         expect(a.asked).toHaveLength(0);
         expect(received().find((m) => m.result?.decision)?.result.decision).not.toBe("accept");
-        expect(toolEnds(a.events)[0]!.call.input).toEqual({ file_path: join(cwd, "a.txt") });
+        // Codex reports the folder's real path (on macOS, /private/var/… for /var/…).
+        expect(toolEnds(a.events)[0]!.call.input).toEqual({ file_path: join(realpathSync(cwd), "a.txt") });
         expect((toolEnds(a.events)[0] as any).result.content).toMatch(/Denied by permission rule Edit\(secrets\/\*\*\)/);
     });
 
@@ -599,9 +609,8 @@ describe("review findings (PR #1)", () => {
         const asked = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Edit(secrets/**)"] } }, ask: () => ({ allow: true }) });
         await asked.run("go");
         expect(asked.asked).toHaveLength(1);
-        expect(asked.asked[0]!.decision.reason).toContain(`write ${join(cwd, "secrets")}`);
-        expect(granted()?.permissions?.fileSystem?.write).toEqual([join(cwd, "secrets")]);
-        expect(requestedPaths({ fileSystem: { read: ["/a"], write: null, entries: [{ path: { type: "path", path: "/b" }, access: "write" }] }, network: { enabled: true } })).toEqual({ read: ["/a"], write: ["/b"], network: true });
+        expect(asked.asked[0]!.decision.reason).toContain(`write ${join(realpathSync(cwd), "secrets")}`);
+        expect(granted()?.permissions?.fileSystem?.write).toEqual([join(realpathSync(cwd), "secrets")]);
     });
 
     test("4. switching to plan mode mid-turn stops Codex's turn and goes on under plan mode", async () => {
@@ -672,6 +681,88 @@ describe("review findings (PR #1)", () => {
         const a = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }), queued: [["one more thing"]] });
         expect(await a.run("go")).toBe("error");
         expect(notices(a.events).join("\n")).toMatch(/Claude Code stopped/);
+    });
+});
+
+describe("review findings, round 2", () => {
+    const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
+    const granted = () => logLines().find((l) => "granted" in l)?.granted;
+
+    test("a folder grant is refused when a deny rule could match anything in it, with symlinks resolved", () => {
+        const real = tempDir("dw-");
+        Bun.spawnSync(["mkdir", "-p", join(real, "w", "src"), join(real, "w", "docs")]);
+        const link = `${real}-link`;
+        symlinkSync(real, link);
+        const w = join(link, "w");
+        // A bare name matches at any depth; ** spans folders.
+        expect(deniedWithin(["Read(.env)"], join(w, "src"), w, "read")).toBe("Read(.env)");
+        expect(deniedWithin(["Read(**/secret.txt)"], join(w, "src"), w, "write")).toBe("Read(**/secret.txt)");
+        // A rule for something inside the folder, written via the link, against the real path; and the other way round.
+        expect(deniedWithin([`Read(/${join(w, "src", "secret.txt")})`], join(real, "w", "src"), w, "read")).toBeDefined();
+        expect(deniedWithin([`Read(/${join(real, "w", "src")}/**)`], join(w, "src"), w, "read")).toBeDefined();
+        // A grant of the whole project, or of the filesystem root, is refused for a rule about part of it.
+        expect(deniedWithin(["Edit(src/**)"], w, w, "write")).toBe("Edit(src/**)");
+        expect(deniedWithin(["Read(src/secret.txt)"], "/", w, "read")).toBe("Read(src/secret.txt)");
+        expect(deniedWithin(["Read(.env)"], "/", w, "read")).toBe("Read(.env)");
+        // But not for what can't be in the folder, or for edit rules on a read grant.
+        expect(deniedWithin(["Read(src/secret.txt)"], join(w, "docs"), w, "read")).toBeUndefined();
+        expect(deniedWithin(["Read(src/*.key)"], join(w, "docs"), w, "write")).toBeUndefined();
+        expect(deniedWithin(["Edit(src/**)"], join(w, "src"), w, "read")).toBeUndefined();
+        expect(deniedWithin(["Bash(rm:*)"], w, w, "write")).toBeUndefined();
+    });
+
+    test("Codex's special paths are resolved; ones that can't be are refused without asking", async () => {
+        process.env.FAKE_SCENARIO = "perms";
+        // The filesystem root holds the harness's credential store.
+        process.env.FAKE_PERMS = JSON.stringify({ network: null, fileSystem: { read: null, write: null, entries: [{ path: { type: "special", value: { kind: "root" } }, access: "write" }] } });
+        const root = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        await root.run("go");
+        expect(root.asked).toHaveLength(0);
+        expect(granted()).toEqual({ permissions: {}, scope: "turn" });
+        rmSync(LOG, { force: true });
+        process.env.FAKE_PERMS = JSON.stringify({ network: null, fileSystem: { read: null, write: null, entries: [{ path: { type: "special", value: { kind: "minimal" } }, access: "read" }] } });
+        const minimal = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        await minimal.run("go");
+        expect(minimal.asked).toHaveLength(0);
+        expect(granted()).toEqual({ permissions: {}, scope: "turn" });
+        expect(notices(minimal.events).join("\n")).toMatch(/Refused Codex's request for access to the special path "minimal"/);
+        const roots = ["/w", "/extra"];
+        const entries = [
+            { path: { type: "path", path: "/b" }, access: "write" },
+            { path: { type: "special", value: { kind: "project_roots", subpath: "out" } }, access: "write" },
+            { path: { type: "glob_pattern", pattern: "/c/**/*.txt" }, access: "read" },
+            { path: { type: "special", value: { kind: "root" } }, access: "deny" },
+        ];
+        expect(requestedPaths({ fileSystem: { read: ["/a"], write: null, entries }, network: { enabled: true } }, roots)).toEqual({ read: ["/a", "/c"], write: ["/b", "/w/out", "/extra/out"], network: true, unknown: [] });
+        expect(requestedPaths({ somethingNew: { x: 1 } }, roots).unknown).toHaveLength(1);
+    });
+
+    test("esc while Codex resumes its thread keeps the thread", async () => {
+        const a = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
+        await a.run("one");
+        expect(a.session.backends.get("codex")?.id).toBe("thr-new");
+        process.env.FAKE_SLOW_RESUME = "3000";
+        const ac = new AbortController();
+        const done = a.run("two", ac.signal);
+        while (!received().some((m) => m.method === "thread/resume")) await Bun.sleep(10);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(a.session.backends.get("codex")?.id).toBe("thr-new");
+        expect(notices(a.events).join("\n")).not.toMatch(/resume/i);
+    });
+
+    test("switching to plan mode while Codex starts its turn still stops it", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_SLOW_TURN_START = "500";
+        const a = await makeAgent({ provider: "codex", mode: "auto" });
+        const done = a.run("work");
+        while (!received().some((m) => m.method === "turn/start")) await Bun.sleep(5);
+        a.switchMode("plan");
+        await done;
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+        const [first, second] = turnStarts();
+        expect(first).toMatchObject({ approvalPolicy: "on-request" });
+        expect(second).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly" } });
     });
 });
 

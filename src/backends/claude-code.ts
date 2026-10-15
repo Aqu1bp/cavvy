@@ -488,7 +488,19 @@ export function claudeRule(raw: string, root: string): string[] {
         return rules;
     }
     if (tool === "Bash" || tool === "WebSearch") return [spec ? `${tool}(${spec})` : tool];
-    if (tool === "WebFetch") return !spec ? ["WebFetch"] : /^domain:/.test(spec) ? [`WebFetch(${spec})`] : [];
+    if (tool === "WebFetch") {
+        if (!spec) return ["WebFetch"];
+        const domain = spec.match(/^domain:(.+)$/)?.[1];
+        if (!domain) return [];
+        // The harness's domain:example.com covers its subdomains; Claude Code's needs *.example.com for those.
+        return domain.startsWith("*.") ? [`WebFetch(${spec})`] : [`WebFetch(${spec})`, `WebFetch(domain:*.${domain})`];
+    }
+    // Every tool: Claude Code takes a bare *; with a path (or a domain), every tool that reads or edits it.
+    if (tool === "*") {
+        if (!spec) return ["*"];
+        if (/^domain:/.test(spec)) return claudeRule(`WebFetch(${spec})`, root);
+        return [...claudeRule(`Read(${spec})`, root), ...claudeRule(`Edit(${spec})`, root)];
+    }
     if (tool === "Task") return [spec ? `Agent(${spec})` : "Agent"];
     if (tool.startsWith("mcp__")) return [tool];
     return [];

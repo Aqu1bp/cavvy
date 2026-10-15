@@ -67,8 +67,18 @@ How it works:
 - Each prompt runs as one turn in the CLI: `claude -p` with stream-json input and output (the protocol the Agent SDK uses), or `codex app-server` (JSON-RPC). The CLI uses its own system prompt, tools, sandbox, context management and memory (CLAUDE.md, AGENTS.md, its own settings, skills and MCP servers). The harness streams what it does into the transcript.
 - When the CLI asks for permission, the harness answers with its own rules and dialog. Deny rules refuse without asking. An explicit allow rule (`Bash(npm test:*)`, `Write`, `--allowedTools`) approves. In Accept edits, so does an edit inside the workspace. Anything else asks you, with the same diff previews as the harness's own tools, and "don't ask again" saves a harness rule. In `-p` mode, anything that would ask is refused. Claude Code's `AskUserQuestion` and `ExitPlanMode`, and Codex's questions to the user, use the harness's question and plan dialogs.
 - What the CLI does without asking never reaches the harness, so the harness's rules have to be in the CLI itself to cover it:
-  - Claude Code gets the harness's deny and ask rules as its own permission rules (`--settings`, with paths made absolute the way the harness resolves them), plus a deny rule for the harness's credential store. They then also cover what it would otherwise do on its own, like reading a file in the project. A rule with no Claude Code equivalent (`*`) only covers what it asks about.
-  - Codex can't take them. Deny rules cover only what Codex asks approval for. In Manual, Plan and Accept edits, that's every edit and every command except ones Codex considers read-only (`cat`, `ls`, `rg`, …), which it runs itself. So a `Read` deny rule doesn't stop Codex from reading a file. In Auto and Bypass it asks much less.
+  - Claude Code gets the harness's deny and ask rules as its own permission rules, plus a deny rule for the harness's credential store. They then also cover what it would otherwise do on its own, like reading a file in the project. The translation:
+    - Paths are made absolute the way the harness resolves them.
+    - `WebFetch(domain:example.com)` also gets `domain:*.example.com`, since the harness's rule covers subdomains and Claude Code's doesn't.
+    - `*` stays `*`, and `*(path)` becomes a read and an edit rule.
+
+    Where the two still differ:
+    - Claude Code matches Bash rules on the command as written, so `Bash(rm:*)` doesn't catch `/bin/rm …` or `bash -c 'rm …'` as the harness's does. That matters only when Claude Code wouldn't ask anyway: its own auto and bypass modes, or allow rules in your Claude Code settings.
+    - Claude Code reads `[…]` in a path as a pattern, where the harness reads it literally.
+    - A bare `Bash` ask rule doesn't stop Claude Code's sandbox from approving commands, if you've turned that sandbox on in your Claude Code settings.
+
+    The rules go on Claude Code's command line, so other local processes can see them (`ps`). They're paths and commands, not secrets.
+  - Codex can't take them. Deny rules cover only what Codex asks approval for. In Manual, Plan and Accept edits, that's every edit and every command except ones Codex considers read-only (`cat`, `ls`, `rg`, …), which it runs itself. So a `Read` deny rule doesn't stop Codex from reading a file. That includes `~/.harness/credentials.json`, if a key is stored there rather than in the OS keychain. In Auto and Bypass it asks much less.
 - The harness's permission mode maps to the CLI's:
 
   | Harness | Claude Code | Codex (approval policy, sandbox) |
@@ -79,7 +89,7 @@ How it works:
   | Auto | `auto` (Claude Code's own auto mode) | `on-request`, workspace-write: commands and edits inside the sandbox run without asking |
   | Bypass permissions | `bypassPermissions` | `never`, no sandbox |
 
-  Neither CLI's own accept-edits behavior is used, because both are looser than the harness's: Claude Code's `acceptEdits` also runs file commands (`rm`, `mv`, `sed`) without asking, and Codex's `on-request` runs any command inside its sandbox. Edits to `.claude/`, `.codex/`, `.harness/`, `.mcp.json` and `.git/` always ask. Codex's requests to widen its sandbox are checked against your deny rules for every folder they name, and they always ask.
+  Neither CLI's own accept-edits behavior is used, because both are looser than the harness's: Claude Code's `acceptEdits` also runs file commands (`rm`, `mv`, `sed`) without asking, and Codex's `on-request` runs any command inside its sandbox. Edits to `.claude/`, `.codex/`, `.harness/`, `.mcp.json` and `.git/` always ask. Codex's requests to widen its sandbox always ask. They're refused without asking if a deny rule could match anything in a folder they name (symlinks resolved), if that folder holds the harness's credential store, or if they name something the harness can't map to folders (like Codex's "minimal" system paths).
 - Changing the mode during a turn: Claude Code switches immediately. Codex can't change its approval policy mid-turn, so switching to a stricter mode stops its turn and resumes it under the new one. A looser mode applies from the next turn, as do prompts you queue.
 
 - The next prompt continues the same Claude Code session (`--resume`) or Codex thread (`thread/resume`), also after `-c`/`-r`. Each turn is also saved in the harness session as text (what was said, and which tools ran). If you switch to another model and back, the CLI gets what the other model said in between; if its session is gone, a new one starts with the conversation so far.

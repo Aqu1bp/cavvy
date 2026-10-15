@@ -17,7 +17,7 @@
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
 
-import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const log = (o: unknown) => {
@@ -68,16 +68,32 @@ function ruleHits(rule: string, tool: string, input: any): boolean {
     if (!spec) return true;
     if (kind === "Bash") return spec.endsWith(":*") ? String(input.command).startsWith(spec.slice(0, -2)) : input.command === spec;
     if (!spec.startsWith("//")) return false;
-    // gitignore-style: ** spans directories (**/ also matches none), * stays within one.
-    const re = spec
-        .slice(1)
+    // Like Claude Code (2.1.268 on), symlinks are resolved: in the rule's literal folders and in the path.
+    const real = (p: string) => {
+        try {
+            return realpathSync(p);
+        } catch {
+            return p;
+        }
+    };
+    const segs = spec.slice(1).split("/");
+    const firstGlob = segs.findIndex((x) => /[*?]/.test(x));
+    const lit = (firstGlob < 0 ? segs : segs.slice(0, firstGlob)).join("/");
+    const pats = [spec.slice(1), [real(lit), ...(firstGlob < 0 ? [] : segs.slice(firstGlob))].join("/")];
+    const path = String(input.file_path ?? "");
+    return pats.some((pat) => [path, real(path)].some((p) => globMatch(pat, p)));
+}
+
+// gitignore-style: ** spans folders (followed by a slash, also none), * stays within one.
+function globMatch(pat: string, path: string): boolean {
+    const re = pat
         .replace(/[.+^${}()|[\]\\]/g, "\\$&")
         .replace(/\*\*\//g, "\u0000")
         .replace(/\*\*/g, "\u0001")
         .replace(/\*/g, "[^/]*")
         .replace(/\u0000/g, "(?:.*/)?")
         .replace(/\u0001/g, ".*");
-    return new RegExp(`^${re}$`).test(String(input.file_path ?? ""));
+    return new RegExp(`^${re}$`).test(path);
 }
 
 const inside = (p: unknown) => typeof p === "string" && p.startsWith(cwd + "/");

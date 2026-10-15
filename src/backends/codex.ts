@@ -10,7 +10,7 @@
 // credentials (~/.codex/auth.json) and never signs in on its behalf.
 
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
@@ -346,6 +346,8 @@ class CodexTurn {
                     const r = await this.rpc.request("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
                     this.threadId = r?.thread?.id ?? t.resumeId;
                 } catch (e) {
+                    // Stopped by esc: the thread is fine and is resumed next time.
+                    if (this.aborted) throw e;
                     return { reason: "error", text: "", actions: [], error: `Couldn't resume the Codex thread: ${(e as Error).message}`, resumeFailed: true };
                 }
             } else {
@@ -418,6 +420,8 @@ class CodexTurn {
         await start();
         // Interrupted while the turn was being started.
         if (this.aborted && this.turnId) this.interrupt();
+        // The mode changed while it was being started (modeChanged had no turn to stop yet).
+        else if (this.turnId) this.modeChanged(this.host.mode());
         await Promise.race([done, this.rpc.done]);
         this.turnDone = undefined;
         if (!this.status && !this.aborted && !this.failure) this.failure = `Codex stopped before the turn finished${cliMessage(this.rpc.proc.stderr()) ? `: ${cliMessage(this.rpc.proc.stderr())}` : ""}`;
@@ -630,13 +634,18 @@ class CodexTurn {
                 return { decision: this.decision(a, p.availableDecisions) };
             }
             case "item/permissions/requestApproval": {
-                const want = requestedPaths(p.permissions);
+                const want = requestedPaths(p.permissions, [this.t.cwd, ...this.t.additionalDirectories]);
+                if (want.unknown.length) {
+                    // Access it can't map to folders can't be checked against the rules: refused, without asking.
+                    this.host.emit({ type: "notice", level: "warn", message: `Refused Codex's request for access to ${want.unknown.join(", ")}: ${APP_TITLE} can't tell which folders that covers, so it can't check it against your rules.` });
+                    return { permissions: {}, scope: "turn" };
+                }
                 const asks = [...want.write.map((x) => `write ${x}`), ...want.read.map((x) => `read ${x}`), ...(want.network ? ["network access"] : [])];
                 const a = await this.host.permission({
                     toolName: "Codex permissions",
                     input: { permissions: p.permissions ?? {} },
                     title: "Codex asks for more permissions",
-                    reason: [typeof p.reason === "string" ? p.reason : "", asks.length ? `It wants: ${asks.join(", ")}.` : JSON.stringify(p.permissions ?? {})].filter(Boolean).join(" "),
+                    reason: [typeof p.reason === "string" ? p.reason : "", `It wants: ${asks.join(", ")}.`].filter(Boolean).join(" "),
                     widens: { read: want.read, write: want.write },
                 });
                 // Granting nothing lets the turn go on without them; what the user said goes in with it.
@@ -714,18 +723,57 @@ function writtenPaths(changes: FileChange[]): string[] {
 }
 
 /** The folders a permissions request asks Codex's sandbox to open, for reading and writing. */
-export function requestedPaths(permissions: any): { read: string[]; write: string[]; network: boolean } {
+export function requestedPaths(permissions: any, roots: string[]): { read: string[]; write: string[]; network: boolean; unknown: string[] } {
     const fs = permissions?.fileSystem ?? {};
     const list = (x: unknown) => (Array.isArray(x) ? x.filter((p): p is string => typeof p === "string") : []);
     const read = list(fs.read);
     const write = list(fs.write);
+    const unknown: string[] = [];
     for (const e of Array.isArray(fs.entries) ? fs.entries : []) {
-        const p = e?.path?.type === "path" ? e.path.path : e?.path?.type === "glob_pattern" ? e.path.pattern : undefined;
-        if (typeof p !== "string") continue;
-        if (e.access === "write") write.push(p);
-        else if (e.access === "read") read.push(p);
+        if (e?.access !== "write" && e?.access !== "read") continue; // "deny" only takes access away
+        const folders = entryFolders(e.path, roots);
+        if (!folders) unknown.push(describeEntry(e.path));
+        else (e.access === "write" ? write : read).push(...folders);
     }
-    return { read, write, network: permissions?.network?.enabled === true };
+    const network = permissions?.network?.enabled === true;
+    // Something it asks for that isn't any of these: it can't be checked, so it's refused.
+    if (!read.length && !write.length && !network && !unknown.length && Object.values(permissions ?? {}).some((v) => v !== null && v !== undefined)) unknown.push(JSON.stringify(permissions));
+    return { read, write, network, unknown };
+}
+
+/**
+ * The folders one sandbox entry covers: a path; a glob's folder up to its
+ * first wildcard; or a special path the harness knows. Undefined for one it
+ * can't map to folders (Codex's "minimal" system paths, or kinds it doesn't
+ * know), which then can't be checked against the rules.
+ */
+function entryFolders(path: any, roots: string[]): string[] | undefined {
+    if (path?.type === "path" && typeof path.path === "string") return [path.path];
+    if (path?.type === "glob_pattern" && typeof path.pattern === "string") {
+        const segs = path.pattern.split("/");
+        const first = segs.findIndex((s: string) => /[*?[{]/.test(s));
+        return [(first < 0 ? segs : segs.slice(0, first)).join("/") || "/"];
+    }
+    if (path?.type === "special") {
+        const v = path.value ?? {};
+        const sub = (r: string) => (typeof v.subpath === "string" && v.subpath ? join(r, v.subpath) : r);
+        switch (v.kind) {
+            case "root":
+                return ["/"];
+            case "tmpdir":
+                return [tmpdir()];
+            case "slash_tmp":
+                return ["/tmp"];
+            case "project_roots":
+                return roots.map(sub);
+        }
+    }
+    return undefined;
+}
+
+function describeEntry(path: any): string {
+    if (path?.type === "special") return `the special path "${String(path.value?.kind ?? "?")}"${typeof path.value?.path === "string" ? ` (${path.value.path})` : ""}`;
+    return JSON.stringify(path);
 }
 
 function mcpText(result: any): string {

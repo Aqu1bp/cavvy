@@ -16,6 +16,8 @@
 // FAKE_DECLINE=1      offer "decline" among the command's availableDecisions
 // FAKE_SCENARIO       cmd (default) | rename | perms | slow
 // FAKE_HANG_INIT=1    never answers initialize, and ignores SIGTERM
+// FAKE_PERMS          the permissions the "perms" scenario asks for (JSON)
+// FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 
 import { appendFileSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
@@ -76,7 +78,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         decision = (await serverRequest("item/fileChange/requestApproval", { threadId, turnId, itemId: change.id, reason: null, grantRoot: null }))?.decision;
         notify("item/completed", { threadId, turnId, item: { ...change, status: decision === "accept" ? "completed" : "declined" } });
     } else if (scenario === "perms") {
-        const r = await serverRequest("item/permissions/requestApproval", { threadId, turnId, itemId: `p-${turnId}`, cwd, reason: "needs to write there", permissions: { network: null, fileSystem: { read: null, write: [join(cwd, "secrets")] } } });
+        const permissions = process.env.FAKE_PERMS ? JSON.parse(process.env.FAKE_PERMS) : { network: null, fileSystem: { read: null, write: [join(cwd, "secrets")] } };
+        const r = await serverRequest("item/permissions/requestApproval", { threadId, turnId, itemId: `p-${turnId}`, cwd, reason: "needs to write there", permissions });
         log({ granted: r });
     } else {
         const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: "/bin/bash -lc 'touch x'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch x" }], aggregatedOutput: null, exitCode: null };
@@ -105,7 +108,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     finish("completed");
 }
 
-function handle(m: any) {
+async function handle(m: any) {
     log({ received: m });
     if (m.method === undefined) {
         const r = pending.get(m.id);
@@ -138,10 +141,12 @@ function handle(m: any) {
         case "thread/start":
             return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test" });
         case "thread/resume":
+            if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
             return reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test" });
         case "turn/start": {
             const turnId = `turn-${++turnSeq}`;
+            if (process.env.FAKE_SLOW_TURN_START && turnSeq === 1) await Bun.sleep(Number(process.env.FAKE_SLOW_TURN_START));
             reply({ turn: { id: turnId, status: "inProgress" } });
             void runTurn(p.threadId, turnId, p);
             return;
@@ -170,7 +175,7 @@ for await (const chunk of Bun.stdin.stream()) {
     while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
-        if (line) handle(JSON.parse(line));
+        if (line) void handle(JSON.parse(line));
     }
 }
 if (process.env.FAKE_HANG_INIT === "1") await new Promise(() => {});
