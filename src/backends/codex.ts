@@ -756,7 +756,8 @@ function entryFolders(path: any, roots: string[]): string[] | undefined {
     }
     if (path?.type === "special") {
         const v = path.value ?? {};
-        const sub = (r: string) => (typeof v.subpath === "string" && v.subpath ? join(r, v.subpath) : r);
+        // As Codex resolves it: an absolute subpath replaces the root, a relative one goes under it.
+        const sub = (r: string) => (typeof v.subpath !== "string" || !v.subpath ? r : isAbsolute(v.subpath) ? resolve(v.subpath) : join(r, v.subpath));
         switch (v.kind) {
             case "root":
                 return ["/"];
@@ -765,7 +766,7 @@ function entryFolders(path: any, roots: string[]): string[] | undefined {
             case "slash_tmp":
                 return ["/tmp"];
             case "project_roots":
-                return roots.map(sub);
+                return [...new Set(roots.map(sub))];
         }
     }
     return undefined;

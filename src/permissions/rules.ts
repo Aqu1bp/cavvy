@@ -233,6 +233,9 @@ function couldMatchWithin(pattern: string[], dir: string[]): boolean {
     if (!pattern.length) return false;
     const [p, ...restP] = pattern;
     if (p === "**") return couldMatchWithin(restP, dir) || couldMatchWithin(pattern, dir.slice(1));
+    // ** inside a name (src/**.pem) spans folders too: past a folder that matches its start, it can reach anything.
+    const span = p!.indexOf("**");
+    if (span >= 0) return globToRegex(p!.slice(0, span) + "*").test(dir[0]!);
     return globToRegex(p!).test(dir[0]!) && couldMatchWithin(restP, dir.slice(1));
 }
 

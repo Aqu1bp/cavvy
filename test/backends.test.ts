@@ -697,6 +697,11 @@ describe("review findings, round 2", () => {
         // A bare name matches at any depth; ** spans folders.
         expect(deniedWithin(["Read(.env)"], join(w, "src"), w, "read")).toBe("Read(.env)");
         expect(deniedWithin(["Read(**/secret.txt)"], join(w, "src"), w, "write")).toBe("Read(**/secret.txt)");
+        // ** inside a name spans folders too, past a folder that matches its start.
+        expect(deniedWithin(["Read(src/**.pem)"], join(w, "src", "nested"), w, "read")).toBe("Read(src/**.pem)");
+        expect(deniedWithin(["Read(src/key**)"], join(w, "src", "keys", "old"), w, "write")).toBe("Read(src/key**)");
+        expect(deniedWithin(["Read(src/key**)"], join(w, "src", "other"), w, "write")).toBeUndefined();
+        expect(deniedWithin(["Read(src/**.pem)"], join(w, "docs"), w, "read")).toBeUndefined();
         // A rule for something inside the folder, written via the link, against the real path; and the other way round.
         expect(deniedWithin([`Read(/${join(w, "src", "secret.txt")})`], join(real, "w", "src"), w, "read")).toBeDefined();
         expect(deniedWithin([`Read(/${join(real, "w", "src")}/**)`], join(w, "src"), w, "read")).toBeDefined();
@@ -726,6 +731,13 @@ describe("review findings, round 2", () => {
         expect(minimal.asked).toHaveLength(0);
         expect(granted()).toEqual({ permissions: {}, scope: "turn" });
         expect(notices(minimal.events).join("\n")).toMatch(/Refused Codex's request for access to the special path "minimal"/);
+        rmSync(LOG, { force: true });
+        // An absolute subpath is the folder Codex opens (it replaces the project root), here the harness's own home.
+        process.env.FAKE_PERMS = JSON.stringify({ network: null, fileSystem: { read: null, write: null, entries: [{ path: { type: "special", value: { kind: "project_roots", subpath: process.env.HARNESS_HOME } }, access: "write" }] } });
+        const store = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        await store.run("go");
+        expect(store.asked).toHaveLength(0);
+        expect(granted()).toEqual({ permissions: {}, scope: "turn" });
         const roots = ["/w", "/extra"];
         const entries = [
             { path: { type: "path", path: "/b" }, access: "write" },
@@ -735,6 +747,9 @@ describe("review findings, round 2", () => {
         ];
         expect(requestedPaths({ fileSystem: { read: ["/a"], write: null, entries }, network: { enabled: true } }, roots)).toEqual({ read: ["/a", "/c"], write: ["/b", "/w/out", "/extra/out"], network: true, unknown: [] });
         expect(requestedPaths({ somethingNew: { x: 1 } }, roots).unknown).toHaveLength(1);
+        const special = (subpath: string) => requestedPaths({ fileSystem: { entries: [{ path: { type: "special", value: { kind: "project_roots", subpath } }, access: "write" }] } }, roots).write;
+        expect(special("/etc")).toEqual(["/etc"]);
+        expect(special("../up")).toEqual(["/up"]);
     });
 
     test("esc while Codex resumes its thread keeps the thread", async () => {

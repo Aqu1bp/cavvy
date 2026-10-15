@@ -77,7 +77,7 @@ How it works:
     - Claude Code reads `[…]` in a path as a pattern, where the harness reads it literally.
     - A bare `Bash` ask rule doesn't stop Claude Code's sandbox from approving commands, if you've turned that sandbox on in your Claude Code settings.
 
-    The rules go on Claude Code's command line, so other local processes can see them (`ps`). They're paths and commands, not secrets.
+    The rules go on Claude Code's command line, so other local processes can see them (`ps`). Don't put a secret in a rule (a token in a `Bash(…)` command, say).
   - Codex can't take them. Deny rules cover only what Codex asks approval for. In Manual, Plan and Accept edits, that's every edit and every command except ones Codex considers read-only (`cat`, `ls`, `rg`, …), which it runs itself. So a `Read` deny rule doesn't stop Codex from reading a file. That includes `~/.harness/credentials.json`, if a key is stored there rather than in the OS keychain. In Auto and Bypass it asks much less.
 - The harness's permission mode maps to the CLI's:
 
