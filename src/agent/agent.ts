@@ -231,6 +231,13 @@ function isContextOverflow(e: unknown): boolean {
     return (err?.status === 400 || err?.status === 413 || err?.status === undefined) && /prompt is too long|context.{0,20}(length|window|limit)|maximum context|too many (input )?tokens|input (is )?too long|exceeds the context|exceeds the maximum number of tokens/i.test(msg);
 }
 
+/** What a read-only agent hears when it tries to change something: for a command, which ones do run. */
+function readOnlyRefusal(toolName: string): string {
+    return toolName === "Bash"
+        ? "This is a read-only agent: only read-only commands run (plain commands such as cat, rg, wc or git log, and pipes of them; no loops, subshells, $(…) or > redirects). Report what should be changed instead."
+        : "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+}
+
 function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
 }
@@ -713,13 +720,13 @@ export class Agent {
             tasks,
         });
         // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
-        this.registration ??= registerTools(tools, () => (this.model.provider === "codex" ? undefined : orchestrationInstructions(this.model.provider)));
+        this.registration ??= registerTools(tools, () => (this.model.provider === "codex" ? undefined : orchestrationInstructions(this.model.provider, this.oneShot)));
         return {
             name: MCP_SERVER_NAME,
             url: this.registration.url,
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
-            instructions: orchestrationInstructions(caller),
+            instructions: orchestrationInstructions(caller, this.oneShot),
             // Above the longest wait, so the harness's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
         };
@@ -727,6 +734,11 @@ export class Agent {
 
     private listings(): ProviderListing[] {
         return this.o.listings?.() ?? cachedListings();
+    }
+
+    /** A non-interactive run (-p): it ends with this turn, and tasks still running end with it. */
+    private get oneShot(): boolean {
+        return !this.o.host.askPermission;
     }
 
     private tasks(): Delegations {
@@ -954,7 +966,8 @@ export class Agent {
         const running = this.delegations?.running().length ?? 0;
         if (running) {
             const name = getProvider(provider)?.name ?? provider;
-            this.emit({ type: "notice", level: "info", message: `${running} delegated task${running === 1 ? " is" : "s are"} still running. ${running === 1 ? "Its result goes" : "Their results go"} to ${name} with your next message (/tasks shows them, /tasks stop stops them).` });
+            const then = this.oneShot ? `${running === 1 ? "It stops" : "They stop"} with this run.` : `${running === 1 ? "Its result goes" : "Their results go"} to ${name} with your next message (/tasks shows them, /tasks stop stops them).`;
+            this.emit({ type: "notice", level: "info", message: `${running} delegated task${running === 1 ? " is" : "s are"} still running. ${then}` });
         }
         this.emit({ type: "turn_end", reason });
         return reason;
@@ -1034,7 +1047,10 @@ export class Agent {
      * to ask; the harness's rules then apply: deny rules (and the harness's
      * protected files) refuse it, an explicit allow rule approves it, and
      * anything else goes to the user. The harness's mode defaults never
-     * approve on the user's behalf what the backend wanted confirmed.
+     * approve on the user's behalf what the backend wanted confirmed, except
+     * where the ask says nothing of its own: Codex asking about every command,
+     * or a read-only agent asking because of the harness's own rule. There a
+     * read-only command the harness would run for its own models runs.
      */
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
@@ -1044,7 +1060,7 @@ export class Agent {
         // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
         if (this.o.readOnly) {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
-            if (!reads) return { allow: false, message: "This is a read-only agent: that action isn't allowed. Report what should be changed instead.", stop: false };
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name), stop: false };
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
@@ -1056,6 +1072,9 @@ export class Agent {
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
+        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
+        // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
+        if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
         if (req.widens) {
             // More access for the backend's sandbox: never in plan mode, never past a deny rule, never without asking.
             if (mode === "plan") return { allow: false, message: "Plan mode is active: no extra permissions until the user approves a plan.", stop: false };
@@ -1093,7 +1112,6 @@ export class Agent {
                 // preview is optional
             }
         }
-        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         const ask = {
             ...decision,
             behavior: "ask" as const,
@@ -1238,7 +1256,7 @@ export class Agent {
         // Read-only agents (explore) never change anything.
         if (this.o.readOnly) {
             const writes = tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || tool.category === "mcp" && !isReadOnly(tool, input);
-            if (writes) return { result: this.errorResult(call, "This is a read-only agent: that action isn't allowed. Report what should be changed instead.") };
+            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name)) };
         }
 
         const settings = this.o.settings();

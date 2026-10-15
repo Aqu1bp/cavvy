@@ -114,7 +114,7 @@ beforeEach(() => {
     cwd = realpathSync(tempDir("deleg-proj-"));
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
+    for (const k of ["FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -144,6 +144,8 @@ interface Opts {
     client?: unknown;
     settings?: any;
     ask?: (req: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>;
+    /** Non-interactive, like -p: no one to ask. */
+    headless?: boolean;
 }
 
 async function makeAgent(o: Opts) {
@@ -168,10 +170,12 @@ async function makeAgent(o: Opts) {
         host: {
             emit: (e) => events.push(e),
             ui: {},
-            askPermission: async (req) => {
-                asked.push(req);
-                return o.ask ? o.ask(req) : { allow: true };
-            },
+            askPermission: o.headless
+                ? undefined
+                : async (req) => {
+                      asked.push(req);
+                      return o.ask ? o.ask(req) : { allow: true };
+                  },
         },
     });
     agents.push(agent);
@@ -687,6 +691,24 @@ describe("Claude Code as the main agent", () => {
         expect(userTexts().at(-1)).not.toContain("A task you delegated");
     });
 
+    test("in a one-shot run (-p) there's no next message: the main agent is told to collect results, and a task left running stops with the run", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Review the code", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
+        const g = gate();
+        script = async (req) => {
+            await g.wait(req.signal);
+            return say("Looks fine.");
+        };
+        const { run, events, agent } = await makeAgent({ provider: "claude-code", headless: true });
+        expect(await run("start a review")).toBe("done");
+        const conn = logLines().find((l) => l.mcpConnected);
+        expect(conn.instructions).toContain("This run ends with your turn: get every task's result before you finish");
+        expect(conn.instructions).not.toContain("next message");
+        expect(notices(events)).toContain("info: 1 delegated task is still running. It stops with this run.");
+        await agent.dispose(1000);
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
+    });
+
     test("interrupting the turn stops the tasks it delegated", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Take forever", description: "Forever", model: "gemini:gemini-test", agent: "explore" } }]);
@@ -844,10 +866,9 @@ describe("Claude Code as the main agent", () => {
         expect(mcpResults()[0].text).toEndWith("\n\nRunning it.\n\nFinished.\n\n[Codex used: Bash(touch x)]");
     });
 
-    test("a read-only agent on Codex can't change anything, and the user isn't asked", async () => {
+    test("a read-only agent on Codex can't change anything, the user isn't asked, and it goes on to its report", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         process.env.FAKE_CODEX_SCENARIO = "cmd";
-        process.env.FAKE_DECLINE = "1";
         calls([{ tool: "delegate", args: { task: "Look around", description: "Look", model: "codex:gpt-test", agent: "explore" } }]);
         const { run, asked } = await makeAgent({ provider: "claude-code" });
         expect(await run("go")).toBe("done");
@@ -856,6 +877,9 @@ describe("Claude Code as the main agent", () => {
         expect(thread.developerInstructions).toContain("This task is read-only");
         expect(asked).toEqual([]);
         expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        // Declined, not cancelled: a refused command doesn't end the task before it reports.
+        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("decline");
+        expect(mcpResults()[0]).toMatchObject({ isError: false, text: expect.stringContaining("Finished.") });
         // No user MCP servers: no config.
         expect(thread.config).toBeUndefined();
     });
@@ -965,6 +989,42 @@ describe("Codex as the main agent", () => {
         // No harness server for the child.
         expect(setServers()).toEqual([]);
         expect(mcpResults()[0].text).toContain('(explore on claude-code:default) finished');
+    });
+
+    test("a read-only agent on Claude Code runs read-only commands without asking", async () => {
+        process.env.FAKE_CODEX_SCENARIO = "mcp";
+        process.env.FAKE_SCENARIO = "bash";
+        process.env.FAKE_COMMAND = "wc -l greet.py";
+        calls([{ tool: "delegate", args: { task: "Count lines", description: "Count", model: "claude-code:default", agent: "explore" } }]);
+        const { run, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+        expect(await run("go")).toBe("done");
+        expect(asked).toEqual([]);
+        const reply = received().find((m) => m.type === "control_response" && m.response?.response?.behavior)!.response.response;
+        expect(reply.behavior).toBe("allow");
+    });
+
+    test("a read-only agent on Codex runs read-only commands without asking, and refuses one that only looks read-only", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_CODEX_SCENARIO = "cmd";
+        process.env.FAKE_COMMAND = "wc -l greet.py";
+        calls([{ tool: "delegate", args: { task: "Count lines", description: "Count", model: "codex:gpt-test", agent: "explore" } }]);
+        const first = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+        expect(await first.run("go")).toBe("done");
+        expect(first.asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "wc -l greet.py" });
+        // Unlike a Codex agent that may change things in manual mode, it isn't told it can.
+        const childTurn = received().find((m) => m.method === "turn/start");
+        expect(childTurn.params.input[0].text).not.toContain("you can still change files");
+
+        // Codex's parsed form leaves the touch out; the whole command is what's checked.
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND_SCRIPT = "touch y; wc -l greet.py";
+        const second = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+        expect(await second.run("go")).toBe("done");
+        expect(second.asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        // Codex's model hears only "rejected": it's told why, and which commands do run.
+        expect(received().find((m) => m.method === "turn/steer")?.params.input[0].text).toContain("This is a read-only agent: only read-only commands run (plain commands such as cat");
     });
 
     test("a mode change reaches the Claude Code agents it delegated to, and a read-only one stays read-only", async () => {

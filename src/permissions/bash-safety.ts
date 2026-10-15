@@ -562,6 +562,7 @@ const SENSITIVE: [RegExp, string][] = [
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
     [/\.harness\/(credentials|providers)\.json/, "the harness credential store"],
+    [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
     [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.harness(?=$|[/\s'";|&)])/, "the harness credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
@@ -605,14 +606,33 @@ function expandGlob(word: string, cwd: string): string[] {
  * With `cwd`, glob words are expanded so `cat .e*` is caught too.
  */
 export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?: string } = {}): string | undefined {
-    const direct = matchSensitive(cmd, opts.harnessHome);
+    const commands = analyzeCommand(cmd).commands;
+    // The words as the shell reads them too, so quoting (`cat .e''nv`) doesn't hide a name.
+    const unquoted = commands.map((c) => c.argv.join(" ")).join(" ; ");
+    const direct = matchSensitive(cmd, opts.harnessHome) ?? matchSensitive(unquoted, opts.harnessHome);
     if (direct || !opts.cwd) return direct;
-    for (const c of analyzeCommand(cmd).commands) {
-        for (const w of c.argv) {
+    // Each pattern in every folder its command might run in (`cd private && cat .e*`). A cd
+    // can fail (`cd x || cat .e*`) or run in a pipeline's subshell (`cd x | cat .e*`), so the
+    // folders before it count too.
+    let dirs: string[] | null = [opts.cwd];
+    for (const c of commands) {
+        const argv = effectiveArgv(c.argv);
+        if (argv[0] === "cd" || argv[0] === "pushd") {
+            const to = argv[1];
+            if (!settledCd(argv, c.text)) dirs = null;
+            else if (dirs) dirs = [...new Set([...dirs, ...dirs.map((d) => resolve(d, to!))])];
+            if (dirs && dirs.length > 32) dirs = null;
+            continue;
+        }
+        for (const w of argv) {
             if (!/[*?[]/.test(w)) continue;
-            for (const hit of expandGlob(w, opts.cwd)) {
-                const r = matchSensitive(" " + hit, opts.harnessHome);
-                if (r) return r;
+            const relative = !/^(\/|~|\$\{?HOME\}?(\/|$))/.test(w);
+            if (relative && !dirs) return "files a pattern matches in a folder the harness can't work out";
+            for (const d of relative ? dirs! : [opts.cwd]) {
+                for (const hit of expandGlob(w, d)) {
+                    const r = matchSensitive(" " + hit, opts.harnessHome);
+                    if (r) return r;
+                }
             }
         }
     }
@@ -720,8 +740,18 @@ export function headBranch(dir: string): string | undefined {
 }
 
 /**
+ * A cd/pushd whose destination is its one operand, spelled out. Not `cd $DIR`,
+ * `cd -`, `cd ~x`, `cd pri*`, `pushd +1` (the directory stack), or zsh's
+ * `cd old new` (which swaps text in the current path).
+ */
+function settledCd(argv: string[], text: string): boolean {
+    const to = argv[1];
+    return to !== undefined && argv.length === 2 && !/^[-~+]|\$|[*?[]/.test(to) && !/\$/.test(text);
+}
+
+/**
  * The commands of a command line with the directory each runs in, following
- * `cd`. null: a `cd` the text doesn't settle (`cd $DIR`, `cd -`, `cd ~x`).
+ * `cd`. null: a `cd` the text doesn't settle (see settledCd).
  */
 export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: string[]; dir: string | null | undefined; text: string }[] {
     const out: { argv: string[]; dir: string | null | undefined; text: string }[] = [];
@@ -729,8 +759,7 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: 
     for (const c of analyzeCommand(cmd).commands) {
         const argv = effectiveArgv(c.argv);
         if (argv[0] === "cd" || argv[0] === "pushd") {
-            const to = argv[1];
-            if (dir !== undefined) dir = dir === null || to === undefined || /^[-~]|\$/.test(to) || /\$/.test(c.text) ? null : resolve(dir, to);
+            if (dir !== undefined) dir = dir === null || !settledCd(argv, c.text) ? null : resolve(dir, argv[1]!);
             continue;
         }
         out.push({ argv, dir, text: c.text });

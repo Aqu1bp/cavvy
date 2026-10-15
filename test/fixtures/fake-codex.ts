@@ -4,8 +4,8 @@
 // network.
 //
 // Like the real CLI (checked against Codex 0.162.1), it asks for approval
-// only where its approval policy says so: under "untrusted" for commands
-// other than read-only ones and for edits outside a writable sandbox; under
+// only where its approval policy says so: under "untrusted" for every
+// command (`cat` included) and for edits outside a writable sandbox; under
 // "on-request" with a workspace-write sandbox it runs commands itself; under
 // "never" it asks for nothing. With FAKE_CODEX_TRUSTS=1 it trusts the project
 // and loads .codex/config.toml (its model), unless -c projects=… marks the
@@ -14,6 +14,9 @@
 // FAKE_LOG            each line: what it was started with, and what it received
 // FAKE_ACCOUNT        chatgpt (default) | apikey | none
 // FAKE_DECLINE=1      offer "decline" among the command's availableDecisions
+// FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
+//                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
+//                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
 // FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp
 // FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
 // FAKE_REJECT_CONFIG=1  thread/start and thread/resume fail when given config, like a Codex that can't parse it
@@ -126,7 +129,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const r = await serverRequest("item/permissions/requestApproval", { threadId, turnId, itemId: `p-${turnId}`, cwd, reason: "needs to write there", permissions });
         log({ granted: r });
     } else {
-        const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: "/bin/bash -lc 'touch x'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch x" }], aggregatedOutput: null, exitCode: null };
+        const shown = process.env.FAKE_COMMAND ?? "touch x";
+        const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: process.env.FAKE_COMMAND_RAW ?? `/bin/zsh -lc '${process.env.FAKE_COMMAND_SCRIPT ?? shown}'`, cwd: process.env.FAKE_COMMAND_CWD ?? cwd, status: "inProgress", commandActions: [{ type: "unknown", command: shown }], aggregatedOutput: null, exitCode: null };
         notify("item/started", { threadId, turnId, item: cmd });
         // Its own policy: in a workspace-write sandbox with on-request, or never, it just runs it.
         const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
@@ -138,11 +142,12 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
                 command: cmd.command,
                 cwd: cmd.cwd,
                 commandActions: cmd.commandActions,
-                availableDecisions: process.env.FAKE_DECLINE === "1" ? ["accept", "acceptForSession", "decline", "cancel"] : ["accept", "cancel"],
+                // What Codex 0.162 offers in untrusted mode. Like Codex, the answer isn't checked against it.
+                availableDecisions: process.env.FAKE_DECLINE === "1" ? ["accept", "acceptForSession", "decline", "cancel"] : ["accept", { acceptWithExecpolicyAmendment: { execpolicy_amendment: shown.split(" ") } }, "cancel"],
             });
             decision = r?.decision;
         }
-        log({ ran: decision === "accept", command: "touch x" });
+        log({ ran: decision === "accept", command: shown });
         if (decision === "accept") notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
         else notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
     }
@@ -208,6 +213,8 @@ async function handle(m: any) {
             }
             return reply({});
         case "turn/steer":
+            // FAKE_STEER_FAIL: the turn has already ended.
+            if (process.env.FAKE_STEER_FAIL) return fail("no active turn to steer");
             return reply({ turnId: p.expectedTurnId });
         case "thread/compact/start":
             reply({});

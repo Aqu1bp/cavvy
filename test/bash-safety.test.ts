@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -419,6 +419,14 @@ describe("sensitiveTarget", () => {
         ["security find-generic-password -s x", /keychain/],
         ["cat ~/.harness/credentials.json", /credential store/],
         ["cat ~/.harness/providers.json", /credential store/],
+        // Quoting doesn't hide the name: the shell reads these as the names above.
+        ["cat .e''nv", /\.env/],
+        ['cat ".e"nv.local', /\.env/],
+        ["cat ~/.s''sh/config", /credentials directory/],
+        ["cat ~/.harness/'credentials'.json", /credential store/],
+        ["cat ~/.codex/auth.json", /sign-in file/],
+        ["cat ~/.claude/.credentials.json", /sign-in file/],
+        ["cat ~/.config/gh/hosts.yml", /sign-in file/],
     ] as const)("%p is sensitive", (cmd, what) => {
         expect(sensitiveTarget(cmd)).toMatch(what);
     });
@@ -443,6 +451,33 @@ describe("sensitiveTarget", () => {
     // BUG: shell globs reach the same files without spelling the name the
     // regexes look for. All three are also read-only, so the checker allows
     // them with no prompt in default mode.
+    test("a pattern is matched in the folder its command runs in", () => {
+        const dir = mkdtempSync(join(tmpdir(), "sensitive-"));
+        mkdirSync(join(dir, "private"));
+        writeFileSync(join(dir, "private", ".env"), "X=1\n");
+        writeFileSync(join(dir, "README.md"), "");
+        try {
+            expect(sensitiveTarget("cat .e*", { cwd: dir })).toBeUndefined();
+            expect(sensitiveTarget("cd private && cat .e*", { cwd: dir })).toBe("a .env file");
+            // A cd the text doesn't settle: the pattern could match anything there.
+            expect(sensitiveTarget('cd "$D" && cat .e*', { cwd: dir })).toMatch(/can't work out/);
+            expect(sensitiveTarget("cd pri* && cat .e*", { cwd: dir })).toMatch(/can't work out/);
+            expect(sensitiveTarget("cd private && ls *.md", { cwd: dir })).toBeUndefined();
+            // The cd may not take: it fails, or runs in a pipeline's subshell.
+            expect(sensitiveTarget("cd missing; cd private; cat .e*", { cwd: dir })).toBe("a .env file");
+            writeFileSync(join(dir, ".env"), "X=1\n");
+            mkdirSync(join(dir, "empty"));
+            expect(sensitiveTarget("cd empty | cat .e*", { cwd: dir })).toBe("a .env file");
+            expect(sensitiveTarget("cd missing || cat .e*", { cwd: dir })).toBe("a .env file");
+            expect(sensitiveTarget("cd empty && ls *.md", { cwd: dir })).toBeUndefined();
+            // zsh's `cd old new` swaps text in the current path (empty -> private); pushd +1 takes the stack.
+            expect(sensitiveTarget("cd empty private && cat .e*", { cwd: join(dir, "empty") })).toMatch(/can't work out/);
+            expect(sensitiveTarget("pushd +1 && cat .e*", { cwd: join(dir, "empty") })).toMatch(/can't work out/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     const globbed = ["cat .env*", "cat ~/.harness/*.json", "grep -r . ~/.harness"];
     for (const cmd of globbed) {
         test(`${JSON.stringify(cmd)} is sensitive`, () => {

@@ -30,6 +30,14 @@ export interface BackendPermission {
      * never approved without asking.
      */
     widens?: { read: string[]; write: string[] };
+    /**
+     * The backend asks about every command (Codex in untrusted mode), so the
+     * ask says nothing of its own: a command the harness would run without
+     * asking for its own models is approved. False: it does say something.
+     * Left out, a read-only agent's asks count as saying nothing (they come
+     * from the harness's own rule).
+     */
+    asksAlways?: boolean;
 }
 
 export type PermissionAnswer =

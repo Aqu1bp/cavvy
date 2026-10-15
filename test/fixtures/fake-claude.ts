@@ -13,6 +13,7 @@
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
 // FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp
+// FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
@@ -213,7 +214,7 @@ async function turn(content: any[]) {
     else if (scenario === "write-config") go = await use("toolu_c", "Write", { file_path: join(cwd, ".claude", "settings.json"), content: "{}" });
     else if (scenario === "read-secret") go = await use("toolu_r", "Read", { file_path: join(cwd, "secret.txt") });
     else if (scenario === "rm") go = await use("toolu_rm", "Bash", { command: "rm victim.txt", description: "Remove it" });
-    else if (scenario === "bash") go = await use("toolu_b", "Bash", { command: "npm test", description: "Run tests" });
+    else if (scenario === "bash") go = await use("toolu_b", "Bash", { command: process.env.FAKE_COMMAND ?? "npm test", description: "Run tests" });
     else if (scenario === "leak") go = await use("toolu_l", "Bash", { command: "cat secret.txt" });
     else if (scenario === "mcp") {
         const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
