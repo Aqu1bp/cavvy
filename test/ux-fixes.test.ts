@@ -272,11 +272,16 @@ describe("stopping background shells", () => {
             return false;
         }
     };
+    /** Killed children of the shell go to init, and the group counts as alive until init reaps them; some inits take a while. */
+    const reaped = async (pid: number, ms = 5000) => {
+        for (const end = Date.now() + ms; alive(pid) && Date.now() < end; ) await Bun.sleep(50);
+        return !alive(pid);
+    };
     test("a process that ignores SIGTERM is force-killed", async () => {
         const child = start("trap '' TERM; while :; do sleep 0.1; done");
         await Bun.sleep(200);
         expect(await stopGroup(child.pid, 300)).toBe("killed");
-        expect(alive(child.pid!)).toBe(false);
+        expect(await reaped(child.pid!)).toBe(true);
     });
     test("one that exits on SIGTERM is just stopped", async () => {
         const child = start("sleep 30");

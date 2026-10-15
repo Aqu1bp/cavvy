@@ -10,6 +10,7 @@ import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
 const { runHooks, fireHooks } = await import("../src/agent/hooks");
+const { unregisterSecret } = await import("../src/util/redact");
 const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
@@ -79,6 +80,8 @@ describe("which events can block", () => {
         expect(warnings).toEqual(['SessionEnd hook "exit 3" exited with 3']);
     });
     test("what the hooks receive is redacted", async () => {
+        // A key the harness doesn't know, caught by its pattern (other test files may have registered this fake one).
+        unregisterSecret(FAKE.anthropic);
         const out = join(tempDir(), "in.jsonl");
         await fireHooks({ hooks: { PreCompact: [record(out)] } }, "PreCompact", { custom_instructions: `keep ${FAKE.anthropic}` }, tempDir(), () => {});
         expect(readFileSync(out, "utf-8")).not.toContain(FAKE.anthropic);
