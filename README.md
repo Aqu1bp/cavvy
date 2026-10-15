@@ -17,7 +17,7 @@ Run `harness` and type `/login`, then paste a key. The provider is recognized fr
 - in the OS keychain (macOS Keychain, libsecret, Windows Credential Manager) via `Bun.secrets`, or
 - in `~/.harness/credentials.json` with mode 600 when no keychain is available.
 
-Supported: Anthropic, OpenAI, Google Gemini, Google Vertex AI (through gcloud, below), OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
+Supported: Anthropic, OpenAI, Google Gemini, Google Vertex AI (through gcloud, below), your Claude or ChatGPT subscription (through your own Claude Code or Codex, [below](#claude-and-chatgpt-subscriptions)), OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
 
 From a shell: `harness auth add [provider]` (hidden prompt, or pipe the key on stdin), `harness auth list`, `harness auth remove <provider>`. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) also work and take precedence.
 
@@ -53,6 +53,47 @@ How keys are kept safe:
 - The agent's file tools can't open the credential store at all. Reading `.env` files, `~/.ssh`, `~/.aws` and similar asks first, through the Read tool or a shell command. Shell commands are matched on their text, so this is a guard against fishing, not a sandbox.
 - A `.env` in the project you're working on is never loaded. Only the harness's own `.env` and `~/.harness/.env` are read, and only for known variables.
 - `bin/harness` starts Bun with `--no-env-file` and its own `--config`, because Bun otherwise reads `.env` and `bunfig.toml` from the current directory, and a repository's `bunfig.toml` can preload scripts.
+
+## Claude and ChatGPT subscriptions
+
+A Claude plan (Pro, Max, Team, Enterprise) or a ChatGPT plan can be used through the official CLI you already have installed. The harness runs Claude Code or Codex itself, the way editor integrations and apps like T3 Code do, rather than calling the API with your plan's credentials.
+
+1. Install [Claude Code](https://code.claude.com/docs/en/setup) or the [Codex CLI](https://developers.openai.com/codex/cli), and sign in there: `claude auth login`, or `codex login`. That's Anthropic's or OpenAI's own sign-in.
+2. In the harness, `/login claude-code` or `/login codex` (`harness auth add claude-code` from a shell). This asks the CLI whether it's signed in (`claude auth status`; Codex's `account/read`) and turns it on. On first run with nothing set up, the harness offers whichever of the two is installed.
+3. Pick a model in `/model`: `claude-code:default`, `claude-code:sonnet`, `codex:gpt-6.1-sol`, …. The list comes from the CLI.
+
+How it works:
+
+- Each prompt runs as one turn in the CLI: `claude -p` with stream-json input and output (the protocol the Agent SDK uses), or `codex app-server` (JSON-RPC). The CLI uses its own system prompt, tools, sandbox, context management and memory (CLAUDE.md, AGENTS.md, its own settings, skills and MCP servers). The harness streams what it does into the transcript.
+- When the CLI wants permission, the harness answers with its own rules and dialog. Deny rules (and the harness's credential store) refuse without asking. An explicit allow rule (`Bash(npm test:*)`, `Write`, `--allowedTools`) approves. Anything else asks you, with the same diff previews as the harness's own tools, and "don't ask again" saves a harness rule. In `-p` mode, anything that would ask is refused. Claude Code's `AskUserQuestion` and `ExitPlanMode`, and Codex's questions to the user, use the harness's question and plan dialogs.
+- The harness's permission mode maps to the CLI's:
+
+  | Harness | Claude Code | Codex (approval policy, sandbox) |
+  |---|---|---|
+  | Manual | `default` | `untrusted`, read-only |
+  | Accept edits | `acceptEdits` | `on-request`, workspace-write |
+  | Plan | `plan` | `untrusted`, read-only, told to only plan |
+  | Auto | `auto` (Claude Code's own auto mode) | `on-request`, workspace-write |
+  | Bypass permissions | `bypassPermissions` | `never`, no sandbox |
+
+- The next prompt continues the same Claude Code session (`--resume`) or Codex thread (`thread/resume`), also after `-c`/`-r`. Each turn is also saved in the harness session as text (what was said, and which tools ran). If you switch to another model and back, the CLI gets what the other model said in between; if its session is gone, a new one starts with the conversation so far.
+- Usage is recorded in tokens. On a plan the cost shows as $0. If the CLI is signed in with an API key instead, Claude Code's reported cost counts, and `/login` warns you.
+- `esc` interrupts the CLI's turn. `/compact` runs the CLI's own compaction, and auto-compaction is left to the CLI.
+
+What's different from the harness's own models:
+
+- The harness's tools, MCP servers, PreToolUse/PostToolUse hooks and auto-mode sandbox don't apply. The CLI's own do, and the harness only sees the permission prompts the CLI raises. UserPromptSubmit and Stop hooks still run.
+- `/rewind` rewinds the conversation, but restores only files the harness's own tools changed. Use git for the CLI's edits.
+- In a folder you haven't trusted, Claude Code runs without the project's Claude Code settings and MCP servers (`--setting-sources user --strict-mcp-config`). While Claude Code is turned on, a project's `.claude/settings.json` and `.claude/settings.local.json` also trigger the trust prompt.
+- One-off helper requests can't go to a CLI (auto-mode reviews and WebFetch summaries are for the harness's own tools anyway). Set `smallModel` to another provider's model if you use those.
+
+What the harness never does: read, copy or store the CLI's credentials (its keychain entry, `~/.claude/.credentials.json`, `~/.codex/auth.json`), sign in on its behalf, send its tokens anywhere, or modify the binary. The CLIs get the same environment as any child process, minus the harness's own provider keys. That way Claude Code uses your plan rather than an `ANTHROPIC_API_KEY` you gave the harness. Only `providers.json` records that a CLI is on, and optionally `path` (a CLI that isn't on `PATH`) and `args` (extra arguments):
+
+```jsonc
+{ "agents": { "claude-code": {}, "codex": { "path": "~/bin/codex", "args": ["-c", "model_reasoning_summary=detailed"] } } }
+```
+
+Why it's built this way: Anthropic's [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance) says subscription sign-in is for Claude Code and Anthropic's own apps. Third-party developers may not offer Claude.ai login, route requests through Free, Pro or Max plan credentials, or "collect, store, or intermediate Claude.ai credentials or session tokens". The same page says this doesn't prevent "an end user from signing in to the unmodified Claude Code binary with their own Claude subscription". Tools that took Claude Code's sign-in and called the API with it were cut off in early 2026. Running the user's own unmodified Claude Code, signed in by the user, is the pattern the terms leave open. That pattern is meant for your own use. If you build a product or service on it for other people, Anthropic directs you to API keys (including for the Agent SDK). Their plan limits also assume ordinary, individual use. For Codex, `codex app-server` is the interface OpenAI ships for driving Codex from other programs (its editor extensions use it), and the harness runs your own Codex through it, signed in with `codex login`.
 
 ## Models
 
@@ -251,6 +292,7 @@ Layout:
 |---|---|
 | `src/agent` | Loop, sessions, compaction, hooks, memory, sub-agents |
 | `src/providers` | Wire formats, model catalog, pricing |
+| `src/backends` | Claude Code and Codex as agent backends (your installed CLIs) |
 | `src/permissions` | Rules, shell-command analysis, the auto-mode classifier |
 | `src/tools` | Built-in tools |
 | `src/mcp` | MCP client |

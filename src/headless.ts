@@ -22,6 +22,7 @@ import { addUsage, costOf, emptyUsage } from "./providers/pricing";
 import { expandMentions } from "./ui/mentions";
 import { redact, redactedJson } from "./util/redact";
 import { sanitizeLine } from "./ui/ansi";
+import { isAgentBackend } from "./backends/types";
 
 export type OutputFormat = "text" | "json" | "stream-json";
 
@@ -221,6 +222,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         nativeWebSearch,
         maxTurns: o.maxTurns,
         appendSystemPrompt: o.appendSystemPrompt,
+        trusted: o.trusted,
         host: {
             emit,
             ui: {
@@ -256,7 +258,9 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
             cwd: o.cwd,
             model: ref,
             permission_mode: mode,
-            tools: tools().map((t) => t.name),
+            // An agent backend (Claude Code, Codex) uses its own tools.
+            tools: isAgentBackend(client) ? [] : tools().map((t) => t.name),
+            ...(isAgentBackend(client) ? { agent_backend: def.name } : {}),
             mcp_servers: [...mcp.servers.values()].map((s) => ({ name: s.name, status: s.status })),
         });
     }

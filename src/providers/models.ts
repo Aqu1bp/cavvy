@@ -10,11 +10,13 @@ import { existsSync } from "fs";
 import { AnthropicProvider } from "./anthropic";
 import { OpenAICompatProvider } from "./openai-compat";
 import { OpenAIResponsesProvider } from "./openai-responses";
-import { allProviders, getProvider, readVertexConfig, type ProviderDef } from "./registry";
+import { allProviders, getProvider, readAgentConfig, readVertexConfig, type ProviderDef } from "./registry";
 import { VertexProvider, forgetTokens } from "./vertex";
 import { anthropicTraits } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
+import { createBackend } from "../backends/index";
+import { backendModel } from "../backends/types";
 import { readJson, writeJson } from "../config/settings";
 import { ensureDir, paths } from "../config/paths";
 import { dirname } from "path";
@@ -25,6 +27,8 @@ export function createClient(def: ProviderDef, key: string | undefined): Provide
             return new AnthropicProvider(def, key ?? "");
         case "responses":
             return new OpenAIResponsesProvider(def, key);
+        case "agent":
+            return createBackend(def);
         default:
             return new OpenAICompatProvider(def, key);
     }
@@ -41,6 +45,11 @@ async function credentialFingerprint(def: ProviderDef): Promise<{ fp: string; ke
         const cfg = readVertexConfig();
         return cfg ? { fp: `${cfg.account}|${cfg.project}|${cfg.location}` } : undefined;
     }
+    if (def.auth === "cli") {
+        // Turned on with /login; the CLI keeps its own sign-in.
+        const cfg = readAgentConfig(def.id);
+        return cfg ? { fp: `cli|${cfg.path ?? ""}|${(cfg.args ?? []).join("\0")}` } : undefined;
+    }
     const key = def.requiresKey ? await getKey(def.id) : undefined;
     if (def.requiresKey && !key) return undefined;
     return { fp: fingerprint(key?.value) + "|" + def.baseUrl, key: key?.value };
@@ -51,7 +60,7 @@ export async function clientFor(providerId: string): Promise<ProviderClient> {
     const def = getProvider(providerId);
     if (!def) throw new ProviderError(`Unknown provider "${providerId}". Run /providers to see the list.`);
     const cred = await credentialFingerprint(def);
-    if (!cred) throw new ProviderError(def.auth === "gcloud" ? `${def.name} isn't set up. Run /login vertex.` : `No API key for ${def.name}. Run /login to add one.`, 401);
+    if (!cred) throw new ProviderError(def.auth === "gcloud" ? `${def.name} isn't set up. Run /login vertex.` : def.auth === "cli" ? `${def.name} isn't turned on. Run /login ${def.id}.` : `No API key for ${def.name}. Run /login to add one.`, 401);
     const hit = clients.get(providerId);
     if (hit && hit.fp === cred.fp) return hit.client;
     const cfg = def.auth === "gcloud" ? readVertexConfig() : undefined;
@@ -243,6 +252,7 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
     if (!def) return undefined;
     const cached = readCache().providers[parsed.provider]?.models.find((m) => m.id === parsed.id);
     if (cached) return cached;
+    if (def.kind === "agent") return backendModel(def.id, parsed.id);
     if (def.kind === "anthropic") {
         const t = anthropicTraits(parsed.id);
         return {
@@ -289,6 +299,8 @@ const PREFERRED: Record<string, RegExp[]> = {
     xai: [/^grok-\d/],
     mistral: [/devstral/, /large/],
     groq: [/kimi|qwen|llama-3\.3/],
+    // The CLI's own default (its listing comes in its order, default first).
+    "claude-code": [/^default$/, /^opus$/],
 };
 
 const SMALL: Record<string, RegExp[]> = {

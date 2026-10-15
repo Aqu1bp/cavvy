@@ -19,10 +19,13 @@ import { sandboxEnabled, sandboxKind } from "../permissions/sandbox";
 import {
     allProviders,
     getProvider,
+    readAgentConfig,
     readProvidersFileForUpdate,
     readVertexConfig,
+    removeAgentConfig,
     removeVertexConfig,
     resolveBaseUrl,
+    saveAgentConfig,
     saveVertexConfig,
     SEARCH_PROVIDERS,
     validVertexLocation,
@@ -52,6 +55,8 @@ import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
 import { rewindCommand } from "./rewind";
+import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
+import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 
 export interface Command {
     name: string;
@@ -131,7 +136,17 @@ function providerOrder(id: string): number {
 }
 
 function modelDetail(m: ModelInfo): string {
+    const def = getProvider(m.provider);
+    if (def?.kind === "agent") return `runs in your ${def.name}`;
     return [m.contextWindow ? `${formatTokens(m.contextWindow)} ctx` : "", formatPrice(m)].filter(Boolean).join(" · ");
+}
+
+/** What adding a provider involves, for the "Add a provider" rows. */
+function addDescription(p: ProviderDef): string {
+    if (p.auth === "gcloud") return "set up with gcloud (Google Cloud billing and credits)";
+    if (p.id === "claude-code") return "your Claude subscription, through your installed Claude Code";
+    if (p.id === "codex") return "your ChatGPT plan, through your installed Codex CLI";
+    return "add an API key";
 }
 
 async function modelItems(app: App): Promise<SelectItem<string>[]> {
@@ -160,7 +175,7 @@ async function modelItems(app: App): Promise<SelectItem<string>[]> {
     // Providers without a key: picking one starts /login for it.
     const have = new Set(listings.map((l) => l.provider.id));
     const missing = allProviders().filter((p) => p.requiresKey && !have.has(p.id));
-    for (const p of missing) items.push({ label: theme.muted(`+ ${p.name}`), value: `login:${p.id}`, description: p.auth === "gcloud" ? "set up with gcloud (Google Cloud billing and credits)" : "add an API key", group: "Add a provider", keywords: `${p.id} ${p.name} login` });
+    for (const p of missing) items.push({ label: theme.muted(`+ ${p.name}`), value: `login:${p.id}`, description: addDescription(p), group: "Add a provider", keywords: `${p.id} ${p.name} login${p.auth === "cli" ? " subscription plan" : ""}` });
     return items;
 }
 
@@ -207,7 +222,7 @@ async function modelCommand(app: App, args: string) {
     }
     const items = await modelItems(app);
     if (!items.some((i) => !i.disabled && !i.value.startsWith("login:"))) {
-        app.notice("No models available yet. Add an API key with /login (Anthropic, OpenAI, Gemini, OpenRouter, Groq, DeepSeek, xAI, Mistral, …) or start Ollama / LM Studio.", "warn");
+        app.notice("No models available yet. Add an API key with /login (Anthropic, OpenAI, Gemini, OpenRouter, Groq, DeepSeek, xAI, Mistral, …), use your Claude or ChatGPT subscription with /login claude-code or /login codex, or start Ollama / LM Studio.", "warn");
         if (await confirm(app, "Add an API key now?")) await runCommand(app, "/login");
         return;
     }
@@ -278,6 +293,7 @@ async function loginCommand(app: App, args: string) {
     let providerId: string | undefined = args.trim().toLowerCase() || undefined;
     if (providerId === "custom") return addCustomProvider(app);
     if (providerId && getProvider(providerId)?.auth === "gcloud") return vertexLogin(app);
+    if (providerId && getProvider(providerId)?.auth === "cli") return agentLogin(app, providerId);
     const known = (id: string) => getProvider(id) ?? SEARCH_PROVIDERS.find((s) => s.id === id);
     if (providerId && !known(providerId)) {
         app.notice(`Unknown provider "${providerId}". Known: ${[...allProviders().map((p) => p.id), ...SEARCH_PROVIDERS.map((s) => s.id)].join(", ")}, or "custom".`, "error");
@@ -296,6 +312,7 @@ async function loginCommand(app: App, args: string) {
               theme.muted("  Anthropic · OpenAI · Google Gemini · OpenRouter · Groq · DeepSeek · xAI · Mistral"),
               theme.muted("  Together · Fireworks · Cerebras · Brave / Tavily (web search)"),
               theme.muted(`Gemini billed to Google Cloud (credits apply): ${bold("/login vertex")} · other OpenAI-compatible endpoints: ${bold("/login custom")}`),
+              theme.muted(`A Claude or ChatGPT subscription, through your own installed CLI: ${bold("/login claude-code")} · ${bold("/login codex")}`),
           ];
     header.push("", theme.subtle(`Stored in ${storage}. Never written to transcripts, logs or settings, and only sent to its own provider.`));
     const key = await app.showDialog(
@@ -362,6 +379,58 @@ async function loginCommand(app: App, args: string) {
     if (!app.model) {
         const pick = defaultModelFrom(l ? [l] : []);
         if (pick) await app.setModel(modelRef(pick), { persist: true });
+    }
+}
+
+/**
+ * /login claude-code, /login codex: use the user's own installed CLI, signed
+ * in to their own plan. Signing in happens in that CLI, through the vendor's
+ * own flow; this only checks it's installed and signed in, and saves nothing
+ * secret (just that it's turned on).
+ */
+async function agentLogin(app: App, providerId: string) {
+    const def = getProvider(providerId)!;
+    const cli = providerId === "codex" ? CODEX_CLI : CLAUDE_CLI;
+    let st: AgentCliStatus | undefined;
+    try {
+        st = await withProgress(app, [theme.permission(bold(`Checking ${def.name}…`)), theme.muted(providerId === "codex" ? "codex app-server · account/read" : "claude auth status")], (signal) => checkAgentCli(providerId, signal));
+    } catch (e) {
+        if ((e as Error).message !== "aborted") app.notice(`Couldn't check ${def.name}: ${redact((e as Error).message)}`, "error");
+        return;
+    }
+    if (!st) return;
+    if (!st.installed) {
+        app.notice(`${def.name} isn't installed (no \`${cli.command}\` on your PATH). ${st.installHint}, sign in with \`${st.signIn}\`, then /login ${providerId} again.`, "warn");
+        return;
+    }
+    if (!st.signedIn) {
+        app.notice(`${def.name} isn't signed in. In a terminal, run \`${st.signIn}\` (${vendorOf(providerId)}'s own sign-in), then /login ${providerId} again.`, "warn");
+        return;
+    }
+    try {
+        saveAgentConfig(providerId);
+    } catch (e) {
+        app.notice(redact((e as Error).message), "error");
+        return;
+    }
+    forgetClient(providerId);
+    await app.keyChanged(providerId);
+    app.print([
+        "",
+        `${theme.success("✔")} ${bold(def.name)} turned on: ${st.description} ${theme.muted(`(${st.path})`)}`,
+        theme.muted(`  Each turn runs in your ${def.name}, with its own tools; ${APP_TITLE} shows it and asks you when it needs permission.`),
+        theme.muted(`  Its sign-in stays in ${def.name}: ${APP_TITLE} never reads or stores it.`),
+    ]);
+    if (st.apiKey) app.notice(`${def.name} is signed in with an API key, so its usage is billed to that key, not a subscription. \`${st.signIn}\` switches it to your account.`, "warn");
+    const listings = await withProgress(app, [theme.permission(bold(`Loading ${def.name} models…`))], () => app.refreshListings());
+    const l = listings?.find((x) => x.provider.id === providerId);
+    if (l?.error) app.notice(`Couldn't list ${def.name} models: ${l.error}`, "warn");
+    else if (l) app.notice(`${l.models.length} ${def.name} model${l.models.length === 1 ? " is" : "s are"} now in /model.`);
+    const pick = defaultModelFrom(l ? [l] : []);
+    if (!pick) return;
+    if (!app.model) await app.setModel(modelRef(pick), { persist: true });
+    else if (app.model.provider !== providerId && (await confirm(app, `Switch to ${pick.name ?? pick.id} in ${def.name}?`, [theme.muted(`Now: ${app.model.name ?? app.model.id} (${app.model.provider})`)], "Switch", "Keep the current model"))) {
+        await app.setModel(modelRef(pick), { persist: true });
     }
 }
 
@@ -596,6 +665,10 @@ async function logoutCommand(app: App, args: string) {
             if (cfg) rows.push({ id: p.id, name: p.name, source: "gcloud", description: `project ${cfg.project} as ${cfg.account} (gcloud stays signed in)` });
             continue;
         }
+        if (p.auth === "cli") {
+            if (readAgentConfig(p.id)) rows.push({ id: p.id, name: p.name, source: "cli", description: `turn it off here (${p.name} stays signed in)` });
+            continue;
+        }
         const k = await getKey(p.id);
         if (k) rows.push({ id: p.id, name: p.name, source: k.source, envVar: k.envVar });
     }
@@ -623,19 +696,28 @@ async function logoutCommand(app: App, args: string) {
         app.notice(`The ${row.name} key comes from $${row.envVar}. Unset it in your shell (and any .env loaded by ${APP_TITLE}) to remove it.`, "warn");
         return;
     }
-    if (row.source === "gcloud") {
+    if (row.source === "gcloud" || row.source === "cli") {
         try {
-            removeVertexConfig();
+            if (row.source === "gcloud") removeVertexConfig();
+            else removeAgentConfig(id);
         } catch (e) {
             app.notice(redact((e as Error).message), "error");
             return;
         }
     } else await removeKey(id);
     forgetClient(id);
-    app.print(["", row.source === "gcloud" ? `${theme.success("✔")} Removed the ${bold(row.name)} setup ${theme.muted("(gcloud itself stays signed in; gcloud auth revoke signs it out)")}` : `${theme.success("✔")} Removed the ${bold(row.name)} key`]);
+    const signOut = id === "codex" ? "codex logout" : "claude auth logout";
+    app.print([
+        "",
+        row.source === "gcloud"
+            ? `${theme.success("✔")} Removed the ${bold(row.name)} setup ${theme.muted("(gcloud itself stays signed in; gcloud auth revoke signs it out)")}`
+            : row.source === "cli"
+              ? `${theme.success("✔")} Turned off ${bold(row.name)} ${theme.muted(`(it stays signed in; ${signOut} signs it out)`)}`
+              : `${theme.success("✔")} Removed the ${bold(row.name)} key`,
+    ]);
     const current = app.model?.provider === id ? app.model.id : undefined;
     await app.keyChanged(id);
-    if (current && !app.model) app.notice(`The current model (${current}) used ${row.source === "gcloud" ? "this setup" : "this key"}; pick another with /model.`, "warn");
+    if (current && !app.model) app.notice(`The current model (${current}) used ${row.source === "gcloud" || row.source === "cli" ? "this setup" : "this key"}; pick another with /model.`, "warn");
     void app.refreshListings();
 }
 
@@ -650,6 +732,13 @@ async function providersCommand(app: App) {
             lines.push(`  ${padEnd(bold(p.name), 22)}${padEnd(theme.muted(p.id), 14)}${padEnd(status, 34)}${theme.subtle(cfg ? `${cfg.project} (${cfg.location}) as ${cfg.account}` : resolveBaseUrl(p))}`);
             continue;
         }
+        if (p.auth === "cli") {
+            const on = readAgentConfig(p.id);
+            const bin = findCli(p.id, p.id === "codex" ? CODEX_CLI : CLAUDE_CLI);
+            const status = on ? theme.success(`✔ on${count}`) : theme.subtle(`off (/login ${p.id})`);
+            lines.push(`  ${padEnd(bold(p.name), 22)}${padEnd(theme.muted(p.id), 14)}${padEnd(status, 34)}${theme.subtle(bin ? `your CLI: ${bin}` : "not installed")}`);
+            continue;
+        }
         const k = p.requiresKey ? await getKey(p.id) : undefined;
         const status = !p.requiresKey ? (l?.status === "offline" || !l ? theme.muted("local · not running") : theme.success(`local · ${l.models.length} models`)) : k ? theme.success(`✔ ${k.source === "env" ? `$${k.envVar}` : k.source}${count}`) : theme.subtle("no key");
         lines.push(`  ${padEnd(bold(p.name), 22)}${padEnd(theme.muted(p.id), 14)}${padEnd(status, 34)}${theme.subtle(resolveBaseUrl(p))}`);
@@ -661,6 +750,7 @@ async function providersCommand(app: App) {
     }
     lines.push(`  ${padEnd(bold("DuckDuckGo"), 22)}${padEnd(theme.muted("duckduckgo"), 14)}${theme.muted("no key needed (fallback)")}`);
     lines.push("", theme.muted(`Add a key: /login · add any OpenAI-compatible endpoint: /login custom · keys live in ${await storageDescription()}`));
+    lines.push(theme.muted(`Use a Claude or ChatGPT subscription through your own installed CLI: /login claude-code · /login codex`));
     app.print(lines);
 }
 
@@ -854,8 +944,10 @@ async function statusCommand(app: App) {
         kv("Directory", displayPath(app.cwd, process.env.HOME ?? "/") + (app.init.trusted ? "" : theme.warning(" (not trusted: project config ignored)"))),
         ...(app.settings.permissions?.additionalDirectories ?? []).map((d) => kv("", theme.muted(`+ ${d}`))),
         kv("Model", m ? `${m.name ?? m.id} ${theme.muted(`(${modelRef(m)})`)}` : theme.warning("none — run /login")),
-        kv("Provider", def ? `${def.name} · ${vertex ? vertexBaseUrl(vertex) : resolveBaseUrl(def)}` : "—"),
-        vertex
+        kv("Provider", def ? `${def.name} · ${def.auth === "cli" ? (findCli(def.id, def.id === "codex" ? CODEX_CLI : CLAUDE_CLI) ?? theme.warning("CLI not found")) : vertex ? vertexBaseUrl(vertex) : resolveBaseUrl(def)}` : "—"),
+        def?.auth === "cli"
+            ? kv("Credentials", `${def.name}'s own sign-in ${theme.muted(`(${APP_TITLE} never sees it)`)}`)
+            : vertex
             ? kv("Credentials", `gcloud token for ${vertex.account} ${theme.muted(`· billed to project ${vertex.project}`)}`)
             : kv("API key", key ? `${maskKey(key.value)} ${theme.muted(`from ${key.source === "env" ? `$${key.envVar}` : key.source}`)}` : def?.requiresKey === false ? theme.muted("not needed") : "—"),
         kv("Context window", m?.contextWindow ? formatTokens(m.contextWindow) : theme.muted("unknown")),

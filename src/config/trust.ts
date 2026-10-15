@@ -8,6 +8,7 @@ import { join, resolve } from "path";
 import { readJson, readJsonForUpdate, writeJson } from "./settings";
 import { harnessHome, paths } from "./paths";
 import { isInside } from "../util/files";
+import { readAgentConfig } from "../providers/registry";
 
 const file = () => join(harnessHome(), "trusted.json");
 const sessionTrusted = new Set<string>();
@@ -51,5 +52,9 @@ export function projectConfigSummary(cwd: string): string[] {
     if (existsSync(paths.projectMcp(cwd))) found.push(".mcp.json");
     if (existsSync(paths.projectCommands(cwd))) found.push(".harness/commands/");
     if (existsSync(paths.projectAgents(cwd))) found.push(".harness/agents/");
+    // Claude Code (when turned on) runs a project's own hooks and rules only in a trusted folder.
+    if (readAgentConfig("claude-code")) {
+        for (const f of ["settings.json", "settings.local.json"]) if (existsSync(join(cwd, ".claude", f))) found.push(`.claude/${f}`);
+    }
     return found;
 }
