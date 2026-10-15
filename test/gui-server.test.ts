@@ -3,7 +3,7 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -341,6 +341,53 @@ describe("sessions", () => {
         const b = lastTurn(c.view(id)).blocks[0];
         expect(b?.t === "shell" && b.output.trim()).toBe("hi there");
         expect(b?.t === "shell" && b.exitCode).toBe(0);
+        c.close();
+    });
+});
+
+describe("using a plan through an installed CLI", () => {
+    // A fake `claude` (test/fixtures) on PATH, as an installed Claude Code would be.
+    const bin = tempDir("harness-gui-cli-");
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
+    chmodSync(join(bin, "claude"), 0o755);
+    const PATH = process.env.PATH;
+    const claudeCode = async (c: Client) => (await c.call<any[]>("providers.list")).find((p) => p.id === "claude-code");
+
+    afterAll(() => {
+        process.env.PATH = PATH;
+        delete process.env.FAKE_LOGGED_IN;
+    });
+
+    test("Claude Code is offered as a plan, checked with the CLI, and can be turned off", async () => {
+        const c = await client();
+        process.env.PATH = `${bin}:${PATH}`;
+        let pr = await claudeCode(c);
+        expect(pr).toMatchObject({ configured: false, requiresKey: false, agentCli: { installed: true, signIn: "claude auth login", plan: "Claude subscription" } });
+
+        process.env.FAKE_LOGGED_IN = "0";
+        await expect(c.call("providers.connectCli", { provider: "claude-code" })).rejects.toThrow(/isn't signed in. Run `claude auth login`/);
+        expect((await claudeCode(c)).configured).toBe(false);
+
+        delete process.env.FAKE_LOGGED_IN;
+        const r = await c.call("providers.connectCli", { provider: "claude-code" });
+        expect(r.description).toBeTruthy();
+        expect(r.warning).toBeFalsy();
+        pr = await claudeCode(c);
+        expect(pr).toMatchObject({ configured: true, source: "your plan" });
+
+        await c.call("providers.removeKey", { provider: "claude-code" });
+        expect((await claudeCode(c)).configured).toBe(false);
+        c.close();
+    });
+
+    test("a CLI that isn't installed says how to get it", async () => {
+        const c = await client();
+        process.env.PATH = "/nonexistent";
+        expect((await claudeCode(c)).agentCli.installed).toBe(false);
+        await expect(c.call("providers.connectCli", { provider: "claude-code" })).rejects.toThrow(/isn't installed. Install Claude Code/);
+        await expect(c.call("providers.connectCli", { provider: "openai" })).rejects.toThrow(/isn't used through a CLI/);
+        await expect(c.call("providers.setKey", { key: " " })).rejects.toThrow(/Paste a key first/);
+        process.env.PATH = PATH;
         c.close();
     });
 });

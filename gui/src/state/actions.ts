@@ -1,9 +1,9 @@
 // What the user does, as calls to the server.
 
-import type { EffortLevel, InteractionResponse, PermissionModeId } from "@shared/protocol";
+import type { EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { copyText, pickFolder } from "../lib/platform";
-import { activate, app, createSession, handleFor, refreshProjects, refreshSessions, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import { prefs, setPrefs } from "./prefs";
 import { requestComposerFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setRewindOpen, setSettingsTab } from "./ui";
 
@@ -206,6 +206,23 @@ export function cycleSession(dir: 1 | -1) {
 
 export function activeHandle() {
     return handleFor(app.activeId);
+}
+
+/**
+ * Use the user's own plan through their installed Claude Code or Codex. The
+ * CLI is asked whether it's signed in; signing in is the CLI's own business.
+ */
+export async function connectCli(pr: ProviderInfo): Promise<boolean> {
+    try {
+        const r = await rpc.call("providers.connectCli", { provider: pr.id });
+        toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
+        if (r.warning) toast(r.warning, "warn");
+        await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
+        return true;
+    } catch (e) {
+        reportError(e);
+        return false;
+    }
 }
 
 export { refreshSessions };

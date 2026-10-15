@@ -334,6 +334,15 @@ export interface ProviderInfo {
     custom?: boolean;
     search?: boolean;
     requiresKey: boolean;
+    /** Used through the user's own installed CLI and plan (Claude Code, Codex) instead of a key. */
+    agentCli?: {
+        installed: boolean;
+        /** The CLI's own sign-in command, for when it isn't signed in. */
+        signIn: string;
+        install: string;
+        /** What the plan is called in buttons ("Claude subscription", "ChatGPT plan"). */
+        plan: string;
+    };
 }
 
 export interface ProviderModels {
@@ -438,8 +447,11 @@ export interface Methods {
     "session.dequeue": { params: { id: string; index: number }; result: null };
     "models.list": { params: { refresh?: boolean }; result: ProviderModels[] };
     "providers.list": { params: Record<string, never>; result: ProviderInfo[] };
-    "providers.setKey": { params: { provider?: string; key: string }; result: { provider: string; masked: string; warning?: string } };
+    /** `model`: the default model it set, when there was none yet. */
+    "providers.setKey": { params: { provider?: string; key: string }; result: { provider: string; masked: string; warning?: string; model?: string } };
     "providers.removeKey": { params: { provider: string }; result: null };
+    /** Turn on an agent CLI provider after checking (with the CLI) that it's installed and signed in. */
+    "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
     "projects.recent": { params: Record<string, never>; result: ProjectInfo[] };
     "projects.inspect": { params: { path: string }; result: ProjectInfo };
     "projects.trust": { params: { path: string; trust: boolean }; result: ProjectInfo };

@@ -1,7 +1,7 @@
 import { createResource, createSignal, For, Show } from "solid-js";
 import { Bug, ChevronDown, Compass, FlaskConical, FolderGit2, FolderOpen, GitPullRequest, KeyRound, ShieldAlert } from "lucide-solid";
 import { activate, app, refreshProjects, rpc } from "../state/app";
-import { chooseProject, openProject, send, trustAndContinue } from "../state/actions";
+import { chooseProject, connectCli, openProject, send, trustAndContinue } from "../state/actions";
 import { requestComposerFocus, setSettingsTab } from "../state/ui";
 import { ago, basename, tildify } from "../lib/format";
 import { now } from "../lib/clock";
@@ -30,6 +30,9 @@ export function Home() {
     );
     const recent = () => app.sessions.filter((s) => s.cwd === app.homeCwd).slice(0, 5);
     const [pending, setPending] = createSignal<string>();
+    // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
+    const clis = () => app.providers.filter((p) => p.agentCli?.installed && !p.configured);
+    const [connecting, setConnecting] = createSignal<string>();
 
     const pick = async () => {
         setPickerOpen(false);
@@ -114,9 +117,22 @@ export function Home() {
                         <KeyRound size={18} />
                         <div>
                             <div class="trust-title">Connect a model provider</div>
-                            <div class="muted small">Paste an API key from Anthropic, OpenAI, Google, OpenRouter, Groq, DeepSeek, xAI, Mistral and others, or start Ollama or LM Studio on this machine. Keys go to your OS keychain and only to their own provider.</div>
+                            <div class="muted small">
+                                {clis().length ? "Use the plan you already have through the CLI installed on this computer, or paste" : "Paste"} an API key from Anthropic, OpenAI, Google, OpenRouter, Groq, DeepSeek, xAI, Mistral and others, or start Ollama or LM Studio on this machine. Keys go to your OS keychain and only to their own provider.
+                            </div>
                             <div class="trust-actions">
-                                <button class="btn primary sm" onClick={() => setSettingsTab("providers")}>
+                                <For each={clis()}>
+                                    {(pr) => (
+                                        <button class="btn primary sm" disabled={connecting() === pr.id} onClick={async () => {
+                                            setConnecting(pr.id);
+                                            await connectCli(pr);
+                                            setConnecting(undefined);
+                                        }}>
+                                            Use my {pr.agentCli!.plan}
+                                        </button>
+                                    )}
+                                </For>
+                                <button class={`btn sm ${clis().length ? "secondary" : "primary"}`} onClick={() => setSettingsTab("providers")}>
                                     Add an API key
                                 </button>
                             </div>

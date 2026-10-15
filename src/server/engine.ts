@@ -14,8 +14,10 @@ import { findSessionAnywhere, listAllSessions, Session } from "../agent/session"
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
-import { cachedListings, forgetClient, listAllModels, type ProviderListing } from "../providers/models";
-import { allProviders, getProvider, readVertexConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { cachedListings, defaultModelFrom, forgetClient, listAllModels, type ProviderListing } from "../providers/models";
+import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { checkAgentCli, vendorOf } from "../backends/index";
+import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
@@ -40,7 +42,7 @@ import type {
     SessionSummary,
 } from "./protocol";
 import { PROTOCOL_VERSION } from "./protocol";
-import type { ImagePart } from "../providers/types";
+import { modelRef, type ImagePart } from "../providers/types";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -409,6 +411,22 @@ export class Engine {
                 out.push({ id: p.id, name: p.name, kind: p.kind, configured: Boolean(v), source: v ? "gcloud" : undefined, masked: v ? `${v.project} · ${v.location}` : undefined, requiresKey: false });
                 continue;
             }
+            if (p.auth === "cli") {
+                // Only looks for the program; asking it whether it's signed in waits for "Use my plan".
+                const cli = p.id === "codex" ? CODEX_CLI : CLAUDE_CLI;
+                const on = Boolean(readAgentConfig(p.id));
+                out.push({
+                    id: p.id,
+                    name: p.name,
+                    kind: p.kind,
+                    configured: on,
+                    source: on ? "your plan" : undefined,
+                    keyUrl: p.keyUrl,
+                    requiresKey: false,
+                    agentCli: { installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
+                });
+                continue;
+            }
             if (!p.requiresKey) {
                 out.push({ id: p.id, name: p.name, kind: p.kind, configured: true, source: "local", local: p.local, custom: p.custom, requiresKey: false });
                 continue;
@@ -423,7 +441,7 @@ export class Engine {
         return out;
     }
 
-    private async addKey(providerId: string | undefined, key: string): Promise<{ provider: string; masked: string; warning?: string }> {
+    private async addKey(providerId: string | undefined, key: string): Promise<{ provider: string; masked: string; warning?: string; model?: string }> {
         const value = key.trim();
         if (!value) throw new RpcError("Paste a key first.");
         if (/\s/.test(value)) throw new RpcError("That doesn't look like a single key.");
@@ -446,7 +464,30 @@ export class Engine {
         const eff = await getKey(id);
         if (eff?.source === "env") warning = `$${eff.envVar} is set and takes precedence over the saved key.`;
         await this.afterKeyChange(id);
-        return { provider: id, masked: maskKey(value), warning };
+        return { provider: id, masked: maskKey(value), warning, model: this.adoptDefaultModel(id) };
+    }
+
+    /** `auth add claude-code|codex` for the GUI: the CLI says whether it's installed and signed in; nothing secret is saved. */
+    private async connectCli(providerId: string): Promise<{ description: string; warning?: string; model?: string }> {
+        const def = getProvider(providerId);
+        if (def?.auth !== "cli") throw new RpcError(`${providerId} isn't used through a CLI`);
+        const st = await checkAgentCli(def.id);
+        if (!st.installed) throw new RpcError(`${def.name} isn't installed. ${st.installHint}, sign in with \`${st.signIn}\`, then try again.`, "not_installed");
+        if (!st.signedIn) throw new RpcError(`${def.name} isn't signed in. Run \`${st.signIn}\` in a terminal (${vendorOf(def.id)}'s own sign-in), then try again.`, "not_signed_in");
+        saveAgentConfig(def.id);
+        forgetClient(def.id);
+        await this.afterKeyChange(def.id);
+        return { description: st.description, warning: st.apiKey ? `${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.` : undefined, model: this.adoptDefaultModel(def.id) };
+    }
+
+    /** As /login does: with no default model yet, the newly connected provider's best one becomes it. */
+    private adoptDefaultModel(providerId: string): string | undefined {
+        if (this.guiSettings(this.o.startCwd).model) return undefined;
+        const listing = this.listings.find((l) => l.provider.id === providerId);
+        const pick = defaultModelFrom(listing ? [listing] : []);
+        if (!pick) return undefined;
+        this.updateGuiSettings({ model: modelRef(pick) });
+        return modelRef(pick);
     }
 
     private async afterKeyChange(id: string) {
@@ -614,10 +655,21 @@ export class Engine {
                 return this.modelsList();
             case "providers.list":
                 return this.providersList();
+            // Awaited here: these can reject before their first await, and a promise handed back unawaited is
+            // only handled a tick later (bun test reports that as an unhandled rejection).
             case "providers.setKey":
-                return this.addKey(optStr(p.provider), str(p.key, "key"));
+                return await this.addKey(optStr(p.provider), str(p.key, "key"));
+            case "providers.connectCli":
+                return await this.connectCli(str(p.provider, "provider"));
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");
+                if (getProvider(id)?.auth === "cli") {
+                    // Turns it off here; the CLI stays signed in.
+                    removeAgentConfig(id);
+                    forgetClient(id);
+                    await this.afterKeyChange(id);
+                    return null;
+                }
                 const k = await getKey(id);
                 if (k?.source === "env") throw new RpcError(`The ${id} key comes from $${k.envVar}; unset it in your shell.`);
                 await removeKey(id);

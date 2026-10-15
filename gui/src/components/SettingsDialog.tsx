@@ -2,6 +2,7 @@ import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { Check, ExternalLink, Info, KeyRound, Keyboard, Palette, Plug, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
+import { connectCli } from "../state/actions";
 import { ACCENTS, prefs, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { mod, openExternal } from "../lib/platform";
@@ -205,7 +206,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             if (r.warning) toast(r.warning, "warn");
             setAdding(false);
             setKey("");
-            await Promise.all([refreshProviders(), refreshModels()]);
+            await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
         } catch (e) {
             reportError(e);
         } finally {
@@ -216,10 +217,15 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         try {
             await rpc.call("providers.removeKey", { provider: p.pr.id });
             await Promise.all([refreshProviders(), refreshModels()]);
-            toast(`Removed the ${p.pr.name} key`);
+            toast(p.pr.agentCli ? `Turned off ${p.pr.name}; it stays signed in` : `Removed the ${p.pr.name} key`);
         } catch (e) {
             reportError(e);
         }
+    };
+    const connect = async () => {
+        setBusy(true);
+        await connectCli(p.pr);
+        setBusy(false);
     };
     return (
         <div class="prov">
@@ -236,7 +242,37 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                     <span class="chip tiny">local</span>
                 </Show>
                 <span class="grow" />
-                <Show when={!p.pr.requiresKey && !p.pr.configured}>
+                <Show when={p.pr.agentCli}>
+                    {(cli) => (
+                        <Show
+                            when={!p.pr.configured}
+                            fallback={
+                                <button class="icon-btn" title={`Turn off (${p.pr.name} stays signed in)`} onClick={() => void remove()}>
+                                    <Trash2 size={14} />
+                                </button>
+                            }
+                        >
+                            <Show
+                                when={cli().installed}
+                                fallback={
+                                    <>
+                                        <span class="muted small">Not installed</span>
+                                        <Show when={p.pr.keyUrl}>
+                                            <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
+                                                Install <ExternalLink size={11} />
+                                            </button>
+                                        </Show>
+                                    </>
+                                }
+                            >
+                                <button class="btn secondary sm" disabled={busy()} onClick={() => void connect()}>
+                                    {busy() ? <Spinner size={12} /> : `Use my ${cli().plan}`}
+                                </button>
+                            </Show>
+                        </Show>
+                    )}
+                </Show>
+                <Show when={!p.pr.requiresKey && !p.pr.configured && !p.pr.agentCli}>
                     <span class="muted small">Set up in the terminal</span>
                 </Show>
                 <Show when={p.pr.requiresKey}>
@@ -283,7 +319,7 @@ function Providers() {
             toast(`Saved a ${r.provider} key ${r.masked}`, "success");
             if (r.warning) toast(r.warning, "warn");
             setKey("");
-            await Promise.all([refreshProviders(), refreshModels()]);
+            await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
         } catch (e) {
             reportError(e);
         } finally {
@@ -309,7 +345,7 @@ function Providers() {
             <div class="set-group">Web search</div>
             <For each={search()}>{(pr) => <ProviderRow pr={pr} />}</For>
             <div class="set-hint" style={{ "margin-top": "12px" }}>
-                Gemini on Google Cloud (Vertex AI) is set up from the terminal with <code>harness auth add vertex</code>. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
+                Claude Code and Codex use your own Claude subscription or ChatGPT plan through the CLI installed on this computer; it stays signed in on its own and nothing secret is stored here. Gemini on Google Cloud (Vertex AI) is set up from the terminal with <code>harness auth add vertex</code>. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
             </div>
         </>
     );
