@@ -101,6 +101,8 @@ export interface PermissionRequest {
     decision: Decision;
     preview?: ToolDisplay;
     agentLabel?: string;
+    /** The tool call waiting on the answer. */
+    callId?: string;
     /** Why the auto-mode reviewer escalated. */
     classifierReason?: string;
     /** Ends when the request no longer matters (its sub-agent was stopped): the prompt is withdrawn. */
@@ -1305,7 +1307,7 @@ export class Agent {
         } catch {
             // preview is optional
         }
-        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, agentLabel: this.o.isSubagent ? "sub-agent" : undefined });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id });
         if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user") };
         if (answer.setMode) {
             const from = this.o.mode.get();

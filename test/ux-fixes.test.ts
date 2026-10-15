@@ -223,6 +223,8 @@ describe("headless runs", () => {
             const s = Session.create(proj);
             s.setModel("mock:m1");
             s.push({ role: "user", content: [{ type: "text", text: "earlier" }], meta: { kind: "prompt" } } as any);
+            // From an earlier run: this process is done with it, as that one would be.
+            s.release();
             // The default names a provider with no key, so only the session's model can work.
             writeFileSync(join(HARNESS_HOME, "settings.json"), JSON.stringify({ model: "anthropic:claude-opus-5-5" }));
             const r = await headless(["again", "-c", "--output-format", "json"], proj);
@@ -272,11 +274,16 @@ describe("stopping background shells", () => {
             return false;
         }
     };
+    /** Killed children of the shell go to init, and the group counts as alive until init reaps them; some inits take a while. */
+    const reaped = async (pid: number, ms = 5000) => {
+        for (const end = Date.now() + ms; alive(pid) && Date.now() < end; ) await Bun.sleep(50);
+        return !alive(pid);
+    };
     test("a process that ignores SIGTERM is force-killed", async () => {
         const child = start("trap '' TERM; while :; do sleep 0.1; done");
         await Bun.sleep(200);
         expect(await stopGroup(child.pid, 300)).toBe("killed");
-        expect(alive(child.pid!)).toBe(false);
+        expect(await reaped(child.pid!)).toBe(true);
     });
     test("one that exits on SIGTERM is just stopped", async () => {
         const child = start("sleep 30");

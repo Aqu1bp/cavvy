@@ -358,6 +358,7 @@ describe("loadHarnessEnv / parseDotenv", () => {
         );
         const pathBefore = process.env.PATH;
         const nodeOptsBefore = process.env.NODE_OPTIONS;
+        const bunOptsBefore = process.env.BUN_OPTIONS;
         const r = creds.loadHarnessEnv([f]);
         expect(r).toEqual({ legacyModel: "anthropic:claude-x", notes: [] });
         expect(process.env.ANTHROPIC_API_KEY).toBe(FAKE.anthropic);
@@ -366,7 +367,7 @@ describe("loadHarnessEnv / parseDotenv", () => {
         expect(process.env.HARNESS_MODEL).toBe("anthropic:claude-x");
         expect(process.env.PATH).toBe(pathBefore);
         expect(process.env.NODE_OPTIONS).toBe(nodeOptsBefore);
-        expect(process.env.BUN_OPTIONS).toBeUndefined();
+        expect(process.env.BUN_OPTIONS).toBe(bunOptsBefore);
         expect(process.env.SOMETHING_ELSE).toBeUndefined();
         expect(process.env.GROQ_API_KEY).toBeUndefined();
     });

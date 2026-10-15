@@ -44,6 +44,8 @@ const codexBin = wrapper("codex", "fake-codex.ts");
 afterAll(() => {
     cleanup();
     rmSync(bin, { recursive: true, force: true });
+    // The fakes' settings would reach other test files' fake CLIs (FAKE_LOG points into the folder just removed).
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
 });
 
 let cwd: string;

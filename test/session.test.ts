@@ -4,7 +4,7 @@ import { dirname, join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const iso = isolate();
-const { Session, listSessions, findSession } = await import("../src/agent/session");
+const { Session, listSessions, findSession, takeOver } = await import("../src/agent/session");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { projectStateDir } = await import("../src/config/paths");
 import type { AssistantMessage, Message, UserMessage } from "../src/providers/types";
@@ -263,5 +263,130 @@ describe("listSessions / findSession", () => {
         expect(findSession(cwd, "zzzz")).toBeUndefined();
         // The meta-only file isn't listed, so it can't be found either.
         expect(findSession(cwd, "20260101-000000-aaaaaa")).toBeUndefined();
+    });
+});
+
+describe("one writer per session", () => {
+    const holder = join(import.meta.dir, "fixtures", "hold-session.ts");
+
+    test("a session another process has open isn't opened (or written) until that process is gone", async () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.push(assistant("running it", [{ id: "c1", name: "Bash" }]));
+        s.release();
+        const child = Bun.spawn([process.execPath, "--no-env-file", holder, s.path], { stdin: "pipe", stdout: "pipe", env: process.env as Record<string, string> });
+        const first = await child.stdout.getReader().read();
+        expect(new TextDecoder().decode(first.value)).toContain("held");
+        const before = readFileSync(s.path, "utf-8");
+        expect(() => Session.load(s.path)).toThrow(/open in another Harness process \(pid \d+\)/);
+        // Nothing was written under the process that has it (such as answering its running tool call as interrupted).
+        expect(readFileSync(s.path, "utf-8")).toBe(before);
+        child.stdin.end();
+        await child.exited;
+        const again = Session.load(s.path);
+        expect(again.messages).toHaveLength(3);
+        again.release();
+        expect(existsSync(`${s.path}.lock`)).toBe(false);
+    });
+
+    test("a lock left by a process that has exited doesn't count", async () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.release();
+        const gone = Bun.spawn(["true"]);
+        await gone.exited;
+        writeFileSync(`${s.path}.lock`, JSON.stringify({ pid: gone.pid }));
+        const again = Session.load(s.path);
+        expect(JSON.parse(readFileSync(`${s.path}.lock`, "utf-8")).pid).toBe(process.pid);
+        again.release();
+    });
+
+    test("processes taking over the same stale lock at once: one gets it", async () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.release();
+        const gone = Bun.spawn(["true"]);
+        await gone.exited;
+        writeFileSync(`${s.path}.lock`, JSON.stringify({ pid: gone.pid }));
+        const kids = Array.from({ length: 8 }, () => Bun.spawn([process.execPath, "--no-env-file", holder, s.path], { stdin: "pipe", stdout: "pipe", env: process.env as Record<string, string> }));
+        try {
+            const said = await Promise.all(kids.map(async (k) => new TextDecoder().decode((await k.stdout.getReader().read()).value).trim()));
+            expect(said.filter((w) => w === "held")).toHaveLength(1);
+            expect(said.filter((w) => w === "in_use")).toHaveLength(7);
+        } finally {
+            for (const k of kids) k.stdin.end();
+            await Promise.all(kids.map((k) => k.exited));
+        }
+        expect(existsSync(`${s.path}.lock`)).toBe(false);
+    }, 20_000);
+
+    test("a released copy writes nothing more (another process may have it now)", () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.release();
+        const other = Session.load(s.path);
+        other.setTitle("Renamed there");
+        // A title that was still being made when it was closed.
+        s.setTitle("Late title");
+        s.push(user("late"));
+        other.release();
+        const again = Session.load(s.path);
+        expect(again.title).toBe("Renamed there");
+        expect(again.messages).toHaveLength(1);
+        again.release();
+    });
+
+    test("taking over a lock that another process has just made its own leaves it", async () => {
+        // The lost race: this process saw a stale lock, and before it removed
+        // it, another process replaced it with its own.
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.release();
+        const other = Bun.spawn(["sleep", "30"]);
+        try {
+            const theirs = JSON.stringify({ pid: other.pid, at: Date.now() });
+            writeFileSync(`${s.path}.lock`, theirs);
+            expect(takeOver(`${s.path}.lock`)).toBe(true);
+            expect(readFileSync(`${s.path}.lock`, "utf-8")).toBe(theirs);
+            expect(() => Session.load(s.path)).toThrow(/open in another Harness process/);
+        } finally {
+            other.kill();
+            await other.exited;
+        }
+    });
+
+    test("a stale lock another process is taking over is left to it", async () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.release();
+        const gone = Bun.spawn(["true"]);
+        await gone.exited;
+        const stale = JSON.stringify({ pid: gone.pid });
+        writeFileSync(`${s.path}.lock`, stale);
+        writeFileSync(`${s.path}.lock.takeover`, "");
+        expect(takeOver(`${s.path}.lock`)).toBe(true);
+        expect(readFileSync(`${s.path}.lock`, "utf-8")).toBe(stale);
+        expect(() => Session.load(s.path)).toThrow(/open in another Harness process/);
+        // One that crashed while taking it over doesn't block it for good.
+        const old = new Date(Date.now() - 60_000);
+        utimesSync(`${s.path}.lock.takeover`, old, old);
+        const again = Session.load(s.path);
+        expect(JSON.parse(readFileSync(`${s.path}.lock`, "utf-8")).pid).toBe(process.pid);
+        expect(existsSync(`${s.path}.lock.takeover`)).toBe(false);
+        again.release();
+    });
+
+    test("this process may load what it already has open; the lock goes with the last copy released", () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        expect(existsSync(`${s.path}.lock`)).toBe(true);
+        // A copy still closing (the GUI unloading it) overlapping the one reopened.
+        const again = Session.load(s.path);
+        expect(again.messages).toHaveLength(1);
+        s.release();
+        s.release();
+        expect(existsSync(`${s.path}.lock`)).toBe(true);
+        again.release();
+        expect(existsSync(`${s.path}.lock`)).toBe(false);
     });
 });

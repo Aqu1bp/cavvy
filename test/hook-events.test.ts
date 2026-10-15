@@ -1,6 +1,7 @@
 // The lifecycle hook events (SessionStart, SessionEnd, PreCompact and
 // SubagentStop; Notification is in notify.test.ts), which events can block,
-// and PostToolUse's additionalContext reaching the model.
+// hooks that exit without reading their input, and PostToolUse's
+// additionalContext reaching the model.
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -9,6 +10,7 @@ import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
 const { runHooks, fireHooks } = await import("../src/agent/hooks");
+const { unregisterSecret } = await import("../src/util/redact");
 const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
@@ -78,6 +80,8 @@ describe("which events can block", () => {
         expect(warnings).toEqual(['SessionEnd hook "exit 3" exited with 3']);
     });
     test("what the hooks receive is redacted", async () => {
+        // A key the harness doesn't know, caught by its pattern (other test files may have registered this fake one).
+        unregisterSecret(FAKE.anthropic);
         const out = join(tempDir(), "in.jsonl");
         await fireHooks({ hooks: { PreCompact: [record(out)] } }, "PreCompact", { custom_instructions: `keep ${FAKE.anthropic}` }, tempDir(), () => {});
         expect(readFileSync(out, "utf-8")).not.toContain(FAKE.anthropic);
@@ -90,6 +94,22 @@ describe("which events can block", () => {
         writeFileSync(join(proj, ".harness", "settings.json"), JSON.stringify({ hooks }));
         expect(loadSettings(proj, { trusted: false }).hooks).toBeUndefined();
         expect(Object.keys(loadSettings(proj, { trusted: true }).hooks ?? {}).sort()).toEqual(["Notification", "PreCompact", "SessionEnd", "SessionStart", "SubagentStop"]);
+    });
+});
+
+describe("a hook that exits without reading its input", () => {
+    // More input than a pipe holds, so the write can't finish before the hook
+    // exits: the harness always gets EPIPE instead of only when it loses a race.
+    const big = { tool_name: "Write", tool_input: { file_path: "big.txt", content: "line of file content\n".repeat(50_000) } };
+
+    test("its decision is honored", async () => {
+        const settings = { hooks: { PreToolUse: [{ command: `echo '{"permissionDecision":"deny","permissionDecisionReason":"not reading that"}'` }] } } as any;
+        const o = await runHooks(settings, "PreToolUse", big, tempDir());
+        expect(o).toEqual({ errors: [], decision: "deny", reason: "not reading that" });
+    });
+    test("its exit code and stderr are too", async () => {
+        const o = await runHooks({ hooks: { PreToolUse: [{ command: "echo too big >&2; exit 2" }] } } as any, "PreToolUse", big, tempDir());
+        expect(o.blocked).toBe("too big");
     });
 });
 

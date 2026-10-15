@@ -1,6 +1,6 @@
 # Harness
 
-A coding agent for your terminal that works with any model provider. It reads, edits and runs code in your project, asks before doing anything risky, and keeps your API keys out of everything it writes.
+A coding agent for your terminal and desktop that works with any model provider. It reads, edits and runs code in your project, asks before doing anything risky, and keeps your API keys out of everything it writes.
 
 ```bash
 bun install
@@ -8,7 +8,7 @@ bin/harness                 # interactive
 bin/harness -p "explain src/agent/agent.ts"   # one-shot
 ```
 
-Put `bin/` on your `PATH` (or run `bun link`) to type `harness` anywhere. `bun run build` produces a standalone binary in `dist/harness`.
+Put `bin/` on your `PATH` (or run `bun link`) to type `harness` anywhere. `bun run build` produces a standalone binary in `dist/harness`. For the desktop app and the browser GUI, see [Desktop app and GUI](#desktop-app-and-gui).
 
 ## API keys
 
@@ -59,7 +59,7 @@ How keys are kept safe:
 A Claude plan (Pro, Max, Team, Enterprise) or a ChatGPT plan can be used through the official CLI you already have installed. The harness runs Claude Code or Codex itself, the way editor integrations and apps like T3 Code do, rather than calling the API with your plan's credentials.
 
 1. Install [Claude Code](https://code.claude.com/docs/en/setup) or the [Codex CLI](https://developers.openai.com/codex/cli), and sign in there: `claude auth login`, or `codex login`. That's Anthropic's or OpenAI's own sign-in.
-2. In the harness, `/login claude-code` or `/login codex` (`harness auth add claude-code` from a shell). This asks the CLI whether it's signed in (`claude auth status`; Codex's `account/read`) and turns it on. On first run with nothing set up, the harness offers whichever of the two is installed.
+2. In the harness, `/login claude-code` or `/login codex` (`harness auth add claude-code` from a shell, or **Use my Claude subscription** / **Use my ChatGPT plan** in the desktop app's Settings → Providers). This asks the CLI whether it's signed in (`claude auth status`; Codex's `account/read`) and turns it on. On first run with nothing set up, the harness offers whichever of the two is installed.
 3. Pick a model in `/model`: `claude-code:default`, `claude-code:sonnet`, `codex:gpt-6.1-sol`, …. The list comes from the CLI.
 
 How it works:
@@ -120,7 +120,7 @@ The main agent can hand a self-contained task to a model from another provider: 
 
 A delegated agent works in the same folder, under the same permission mode and rules. Its actions are approved or asked about like the main agent's, and the prompt names it and its model (`Review auth (provider:model)`). Its work shows under the call that started it, and its spend counts toward the session's (billed by its own provider). It can't delegate further. Only one delegated task that can change files runs at a time, and up to four run at once. An `explore` agent is read-only: on Claude Code or Codex, reads and read-only commands run without asking you, and the harness refuses everything else. On Claude Code it runs without its edit tools or any MCP servers. On Codex, the MCP servers in your Codex config are turned off for it, because Codex runs tools set to `approve` there without asking. Servers that come from Codex plugins or apps aren't turned off. If a stopped sub-agent was asking you something, the prompt is withdrawn, and background commands it started are stopped.
 
-`delegate` waits for the result: 10 minutes by default, 60 at most. After that the task keeps running, and `task_status` gets its result. With `wait: false` it returns a task id at once, so several tasks can run together. If a task is still running when the turn ends, its result goes to the CLI with your next message. In `-p` mode there is no next message, so the main agent is told to collect every result before it finishes, and tasks still running when it does are stopped. `esc` stops the delegated tasks still running (whichever model is answering), `/tasks` lists them, and `/tasks stop [id]` stops them. Quitting, `/clear`, `/resume` and `/logout` stop them too.
+`delegate` waits for the result: 10 minutes by default, 60 at most. After that the task keeps running, and `task_status` gets its result. With `wait: false` it returns a task id at once, so several tasks can run together. If a task is still running when the turn ends, its result goes to the CLI with your next message. In `-p` mode there is no next message, so the main agent is told to collect every result before it finishes, and tasks still running when it does are stopped. `esc` stops the delegated tasks still running (whichever model is answering), `/tasks` lists them, and `/tasks stop [id]` stops them. Quitting, `/clear`, `/resume` and `/logout` stop them too. In the desktop app and `harness gui`, each sub-agent shows as a chip above the input while it works ([below](#desktop-app-and-gui)), and a delegated task still running when the turn ends keeps its permission prompts until you answer or stop it.
 
 The server listens on 127.0.0.1 only, with a random token for each session. Claude Code gets the server over stdin (an `mcp_set_servers` request), and Codex gets it in the thread's config over its app-server connection. The token never goes on a command line or into the environment, and it's redacted from anything shown or saved. Requests from a browser (with an `Origin` header) or without a live token are refused. The CLIs run the harness's tools without their own approval prompt, because the delegated agent's actions are checked one by one as they happen. The contract follows [T3 Code](https://github.com/pingdotgg/t3code)'s orchestration (MIT): wait or run in the background, a timeout that leaves the task running, and status and cancel by id.
 
@@ -296,6 +296,59 @@ When the terminal window isn't focused, the harness lets you know when a turn th
 
 Inside tmux, `auto` uses the bell, which tmux passes on to your terminal. `terminal` wraps the sequence for tmux passthrough, which works only with `set -g allow-passthrough on` (tmux 3.3 and later; `on` passes it only from a visible pane, `all` from any pane). For focus reporting inside tmux, also `set -g focus-events on`.
 
+## Desktop app and GUI
+
+The same agent, in a window: a sidebar of sessions from every project, several sessions running at once, the reply streaming in with tool calls folded into one-line summaries ("Read 3 files, searched 2 times · +13 −1") you can open, approvals as cards above the input, a Changes panel with the session's diffs, the plan as a checklist, and context and cost at a glance. Sessions are the same files the terminal app uses: start in one, continue in the other (`harness -r <id>`, or **Copy resume command** in the GUI).
+
+```bash
+bun run gui:build          # once (and after pulling GUI changes): builds gui/dist
+harness gui                # opens it in your browser (harness serve: server only)
+bun run gui:demo           # try it without API keys: a mock model and a demo project
+```
+
+The desktop app wraps the same GUI in a native window ([Tauri](https://tauri.app)); the agent runs alongside it as a sidecar, the CLI compiled with `bun build --compile`:
+
+```bash
+bun run desktop:dev        # hot-reloading GUI, server from source
+bun run desktop:build      # installers in desktop/src-tauri/target/release/bundle
+```
+
+Building it needs Rust ([rustup](https://rustup.rs)) and, on Linux, the WebKitGTK headers (`libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` on Debian and Ubuntu). To distribute it on macOS, sign and notarize the app, sidecar included.
+
+Using it:
+
+- `⌘K` (`Ctrl+K`) searches sessions, projects and actions; `⌘N` new session, `⌘B` sidebar, `⌘.` side panel, `⌘/` model, `⌘[` `⌘]` previous/next session, `⌘,` settings.
+- In the input: `@` mentions a file, `/` lists commands (`/compact`, `/init`, `/review`, `/rewind`, custom commands…), `!` runs a shell command yourself, paste or drop images, `↑` recalls a prompt, `shift+tab` cycles the permission mode, `Esc` interrupts. Messages sent while it works are queued; remove them before they go, and after an interrupt they come back to the input.
+- Approvals: `1` `2` `3` choose, `Esc` denies (with a note for the model if you type one). The buttons never take focus on their own, so an Enter meant for the input can't approve anything.
+- Hover a prompt to copy it or rewind to before it (files, conversation, or both, as with `/rewind`).
+- Themes: Light, Paper, Dark, Midnight, Dusk and High contrast, or follow the system; nine accent colors, text size and density. Settings → Providers adds API keys (validated, then stored in the OS keychain, like `/login`) or turns on Claude Code or Codex to use your own Claude subscription or ChatGPT plan.
+- Sub-agents (Task calls, and tasks Claude Code or Codex delegate to another provider's model) show as chips above the input: their name, model, and whether they're working, waiting for you, done or failed. A chip opens that agent in the side panel: the task it was given, what it's saying and doing as it goes (each tool call opens to its output or diff), and its report. A delegated task has a Stop button; a Task sub-agent stops with the turn. When one asks permission, the prompt names it and links to it. `/tasks` lists them all, and `/tasks stop [task-id]` stops delegated tasks.
+- A session that finishes or needs you while you're elsewhere sends a notification; the window title counts the sessions waiting for you.
+
+How it fits together:
+
+```
+desktop app (Rust, Tauri)          browser tab (harness gui)
+  native window, system webview      ─┐
+  └─ GUI (gui/, SolidJS) ─────────────┴─ WebSocket on 127.0.0.1, token ─┐
+                                                                        ▼
+  harness serve  (src/server: engine.ts → runtime.ts, one per open session)
+     └─ the agent (src/agent), tools, permissions, providers, MCP: shared with the CLI
+```
+
+`src/server/protocol.ts` is the contract between the two sides. A session's timeline is changed by small ops (add a block, append text, patch a tool's status) that the server applies to its own copy and sends; the GUI applies them with the same code (`src/server/timeline.ts`), batched once per frame, so streaming only touches the text that changed. Opening a session rebuilds the same timeline from the transcript plus a small log of what it doesn't keep (diffs, timings), so a reopened session looks the way it did live, including turns from before a compaction.
+
+Security. Whoever can talk to the server can run commands as you, so:
+
+- It listens on 127.0.0.1 only (`--host` exposes it, with a warning). Every WebSocket needs the server's random token, sent as a subprotocol so it never appears in a URL or a log. The browser link carries a one-time code (two minutes) that the page trades for the token. Host and Origin headers are checked, so a web page that rebinds a DNS name to 127.0.0.1 can't connect, and the pages are served with a strict Content-Security-Policy.
+- Model output is untrusted: raw HTML in it is shown as text, links open in your browser (never in the app), and images in replies aren't loaded, since a remote image URL can carry data out the moment it's displayed.
+- The desktop app's webview has no shell access; only the Rust side starts the sidecar. The sidecar exits when its stdin closes, so it goes away with the app, even if the app is killed.
+- Apps started outside a terminal don't get your shell's `PATH`; the desktop sidecar asks your login shell for it (`--login-env`), so the agent finds your tools.
+
+`HARNESS_GUI_DEBUG=1` makes the server say why it refused a connection. On Linux, if the window stays blank, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+
+**Adding features.** Anything in the core (`src/agent`, `src/tools`, `src/providers`, `src/permissions`, `src/mcp`) reaches both apps by itself. Something you see or click needs a part in each: the terminal's in `src/ui` and `src/commands`, the GUI's in `src/server/runtime.ts` (which plays the role of `src/ui/app.ts`) and `gui/`. Keeping the logic in the core and the two front ends thin keeps them from drifting apart.
+
 ## Headless
 
 ```bash
@@ -312,6 +365,7 @@ Piped stdin is added to the prompt. When the prompt is also given on the command
 
 ```bash
 bun run typecheck
+bun run gui:typecheck
 bun run test
 ```
 
@@ -327,3 +381,7 @@ Layout:
 | `src/mcp` | MCP client |
 | `src/ui` | Terminal renderer, editor, markdown, dialogs |
 | `src/commands` | Slash commands |
+| `src/server` | GUI server: protocol, multi-session engine, WebSocket server (`harness gui` / `serve`) |
+| `gui` | The GUI (SolidJS, Vite). `bun run gui:dev` (add `--demo` for the mock model) runs it with hot reload at http://localhost:5173 |
+| `desktop` | The desktop app (Tauri): Rust shell, icons, capabilities |
+| `scripts` | Mock model and demo project (`gui:demo`), sidecar build |

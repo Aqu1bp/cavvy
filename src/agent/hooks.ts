@@ -65,8 +65,16 @@ export async function runHooks(settings: Settings, event: HookEvent, payload: Re
             continue;
         }
         // Hooks see prompts and tool input as the model does: with known keys redacted.
-        proc.stdin.write(redactedJson({ hook_event_name: event, cwd, ...payload }));
-        await proc.stdin.end();
+        // A hook that exits without reading its input (`exit 0`, a bare echo) closes
+        // the pipe first: EPIPE just means it didn't want it, and its output still counts.
+        // (Bun's stdin is a socket pair on macOS, which says ENOTCONN or ECONNRESET instead.)
+        // write() returns a promise when the input doesn't fit in the pipe, so await that too.
+        try {
+            await proc.stdin.write(redactedJson({ hook_event_name: event, cwd, ...payload }));
+            await proc.stdin.end();
+        } catch (e) {
+            if (!["EPIPE", "ENOTCONN", "ECONNRESET"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
+        }
         const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
         if (code === 2 && BLOCKING_EVENTS.has(event)) {
             out.blocked = stderr.trim() || `Blocked by ${event} hook`;

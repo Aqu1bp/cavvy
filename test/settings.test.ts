@@ -244,6 +244,19 @@ describe("folder trust", () => {
         expect(read(trustFile()).dirs).not.toContain(dir);
     });
 
+    test("trustForSession covers that folder, not the projects inside it", () => {
+        const parent = project();
+        const child = join(parent, "repo");
+        mkdirSync(child);
+        trust.trustForSession(parent);
+        expect(trust.isTrusted(parent)).toBe(true);
+        expect(trust.isTrusted(child)).toBe(false);
+        expect(trust.trustedByUser(parent)).toBe(false);
+        // The user's own trust still covers what's inside.
+        trust.trustFolder(parent);
+        expect(trust.isTrusted(child)).toBe(true);
+    });
+
     test("home and / are trusted for the session only (child process)", () => {
         const proc = Bun.spawnSync([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures", "trust-session-only.ts")], {
             cwd: ROOT,

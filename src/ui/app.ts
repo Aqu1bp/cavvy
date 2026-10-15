@@ -555,6 +555,7 @@ export class App {
     newSession() {
         const prev = this.session;
         this.session = Session.create(this.cwd);
+        prev.release();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.makeAgent();
@@ -571,6 +572,7 @@ export class App {
             if (!prev) this.session = Session.create(this.cwd);
             return;
         }
+        prev?.release();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         if (this.agent) this.makeAgent();

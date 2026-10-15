@@ -18,17 +18,21 @@ import { isInside } from "../util/files";
 import { readAgentConfig } from "../providers/registry";
 
 const file = () => join(harnessHome(), "trusted.json");
-/** Trusted for this session, by the user or because there was nothing to protect. */
-const sessionTrusted = new Set<string>();
-/** Trusted by the user for this session only (home, "/", or the list couldn't be saved). */
+/** Trusted by the user for this session only (home, "/", or the list couldn't be saved); folders inside it too. */
 const userTrusted = new Set<string>();
+/**
+ * Trusted for this session because it had nothing to protect when it was
+ * opened: that folder only. A parent opened this way (~/code) doesn't make
+ * the projects inside it trusted, which matters when one process opens many
+ * folders (the GUI server).
+ */
+const emptyTrusted = new Set<string>();
 
 const saved = () => readJson<{ dirs?: string[] }>(file())?.dirs ?? [];
 
 export function isTrusted(dir: string): boolean {
     const d = resolve(dir);
-    if ([...sessionTrusted].some((t) => isInside(d, t))) return true;
-    return saved().some((t) => isInside(d, t));
+    return emptyTrusted.has(d) || trustedByUser(d);
 }
 
 /** The user said they trust this folder (now or before); a folder trusted only for having nothing to protect doesn't count. */
@@ -42,7 +46,6 @@ export function trustFolder(dir: string) {
     const d = resolve(dir);
     // Trusting the whole home directory is only remembered for this session.
     if (d === homedir() || d === "/") {
-        sessionTrusted.add(d);
         userTrusted.add(d);
         return;
     }
@@ -51,7 +54,6 @@ export function trustFolder(dir: string) {
         cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
     } catch (e) {
         // Don't drop the other trusted folders; trust this one until exit.
-        sessionTrusted.add(d);
         userTrusted.add(d);
         throw e;
     }
@@ -60,9 +62,9 @@ export function trustFolder(dir: string) {
     writeJson(file(), { dirs: [...dirs].sort() }, 0o600);
 }
 
-/** Trust for this session because there's nothing to protect yet (not the user's say-so). */
+/** Trust this folder (not the ones inside it) for this session because there's nothing to protect yet (not the user's say-so). */
 export function trustForSession(dir: string) {
-    sessionTrusted.add(resolve(dir));
+    emptyTrusted.add(resolve(dir));
 }
 
 /**

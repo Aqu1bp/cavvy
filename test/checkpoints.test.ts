@@ -3,7 +3,7 @@
 // cleanup, and the /rewind command flow.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -328,10 +328,13 @@ describe("file snapshots", () => {
         const [a, b, c] = ["a.txt", "b.txt", "c.txt"].map((n) => join(proj, n));
         const { session, run, history } = setup(proj, { one: [write(a!, "1\n")], two: [write(b!, "2\n")], three: [write(c!, "3\n")] });
         await run("one");
+        // A folder where the index was makes the append fail, even as root (whom a read-only file doesn't stop).
         const index = join(history.dir, "index.jsonl");
-        chmodSync(index, 0o400);
+        renameSync(index, `${index}.kept`);
+        mkdirSync(index);
         await run("two");
-        chmodSync(index, 0o600);
+        rmdirSync(index);
+        renameSync(`${index}.kept`, index);
         await run("three");
         expect(history.unsaved).toBeTruthy();
         expect(history.plan(cpOf(session, "two")).map((i) => i.path)).toEqual([b, c]);

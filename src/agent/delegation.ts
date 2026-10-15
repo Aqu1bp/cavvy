@@ -147,6 +147,8 @@ export interface DelegatedTask {
     writes: boolean;
     status: "running" | ChildResult["status"];
     startedAt: number;
+    /** The backend's delegate call that started it; its sub-agent events carry this id. */
+    callId?: string;
     result?: ChildResult;
     /** The main agent has been given the result. */
     delivered: boolean;
@@ -192,7 +194,7 @@ export class Delegations {
         const writer = req.writes && running.find((t) => t.writes);
         if (writer) return `Task ${writer.id} "${writer.description}" can change files in this folder, and only one such task runs at a time. Wait for it with task_status, or use agent "explore" for read-only work.`;
         const controller = new AbortController();
-        const t: DelegatedTask = { id: `task-${++this.seq}`, description: req.description, agent: req.agent, model: req.model, writes: req.writes, status: "running", startedAt: Date.now(), delivered: false, controller, settled: Promise.resolve() };
+        const t: DelegatedTask = { id: `task-${++this.seq}`, description: req.description, agent: req.agent, model: req.model, writes: req.writes, status: "running", startedAt: Date.now(), callId: req.callId, delivered: false, controller, settled: Promise.resolve() };
         t.settled = this.run(req, controller.signal)
             .then(
                 (r) => {

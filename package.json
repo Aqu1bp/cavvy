@@ -11,7 +11,14 @@
     "dev": "bun --no-env-file --config=bunfig.toml src/index.ts",
     "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/harness src/index.ts",
     "test": "bun --no-env-file test",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "gui": "bun --no-env-file --config=bunfig.toml src/index.ts gui",
+    "gui:build": "cd gui && bun install && bun run build",
+    "gui:dev": "bun --no-env-file --config=bunfig.toml scripts/gui-dev.ts",
+    "gui:demo": "bun --no-env-file --config=bunfig.toml scripts/gui-demo.ts",
+    "gui:typecheck": "cd gui && bun run typecheck",
+    "desktop:dev": "cd desktop && bun install && bun run dev",
+    "desktop:build": "cd desktop && bun install && bun run build"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

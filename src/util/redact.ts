@@ -49,6 +49,38 @@ export function redact(text: string): string {
     return out;
 }
 
+/** Longer than this, the rest of a line isn't kept for showing (`head -c 1G /dev/zero` has no line breaks). */
+const MAX_PARTIAL_LINE = 64 * 1024;
+
+/**
+ * For output shown as it arrives: a key split between two pieces gets past
+ * redact() in each. Keys don't span lines, so each piece returns the whole
+ * lines it completes, redacted (after `prep`, such as stripping colors), and
+ * the rest waits for more. A line too long to wait for isn't shown; the full
+ * output, redacted whole at the end, still has it.
+ */
+export function lineRedactor(prep: (text: string) => string = (t) => t): (chunk: string) => string {
+    let pending = "";
+    let skipping = false;
+    return (chunk) => {
+        let text = pending + chunk;
+        if (skipping) {
+            const end = text.search(/[\r\n]/);
+            pending = "";
+            if (end < 0) return "";
+            text = text.slice(end + 1);
+            skipping = false;
+        }
+        const cut = Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
+        pending = text.slice(cut);
+        if (pending.length > MAX_PARTIAL_LINE) {
+            pending = "";
+            skipping = true;
+        }
+        return cut ? redact(prep(text.slice(0, cut))) : "";
+    };
+}
+
 export function containsSecret(text: string): boolean {
     return redact(text) !== text;
 }
