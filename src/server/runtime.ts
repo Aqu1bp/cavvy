@@ -742,8 +742,10 @@ export class Runtime {
         const b = this.blockIn(this.toolTurn.get(call.id), call.id) as ToolBlock | undefined;
         this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, at: Date.now() });
         if (call.name === "TodoWrite") this.setState({ todos: this.toolState.todos.map((t) => ({ ...t })) });
-        // A Task's result is its sub-agent's report (a delegated task's comes when it settles).
-        if (call.name === "Task" && this.view.agents.some((a) => a.id === call.id)) this.agentPatch(call.id, { report: redact(result.content) });
+        // A Task's result is its sub-agent's report (a delegated task's comes when it settles). One
+        // still working (Claude Code's in the background) only says it started: its report comes when it ends.
+        const sub = call.name === "Task" ? this.view.agents.find((a) => a.id === call.id) : undefined;
+        if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(call.id, { report: redact(result.content) });
         if (patch.diff || b?.category === "edit") this.setState({ filesChanged: this.filesChanged() });
         this.syncShells();
     }
@@ -879,7 +881,9 @@ export class Runtime {
         if (!a) return;
         const said = [...a.blocks].reverse().find((b) => b.t === "text" && b.text.trim());
         const status: AgentRun["status"] = reason === "aborted" ? "stopped" : reason === "done" || reason === "max_turns" ? "done" : "failed";
-        this.agentPatch(id, { status, endedAt: Date.now(), activity: undefined, ...(a.report === undefined && said?.t === "text" ? { report: said.text } : {}) });
+        // Its last word is its report; one ending again (Claude Code saying so twice) takes the later.
+        const report = (a.report === undefined || a.endedAt !== undefined) && said?.t === "text" ? said.text : undefined;
+        this.agentPatch(id, { status, endedAt: Date.now(), activity: undefined, ...(report !== undefined ? { report } : {}) });
         // A delegated task's result (its report, and why it ended) comes once it settles.
         const task = a.taskId ? this.agent?.delegatedTasks.find((t) => t.id === a.taskId) : undefined;
         if (task)

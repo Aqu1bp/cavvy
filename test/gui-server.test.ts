@@ -796,6 +796,103 @@ describe("sub-agents", () => {
         }
     }, 45_000);
 
+    /** A turn on the fake Claude Code in a scenario; the session's view once it's over. */
+    async function claudeCodeTurn(scenario: string) {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = scenario;
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "map the auth module" });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            c.close();
+            return v;
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }
+
+    test("Claude Code's own sub-agent finishes: its chip, its tools and its handed-back report", async () => {
+        const v = await claudeCodeTurn("agent");
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.description, a.status, a.taskId]).toEqual(["Map auth", "done", undefined]);
+        expect(a.endedAt).toBeGreaterThanOrEqual(a.startedAt);
+        // Its tool calls finish too; one it never got a result for is closed with it.
+        expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "Write:ok", "Task:ok", "Glob:error", "src/auth registers sign-in strategies in one list."]);
+        const subTools = a.blocks.filter((b): b is ToolBlock => b.t === "tool");
+        // What it wrote shows as a diff, with the token in it redacted.
+        const write = subTools.find((b) => b.name === "Write")!;
+        const diff = JSON.stringify(write.diff);
+        expect(diff).toContain("google-token");
+        expect(diff).not.toContain("ya29.subagentWroteThisToken1234567890");
+        // An agent of its own: its report, not where Claude Code delivered it.
+        expect(subTools.find((b) => b.name === "Task")!.output).toBe("Only email sign-in is tested.");
+        // The same on the chip and on the call.
+        expect(a.report).toBe("src/auth registers sign-in strategies in one list.");
+        const call = tools(lastTurn(v)).find((b) => b.name === "Task")!;
+        expect([call.status, call.agent, call.output]).toEqual(["ok", true, "src/auth registers sign-in strategies in one list."]);
+    }, 45_000);
+
+    for (const [scenario, when] of [
+        ["agent-background", "launched first"],
+        ["agent-background-late", "launched after its first step"],
+    ])
+        test(`Claude Code's sub-agent in the background (${when}) stops with the turn, without the launch note as its report`, async () => {
+            const v = await claudeCodeTurn(scenario);
+            expect(v.agents).toHaveLength(1);
+            const a = v.agents[0]!;
+            expect([a.description, a.status, a.report]).toEqual(["Map auth", "stopped", undefined]);
+            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t))).toEqual(["Read:ok", "Glob:error"]);
+        }, 45_000);
+
+    test("Claude Code's sub-agent that shows nothing before it finishes still gets a chip with its report", async () => {
+        const v = await claudeCodeTurn("agent-quiet");
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.status, a.report]).toEqual(["done", "src/auth registers sign-in strategies in one list."]);
+        expect(a.blocks.map((b) => (b.t === "text" ? b.text : b.t))).toEqual(["src/auth registers sign-in strategies in one list."]);
+        expect(tools(lastTurn(v)).find((b) => b.name === "Task")!.output).toBe("src/auth registers sign-in strategies in one list.");
+    }, 45_000);
+
+    test("Claude Code's sub-agent said to be finished before its report: no step left running, and the later report", async () => {
+        const v = await claudeCodeTurn("agent-waits");
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.status, a.report]).toEqual(["done", "src/auth registers sign-in strategies in one list."]);
+        // The step after it was said to be finished isn't shown (nothing would ever close it).
+        expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "Task:ok", "src/auth registers sign-in strategies in one list."]);
+        // An agent of its own whose report is only in its result.
+        expect(a.blocks.find((b): b is ToolBlock => b.t === "tool" && b.name === "Task")!.output).toBe("Only email sign-in is tested.");
+        expect(tools(lastTurn(v)).find((b) => b.name === "Task")!.output).toBe("src/auth registers sign-in strategies in one list.");
+    }, 45_000);
+
+    test("Claude Code saying again how its sub-agent ended replaces what it said: the later report", async () => {
+        const v = await claudeCodeTurn("agent-renotified");
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.status, a.report]).toEqual(["done", "src/auth registers sign-in strategies in one list."]);
+        expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "A first look: one list of strategies.", "src/auth registers sign-in strategies in one list."]);
+    }, 45_000);
+
+    test("Claude Code's sub-agent handing back its report after it was said to be finished: that's its report", async () => {
+        const v = await claudeCodeTurn("agent-hands-back-late");
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.status, a.report]).toEqual(["done", "src/auth registers sign-in strategies in one list."]);
+        expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "src/auth registers sign-in strategies in one list."]);
+    }, 45_000);
+
+    test("Claude Code saying again how its sub-agent ended replaces what it said: failed after all", async () => {
+        const v = await claudeCodeTurn("agent-fails-later");
+        expect(v.agents.map((a) => [a.status, a.report])).toEqual([["failed", undefined]]);
+    }, 45_000);
+
     test("a delegated agent working past the turn keeps asking; stopping it withdraws the request", async () => {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });
