@@ -47,6 +47,8 @@ afterAll(() => {
     stopServer();
     cleanup();
     rmSync(bin, { recursive: true, force: true });
+    // The fakes' settings would reach other test files' fake CLIs (FAKE_LOG points into the folder just removed).
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
 });
 
 const TOOLS = ["models", "delegate", "task_status", "task_cancel"];
