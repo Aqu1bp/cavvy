@@ -341,7 +341,15 @@ function lockPid(file: string): number | undefined {
 
 function pidIn(lock: string): number | undefined {
     try {
-        const pid = Number((JSON.parse(readFileSync(lock, "utf-8")) as { pid?: unknown }).pid);
+        return pidOf(readFileSync(lock, "utf-8"));
+    } catch {
+        return undefined;
+    }
+}
+
+function pidOf(body: string): number | undefined {
+    try {
+        const pid = Number((JSON.parse(body) as { pid?: unknown }).pid);
         return Number.isInteger(pid) && pid > 0 ? pid : undefined;
     } catch {
         return undefined;
@@ -363,10 +371,21 @@ export function sessionHolder(file: string): number | undefined {
 }
 
 function lockHolder(lock: string): number | undefined {
-    const pid = pidIn(lock);
+    let body: string;
+    try {
+        body = readFileSync(lock, "utf-8");
+    } catch {
+        return undefined;
+    }
+    return holderIn(lock, body);
+}
+
+/** Who holds a lock that reads `body`: a running process, -1 for one still being written, or undefined when it's stale. */
+function holderIn(lock: string, body: string): number | undefined {
+    const pid = pidOf(body);
     if (pid !== undefined && pid !== process.pid && running(pid)) return pid;
     // Just created and not written yet (where there are no hard links, the other process is between two calls).
-    if (pid === undefined && existsSync(lock)) {
+    if (pid === undefined) {
         try {
             if (Date.now() - statSync(lock).mtimeMs < 2000) return -1;
         } catch {
@@ -477,7 +496,10 @@ export function takeOver(lock: string): boolean {
         return true;
     }
     try {
-        if (lockHolder(lock) === undefined) unlinkSync(lock);
+        // Read once: a stale lock stays as read until it's removed here, but
+        // one already gone can be made again at any moment (and mustn't be removed).
+        const body = readFileSync(lock, "utf-8");
+        if (holderIn(lock, body) === undefined) unlinkSync(lock);
         return true;
     } catch (e) {
         return (e as NodeJS.ErrnoException).code === "ENOENT";
