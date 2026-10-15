@@ -24,10 +24,16 @@ import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { paths } from "../config/paths";
+import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
+
+/** How long Claude Code may take to connect to the harness's MCP server before the prompt goes without it (changeable for tests). */
+export const attachTiming = { timeoutMs: 30_000 };
+
+/** Claude Code's tools that change files, off for a read-only sub-agent. */
+const READ_ONLY_DENY = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
 const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
@@ -85,7 +91,8 @@ const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toS
 
 export class ClaudeCodeBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
-    private turn?: ClaudeTurn;
+    /** Turns running now: the main agent's, and sub-agents' on Claude Code. */
+    private turns = new Set<ClaudeTurn>();
 
     constructor(readonly def: ProviderDef) {}
 
@@ -130,11 +137,11 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const turn = new ClaudeTurn(this.def, bin, t);
-        this.turn = turn;
+        this.turns.add(turn);
         try {
             return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } }))]);
         } finally {
-            if (this.turn === turn) this.turn = undefined;
+            this.turns.delete(turn);
         }
     }
 
@@ -144,8 +151,9 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         return this.runTurn({ ...t, prompt: `/compact${t.instructions ? ` ${t.instructions}` : ""}`, images: [] });
     }
 
-    setMode(m: PermissionMode) {
-        this.turn?.setMode(m);
+    /** Each running turn takes its own agent's mode now (a read-only sub-agent's stays read-only). */
+    setMode(_m: PermissionMode) {
+        for (const turn of this.turns) turn.setMode(turn.agentMode());
     }
 }
 
@@ -173,6 +181,10 @@ class ClaudeTurn {
     private failure?: string;
     private reason?: BackendResult["reason"];
     private signedOut = false;
+    /** Control requests sent to Claude Code, waiting for its answer. */
+    private controls = new Map<string, (response: Record<string, any>) => void>();
+    /** The prompt has been sent. */
+    private prompted = false;
 
     constructor(
         private def: ProviderDef,
@@ -182,6 +194,11 @@ class ClaudeTurn {
 
     private get host(): BackendHost {
         return this.t.host;
+    }
+
+    /** The mode of the agent running this turn, as it is now. */
+    agentMode(): PermissionMode {
+        return this.host.mode();
     }
 
     private args(): string[] {
@@ -196,7 +213,16 @@ class ClaudeTurn {
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
         if (!t.trusted) a.push("--setting-sources", "user", "--strict-mcp-config");
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
-        a.push("--settings", JSON.stringify({ permissions: claudePermissions(t.rules) }));
+        const permissions = claudePermissions(t.rules);
+        if (!t.readOnly) {
+            a.push("--settings", JSON.stringify({ permissions }));
+            return a;
+        }
+        // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
+        a.push("--disallowedTools", READ_ONLY_DENY.join(","));
+        if (t.trusted) a.push("--strict-mcp-config");
+        const settings = { permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
+        a.push("--settings", JSON.stringify(settings));
         return a;
     }
 
@@ -205,7 +231,44 @@ class ClaudeTurn {
     }
 
     private sendUser(content: unknown[]) {
+        this.prompted = true;
         this.proc.send({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "" });
+    }
+
+    /**
+     * Give Claude Code the harness's MCP server for this run. It goes over
+     * stdin (mcp_set_servers, as the Agent SDK sends it), so the token is in
+     * neither its arguments, which other local users can list, nor the
+     * environment its commands inherit. Claude Code answers once it has
+     * connected (or given up); the harness's tools need no prompt.
+     */
+    private async attach(o: OrchestratorServer) {
+        const id = requestId();
+        const answered = new Promise<Record<string, any>>((resolve) => this.controls.set(id, resolve));
+        this.proc.send({
+            type: "control_request",
+            request_id: id,
+            request: {
+                subtype: "mcp_set_servers",
+                servers: {
+                    [o.name]: {
+                        type: "http",
+                        url: o.url,
+                        headers: { Authorization: o.authorization },
+                        timeout: o.toolTimeoutSec * 1000,
+                        alwaysLoad: true,
+                        tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
+                    },
+                },
+            },
+        });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const r = await Promise.race([answered, this.proc.exited.then(() => undefined), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), attachTiming.timeoutMs)))]);
+        clearTimeout(timer);
+        this.controls.delete(id);
+        if (this.aborted) return;
+        const why = !r ? "it didn't answer" : r.subtype !== "success" ? String(r.error ?? "it refused") : r.response?.errors?.[o.name];
+        if (why) this.host.emit({ type: "notice", level: "warn", message: `Claude Code couldn't connect to ${APP_TITLE}'s delegation tools (${redact(String(why))}); this turn runs without them.` });
     }
 
     async run(content: unknown[]): Promise<BackendResult> {
@@ -215,13 +278,18 @@ class ClaudeTurn {
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
+            // Nothing to interrupt before the prompt is sent.
+            if (!this.prompted) return void this.proc.kill();
             this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "interrupt" } });
             // It answers an interrupt with a result; if it doesn't, stop it (SIGKILL if need be).
             killTimer = setTimeout(() => void this.proc.kill(), stopTiming.interruptMs);
         };
         signal.addEventListener("abort", onAbort, { once: true });
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
-        this.sendUser(content);
+        // The prompt waits for the MCP server, so its first request has the harness's tools.
+        const o = this.t.orchestrator;
+        if (o) void this.attach(o).then(() => this.aborted || this.sendUser(content));
+        else this.sendUser(content);
         let gotResult = false;
         try {
             for await (const m of this.proc.messages()) {
@@ -265,6 +333,11 @@ class ClaudeTurn {
             case "control_request":
                 void this.onControlRequest(m);
                 break;
+            case "control_response": {
+                const r = m.response ?? {};
+                this.controls.get(String(r.request_id ?? ""))?.(r);
+                break;
+            }
             case "system":
                 this.onSystem(m);
                 break;
@@ -459,6 +532,9 @@ class ClaudeTurn {
             const fb = r.feedback?.trim();
             return fb ? { behavior: "deny", message: `The user wants changes to the plan:\n${fb}` } : { behavior: "deny", message: "The user rejected the plan. Wait for them to say how to proceed.", interrupt: true };
         }
+        // The harness's own tools (delegating to other models): what a delegated agent does is checked when it does it.
+        const own = this.t.orchestrator;
+        if (own && String(req.tool_name ?? "").startsWith(`mcp__${own.name}__`)) return { behavior: "allow", updatedInput: raw };
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason });

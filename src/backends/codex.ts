@@ -20,7 +20,7 @@ import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type PermissionAnswer } from "./types";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 class Rpc {
@@ -234,14 +234,16 @@ export class CodexBackend implements AgentBackendClient {
         }
     }
 
-    private turn?: CodexTurn;
+    /** Turns running now: the main agent's, and sub-agents' on Codex. */
+    private turns = new Set<CodexTurn>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = (this.turn = new CodexTurn(this.def, t));
+        const turn = new CodexTurn(this.def, t);
+        this.turns.add(turn);
         try {
             return await turn.run();
         } finally {
-            if (this.turn === turn) this.turn = undefined;
+            this.turns.delete(turn);
         }
     }
 
@@ -251,9 +253,13 @@ export class CodexBackend implements AgentBackendClient {
         return new CodexTurn(this.def, { ...t, prompt: "", images: [] }).run({ compact: true });
     }
 
-    /** Codex takes its approval policy and sandbox per turn: a stricter mode restarts the running turn under it. */
-    setMode(m: PermissionMode) {
-        this.turn?.modeChanged(m);
+    /**
+     * Codex takes its approval policy and sandbox per turn: a stricter mode
+     * restarts a running turn under it. Each turn goes by its own agent's
+     * mode (a read-only sub-agent's stays read-only).
+     */
+    setMode(_m: PermissionMode) {
+        for (const turn of this.turns) turn.modeChanged(turn.agentMode());
     }
 }
 
@@ -317,6 +323,11 @@ class CodexTurn {
         return this.t.host;
     }
 
+    /** The mode of the agent running this turn, as it is now. */
+    agentMode(): PermissionMode {
+        return this.host.mode();
+    }
+
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
@@ -340,10 +351,29 @@ class CodexTurn {
             this.billedToPlan = account.type === "chatgpt";
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
-            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, developerInstructions: t.appendSystemPrompt || undefined };
+            const o = t.orchestrator;
+            const developerInstructions = [t.appendSystemPrompt, o?.instructions].filter(Boolean).join("\n\n") || undefined;
+            let config = o ? orchestratorConfig(o) : undefined;
+            if (t.readOnly) {
+                const off = await this.mcpServersOff(t.cwd);
+                if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
+                config = off;
+            }
+            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, developerInstructions, ...(config ? { config } : {}) };
+            // A Codex that won't take the delegation server's config still gets its thread, without it.
+            const thread = async (method: string, params: Record<string, unknown>) => {
+                try {
+                    return await this.rpc.request(method, params);
+                } catch (e) {
+                    if (this.aborted || !o) throw e;
+                    const r = await this.rpc.request(method, { ...params, config: undefined, developerInstructions: t.appendSystemPrompt || undefined });
+                    this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them.` });
+                    return r;
+                }
+            };
             if (t.resumeId) {
                 try {
-                    const r = await this.rpc.request("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
+                    const r = await thread("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
                     this.threadId = r?.thread?.id ?? t.resumeId;
                 } catch (e) {
                     // Stopped by esc: the thread is fine and is resumed next time.
@@ -351,7 +381,7 @@ class CodexTurn {
                     return { reason: "error", text: "", actions: [], error: `Couldn't resume the Codex thread: ${(e as Error).message}`, resumeFailed: true };
                 }
             } else {
-                const r = await this.rpc.request("thread/start", threadParams);
+                const r = await thread("thread/start", threadParams);
                 this.threadId = r?.thread?.id;
                 if (!this.threadId) throw new ProviderError("Codex didn't start a thread");
             }
@@ -604,6 +634,25 @@ class CodexTurn {
         this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: open.name, input: open.input }, result: { content, isError, display }, durationMs: Date.now() - open.started });
     }
 
+    /**
+     * For a read-only sub-agent: thread config that turns off the MCP
+     * servers in the user's Codex config (as seen from this folder), since
+     * Codex runs tools set to "approve" there without asking, and they may
+     * change things. Thread config is merged into the user's, so each is
+     * turned off by name. Why it can't, if Codex doesn't list them.
+     */
+    private async mcpServersOff(cwd: string): Promise<Record<string, unknown> | undefined | string> {
+        let servers: unknown;
+        try {
+            servers = (await this.rpc.request("config/read", { cwd }))?.config?.mcp_servers;
+        } catch (e) {
+            if (this.aborted) throw e;
+            return `Codex didn't list its MCP servers (${redact((e as Error).message).replace(/^Codex:\s*/, "")}), so a read-only task can't run on it: their tools couldn't be turned off.`;
+        }
+        const names = servers && typeof servers === "object" && !Array.isArray(servers) ? Object.keys(servers) : [];
+        return names.length ? { mcp_servers: Object.fromEntries(names.map((n) => [n, { enabled: false }])) } : undefined;
+    }
+
     private async onRequest(method: string, p: any): Promise<unknown> {
         switch (method) {
             case "item/commandExecution/requestApproval": {
@@ -696,6 +745,26 @@ class CodexTurn {
         }
         void this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).catch(() => (this.followUp = text));
     }
+}
+
+/**
+ * The harness's MCP server as Codex config for the thread (sent over the
+ * app-server's stdin, never in arguments). Its tools run without Codex's
+ * approval prompt: what a delegated agent does is checked when it does it.
+ */
+export function orchestratorConfig(o: OrchestratorServer): Record<string, unknown> {
+    return {
+        mcp_servers: {
+            [o.name]: {
+                url: o.url,
+                http_headers: { Authorization: o.authorization },
+                tool_timeout_sec: o.toolTimeoutSec,
+                startup_timeout_sec: 30,
+                default_tools_approval_mode: "approve",
+                supports_parallel_tool_calls: true,
+            },
+        },
+    };
 }
 
 /** The command a commandExecution runs, without Codex's `bash -lc '…'` wrapper. */

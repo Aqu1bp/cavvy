@@ -80,6 +80,8 @@ export interface Settings {
     notifications?: NotificationMode;
     /** A finished turn alerts only when it took at least this long (default 30). */
     notifyAfterSeconds?: number;
+    /** Claude Code and Codex get tools to hand tasks to other providers' models (default true). */
+    delegation?: boolean;
 }
 
 export type SettingsScope = "user" | "project" | "local";
