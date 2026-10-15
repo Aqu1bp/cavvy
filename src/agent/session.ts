@@ -62,7 +62,19 @@ type Line =
     | { t: "title"; title: string }
     | { t: "compact"; summary: string }
     | { t: "rewind"; count: number }
-    | { t: "usage"; usage: Usage; cost: number; model: string };
+    | { t: "usage"; usage: Usage; cost: number; model: string }
+    /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
+    | { t: "backend"; provider: string; id: string | null; synced?: number };
+
+/**
+ * An agent backend's session behind this one, and how much of this session's
+ * history it has seen: `synced` messages. Turns other models answered after
+ * that are passed to the backend as context on its next turn.
+ */
+export interface BackendSession {
+    id: string;
+    synced: number;
+}
 
 export interface SessionSummary {
     id: string;
@@ -84,6 +96,8 @@ export class Session {
     /** USD spent in this session (estimates included). */
     cost = 0;
     usageByModel = new Map<string, { usage: Usage; cost: number }>();
+    /** Agent backends' own sessions, by provider. */
+    backends = new Map<string, BackendSession>();
     private file: string;
     private persist: boolean;
 
@@ -171,6 +185,23 @@ export class Session {
         this.usageByModel.set(model, cur);
     }
 
+    setBackendSession(provider: string, id: string, synced: number) {
+        const cur = this.backends.get(provider);
+        if (cur?.id === id && cur.synced === synced) return;
+        this.backends.set(provider, { id, synced });
+        this.write({ t: "backend", provider, id, synced });
+    }
+
+    forgetBackendSession(provider: string) {
+        if (!this.backends.delete(provider)) return;
+        this.write({ t: "backend", provider, id: null });
+    }
+
+    /** A backend session that saw messages from `count` on can't continue a history cut back to `count`. */
+    private dropBackendsAfter(count: number) {
+        for (const [p, b] of this.backends) if (b.synced > count) this.backends.delete(p);
+    }
+
     /**
      * Keep only the first `count` messages (/rewind). Recorded as a line, like
      * a compaction, rather than by rewriting the file: an append can't lose
@@ -180,12 +211,14 @@ export class Session {
      */
     rewind(count: number) {
         this.messages = this.messages.slice(0, count);
+        this.dropBackendsAfter(count);
         this.write({ t: "rewind", count });
     }
 
-    /** Replace history with a compacted version. */
+    /** Replace history with a compacted version. Backend sessions start over from the summary. */
     compact(summary: string, messages: Message[]) {
         this.messages = [];
+        this.backends.clear();
         this.summary = summary;
         this.write({ t: "compact", summary });
         for (const m of messages) this.push(m);
@@ -221,9 +254,18 @@ export class Session {
             if (l.t === "msg") s.messages.push(l.m);
             else if (l.t === "compact") {
                 s.messages = [];
+                s.backends.clear();
                 s.summary = l.summary;
             }
-            else if (l.t === "rewind") s.messages = s.messages.slice(0, l.count);
+            else if (l.t === "rewind") {
+                s.messages = s.messages.slice(0, l.count);
+                s.dropBackendsAfter(l.count);
+            }
+            else if (l.t === "backend") {
+                if (typeof l.provider !== "string") continue;
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length });
+                else s.backends.delete(l.provider);
+            }
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "title") s.title = l.title;
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost);
@@ -284,7 +326,7 @@ function sessionHead(file: string): SessionHead {
         let wanted: boolean | undefined;
         const decide = () => {
             const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|model)"/.test(prefix);
+            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|model|backend)"/.test(prefix);
             if (!wanted) parts = [Buffer.from(prefix, "latin1")];
         };
         for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {

@@ -11,7 +11,7 @@
 import { chmodSync, existsSync, readFileSync, statSync } from "fs";
 import { readJson, readJsonForUpdate, writeJson } from "../config/settings";
 import { paths } from "../config/paths";
-import { allProviders, getProvider, readProvidersFile, readProvidersFileForUpdate, readVertexConfig, writeProvidersFile, SEARCH_PROVIDERS, type ProviderDef } from "../providers/registry";
+import { allProviders, getProvider, readAgentConfig, readProvidersFile, readProvidersFileForUpdate, readVertexConfig, writeProvidersFile, SEARCH_PROVIDERS, type ProviderDef } from "../providers/registry";
 import { registerSecret } from "../util/redact";
 
 const SERVICE = "harness-cli";
@@ -164,6 +164,10 @@ export async function configuredProviders(): Promise<ProviderDef[]> {
     for (const p of allProviders()) {
         if (p.auth === "gcloud") {
             if (readVertexConfig()) out.push(p);
+            continue;
+        }
+        if (p.auth === "cli") {
+            if (readAgentConfig(p.id)) out.push(p);
             continue;
         }
         if (!p.requiresKey) {

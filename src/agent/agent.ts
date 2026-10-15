@@ -45,6 +45,12 @@ import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { redact } from "../util/redact";
+import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type PermissionAnswer } from "../backends/types";
+import { getProvider } from "../providers/registry";
+import { suggestBashRules } from "../permissions/bash-safety";
+import { trustedByUser } from "../config/trust";
+import { deniedWithin } from "../permissions/rules";
+import { expandPath } from "../util/files";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -237,6 +243,8 @@ export class Agent {
 
     noteModeChange(from: PermissionMode, to: PermissionMode) {
         if (from === to) return;
+        // A backend turn in progress takes the new mode now (where the backend can).
+        if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
         if (to === "plan") {
             this.addReminder(
                 "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.",
@@ -312,7 +320,10 @@ export class Agent {
 
         const parts: UserContent[] = [...content];
         for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r));
-        this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
+        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
+
+        // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
+        if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal);
 
         let turns = 0;
         let maxTokenStrikes = 0;
@@ -500,6 +511,8 @@ export class Agent {
     private shouldAutoCompact(): boolean {
         const s = this.o.settings();
         if (s.autoCompact === false || this.o.isSubagent) return false;
+        // Agent backends manage their own context.
+        if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
         const reserve = Math.min(this.model.maxOutput ?? 32_000, 32_000);
@@ -550,6 +563,7 @@ export class Agent {
 
     /** Summarize the history and replace it. Returns false if there was nothing to do. */
     async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean }): Promise<boolean> {
+        if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
         const history = this.session.messages;
         if (history.length < 2) return false;
         this.emit({ type: "compact_start", auto: opts.auto });
@@ -597,6 +611,306 @@ export class Agent {
         this.state.fileState.clear();
         this.emit({ type: "compact_end", summary });
         return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Agent backends (src/backends): Claude Code and Codex run the turn
+
+    private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
+        const s = this.o.settings();
+        return {
+            cwd: this.state.cwd,
+            model: this.model,
+            mode: this.o.mode.get(),
+            effort: s.effort,
+            appendSystemPrompt: this.o.appendSystemPrompt,
+            additionalDirectories: s.permissions?.additionalDirectories ?? [],
+            // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.
+            trusted: trustedByUser(this.state.cwd),
+            rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
+            maxTurns: this.o.maxTurns,
+            signal,
+            host,
+        };
+    }
+
+    /**
+     * The prompt for a backend turn. A new backend session gets the
+     * conversation so far (it may have started on another model); a resumed
+     * one gets what other models said since its last turn.
+     */
+    private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
+        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex);
+        const transcript = missed.length ? transcriptText(missed, 60_000) : "";
+        if (!transcript) return text;
+        const intro = resume
+            ? "While another model answered in this session, the conversation went on. Here is what happened since your last turn:"
+            : "This conversation started before you joined it (with another model, or before the history was compacted or rewound). Here it is so far:";
+        return `<conversation-so-far>\n${intro}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
+    }
+
+    private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
+        const provider = this.model.provider;
+        const name = getProvider(provider)?.name ?? provider;
+        let promptIndex = this.session.messages.length - 1;
+        const text = parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
+        const images = parts.filter((p): p is ImagePart => p.type === "image");
+        let declined = false;
+        const host: BackendHost = {
+            emit: (e) => this.emitFromBackend(e),
+            mode: () => this.o.mode.get(),
+            permission: async (req) => {
+                const a = await this.backendPermission(req, signal);
+                if (!a.allow && a.stop) declined = true;
+                return a;
+            },
+            askQuestions: async (qs) => {
+                const ask = this.o.host.ui.askQuestion;
+                if (!ask) return undefined;
+                const out: string[][] = [];
+                for (const q of qs) {
+                    const a = await ask(q.question, q.options, Boolean(q.multiSelect));
+                    if (!a) return undefined;
+                    out.push(a.map(redact));
+                }
+                return out;
+            },
+            approvePlan: async (plan) => {
+                if (!this.o.host.ui.approvePlan) return { approved: false, feedback: "This is a non-interactive run, so the plan can't be approved here. Give the complete plan as your final answer." };
+                const r = await this.o.host.ui.approvePlan(plan);
+                return r.feedback ? { ...r, feedback: redact(r.feedback) } : r;
+            },
+            setMode: (m) => {
+                if (this.o.mode.get() !== m) this.o.mode.set(m);
+            },
+            usage: (u, o) => this.recordBackendUsage(u, o),
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
+            drainQueued: () => {
+                const queued = this.o.host.drainQueued?.() ?? [];
+                if (!queued.length) return [];
+                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
+                return [textOf(m)];
+            },
+        };
+        const base = this.backendTurn(signal, host);
+        let stopRounds = 0;
+        let prompt = text;
+        let promptImages = images;
+        while (true) {
+            const resume = this.session.backends.get(provider);
+            this.emit({ type: "request_start" });
+            let result: BackendResult;
+            try {
+                result = await backend.runTurn({ ...base, prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, resumeId: resume?.id });
+                if (result.resumeFailed) {
+                    // Gone, or made in another folder: start a new one with this conversation as context.
+                    this.session.forgetBackendSession(provider);
+                    this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
+                    result = await backend.runTurn({ ...base, prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, resumeId: undefined });
+                }
+            } catch (e) {
+                if (isAbort(e, signal)) return this.interrupted(false);
+                this.emit({ type: "notice", level: "error", message: redact((e as Error).message || String(e)) });
+                this.emit({ type: "turn_end", reason: "error" });
+                return "error";
+            }
+            this.recordBackendTurn(provider, name, result);
+            if (result.reason === "aborted" || signal.aborted) {
+                const r = declined ? this.endBackendTurn(provider, "denied") : this.interrupted(false);
+                this.syncBackend(provider);
+                return r;
+            }
+            if (declined) return this.endBackendTurn(provider, "denied");
+            if (result.reason === "error") {
+                this.emit({ type: "notice", level: "error", message: redact(result.error || `${name} stopped with an error.`) });
+                return this.endBackendTurn(provider, "error");
+            }
+            if (result.reason === "max_turns") {
+                this.emit({ type: "notice", level: "warn", message: `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).` });
+                return this.endBackendTurn(provider, "max_turns");
+            }
+            const settings = this.o.settings();
+            if (settings.hooks?.Stop?.length && stopRounds < 3) {
+                const h = await runHooks(settings, "Stop", { session_id: this.session.meta.id, last_message: result.text }, this.state.cwd, signal).catch(() => undefined);
+                for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
+                if (h?.blocked) {
+                    stopRounds++;
+                    prompt = reminder(`A Stop hook asked you to keep going:\n${redact(h.blocked)}`).text;
+                    promptImages = [];
+                    this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
+                    promptIndex = this.session.messages.length - 1;
+                    this.syncBackend(provider, 1);
+                    continue;
+                }
+            }
+            return this.endBackendTurn(provider, "done");
+        }
+    }
+
+    /** The turn in this session's history, as text: other models (and /export) see what the backend said and did. */
+    private recordBackendTurn(provider: string, name: string, r: BackendResult) {
+        const content: AssistantMessage["content"] = [];
+        if (r.text.trim()) content.push({ type: "text", text: r.text });
+        if (r.actions.length) {
+            const shown = r.actions.slice(0, 50);
+            content.push({ type: "text", text: `[${name} used: ${shown.join(", ")}${r.actions.length > shown.length ? `, and ${r.actions.length - shown.length} more` : ""}]` });
+        }
+        if (content.length) this.session.push({ role: "assistant", content, provider, model: this.model.id, stopReason: r.reason === "done" ? "end_turn" : "other" });
+    }
+
+    /** The backend session has now seen everything up to here (minus `pending` messages it hasn't been sent yet). */
+    private syncBackend(provider: string, pending = 0) {
+        const b = this.session.backends.get(provider);
+        if (b) this.session.setBackendSession(provider, b.id, this.session.messages.length - pending);
+    }
+
+    private endBackendTurn(provider: string, reason: TurnEndReason): TurnEndReason {
+        this.syncBackend(provider);
+        this.emit({ type: "turn_end", reason });
+        return reason;
+    }
+
+    private async compactBackend(backend: AgentBackendClient, opts: { auto: boolean; signal: AbortSignal; instructions?: string }): Promise<boolean> {
+        const provider = this.model.provider;
+        const resume = this.session.backends.get(provider);
+        if (!resume) return false;
+        this.emit({ type: "compact_start", auto: opts.auto });
+        const host: BackendHost = {
+            emit: (e) => {
+                if (e.type === "notice" || e.type === "retry") this.emit(e);
+            },
+            mode: () => this.o.mode.get(),
+            permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),
+            askQuestions: async () => undefined,
+            approvePlan: async () => ({ approved: false }),
+            setMode: () => {},
+            usage: (u, o) => this.recordBackendUsage(u, o),
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
+            drainQueued: () => [],
+        };
+        const r = await backend.compact({ ...this.backendTurn(opts.signal, host), resumeId: resume.id, instructions: opts.instructions });
+        if (r.reason === "aborted") throw new ProviderError("aborted");
+        if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
+        this.contextTokens = 0;
+        this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.` });
+        return true;
+    }
+
+    /**
+     * Backend tool calls use the harness's tool (when there is one) for titles
+     * and rendering. Their output is redacted here, as the harness's own tools
+     * redact theirs (keys in a file the backend read, say).
+     */
+    private emitFromBackend(e: AgentEvent) {
+        if (e.type === "tool_progress") e = { ...e, text: redact(e.text) };
+        else if (e.type === "tool_end") {
+            const d = e.result.display;
+            const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
+            e = { ...e, result: { ...e.result, content: redact(e.result.content), display } };
+        }
+        if (e.type === "tool_start" && !e.tool) {
+            const tool = this.findTool(e.call.name);
+            if (tool) {
+                let title = e.title;
+                try {
+                    title = tool.title(e.call.input as any) || title;
+                } catch {
+                    // keep the backend's title
+                }
+                e = { ...e, tool, title };
+            }
+        }
+        this.emit(e);
+    }
+
+    private recordBackendUsage(usage: Usage, o: { contextTokens?: number; contextWindow?: number }) {
+        const cost = costOf(usage, this.model);
+        this.session.recordUsage(modelRef(this.model), usage, cost.usd);
+        if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;
+        if (o.contextTokens) this.contextTokens = o.contextTokens;
+        this.lastUsageTotal = this.session.messages.length;
+        this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
+    }
+
+    /**
+     * A permission prompt from the backend. Its own permission system decided
+     * to ask; the harness's rules then apply: deny rules (and the harness's
+     * protected files) refuse it, an explicit allow rule approves it, and
+     * anything else goes to the user. The harness's mode defaults never
+     * approve on the user's behalf what the backend wanted confirmed.
+     */
+    private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
+        const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
+        const input = req.input;
+        const mode = this.o.mode.get();
+        const cwd = this.state.cwd;
+        // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
+        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
+        let decision = this.o.checker.check(tool, input, mode, cwd);
+        let ruled = approves(decision);
+        for (const p of req.otherPaths ?? []) {
+            if (decision.behavior === "deny") break;
+            const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd);
+            if (d.behavior === "deny") decision = d;
+            else if (!approves(d)) ruled = false;
+        }
+        if (req.widens) {
+            // More access for the backend's sandbox: never in plan mode, never past a deny rule, never without asking.
+            if (mode === "plan") return { allow: false, message: "Plan mode is active: no extra permissions until the user approves a plan.", stop: false };
+            const deny = this.o.settings().permissions?.deny ?? [];
+            const access: ["read" | "write", string[]][] = [
+                ["read", req.widens.read],
+                ["write", req.widens.write],
+            ];
+            for (const [kind, list] of access) {
+                for (const p of list) {
+                    const abs = expandPath(p, cwd);
+                    const rule = deniedWithin(deny, abs, this.state.projectRoot, kind);
+                    if (rule) return { allow: false, message: `Denied: the permission rule ${rule} covers ${abs}.`, stop: false };
+                    if (this.o.checker.isProtectedArea(abs)) return { allow: false, message: `Denied: ${abs} holds the harness's credential store.`, stop: false };
+                }
+            }
+            ruled = false;
+        }
+        if (decision.behavior === "deny") return { allow: false, message: decision.reason ?? "Denied by a permission rule.", stop: false };
+        let title = req.title ?? tool.name;
+        try {
+            title = tool.title(input as any) || title;
+        } catch {
+            // keep the backend's title
+        }
+        if (ruled) return { allow: true };
+        if (!this.o.host.askPermission) {
+            return { allow: false, message: `Permission to use ${tool.name} was not granted (non-interactive session). ${req.reason ?? ""} Allow it with --allowedTools, a permission rule, or --permission-mode.`.replace(/\s+/g, " ").trim(), stop: false };
+        }
+        let preview = req.preview;
+        if (!preview) {
+            try {
+                preview = await tool.preview?.(input, this.toolContext("", signal));
+            } catch {
+                // preview is optional
+            }
+        }
+        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
+        const ask = {
+            ...decision,
+            behavior: "ask" as const,
+            reason: decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
+            suggestions: decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined),
+            sandbox: undefined,
+            needsClassifier: undefined,
+        };
+        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview });
+        if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
+        if (answer.setMode) this.o.mode.set(answer.setMode);
+        if (answer.rules?.length) {
+            this.o.checker.sessionAllow.push(...answer.rules);
+            if (answer.scope && answer.scope !== "session") this.o.host.saveRules?.(answer.rules, answer.scope);
+        }
+        if (answer.allow) return { allow: true, mode: answer.setMode };
+        const fb = answer.feedback?.trim();
+        if (fb) return { allow: false, message: `The user declined this tool call and said:\n${redact(fb)}`, stop: false, fromUser: true };
+        return { allow: false, message: "The user declined this tool call. Stop and wait for the user to tell you how to proceed; don't retry it.", stop: true };
     }
 
     // -----------------------------------------------------------------------
@@ -945,4 +1259,17 @@ export class Agent {
         if (reason === "error") return `The sub-agent stopped with an error.${report ? ` Its last message:\n${report}` : ""}`;
         return report || "(The sub-agent finished without a report.)";
     }
+}
+
+/** Stands in for a backend tool the harness has no tool of its own for (rules still match its name). */
+function backendTool(name: string, title?: string): Tool<any> {
+    return {
+        name,
+        description: "",
+        parameters: { type: "object" },
+        category: name.startsWith("mcp__") ? "mcp" : "execute",
+        readOnly: false,
+        title: () => title ?? name,
+        run: async () => ({ content: "" }),
+    };
 }
