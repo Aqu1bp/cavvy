@@ -194,7 +194,7 @@ export class OpenAICompatProvider implements ProviderClient {
 
         const payload = JSON.stringify(body);
         // A request that stops sending anything is retried instead of waited on forever.
-        const stall = stallTimer(req.signal);
+        const stall = stallTimer(req.signal, def.id === "vertex");
         const post = async (fresh: boolean) =>
             fetch(`${this.base}/chat/completions`, {
                 method: "POST",
@@ -203,7 +203,7 @@ export class OpenAICompatProvider implements ProviderClient {
                 signal: stall.signal,
             }).catch((e: Error) => {
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
+                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
                 throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
             });
         try {
@@ -220,13 +220,14 @@ export class OpenAICompatProvider implements ProviderClient {
         // An expired token: get a new one and try once more.
         if (res.status === 401 && this.canRefresh()) {
             await res.body?.cancel().catch(() => {});
+            stall.restart();
             res = await post(true);
             stall.touch();
         }
         if (!res.ok || !res.body) {
             const text = await res.text().catch(() => "");
             if (req.signal?.aborted) throw new ProviderError("aborted");
-            if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
+            if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
             throw this.apiError(res.status, res.statusText, text, res.headers.get("retry-after"));
         }
 
@@ -302,7 +303,7 @@ export class OpenAICompatProvider implements ProviderClient {
             }
         } catch (e) {
             if (req.signal?.aborted) throw new ProviderError("aborted");
-            if (stall.stalled()) throw new ProviderError(stallMessage(def.name), undefined, true);
+            if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
             if (e instanceof ProviderError) throw e;
             throw new ProviderError(`Stream from ${def.name} failed: ${(e as Error).message}`, undefined, true);
         }

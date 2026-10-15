@@ -437,6 +437,54 @@ describe("Chat Completions: streaming", () => {
             expect(Date.now() - t0).toBeLessThan(1000);
         });
 
+        test("Vertex, which sends nothing until the reply is ready, gets longer for the first byte", async () => {
+            const prevFirst = stall.firstByteMs;
+            stall.firstByteMs = 1000;
+            try {
+                // Silent for longer than the usual limit, then the whole reply at once.
+                respond = async () => {
+                    await Bun.sleep(400);
+                    return sse([{ choices: [{ index: 0, delta: { content: "whole" }, finish_reason: "stop" }] }]);
+                };
+                const vertex: ProviderDef = { ...CUSTOM, id: "vertex", name: "Vertex AI" };
+                const msg = await new OpenAICompatProvider(vertex, FAKE.openai).stream(req(model, []), () => {});
+                expect(msg.content).toEqual([{ type: "text", text: "whole" }]);
+                // Anyone else still gives up at the usual limit.
+                const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+                expect(err.message).toBe("No response from Custom X for 0s");
+                // The longer wait is only for the first byte, and the message says which limit ran out.
+                respond = async () => {
+                    await Bun.sleep(1500);
+                    return sse([]);
+                };
+                const late = await new OpenAICompatProvider(vertex, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+                expect(late.message).toBe("No response from Vertex AI for 1s");
+                expect(late.retryable).toBe(true);
+                respond = () => sse([{ choices: [{ index: 0, delta: { content: "par" } }] }, { choices: [{ index: 0, delta: { content: "t" }, finish_reason: "stop" }] }], { pauseAfter: 0, pauseMs: 1500 });
+                const t0 = Date.now();
+                const cut = await new OpenAICompatProvider(vertex, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
+                expect(cut.message).toBe("No response from Vertex AI for 0s");
+                expect(Date.now() - t0).toBeLessThan(900);
+                // A rejected token is refreshed and the request sent again: that request waits for its first byte too.
+                class Refreshing extends OpenAICompatProvider {
+                    protected override canRefresh() {
+                        return true;
+                    }
+                }
+                let n = 0;
+                respond = async () => {
+                    if (++n === 1) return new Response("expired", { status: 401 });
+                    await Bun.sleep(400);
+                    return sse([{ choices: [{ index: 0, delta: { content: "again" }, finish_reason: "stop" }] }]);
+                };
+                const again = await new Refreshing(vertex, FAKE.openai).stream(req(model, []), () => {});
+                expect(n).toBe(2);
+                expect(again.content).toEqual([{ type: "text", text: "again" }]);
+            } finally {
+                stall.firstByteMs = prevFirst;
+            }
+        });
+
         test("silence partway through the body", async () => {
             respond = () => sse([{ choices: [{ index: 0, delta: { content: "par" } }] }, { choices: [{ index: 0, delta: { content: "t" }, finish_reason: "stop" }] }], { pauseAfter: 0, pauseMs: 1500 });
             const err = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {}).catch((e) => e);
@@ -895,6 +943,41 @@ describe("Anthropic message conversion", () => {
         expect(sanitizeToolId("a.b:c")).toBe("a_b_c");
         expect(sanitizeToolId("")).toBe("tool");
         expect(sanitizeToolId("x".repeat(100))).toHaveLength(64);
+    });
+});
+
+describe("Anthropic streaming", () => {
+    test("thinking that isn't streamed still says it started", async () => {
+        const { AnthropicProvider } = await import("../src/providers/anthropic");
+        const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+        respond = () =>
+            new Response(
+                [
+                    ev("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }),
+                    // display "omitted": the block opens, gets only its signature, and closes.
+                    ev("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
+                    ev("content_block_delta", { index: 0, delta: { type: "signature_delta", signature: "sig" } }),
+                    ev("content_block_stop", { index: 0 }),
+                    ev("content_block_start", { index: 1, content_block: { type: "text", text: "" } }),
+                    ev("content_block_delta", { index: 1, delta: { type: "text_delta", text: "Done." } }),
+                    ev("content_block_stop", { index: 1 }),
+                    ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 500 } }),
+                    ev("message_stop", {}),
+                ].join(""),
+                { headers: { "content-type": "text/event-stream" } },
+            );
+        const m: ModelInfo = { provider: "anthropic", id: "claude-haiku-5-5", maxOutput: 64_000, supportsReasoning: true, adaptiveThinking: true };
+        const { events, on } = collect();
+        const msg = await new AnthropicProvider(builtin("anthropic", { baseUrl: `http://127.0.0.1:${server.port}` }), FAKE.anthropic).stream(req(m, [{ role: "user", content: [{ type: "text", text: "q" }] }]), on);
+        expect(seen[0]!.body.thinking).toMatchObject({ type: "adaptive", display: "omitted" });
+        expect(events.filter((e) => e.type === "thinking" || e.type === "text")).toEqual([
+            { type: "thinking", text: "" },
+            { type: "text", text: "Done." },
+        ]);
+        expect(msg.content).toEqual([
+            { type: "thinking", text: "", signature: "sig" },
+            { type: "text", text: "Done." },
+        ]);
     });
 });
 

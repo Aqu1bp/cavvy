@@ -229,6 +229,9 @@ export class AnthropicProvider implements ProviderClient {
                         const c = b.content;
                         const n = Array.isArray(c) ? c.length : 0;
                         onEvent({ type: "server_tool", name: "web_search_result", detail: Array.isArray(c) ? `${n} results` : "error" });
+                    } else if (b.type === "thinking" || b.type === "redacted_thinking") {
+                        // With display "omitted" nothing more arrives until the thinking ends; say it started.
+                        onEvent({ type: "thinking", text: "" });
                     } else if (b.type === "fallback") {
                         onEvent({ type: "notice", message: `${b.from.model} declined this request; continuing on ${b.to.model}.` });
                     }

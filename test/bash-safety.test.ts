@@ -34,6 +34,34 @@ describe("analyzeCommand", () => {
         expect(analyzeCommand("ls 2>&1").commands.length).toBe(1);
     });
 
+    test("a redirection's fd, an fd it copies and a /dev/null target aren't arguments", () => {
+        expect(argvs("node -v 2>/dev/null")).toEqual([["node", "-v"]]);
+        expect(argvs("git push 2>&1 | tail -1")).toEqual([["git", "push"], ["tail", "-1"]]);
+        expect(argvs("make >/dev/null 2>&1; ls 2> /dev/null >&2")).toEqual([["make"], ["ls"]]);
+        expect(argvs("cmd 2>>/dev/null 1>&- x")).toEqual([["cmd", "x"]]);
+        // Only a bare number is an fd: these are arguments, and the redirect is stdout's.
+        expect(argvs("echo a2>/dev/null '2'>/dev/null \\2>/dev/null 2 >/dev/null")).toEqual([["echo", "a2", "2", "2", "2"]]);
+        // A line continuation joins `''` and `2` into one quoted word: `uniq input 2` writes the file 2.
+        expect(argvs("uniq input ''\\\n2>/dev/null")).toEqual([["uniq", "input", "2"]]);
+        expect(isReadOnlyCommand("uniq input ''\\\n2>/dev/null")).toBe(false);
+        // Unquoted, the joined word is the fd again.
+        expect(argvs("ls \\\n2>/dev/null")).toEqual([["ls"]]);
+        // `\r`, `\v` and a no-break space are letters to the shell: `>&2\r` writes the file "2\r".
+        for (const ws of ["\r", "\v", " "]) {
+            expect(analyzeCommand(`node -v >&2${ws}`).redirects).toEqual([`2${ws}`]);
+            expect(isReadOnlyCommand(`node -v >&2${ws}`)).toBe(false);
+            expect(argvs(`ls${ws}-la`)).toEqual([[`ls${ws}-la`]]);
+        }
+        expect(argvs("ls\t-la 2>\t/dev/null")).toEqual([["ls", "-la"]]);
+        // zsh passes a two-digit number to the command; keep it.
+        expect(argvs("echo A 10>/dev/null")).toEqual([["echo", "A", "10"]]);
+        // A file target is still a word (deny rules and path checks see it) and still a write.
+        const a = analyzeCommand("sort f 2>err.log");
+        expect(a.commands[0]!.argv).toEqual(["sort", "f", "err.log"]);
+        expect(a.redirects).toEqual(["err.log"]);
+        expect(a.commands[0]!.text).toBe("sort f 2>err.log");
+    });
+
     test("a # comment runs to the end of the line only", () => {
         expect(argvs("ls # ; rm -rf x")).toEqual([["ls"]]);
         expect(argvs("ls #c\nrm x")).toEqual([["ls"], ["rm", "x"]]);
