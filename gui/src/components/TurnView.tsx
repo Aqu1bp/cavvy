@@ -1,11 +1,12 @@
-import { createMemo, createSignal, Index, Match, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, ChevronRight, Info, RotateCcw, SquareTerminal } from "lucide-solid";
-import type { Block, CompactBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { clock, duration, stripAnsi } from "../lib/format";
+import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
+import { AlertCircle, AlertTriangle, ChevronRight, FileDiff, Info, RotateCcw, SquareTerminal } from "lucide-solid";
+import type { Block, CompactBlock, FileDiff as Diff, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
+import { basename, clock, duration, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
-import { prefs } from "../state/prefs";
+import { prefs, setPrefs } from "../state/prefs";
 import { ActivityGroup, groupBlocks } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
+import { DiffStat } from "./blocks/DiffView";
 import { CopyButton, Logo, Spinner } from "./ui/bits";
 
 export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }) {
@@ -134,6 +135,53 @@ export function LiveStatus(p: { state: SessionState; since?: number }) {
     );
 }
 
+/** What a finished turn changed, file by file (its edits' diffs, added up). */
+function turnChanges(t: Turn): { path: string; status: Diff["status"]; added: number; removed: number }[] {
+    const files = new Map<string, { path: string; status: Diff["status"]; added: number; removed: number }>();
+    for (const b of t.blocks) {
+        if (b.t !== "tool" || b.status !== "ok" || !b.diff) continue;
+        const f = files.get(b.diff.path) ?? { path: b.diff.path, status: b.diff.status, added: 0, removed: 0 };
+        f.added += b.diff.added;
+        f.removed += b.diff.removed;
+        files.set(b.diff.path, f);
+    }
+    return [...files.values()];
+}
+
+function ChangesCard(p: { turn: Turn; project: string; branch?: string }) {
+    const files = createMemo(() => turnChanges(p.turn));
+    const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
+    return (
+        <Show when={files().length}>
+            <div class="result-card">
+                <div class="rc-title">{files().length === 1 ? `Changed ${basename(files()[0]!.path)}` : `Changed ${plural(files().length, "file")}`}</div>
+                <div class="rc-sub">
+                    <FileDiff size={14} />
+                    <span class="truncate">{p.project}</span>
+                    <Show when={p.branch}>
+                        <span class="rc-dot">·</span>
+                        <span class="truncate">{p.branch}</span>
+                    </Show>
+                    <span class="rc-dot">·</span>
+                    <DiffStat added={total().added} removed={total().removed} />
+                </div>
+                <div class="rc-actions">
+                    <button class="btn primary" onClick={() => setPrefs({ panel: true, panelTab: "changes" })}>
+                        Review changes
+                    </button>
+                    <span class="rc-files truncate" title={files().map((f) => f.path).join("\n")}>
+                        {files()
+                            .slice(0, 3)
+                            .map((f) => basename(f.path))
+                            .join(", ")}
+                        {files().length > 3 ? ` and ${files().length - 3} more` : ""}
+                    </span>
+                </div>
+            </div>
+        </Show>
+    );
+}
+
 const END_TEXT: Partial<Record<Turn["status"], string>> = {
     aborted: "Interrupted",
     error: "Stopped with an error",
@@ -171,7 +219,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; on
                 <div class="assistant">
                     <Show when={p.turn.prompt}>
                         <div class="assistant-head">
-                            <Logo size={20} />
+                            <Logo size={28} />
                             <span class="assistant-name">Harness</span>
                             <Show when={p.turn.startedAt}>
                                 <span class="assistant-time">{clock(p.turn.startedAt!)}</span>
@@ -201,6 +249,9 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; on
                         </Index>
                         <Show when={showStatus()}>
                             <LiveStatus state={p.state} />
+                        </Show>
+                        <Show when={!running() && !p.turn.archived}>
+                            <ChangesCard turn={p.turn} project={p.state.projectName} branch={p.state.branch} />
                         </Show>
                         <Show when={!running() && p.turn.prompt}>
                             <div class="turn-foot">

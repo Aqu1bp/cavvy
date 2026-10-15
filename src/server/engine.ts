@@ -5,7 +5,7 @@
 
 import { readdirSync, statSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
-import { homedir } from "os";
+import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, harnessHome } from "../config/paths";
 import { loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "../config/trust";
@@ -521,7 +521,13 @@ export class Engine {
         switch (method) {
             case "hello": {
                 const startCwd = this.o.startCwd && this.o.startCwd !== homedir() ? this.o.startCwd : undefined;
-                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: harnessHome(), platform: process.platform, homeDir: homedir(), startCwd } satisfies HelloResult;
+                let user = "";
+                try {
+                    user = userInfo().username;
+                } catch {
+                    user = process.env.USER ?? "";
+                }
+                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: harnessHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));

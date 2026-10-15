@@ -1,42 +1,21 @@
 /* ---- Interaction dock ----------------------------------------------- */
 
 .dock {
-    background: var(--bg-elev);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-lg);
-    padding: 14px 16px;
+    background: var(--bg-card);
+    border-radius: 20px;
+    box-shadow: var(--shadow-float);
+    padding: 18px 20px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    animation: rise 220ms var(--ease-out);
+    gap: 14px;
+    animation: rise 260ms var(--ease-out);
     max-height: 62vh;
     overflow: hidden;
     position: relative;
 }
 
-.dock::before {
-    content: "";
-    position: absolute;
-    inset: 0 0 auto;
-    height: 3px;
-    background: var(--warning);
-}
-
-.dock-question::before {
-    background: var(--info);
-}
-
-.dock-plan::before {
-    background: var(--plan);
-}
-
 .dock.danger {
-    border-color: color-mix(in srgb, var(--danger) 50%, var(--border-strong));
-}
-
-.dock.danger::before {
-    background: var(--danger);
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--danger) 55%, transparent), var(--shadow-float);
 }
 
 .dock-count {
@@ -52,9 +31,9 @@
 }
 
 .dock-icon {
-    width: 30px;
-    height: 30px;
-    border-radius: 9px;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
     display: grid;
     place-items: center;
     flex: none;
@@ -83,10 +62,11 @@
 }
 
 .dock-title {
-    font-weight: 620;
-    font-size: 1rem;
+    font-weight: 600;
+    font-size: 1.07rem;
+    letter-spacing: -0.01em;
     line-height: 1.35;
-    margin-top: 4px;
+    margin-top: 6px;
 }
 
 .dock-sub {
@@ -257,8 +237,7 @@
 
 .dialog {
     background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: 16px;
     box-shadow: var(--shadow-lg);
     max-height: 76vh;
     display: flex;

@@ -23,6 +23,7 @@ body {
     color: var(--fg);
     background: var(--bg);
     line-height: 1.5;
+    letter-spacing: -0.003em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -256,11 +257,11 @@ h3 {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    height: 34px;
+    height: 32px;
     padding: 0 14px;
-    border-radius: var(--radius-md);
-    font-weight: 550;
-    font-size: 0.93rem;
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 0.964rem;
     white-space: nowrap;
     transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast), box-shadow var(--dur-fast), transform 80ms;
     border: 1px solid transparent;
@@ -628,8 +629,7 @@ input[type="range"] {
     position: fixed;
     z-index: 60;
     background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: 12px;
     box-shadow: var(--shadow-lg);
     padding: 5px;
     overflow: auto;
@@ -733,4 +733,14 @@ select:focus-visible {
 
 .hidden {
     display: none !important;
+}
+
+/* Icons: a lighter stroke than the library's default reads calmer at UI sizes. */
+svg.lucide {
+    stroke-width: 1.65;
+}
+
+.btn svg.lucide,
+.send svg.lucide {
+    stroke-width: 2;
 }

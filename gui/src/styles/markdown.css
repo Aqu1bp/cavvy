@@ -1,8 +1,8 @@
 /* Model replies. Sized for reading: a little larger and airier than the UI. */
 
 .md {
-    font-size: 1rem;
-    line-height: 1.65;
+    font-size: 1.036rem;
+    line-height: 1.62;
     color: var(--fg);
     overflow-wrap: anywhere;
     display: flex;
@@ -12,7 +12,7 @@
 }
 
 .md.small {
-    font-size: 0.93rem;
+    font-size: 0.97rem;
     gap: 0.55em;
 }
 
@@ -34,7 +34,7 @@
 .md h4 {
     margin: 0.5em 0 -0.1em;
     line-height: 1.3;
-    font-weight: 620;
+    font-weight: 600;
 }
 
 .md h1 {
@@ -73,7 +73,7 @@
 }
 
 .md strong {
-    font-weight: 620;
+    font-weight: 600;
 }
 
 .md :not(pre) > code {
@@ -128,7 +128,8 @@
 
 .md-table {
     overflow-x: auto;
-    border: 1px solid var(--border);
+    background: var(--bg-card);
+    box-shadow: 0 0 0 1px var(--border);
     border-radius: var(--radius-md);
 }
 
@@ -148,7 +149,7 @@
 
 .md th {
     background: var(--bg-subtle);
-    font-weight: 600;
+    font-weight: 500;
 }
 
 .md tr:last-child td {
@@ -159,7 +160,7 @@
     margin: 0;
     padding: 10px 12px;
     background: var(--bg-code);
-    border: 1px solid var(--border);
+    box-shadow: 0 0 0 1px var(--border);
     border-radius: var(--radius-md);
     overflow-x: auto;
     font-size: 0.82rem;

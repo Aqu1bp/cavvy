@@ -53,7 +53,7 @@ export function Home() {
                             <span class="project-name">{basename(app.homeCwd!)}</span>
                             <span class="project-path truncate">{tildify(app.homeCwd!, app.hello?.homeDir)}</span>
                             <Show when={info()?.branch}>
-                                <span class="chip mono tiny">{info()!.branch}</span>
+                                <span class="chip tiny">{info()!.branch}</span>
                             </Show>
                         </Show>
                         <ChevronDown size={13} />

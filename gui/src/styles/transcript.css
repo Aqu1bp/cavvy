@@ -17,7 +17,7 @@
 .transcript-col {
     max-width: var(--column-w);
     margin: 0 auto;
-    padding: 18px 24px 36px;
+    padding: 18px 28px 44px;
 }
 
 .transcript-end {
@@ -50,11 +50,10 @@
     height: 32px;
     padding: 0 14px;
     border-radius: 999px;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow-md);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-lg);
     font-size: 0.857rem;
-    font-weight: 550;
+    font-weight: 500;
     color: var(--fg);
     z-index: 4;
     animation: rise 200ms var(--ease-out);
@@ -63,7 +62,7 @@
 /* ---- Turns ----------------------------------------------------------- */
 
 .turn {
-    padding: 10px 0 18px;
+    padding: 14px 0 22px;
     /* Turns off screen skip layout and paint: long sessions stay smooth. */
     content-visibility: auto;
     contain-intrinsic-size: auto 320px;
@@ -82,7 +81,7 @@
     justify-content: flex-end;
     align-items: flex-start;
     gap: 6px;
-    margin: 6px 0 22px;
+    margin: 6px 0 26px;
     animation: rise 220ms var(--ease-out);
 }
 
@@ -99,12 +98,12 @@
 }
 
 .user-bubble {
-    max-width: min(82%, 620px);
+    max-width: min(80%, 560px);
     background: var(--bg-user);
-    padding: 10px 16px;
+    padding: 9px 16px;
     border-radius: 20px;
-    font-size: 1rem;
-    line-height: 1.55;
+    font-size: 1.036rem;
+    line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     position: relative;
@@ -150,25 +149,31 @@
 .assistant-head {
     display: flex;
     align-items: center;
-    gap: 9px;
-    margin-bottom: 8px;
+    gap: 10px;
+    margin-bottom: 0;
 }
 
 .assistant-name {
-    font-weight: 620;
-    letter-spacing: -0.005em;
+    font-weight: 600;
+    font-size: 1.036rem;
+    letter-spacing: -0.006em;
 }
 
 .assistant-time {
-    font-size: 0.82rem;
+    font-size: 0.893rem;
     color: var(--fg-subtle);
+    margin-left: -3px;
 }
 
 .assistant-body {
-    padding-left: 29px;
+    padding-left: 38px;
     display: flex;
     flex-direction: column;
     gap: 10px;
+}
+
+.assistant-head + .assistant-body {
+    margin-top: -4px;
 }
 
 .turn-foot {
@@ -244,13 +249,13 @@
 .activity-line {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     max-width: 100%;
-    padding: 3px 8px 3px 4px;
+    padding: 3px 9px 3px 4px;
     margin-left: -4px;
-    border-radius: var(--radius-sm);
+    border-radius: 8px;
     color: var(--fg-muted);
-    font-size: 0.96rem;
+    font-size: 1.036rem;
     min-width: 0;
     transition: background var(--dur-fast), color var(--dur-fast);
 }
@@ -369,7 +374,7 @@
     min-width: 0;
     padding: 5px 8px;
     border-radius: var(--radius-sm);
-    font-size: 0.9rem;
+    font-size: 0.964rem;
     color: var(--fg);
 }
 
@@ -389,13 +394,13 @@
 }
 
 .tool-verb {
-    font-weight: 560;
+    font-weight: 500;
     flex: none;
 }
 
 .tool-arg {
     font-family: var(--font-mono);
-    font-size: 0.82rem;
+    font-size: 0.857rem;
     color: var(--fg-muted);
     flex: 1;
 }
@@ -596,13 +601,14 @@
     margin-top: 10px;
     padding: 12px 16px;
     border-radius: var(--radius-md);
-    background: var(--bg-subtle);
-    border: 1px solid var(--border);
+    background: var(--bg-card);
+    box-shadow: 0 0 0 1px var(--border);
 }
 
 .shell-block {
-    border: 1px solid var(--border);
     border-radius: var(--radius-md);
+    box-shadow: 0 0 0 1px var(--border);
+    background: var(--bg-card);
     overflow: hidden;
 }
 
@@ -611,7 +617,6 @@
     align-items: center;
     gap: 8px;
     padding: 7px 12px;
-    background: var(--bg-subtle);
     font-size: 0.857rem;
     min-width: 0;
 }
@@ -621,7 +626,7 @@
 }
 
 .shell-block .term {
-    border: 0;
+    box-shadow: none;
     border-radius: 0;
     border-top: 1px solid var(--border);
 }
@@ -632,9 +637,9 @@
     margin: 0;
     padding: 10px 12px;
     background: var(--bg-code);
-    border: 1px solid var(--border);
+    box-shadow: 0 0 0 1px var(--border);
     border-radius: var(--radius-md);
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     line-height: 1.55;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -652,9 +657,9 @@
 /* ---- Code blocks ---------------------------------------------------- */
 
 .code {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    border-radius: 12px;
     background: var(--bg-code);
+    box-shadow: 0 0 0 1px var(--border);
     overflow: hidden;
     min-width: 0;
 }
@@ -667,11 +672,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 3px 4px 3px 12px;
+    padding: 4px 6px 4px 14px;
     border-bottom: 1px solid var(--border);
-    font-size: 0.75rem;
+    font-size: 0.786rem;
     color: var(--fg-subtle);
-    font-weight: 550;
+    font-weight: 500;
 }
 
 .code-head .icon-btn {
@@ -681,9 +686,9 @@
 
 .code-body {
     margin: 0;
-    padding: 11px 14px;
+    padding: 12px 16px;
     overflow: auto;
-    font-size: 0.82rem;
+    font-size: 0.857rem;
     line-height: 1.6;
     tab-size: 4;
     color: var(--shiki-foreground);
@@ -701,11 +706,11 @@
 /* ---- Diffs ---------------------------------------------------------- */
 
 .diff {
-    border: 1px solid var(--border);
     border-radius: var(--radius-md);
+    box-shadow: 0 0 0 1px var(--border);
     overflow: hidden;
     background: var(--bg-code);
-    font-size: 0.8rem;
+    font-size: 0.82rem;
 }
 
 .diff-head {
@@ -713,7 +718,6 @@
     align-items: center;
     gap: 8px;
     padding: 7px 12px;
-    background: var(--bg-subtle);
     border-bottom: 1px solid var(--border);
     font-size: 0.857rem;
     min-width: 0;
@@ -925,4 +929,60 @@
     flex-direction: column;
     gap: 10px;
     animation: fade 160ms;
+}
+
+/* ---- A turn's result: what it changed, ready to review ---------------- */
+
+.result-card {
+    display: flex;
+    flex-direction: column;
+    padding: 16px 18px;
+    margin: 6px 0 2px;
+    border-radius: 14px;
+    background: var(--bg-card);
+    box-shadow: var(--shadow-card);
+    animation: rise 320ms var(--ease-out);
+}
+
+.rc-title {
+    font-size: 1.036rem;
+    font-weight: 500;
+    letter-spacing: -0.006em;
+}
+
+.rc-sub {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 3px;
+    color: var(--fg-muted);
+    font-size: 0.929rem;
+    min-width: 0;
+}
+
+.rc-sub svg {
+    color: var(--success);
+    flex: none;
+}
+
+.rc-dot {
+    color: var(--fg-subtle);
+}
+
+.rc-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 14px;
+    min-width: 0;
+}
+
+.rc-actions .btn {
+    flex: none;
+}
+
+.rc-files {
+    color: var(--fg-subtle);
+    font-size: 0.857rem;
+    min-width: 0;
 }

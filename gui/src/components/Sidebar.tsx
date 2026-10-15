@@ -1,5 +1,5 @@
-import { createMemo, createSignal, For, Show } from "solid-js";
-import { Archive, ArchiveRestore, Check, CircleDot, FolderOpen, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings } from "lucide-solid";
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
+import { Archive, ArchiveRestore, Check, CircleAlert, CircleDot, FolderOpen, Hand, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, User } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, isUnread } from "../state/app";
 import { archive, chooseProject, newSession, openProject, pin, rename, toggleSidebar } from "../state/actions";
@@ -9,14 +9,22 @@ import { ago, dayGroup } from "../lib/format";
 import { now } from "../lib/clock";
 import { isTauri, mod, os } from "../lib/platform";
 import { Popover } from "./ui/Popover";
-import { Kbd, Logo, Spinner } from "./ui/bits";
+import { Logo, Spinner } from "./ui/bits";
 
 function StatusMark(p: { s: SessionSummary }) {
     return (
         <span class="sess-mark">
-            <Show when={p.s.status === "running"} fallback={<Show when={p.s.status === "waiting"} fallback={<Show when={p.s.status === "error"}><span class="dot err" title="Stopped with an error" /></Show>}><span class="dot warn pulse" title="Waiting for you" /></Show>}>
-                <Spinner size={12} class="tone-accent" />
-            </Show>
+            <Switch>
+                <Match when={p.s.status === "running"}>
+                    <Spinner size={13} class="tone-accent" />
+                </Match>
+                <Match when={p.s.status === "waiting"}>
+                    <Hand size={14} class="tone-warn" />
+                </Match>
+                <Match when={p.s.status === "error"}>
+                    <CircleAlert size={14} class="tone-err" />
+                </Match>
+            </Switch>
         </span>
     );
 }
@@ -49,13 +57,12 @@ function SessionRow(p: { s: SessionSummary }) {
                     />
                 }
             >
-                <button class="sess-main" onClick={() => void activate(p.s.id)} onDblClick={() => setEditing(true)} title={`${p.s.title}\n${p.s.cwd}`}>
+                <button class="sess-main" onClick={() => void activate(p.s.id)} onDblClick={() => setEditing(true)} title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}>
                     <StatusMark s={p.s} />
                     <span class="sess-title truncate">{p.s.title}</span>
                     <Show when={prefs.groupBy === "date" && app.projects.length > 1}>
                         <span class="sess-proj truncate">{p.s.projectName}</span>
                     </Show>
-                    <span class="sess-time">{(now(), ago(p.s.updatedAt))}</span>
                     <Show when={unread()}>
                         <span class="dot accent" title="New activity" />
                     </Show>
@@ -88,6 +95,18 @@ function SessionRow(p: { s: SessionSummary }) {
             </Show>
         </div>
     );
+}
+
+/** The OS account name, if it names a person (not root or a placeholder). */
+function personName(user?: string): string | undefined {
+    if (!user || /^(root|unknown|admin|user|nobody)$/i.test(user)) return undefined;
+    const words = user.replace(/[._-]+/g, " ").trim().split(/\s+/).filter(Boolean);
+    return words.map((w) => w[0]!.toUpperCase() + w.slice(1)).join(" ") || undefined;
+}
+
+function initials(name: string): string {
+    const parts = name.split(" ");
+    return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : parts[0]!.slice(0, 1)).toUpperCase();
 }
 
 export function Sidebar() {
@@ -132,24 +151,18 @@ export function Sidebar() {
         <aside class={`sidebar ${isTauri && os === "macos" ? "traffic" : ""}`}>
             <div class="sidebar-top" data-tauri-drag-region>
                 <div class="brand" data-tauri-drag-region>
-                    <Logo size={22} />
+                    <Logo size={24} />
                     <span class="brand-name">Harness</span>
                 </div>
                 <span class="grow" data-tauri-drag-region />
                 <button class="icon-btn" title={`Hide sidebar (${mod}+B)`} onClick={toggleSidebar}>
-                    <PanelLeftClose size={16} />
+                    <PanelLeftClose size={17} />
                 </button>
             </div>
             <nav class="side-nav">
-                <button class="nav-item" onClick={() => newSession(app.homeCwd)}>
-                    <Plus size={16} />
+                <button class="nav-item" title={`New session (${mod}+N)`} onClick={() => newSession(app.homeCwd)}>
+                    <Plus size={17} />
                     <span>New session</span>
-                    <Kbd keys={`${mod}+N`} />
-                </button>
-                <button class="nav-item" onClick={() => setPaletteOpen(true)}>
-                    <Search size={16} />
-                    <span>Search</span>
-                    <Kbd keys={`${mod}+K`} />
                 </button>
                 <button
                     class="nav-item"
@@ -158,8 +171,12 @@ export function Sidebar() {
                         if (path) void openProject(path);
                     }}
                 >
-                    <FolderOpen size={16} />
+                    <FolderOpen size={17} />
                     <span>Open project…</span>
+                </button>
+                <button class="nav-item" title={`Search (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
+                    <Search size={17} />
+                    <span>Search</span>
                 </button>
             </nav>
             <div class="side-section-head">
@@ -170,11 +187,11 @@ export function Sidebar() {
                     </span>
                 </Show>
                 <span class="grow" />
-                <button ref={filterBtn} class="icon-btn" title="View options" onClick={() => setFilterOpen(!filterOpen())}>
-                    <ListFilter size={14} />
-                </button>
                 <button class="icon-btn" title="New session" onClick={() => newSession(app.homeCwd)}>
-                    <Plus size={15} />
+                    <Plus size={16} />
+                </button>
+                <button ref={filterBtn} class="icon-btn" title="View options" onClick={() => setFilterOpen(!filterOpen())}>
+                    <ListFilter size={15} />
                 </button>
                 <Popover open={filterOpen()} anchor={() => filterBtn} onClose={() => setFilterOpen(false)} align="end" width={210}>
                     <div class="menu-head">Group by</div>
@@ -194,7 +211,7 @@ export function Sidebar() {
                 <Show when={pinned().length}>
                     <div class="side-group">
                         <div class="side-group-label">
-                            <Pin size={12} /> Pinned
+                            <Pin size={13} /> Pinned <span class="count">{pinned().length}</span>
                         </div>
                         <For each={pinned()}>{(s) => <SessionRow s={s} />}</For>
                     </div>
@@ -212,12 +229,23 @@ export function Sidebar() {
                 </Show>
             </div>
             <div class="sidebar-foot">
-                <button class="nav-item" onClick={() => setSettingsTab("general")}>
+                <div class="profile" title={app.hello ? `${app.hello.user}@${app.hello.host}\n${app.hello.home}` : undefined}>
+                    <span class={`avatar ${personName(app.hello?.user) ? "" : "anon"}`}>
+                        <Show when={personName(app.hello?.user)} fallback={<User size={16} />}>
+                            {(n) => initials(n())}
+                        </Show>
+                    </span>
+                    <span class="profile-text">
+                        <span class="profile-name truncate">{personName(app.hello?.user) ?? "You"}</span>
+                        <span class="profile-sub">
+                            <span class={`conn conn-${app.conn}`} />
+                            <span class="truncate">{app.conn === "open" ? (app.hello?.host ?? "This computer") : "Reconnecting…"}</span>
+                        </span>
+                    </span>
+                </div>
+                <button class="icon-btn" title={`Settings (${mod}+,)`} onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
-                    <span>Settings</span>
-                    <Kbd keys={`${mod}+,`} />
                 </button>
-                <span class={`conn conn-${app.conn}`} title={app.conn === "open" ? "Connected" : app.conn} />
             </div>
             <div class="resize-handle" onPointerDown={onResize} />
         </aside>

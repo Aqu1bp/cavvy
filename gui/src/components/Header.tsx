@@ -54,16 +54,16 @@ export function Header(p: { handle?: SessionHandle }) {
                         </button>
                     </Show>
                     <span class="header-chips" data-tauri-drag-region>
-                        <span class="chip" title={st()!.cwd}>
-                            <FolderGit2 size={12} /> {st()!.projectName}
+                        <span class="meta" title={st()!.cwd}>
+                            <FolderGit2 size={14} /> {st()!.projectName}
                         </span>
                         <Show when={st()!.branch}>
-                            <span class="chip mono" title="Git branch">
-                                <GitBranch size={12} /> {st()!.branch}
+                            <span class="meta" title="Git branch">
+                                <GitBranch size={14} /> {st()!.branch}
                             </span>
                         </Show>
                         <Show when={!st()!.trusted}>
-                            <span class="chip warn" title="This folder's configuration is ignored">
+                            <span class="meta warn" title="This folder's configuration is ignored">
                                 untrusted
                             </span>
                         </Show>
@@ -75,18 +75,18 @@ export function Header(p: { handle?: SessionHandle }) {
                 <div class="header-actions">
                     <Show when={st()!.filesChanged}>
                         <button class={`chip-btn ${prefs.panel && prefs.panelTab === "changes" ? "active" : ""}`} onClick={() => togglePanel("changes")} title="Files changed in this session">
-                            <FileDiff size={13} /> {st()!.filesChanged} {st()!.filesChanged === 1 ? "file" : "files"}
+                            <FileDiff size={15} /> {st()!.filesChanged} {st()!.filesChanged === 1 ? "file" : "files"}
                         </button>
                     </Show>
                     <button class={`chip-btn ${prefs.panel && prefs.panelTab === "context" ? "active" : ""}`} onClick={() => togglePanel("context")} title="Context and cost">
-                        <Ring value={ctx()} size={14} stroke={2.2} />
+                        <Ring value={ctx()} size={15} stroke={2.2} />
                         <span>{st()!.cost > 0 ? usd(st()!.cost) : `${Math.round(ctx() * 100)}%`}</span>
                     </button>
                     <button class={`icon-btn ${prefs.panel ? "active" : ""}`} title={`Toggle panel (${mod}+.)`} onClick={() => togglePanel()}>
-                        <PanelRight size={16} />
+                        <PanelRight size={18} />
                     </button>
                     <button ref={moreBtn} class="icon-btn" title="More" onClick={() => setMenuOpen(!menuOpen())}>
-                        <MoreHorizontal size={16} />
+                        <MoreHorizontal size={18} />
                     </button>
                     <Popover open={menuOpen()} anchor={() => moreBtn} onClose={() => setMenuOpen(false)} align="end" width={230}>
                         <button class="menu-item compact" onClick={() => { setMenuOpen(false); setRewindOpen(true); }}>

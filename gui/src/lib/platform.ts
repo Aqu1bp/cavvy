@@ -142,6 +142,17 @@ export async function notify(title: string, body: string, onClick?: () => void) 
     };
 }
 
+/** Match the native window chrome (title bar, traffic lights) to the app's light or dark theme. */
+export async function setNativeTheme(scheme: "light" | "dark") {
+    if (!isTauri) return;
+    try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().setTheme(scheme);
+    } catch {
+        // older webviews or a missing permission: the chrome keeps the system theme
+    }
+}
+
 /** The app window has focus (for deciding whether to notify). */
 export function focused(): boolean {
     return document.visibilityState === "visible" && document.hasFocus();

@@ -3,16 +3,17 @@
 
 import { createEffect, createRoot, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
+import { setNativeTheme } from "../lib/platform";
 
 export type ThemeId = "light" | "paper" | "dark" | "midnight" | "dusk" | "contrast";
 export type AccentId = "blue" | "indigo" | "violet" | "pink" | "red" | "orange" | "green" | "teal" | "graphite";
 
 export const THEMES: { id: ThemeId; name: string; scheme: "light" | "dark"; swatch: [string, string, string, string] }[] = [
-    { id: "light", name: "Light", scheme: "light", swatch: ["#ffffff", "#f7f7f5", "#1c1c1f", "#2f6bff"] },
-    { id: "paper", name: "Paper", scheme: "light", swatch: ["#fbf9f5", "#f3eee6", "#2b2520", "#c4572a"] },
-    { id: "dark", name: "Dark", scheme: "dark", swatch: ["#161618", "#111113", "#ededef", "#6e9bff"] },
-    { id: "midnight", name: "Midnight", scheme: "dark", swatch: ["#0c111d", "#090d17", "#e3e9f6", "#7c9dff"] },
-    { id: "dusk", name: "Dusk", scheme: "dark", swatch: ["#1a1724", "#15121e", "#e9e4f4", "#c4a7e7"] },
+    { id: "light", name: "Light", scheme: "light", swatch: ["#f8f8f8", "#ffffff", "#1d1d1f", "#2f6bff"] },
+    { id: "paper", name: "Paper", scheme: "light", swatch: ["#f6f2eb", "#fffdf9", "#2b2520", "#c4572a"] },
+    { id: "dark", name: "Dark", scheme: "dark", swatch: ["#131315", "#1c1c1f", "#ececee", "#6e9bff"] },
+    { id: "midnight", name: "Midnight", scheme: "dark", swatch: ["#0a0e18", "#111827", "#e3e9f6", "#7c9dff"] },
+    { id: "dusk", name: "Dusk", scheme: "dark", swatch: ["#15121d", "#1e1a29", "#e9e4f4", "#c4a7e7"] },
     { id: "contrast", name: "High contrast", scheme: "dark", swatch: ["#000000", "#000000", "#ffffff", "#5cb2ff"] },
 ];
 
@@ -94,7 +95,9 @@ createRoot(() => {
         const d = document.documentElement;
         const theme = activeTheme();
         d.dataset.theme = theme;
-        d.dataset.scheme = THEMES.find((t) => t.id === theme)?.scheme ?? "light";
+        const scheme = THEMES.find((t) => t.id === theme)?.scheme ?? "light";
+        d.dataset.scheme = scheme;
+        void setNativeTheme(scheme);
         if (prefs.accent) d.dataset.accent = prefs.accent;
         else delete d.dataset.accent;
         d.dataset.density = prefs.density;

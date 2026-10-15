@@ -7,40 +7,34 @@
 .composer-box {
     position: relative;
     background: var(--bg-input);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-md);
-    transition: border-color var(--dur), box-shadow var(--dur);
+    border-radius: 20px;
+    box-shadow: var(--shadow-card);
+    transition: box-shadow 260ms var(--ease-out);
 }
 
+/* Focus lifts the box a little; no colored ring. */
 .composer-box:focus-within {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
-    box-shadow: var(--shadow-md), var(--ring);
+    box-shadow: var(--shadow-float);
 }
 
 .composer.v-home .composer-box {
-    box-shadow: var(--shadow-lg);
+    box-shadow: var(--shadow-float);
 }
 
 .composer.dragging .composer-box {
-    border-style: dashed;
-    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent), var(--shadow-float);
     background: var(--accent-softer);
 }
 
 .composer.shell .composer-box {
-    border-color: color-mix(in srgb, var(--warning) 55%, var(--border-strong));
-}
-
-.composer.shell .composer-box:focus-within {
-    box-shadow: var(--shadow-md), 0 0 0 3px var(--warning-soft);
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--warning) 55%, transparent), var(--shadow-card);
 }
 
 .composer-input {
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    padding: 14px 18px 4px;
+    padding: 15px 18px 4px;
 }
 
 .composer textarea {
@@ -48,16 +42,16 @@
     resize: none;
     border: 0;
     background: transparent;
-    font-size: 1rem;
+    font-size: 1.036rem;
     line-height: 1.55;
-    min-height: 26px;
+    min-height: 24px;
     max-height: 40vh;
     padding: 0;
     overflow-y: auto;
 }
 
 .composer.v-home textarea {
-    min-height: 52px;
+    min-height: 56px;
 }
 
 .composer.shell textarea {
@@ -77,14 +71,20 @@
 .composer-bar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px 8px 8px 10px;
+    gap: 2px;
+    padding: 6px 9px 9px 10px;
     min-width: 0;
 }
 
 .composer-bar .icon-btn {
-    width: 30px;
-    height: 30px;
+    width: 32px;
+    height: 32px;
+    color: var(--fg-muted);
+}
+
+.composer-bar .chip-btn {
+    font-size: 0.929rem;
+    color: var(--fg-muted);
 }
 
 .mode-default.chip-btn {
@@ -107,11 +107,11 @@
     color: var(--danger);
 }
 
-.chip-btn.mode-acceptEdits,
-.chip-btn.mode-plan,
-.chip-btn.mode-auto,
-.chip-btn.mode-bypassPermissions {
-    background: color-mix(in srgb, currentColor 10%, transparent);
+.chip-btn.mode-acceptEdits:hover,
+.chip-btn.mode-plan:hover,
+.chip-btn.mode-auto:hover,
+.chip-btn.mode-bypassPermissions:hover {
+    background: color-mix(in srgb, currentColor 9%, transparent);
 }
 
 .ctx {
@@ -141,7 +141,7 @@
 }
 
 .send:disabled {
-    opacity: 0.25;
+    opacity: 0.18;
 }
 
 .send.stop {
@@ -223,7 +223,6 @@
     right: 0;
     bottom: calc(100% + 8px);
     background: var(--bg-elev);
-    border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
     padding: 5px;

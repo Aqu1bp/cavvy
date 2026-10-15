@@ -405,6 +405,9 @@ export interface HelloResult {
     home: string;
     platform: string;
     homeDir: string;
+    /** Who's signed in to this machine, and its name (the sidebar's profile). */
+    user: string;
+    host: string;
     /** The folder the server was started in, when it's a project. */
     startCwd?: string;
 }
