@@ -13,7 +13,7 @@
 import { existsSync, lstatSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { analyzeCommand, commandsWithDirs, effectiveArgv, gitSubcommand, readSmallFile } from "./bash-safety";
+import { commandsWithDirs, gitSubcommand, readSmallFile } from "./bash-safety";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -283,14 +283,33 @@ export function sandboxArgv(s: Sandbox, shell: string, script: string): string[]
     return ["bwrap", ...bwrapArgs(s.policy), "--", shell, "-c", script];
 }
 
-const NET_SUBCOMMANDS: Record<string, RegExp> = {
-    npm: /^(install|i|add|ci|update|up|upgrade|outdated|audit|publish|unpublish|login|adduser|view|info|show|search|create|init|exec|pack|deprecate|dist-tag|owner|access|token|whoami)$/,
-    pnpm: /^(install|i|add|update|up|upgrade|outdated|audit|publish|dlx|create|fetch|import|login|view|info)$/,
-    yarn: /^(install|add|upgrade|up|outdated|audit|publish|dlx|create|login|info|npm)$/,
-    bun: /^(install|i|add|a|update|upgrade|outdated|publish|create|x|pm)$/,
+/**
+ * Subcommands that need only the network, and work in the Seatbelt sandbox
+ * through its proxy once given the hosts (sandboxCacheEnv gives them a cache).
+ */
+const NETWORK_SUBCOMMANDS: Record<string, RegExp> = {
+    npm: /^(install|i|add|ci|update|up|upgrade|outdated|audit|view|info|show|search|create|init|exec|pack)$/,
+    pnpm: /^(install|i|add|update|up|upgrade|outdated|audit|dlx|create|fetch|import|view|info)$/,
+    yarn: /^(install|add|upgrade|up|outdated|audit|dlx|create|info)$/,
+    bun: /^(install|i|add|a|update|outdated|create|x|pm)$/,
     pip: /^(install|download|search|index)$/,
     pip3: /^(install|download|search|index)$/,
-    uv: /^(add|sync|lock|pip|tool|python|venv|init|run|publish|self)$/,
+    uv: /^(add|sync|lock|pip|venv|init|run)$/,
+};
+/** Programs that need only the network. */
+const NETWORK_PROGRAMS = new Set(["curl", "wget", "http", "https", "xh", "npx", "bunx", "pnpx"]);
+
+/**
+ * Subcommands that need the network and more: credentials (publishing,
+ * logging in, git remotes), or writing to the home directory (global tools,
+ * toolchains, caches that are also where installs live).
+ */
+const HOST_SUBCOMMANDS: Record<string, RegExp> = {
+    npm: /^(publish|unpublish|login|adduser|deprecate|dist-tag|owner|access|token|whoami)$/,
+    pnpm: /^(publish|login)$/,
+    yarn: /^(publish|login|npm)$/,
+    bun: /^(publish|upgrade)$/,
+    uv: /^(tool|python|publish|self)$/,
     poetry: /^(add|install|update|lock|publish|search|self)$/,
     cargo: /^(add|install|update|fetch|publish|search|login|generate-lockfile|vendor)$/,
     go: /^(get|install|mod)$/,
@@ -304,40 +323,94 @@ const NET_SUBCOMMANDS: Record<string, RegExp> = {
     gradle: /./,
     gradlew: /./,
 };
-/** Programs that need the network or services outside the sandbox whatever their arguments. */
+/** Programs that need services outside the sandbox whatever their arguments (credentials, sockets, other processes). */
 const HOST_PROGRAMS = new Set([
-    "curl", "wget", "http", "https", "xh", "ssh", "scp", "sftp", "rsync", "ftp", "telnet", "nc", "ncat", "gh", "glab", "hub",
+    "ssh", "scp", "sftp", "rsync", "ftp", "telnet", "nc", "ncat", "gh", "glab", "hub",
     "docker", "podman", "docker-compose", "kubectl", "helm", "terraform", "tofu", "pulumi", "aws", "gcloud", "gsutil", "az",
     "fly", "flyctl", "vercel", "netlify", "heroku", "firebase", "wrangler", "railway", "brew", "apt", "apt-get", "yum", "dnf",
-    "pacman", "port", "snap", "pipx", "npx", "bunx", "pnpx", "open", "osascript", "pbcopy", "pbpaste", "security", "launchctl",
+    "pacman", "port", "snap", "pipx", "open", "osascript", "pbcopy", "pbpaste", "security", "launchctl",
     "crontab", "say", "afplay", "shortcuts", "sudo", "kill", "pkill", "killall",
 ]);
 const LOCAL_URL = /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/;
 
+export interface AccessNeeded {
+    /** Something that needs more than the network (credentials, other processes, system services): it can't run sandboxed. */
+    host?: string;
+    /** Something that needs only the network: in the Seatbelt sandbox it can, given the hosts. */
+    network?: string;
+}
+
 /**
- * What a command needs from outside the sandbox (the network, other
- * processes, system services), or undefined. A guess from the command text,
- * used only to skip a sandboxed attempt that would fail: a command it misses
- * fails in the sandbox and can be retried outside it.
+ * What a command needs from outside the sandbox, as a guess from its text.
+ * It's used to skip a sandboxed attempt that would fail, and to tell the
+ * model to list hosts: a command it misses fails in the sandbox and can be
+ * retried with them, or outside it.
  */
-export function needsHostAccess(cmd: string): string | undefined {
-    for (const c of analyzeCommand(cmd).commands) {
-        const argv = effectiveArgv(c.argv);
+export function accessNeeded(cmd: string, cwd?: string): AccessNeeded {
+    const out: AccessNeeded = {};
+    for (const { argv, dir, text } of commandsWithDirs(cmd, cwd)) {
         const prog = (argv[0] ?? "").split("/").pop()!;
         const args = argv.slice(1);
         const sub = prog === "git" ? argv[gitSubcommand(argv).index] : args.find((a) => !a.startsWith("-"));
-        if (HOST_PROGRAMS.has(prog)) {
-            // Fetching from a local dev server works inside.
+        if (NETWORK_PROGRAMS.has(prog)) {
+            // `curl --version` needs nothing.
+            if (!sub) continue;
+            // Fetching from a local dev server works inside without any.
             if (/^(curl|wget|http|https|xh)$/.test(prog) && args.some((a) => LOCAL_URL.test(a)) && !args.some((a) => /^https?:\/\//.test(a) && !LOCAL_URL.test(a))) continue;
-            // So does managing processes the same command started.
-            if (/^(kill|pkill)$/.test(prog) && /%\d|\$!/.test(c.text)) continue;
-            return prog;
+            // `npx jest` runs the project's own copy (pnpx always downloads).
+            if ((prog === "npx" || prog === "bunx") && dir && hasLocalBin(dir, sub)) continue;
+            out.network ??= prog;
+            continue;
         }
-        const re = NET_SUBCOMMANDS[prog];
-        if (re && sub && re.test(sub)) return `${prog} ${sub}`;
-        if (/^python[\d.]*$/.test(prog) && args[0] === "-m" && /^(pip|ensurepip)$/.test(args[1] ?? "") && /\b(install|download)\b/.test(args.join(" "))) return `${prog} -m ${args[1]}`;
+        if (HOST_PROGRAMS.has(prog)) {
+            // Managing processes the same command started works inside.
+            if (/^(kill|pkill)$/.test(prog) && /%\d|\$!/.test(text)) continue;
+            out.host ??= prog;
+            continue;
+        }
+        if (prog === "git" && sub === "clone") {
+            // Over https a public repository clones fine; ssh and private ones need the user's keys.
+            const rest = argv.slice(gitSubcommand(argv).index + 1);
+            if (rest.some((a) => /^https:\/\//.test(a)) && !rest.some((a) => /^(ssh|git):\/\/|^[\w.-]+@[\w.-]+:/.test(a))) out.network ??= "git clone";
+            else out.host ??= "git clone";
+            continue;
+        }
+        if (sub && HOST_SUBCOMMANDS[prog]?.test(sub)) out.host ??= `${prog} ${sub}`;
+        else if (sub && NETWORK_SUBCOMMANDS[prog]?.test(sub)) out.network ??= `${prog} ${sub}`;
+        else if (/^python[\d.]*$/.test(prog) && args[0] === "-m" && /^(pip|ensurepip)$/.test(args[1] ?? "") && /\b(install|download)\b/.test(args.join(" "))) out.network ??= `${prog} -m ${args[1]}`;
     }
-    return undefined;
+    return out;
+}
+
+/** What a command needs from outside the sandbox (the network, other processes, system services), or undefined. */
+export function needsHostAccess(cmd: string, cwd?: string): string | undefined {
+    const a = accessNeeded(cmd, cwd);
+    return a.host ?? a.network;
+}
+
+/** A plain name (no version, no scope) installed in node_modules/.bin here or in a directory above, as npx and bunx look for it. */
+function hasLocalBin(dir: string, name: string): boolean {
+    if (!/^[\w.-]+$/.test(name)) return false;
+    for (let d = dir; ; d = dirname(d)) {
+        if (existsSync(join(d, "node_modules", ".bin", name))) return true;
+        if (dirname(d) === d) return false;
+    }
+}
+
+/**
+ * Package caches a sandboxed command can write: npm, Bun and uv won't run
+ * with theirs in the home directory read-only. Only sandboxed commands use
+ * them, so what one leaves there never reaches a command outside.
+ *
+ * With network access, Corepack gets a home there too, so it can fetch the
+ * pnpm or yarn a project pins; without, it keeps the user's, where the
+ * versions already downloaded are.
+ */
+export function sandboxCacheEnv(network = false): Record<string, string> {
+    const dir = join(real(tmpdir()), "harness-sandbox-cache");
+    const env: Record<string, string> = { npm_config_cache: join(dir, "npm"), BUN_INSTALL_CACHE_DIR: join(dir, "bun"), UV_CACHE_DIR: join(dir, "uv"), PIP_CACHE_DIR: join(dir, "pip") };
+    if (network) env.COREPACK_HOME = join(dir, "corepack");
+    return env;
 }
 
 // `/` so a program given by path (/bin/rm) counts too.
@@ -420,4 +493,12 @@ export function blockedBySandbox(output: string): boolean {
 }
 
 export const SANDBOX_HINT =
+    "[This ran in the auto-mode sandbox: no network except localhost and the hosts in allowedHosts, writes only inside the project and temp directories, no credential files, no signals to other processes. If it failed for want of a host, run it again listing the host in allowedHosts; if it failed for something else the sandbox blocks, run it again with dangerouslyDisableSandbox: true. The safety reviewer or the user then decides.]";
+
+/** bubblewrap has no proxy: a sandboxed command there gets no network at all. */
+const BWRAP_HINT =
     "[This ran in the auto-mode sandbox: no network except localhost, writes only inside the project and temp directories, no credential files, no signals to other processes. If the failure comes from that, run the command again with dangerouslyDisableSandbox: true; the safety reviewer or the user then decides.]";
+
+export function sandboxHint(kind: SandboxKind): string {
+    return kind === "seatbelt" ? SANDBOX_HINT : BWRAP_HINT;
+}

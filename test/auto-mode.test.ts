@@ -64,7 +64,7 @@ async function runAuto(opts: {
         model: { provider: "test", id: "test" } as any,
         client: { stream: async (req: ChatRequest) => opts.script(req, ++n) } as any,
         settings: () => settings,
-        checker: new PermissionChecker(() => settings, opts.ws, () => opts.sandbox ?? true),
+        checker: new PermissionChecker(() => settings, opts.ws, () => ((opts.sandbox ?? true) ? "seatbelt" : undefined)),
         classifier: { classify: async (c: ClassifierInput) => (run.reviews.push(c), opts.verdict?.(c) ?? { decision: "allow", reason: "routine" }) } as any,
         tools: (opts.tools ?? ["Bash", "Read", "Task"]).map(tool),
         mode: { get: () => "auto", set() {} },
@@ -112,6 +112,32 @@ describe.skipIf(!seatbelt)("sandboxed commands (Seatbelt)", () => {
         expect(existsSync(join(ws, ".git", "hooks", "pre-commit"))).toBe(false);
     });
 
+    test("a command that needs the network but lists no hosts is turned back with advice, before running or review", async () => {
+        const ws = workspace();
+        const r = await runAuto({ ws, prompt: "add lodash", script: oneCommand({ command: "npm install lodash && touch ran.txt" }) });
+        expect(r.reviews).toHaveLength(0);
+        expect(r.asked).toBe(0);
+        expect(r.results[0]).toContain('allowedHosts naming the hosts it needs (probably ["registry.npmjs.org"]');
+        expect(existsSync(join(ws, "ran.txt"))).toBe(false);
+    });
+
+    test("with hosts it's reviewed, then runs sandboxed, reaching only those", async () => {
+        const ws = workspace();
+        const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("from the listed host") });
+        try {
+            const command = `NO_PROXY= no_proxy= curl -fsS -m 5 http://127.0.0.1:${server.port}/ && NO_PROXY= no_proxy= curl -fsS -m 5 http://1.1.1.1/`;
+            const r = await runAuto({ ws, prompt: "check the local server", script: oneCommand({ command, allowedHosts: ["127.0.0.1"] }) });
+            expect(r.reviews).toHaveLength(1);
+            expect(r.reviews[0]!.sandboxed).toBe(true);
+            expect((r.reviews[0]!.input as { allowedHosts: string[] }).allowedHosts).toEqual(["127.0.0.1"]);
+            expect(r.events.find((e) => e.type === "tool_approved")).toMatchObject({ reason: "routine", sandboxed: true });
+            expect(r.results[0]).toStartWith("from the listed host");
+            expect(r.results[0]).toContain("The sandbox refused connections to 1.1.1.1:80");
+        } finally {
+            server.stop(true);
+        }
+    });
+
     test("approved by the user after the reviewer escalated, it still runs sandboxed", async () => {
         const ws = workspace();
         let n = 0;
@@ -121,7 +147,7 @@ describe.skipIf(!seatbelt)("sandboxed commands (Seatbelt)", () => {
             model: { provider: "test", id: "test" } as any,
             client: { stream: async () => (n++ === 0 ? toolCall("c1", "Bash", { command: "rm a.txt && sh w.sh" }) : text("done")) } as any,
             settings: () => settings,
-            checker: new PermissionChecker(() => settings, ws, () => true),
+            checker: new PermissionChecker(() => settings, ws, () => "seatbelt"),
             classifier: { classify: async () => ({ decision: "escalate", reason: "deletes a file" }) } as any,
             tools: [tool("Bash")],
             mode: { get: () => "auto", set() {} },

@@ -13,8 +13,10 @@
 //   9. per-category defaults by mode (below)
 //
 // Auto mode's shell defaults: commands run in the sandbox when there is one
-// (commands that delete things get the reviewer's look first); what can't be
-// sandboxed (needs the network, or the model opted out after a sandbox
+// (commands that delete things get the reviewer's look first). With Seatbelt a
+// command can list the hosts it needs (allowedHosts): the reviewer sees them,
+// and the sandbox opens them for that command only. What can't be sandboxed
+// (needs more than the network, or the model opted out after a sandbox
 // failure) goes to the reviewer and runs unsandboxed if it's allowed. Without
 // a sandbox, read-only commands run and the rest go to the reviewer.
 
@@ -24,8 +26,8 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import type { Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { analyzeCommand, configTarget, dangerousReason, ENV_FILE, isReadOnlyCommand, pushesDefaultBranch, sensitiveTarget, suggestBashRules } from "./bash-safety";
-import { looksDestructive, needsHostAccess, sandboxEnabled } from "./sandbox";
+import { analyzeCommand, configTarget, dangerousReason, effectiveArgv, ENV_FILE, isReadOnlyCommand, pushesDefaultBranch, sensitiveTarget, suggestBashRules } from "./bash-safety";
+import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, type SandboxKind } from "./sandbox";
 import { isReadOnly } from "../tools/types";
 import { canonical, expandPath, isInside } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
@@ -67,9 +69,13 @@ export class PermissionChecker {
     constructor(
         private settings: () => Settings,
         private root: string,
-        /** Whether auto mode can run shell commands sandboxed here (replaceable in tests). */
-        readonly sandboxAvailable: () => boolean = () => sandboxEnabled(settings().sandbox),
+        /** The sandbox auto mode runs shell commands in here, if any (replaceable in tests). */
+        readonly sandbox: () => SandboxKind | undefined = () => (sandboxEnabled(settings().sandbox) ? sandboxKind() : undefined),
     ) {}
+
+    sandboxAvailable(): boolean {
+        return this.sandbox() !== undefined;
+    }
 
     workspaceRoots(): string[] {
         return [this.root, ...(this.settings().permissions?.additionalDirectories ?? []).map((d) => expandPath(d, this.root))].map((p) => canonical(p));
@@ -177,16 +183,24 @@ export class PermissionChecker {
                 if (tool.name === "Bash") {
                     const cmd = t.command ?? "";
                     const suggestions = suggestBashRules(cmd);
-                    const sandbox = mode === "auto" && this.canSandbox(input, cmd);
+                    const access = accessNeeded(cmd, cwd);
+                    const hosts = allowedHostsOf(input);
+                    const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true ? this.sandbox() : undefined;
+                    // Seatbelt can open hosts for a command (through its proxy); bubblewrap can't, so
+                    // there a command that wants the network runs outside, after review.
+                    const sandbox = kind !== undefined && !access.host && (kind === "seatbelt" || (!access.network && !hosts.length));
+                    const opensHosts = sandbox && hosts.length > 0;
                     const sensitive = sensitiveTarget(cmd, { cwd, harnessHome: harnessHome() });
+                    if (sensitive && !(mode === "auto" && sensitive === ENV_FILE)) return { behavior: "ask", reason: `This command reads or touches ${sensitive}, which may contain credentials.` };
+                    // It would only fail in the sandbox: say how to ask for the network before running it.
+                    if (sandbox && access.network && !hosts.length) return { behavior: "deny", reason: networkAdvice(access.network, cmd) };
                     if (sensitive) {
-                        const reason = `This command reads or touches ${sensitive}, which may contain credentials.`;
                         // Using a .env (loading it to run the tests, creating one from the
                         // example) is routine; printing or sending it isn't. The reviewer tells them apart.
-                        if (mode === "auto" && sensitive === ENV_FILE) return { behavior: "ask", needsClassifier: true, sandbox, reason, suggestions };
-                        return { behavior: "ask", reason };
+                        return { behavior: "ask", needsClassifier: true, sandbox, reason: `This command reads or touches ${sensitive}, which may contain credentials.`, suggestions };
                     }
-                    if (isReadOnlyCommand(cmd)) {
+                    // Opening hosts always takes the reviewer, read-only command or not.
+                    if (isReadOnlyCommand(cmd) && !opensHosts) {
                         // Even read-only git runs programs from a repo's config (core.fsmonitor,
                         // core.sshCommand), and a sandboxed command can set one up (in /tmp, say).
                         // So in auto mode with a sandbox these run in it, and one that can't (it
@@ -201,6 +215,7 @@ export class PermissionChecker {
                         // The sandbox contains everything but damage inside the project, so deletions get a look.
                         const destructive = looksDestructive(cmd, cwd);
                         if (destructive) return { behavior: "ask", needsClassifier: true, sandbox, reason: `This command deletes or discards work (${destructive}).`, suggestions };
+                        if (opensHosts) return { behavior: "ask", needsClassifier: true, sandbox, reason: `This command opens network access to ${hosts.join(", ")}.`, suggestions };
                         return { behavior: "allow", sandbox, reason: "sandboxed" };
                     }
                     return { behavior: "ask", needsClassifier: true, suggestions };
@@ -248,11 +263,6 @@ export class PermissionChecker {
         return asks.length ? `ask:${[...new Set(asks)].sort().join("\0")}` : undefined;
     }
 
-    /** Auto mode can run this command in the sandbox: one exists, the model didn't opt out, and it doesn't plainly need the network. */
-    private canSandbox(input: any, cmd: string): boolean {
-        return input?.dangerouslyDisableSandbox !== true && this.sandboxAvailable() && !needsHostAccess(cmd);
-    }
-
     /** Inside the system temp directories (symlinks resolved, so a link can't point elsewhere). */
     private inTemp(p: string): boolean {
         const c = canonical(p);
@@ -294,6 +304,35 @@ export class PermissionChecker {
         const home = FOLD(homedir());
         return pathForms(p).some((f) => SENSITIVE_HOME.some((s) => isInside(f, join(home, FOLD(s)))) || /(^|\/)\.env(?!\.(example|sample|template|dist)$)(\.|$)/.test(f));
     }
+}
+
+/** The Bash tool's allowedHosts (validated by the tool before the check). */
+function allowedHostsOf(input: any): string[] {
+    const h = input?.allowedHosts;
+    return Array.isArray(h) ? h.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** For a command that needs the network but listed no hosts. */
+function networkAdvice(what: string, cmd: string): string {
+    const likely = likelyHosts(cmd);
+    return `In auto mode, a command that uses the network (here ${what}) runs in the sandbox, which opens only the hosts the command lists. Run it again with allowedHosts naming the hosts it needs${likely.length ? ` (probably ${JSON.stringify(likely)}, unless the project uses another registry)` : ""}; the safety reviewer checks them. If it needs more than the network (SSH keys, stored credentials, other programs), set dangerouslyDisableSandbox: true instead.`;
+}
+
+/** Hosts a command probably needs: the ones in its URLs, and the default registries of the package managers in it. */
+export function likelyHosts(cmd: string): string[] {
+    const out = new Set<string>();
+    for (const m of cmd.matchAll(/\bhttps?:\/\/(?:[^/\s@'"]*@)?(\[[^\]\s]+\]|[^/\s:'"?#]+)/g)) {
+        const h = m[1]!.toLowerCase();
+        if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(h)) out.add(h);
+    }
+    for (const c of analyzeCommand(cmd).commands) {
+        const argv = effectiveArgv(c.argv);
+        const prog = (argv[0] ?? "").split("/").pop()!;
+        if (/^(npm|npx|pnpm|pnpx|bun|bunx|yarn)$/.test(prog)) out.add("registry.npmjs.org");
+        if (prog === "yarn") out.add("registry.yarnpkg.com");
+        if (/^(pip3?|uv)$/.test(prog) || (/^python[\d.]*$/.test(prog) && argv[1] === "-m" && /^pip/.test(argv[2] ?? ""))) out.add("pypi.org").add("files.pythonhosted.org");
+    }
+    return [...out];
 }
 
 /** `//abs/dir/**` rule for the directory containing an absolute path. */

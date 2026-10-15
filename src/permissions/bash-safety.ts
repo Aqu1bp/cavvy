@@ -704,8 +704,8 @@ export function headBranch(dir: string): string | undefined {
  * The commands of a command line with the directory each runs in, following
  * `cd`. null: a `cd` the text doesn't settle (`cd $DIR`, `cd -`, `cd ~x`).
  */
-export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: string[]; dir: string | null | undefined }[] {
-    const out: { argv: string[]; dir: string | null | undefined }[] = [];
+export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: string[]; dir: string | null | undefined; text: string }[] {
+    const out: { argv: string[]; dir: string | null | undefined; text: string }[] = [];
     let dir: string | null | undefined = cwd;
     for (const c of analyzeCommand(cmd).commands) {
         const argv = effectiveArgv(c.argv);
@@ -714,7 +714,7 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: 
             if (dir !== undefined) dir = dir === null || to === undefined || /^[-~]|\$/.test(to) || /\$/.test(c.text) ? null : resolve(dir, to);
             continue;
         }
-        out.push({ argv, dir });
+        out.push({ argv, dir, text: c.text });
     }
     return out;
 }

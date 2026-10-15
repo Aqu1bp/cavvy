@@ -392,7 +392,7 @@ describe("Bash", () => {
     });
 
     describe("auto mode", () => {
-        const withSandbox = (available: boolean) => new PermissionChecker(() => settings, W, () => available);
+        const withSandbox = (available: boolean | "bwrap") => new PermissionChecker(() => settings, W, () => (available === "bwrap" ? "bwrap" : available ? "seatbelt" : undefined));
         const auto = (c: Checker, input: unknown) => c.check(T("Bash"), input, "auto", W);
 
         test("without a sandbox, non-read-only commands go to the classifier and run unsandboxed", () => {
@@ -412,14 +412,82 @@ describe("Bash", () => {
             },
         );
 
-        test.each(["npm install lodash", "git push", "curl https://example.com", "gh pr create --fill", "docker build ."])(
-            "%p needs the network: classifier, unsandboxed",
+        test.each(["git push", "git fetch origin", "git clone git@github.com:a/b.git", "gh pr create --fill", "docker build .", "npm whoami", "bun upgrade", "uv tool install ruff"])(
+            "%p needs more than the network: classifier, unsandboxed, whatever hosts it lists",
             (cmd) => {
-                const d = auto(withSandbox(true), bash(cmd));
-                expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
-                expect(d.sandbox).toBeFalsy();
+                for (const input of [bash(cmd), { command: cmd, allowedHosts: ["github.com"] }]) {
+                    const d = auto(withSandbox(true), input);
+                    expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+                    expect(d.sandbox).toBeFalsy();
+                }
             },
         );
+
+        describe("a command that needs only the network", () => {
+            test.each([
+                ["npm install lodash", ["registry.npmjs.org"]],
+                ["bun add zod", ["registry.npmjs.org"]],
+                ["yarn add react", ["registry.npmjs.org", "registry.yarnpkg.com"]],
+                ["FOO=1 python3 -m pip install -r requirements.txt", ["pypi.org", "files.pythonhosted.org"]],
+                ["curl -fsSL https://api.github.com/repos/a/b -o b.json", ["api.github.com"]],
+                ["git clone --depth 1 https://user@gitlab.example.com/a/b.git", ["gitlab.example.com"]],
+                ["npx prettier --check .", ["registry.npmjs.org"]],
+            ])("%p without hosts is refused, with advice on which to list", (cmd, likely) => {
+                const d = auto(withSandbox(true), bash(cmd));
+                expect(d.behavior).toBe("deny");
+                expect(d.reason).toContain("allowedHosts");
+                expect(d.reason).toContain(JSON.stringify(likely));
+                expect(d.reason).toContain("dangerouslyDisableSandbox");
+            });
+
+            test("with hosts it goes to the classifier, then runs sandboxed", () => {
+                const d = auto(withSandbox(true), { command: "npm install lodash", allowedHosts: ["registry.npmjs.org"] });
+                expect(d).toEqual({ behavior: "ask", needsClassifier: true, sandbox: true, reason: "This command opens network access to registry.npmjs.org.", suggestions: ["Bash(npm install:*)"] });
+            });
+
+            test("hosts take a read-only command to the classifier too", () => {
+                expect(auto(withSandbox(true), { command: "ls", allowedHosts: ["example.com"] })).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true });
+                expect(auto(withSandbox(true), bash("ls"))).toEqual({ behavior: "allow", reason: "read-only command", sandbox: true });
+            });
+
+            test("deleting something with hosts open still says it deletes", () => {
+                expect(auto(withSandbox(true), { command: "rm -rf node_modules && npm ci", allowedHosts: ["registry.npmjs.org"] })).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true, reason: expect.stringContaining("deletes") });
+            });
+
+            test("loading .env for it: refused without hosts, reviewed with them", () => {
+                expect(auto(withSandbox(true), bash("source .env && npm install")).behavior).toBe("deny");
+                expect(auto(withSandbox(true), { command: "source .env && npm install", allowedHosts: ["registry.npmjs.org"] })).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true });
+            });
+
+            test("a version check needs nothing", () => {
+                expect(auto(withSandbox(true), bash("curl --version"))).toMatchObject({ behavior: "allow", sandbox: true });
+            });
+
+            test("opting out of the sandbox takes the classifier, unsandboxed, as before", () => {
+                const d = auto(withSandbox(true), { command: "npm install lodash", dangerouslyDisableSandbox: true, allowedHosts: ["registry.npmjs.org"] });
+                expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+                expect(d.sandbox).toBeFalsy();
+            });
+
+            test("bubblewrap has no proxy: classifier, unsandboxed, hosts or not", () => {
+                for (const input of [bash("npm install lodash"), { command: "npm install lodash", allowedHosts: ["registry.npmjs.org"] }, { command: "make", allowedHosts: ["example.com"] }]) {
+                    const d = auto(withSandbox("bwrap"), input);
+                    expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+                    expect(d.sandbox).toBeFalsy();
+                }
+                expect(auto(withSandbox("bwrap"), bash("make"))).toEqual({ behavior: "allow", sandbox: true, reason: "sandboxed" });
+            });
+
+            test("without a sandbox: classifier, unsandboxed", () => {
+                const d = auto(withSandbox(false), { command: "npm install lodash", allowedHosts: ["registry.npmjs.org"] });
+                expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+                expect(d.sandbox).toBeFalsy();
+            });
+
+            test("outside auto mode hosts change nothing", () => {
+                expect(withSandbox(true).check(T("Bash"), { command: "npm install lodash", allowedHosts: ["registry.npmjs.org"] }, "default", W)).toEqual({ behavior: "ask", suggestions: ["Bash(npm install:*)"] });
+            });
+        });
 
         test("dangerouslyDisableSandbox sends the command to the classifier, unsandboxed", () => {
             const d = auto(withSandbox(true), { command: "npm test", dangerouslyDisableSandbox: true });

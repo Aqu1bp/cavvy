@@ -139,6 +139,23 @@ describe("AutoClassifier", () => {
         expect(calls[3]!.prompt).not.toMatch(/sandbox|full access/);
     });
 
+    test("sandboxed with hosts, the reviewer sees them and is asked to judge them; unsandboxed they're left out", async () => {
+        const { fn, calls } = fakeComplete(ALLOW);
+        const c = new AutoClassifier(fn);
+        await c.classify(input({ input: { command: "npm install lodash", allowedHosts: ["registry.npmjs.org"] }, sandboxed: true }));
+        expect(calls[0]!.prompt).toContain('{"allowedHosts":["registry.npmjs.org"],"command":"npm install lodash"}');
+        expect(calls[0]!.prompt).toMatch(/runs in a sandbox: network only to localhost and the hosts in allowedHosts/);
+        expect(calls[0]!.prompt).toMatch(/Judge whether the task needs those hosts/);
+        expect(calls[0]!.system).toMatch(/allowedHosts the task doesn't need/);
+        // Outside the sandbox they'd restrict nothing, so they aren't shown as if they did.
+        await c.classify(input({ input: { command: "npm install lodash", allowedHosts: ["registry.npmjs.org"], dangerouslyDisableSandbox: true } }));
+        expect(calls[1]!.prompt).toContain('{"command":"npm install lodash"}');
+        expect(calls[1]!.prompt).toMatch(/full access/);
+        // Different hosts are a different question.
+        await c.classify(input({ input: { command: "npm install lodash", allowedHosts: ["evil.example"] }, sandboxed: true }));
+        expect(calls).toHaveLength(3);
+    });
+
     test("long requests are truncated; the action never is", async () => {
         const { fn, calls } = fakeComplete(ALLOW);
         await new AutoClassifier(fn).classify(input({ input: { command: "x".repeat(10000) }, context: { requests: ["r".repeat(2000)] } }));

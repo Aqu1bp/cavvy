@@ -47,6 +47,8 @@ export interface BackgroundShell {
     exitCode: number | null;
     /** Started in the auto-mode sandbox. */
     sandboxed?: boolean;
+    /** The message for the model when it failed in there (refused hosts, what the sandbox blocks). */
+    sandboxHint?: () => string | undefined;
     /** SIGTERM, then SIGKILL after the grace period if anything in the group is still running. */
     kill: (graceMs?: number) => Promise<"gone" | "stopped" | "killed">;
 }

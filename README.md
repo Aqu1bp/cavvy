@@ -87,13 +87,15 @@ When a prompt appears you can allow once, allow and don't ask again (saved as a 
 - **Sandboxed shell.** Shell commands, read-only ones included, run in a sandbox when the OS has one: Seatbelt (`sandbox-exec`) on macOS. On Linux, bubblewrap is used only when you turn it on with `"sandbox": true`, because it's experimental (see below). Inside the sandbox a command:
   - can write only in the workspace and the temp directories, and never to `.git/hooks`, git config (submodules' and worktrees' included), `.harness/`, `.mcp.json` or `~/.harness`. It also can't move or repoint the repo's git directory (`.git`, a worktree's `.git` file, `commondir`) or the workspace itself, so it can't plant config that a later unsandboxed git command would run;
   - can't read credential files (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, the keychain, `~/.harness` and others);
-  - has no network except localhost, and no Unix sockets (so no ssh-agent or Docker);
+  - has no network except localhost and the hosts the command lists (below), and no Unix sockets (so no ssh-agent or Docker);
   - can't signal processes it didn't start;
   - on macOS, can't open apps, send Apple Events, create launchd jobs, or reach the keychain, clipboard or window server.
 
   Sandboxed commands run without asking and without review. The exception is commands that delete or discard work, which go to the reviewer first and then still run sandboxed. These are `rm`, `find -delete`, `git checkout` of files, `git restore`, `git stash drop`, `git branch -D`, and deletions in inline `python -c`/`node -e` code.
+- **Network in the sandbox (macOS).** A command that needs the network lists the hosts in `allowedHosts`, like `["registry.npmjs.org"]` for `npm install`. The reviewer sees the hosts with the command, and if it allows them the command runs sandboxed with only those hosts open, for that command only. This works for package installs (npm, pnpm, yarn, Bun, pip, uv), `npx`/`bunx`, `curl`/`wget` and `git clone` over https. Each command gets its own proxy on localhost, which tools find through `HTTPS_PROXY` and the like. Other commands can't use it: it wants a password that's only in that command's environment, which macOS doesn't show to other processes. It refuses unlisted hosts and names them in the result, so the model knows what to ask for. It also refuses a listed name that resolves only to this machine or the cloud metadata address, unless the IP itself is listed. A command that clearly needs the network but lists no hosts is turned back with the likely hosts before it runs. Sandboxed npm, Bun, uv and pip get their own package caches in the temp directory, and so does Corepack (the pnpm or yarn a project pins) when the command lists hosts.
 - **The reviewer** sees everything else:
-  - commands that need the network or the host (`npm install`, `git push`, `curl`, `gh`, `docker`, `kill`, …), read-only ones like `gh pr view` included, since even those can run programs from a repo's config;
+  - commands that need more than the network (`git push`/`fetch`/`pull`, an ssh `git clone`, `gh`, `docker`, cloud CLIs, `npm publish`, `kill`, …), read-only ones like `gh pr view` included, since even those can run programs from a repo's config;
+  - sandboxed commands that list hosts;
   - commands the model reruns outside the sandbox after the sandbox got in the way (`dangerouslyDisableSandbox`);
   - web fetches and MCP tools.
 
@@ -105,7 +107,9 @@ When a prompt appears you can allow once, allow and don't ask again (saved as a 
 What the sandbox doesn't cover:
 - Changes inside the workspace itself. That's why deletions are reviewed. Git is the undo for shell changes; `/rewind` restores only what the edit tools changed.
 - Code a sandboxed command leaves behind runs with your full access when something unsandboxed runs it later. That includes scripts, `package.json` scripts on `npm install`, `.husky/` hooks, and a nested repo or submodule with its own git config when git runs inside it unsandboxed (your own `git status` in a terminal recurses into submodules).
-- Which commands need the network is a guess from the command text. One that fails in the sandbox is retried outside it, after review.
+- Which commands need the network is a guess from the command text. One that fails in the sandbox is retried with the hosts it needs, or outside the sandbox, after review.
+- A listed host is open to the whole command. The proxy decides on the host name the client asks for and doesn't look inside TLS, so a host that fronts others (a CDN) reaches those too, and anything a listed host accepts (an upload, say) can carry data out. Tools that ignore the proxy variables (plain ssh, most database drivers) get no network at all.
+- On Linux, bubblewrap has no proxy: commands that need the network run outside the sandbox, after review, as before.
 - Linux (bubblewrap, experimental):
   - It has its own network, PID and IPC namespaces. It hides the usual Unix-socket locations (`/run`, X11, tmux, ssh-agent, Docker Desktop, Colima, Lima), but sockets elsewhere stay reachable.
   - It can only protect paths that exist when the command starts. A `.harness/` or `.mcp.json` that doesn't exist yet can be created, and so can the hooks of a repo created by that same command.

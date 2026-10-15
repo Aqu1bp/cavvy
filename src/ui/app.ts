@@ -886,6 +886,8 @@ export class App {
             header.push(...lines.slice(0, 12).map((l) => "  " + l));
             if (lines.length > 12) header.push(theme.subtle(`  … +${lines.length - 12} lines`));
             if (input.description) header.push(theme.muted(`  ${input.description}`));
+            const hosts = Array.isArray(input.allowedHosts) ? input.allowedHosts.map(String) : [];
+            if (decision.sandbox && hosts.length) header.push(theme.muted(`  Sandboxed, with network access to ${hosts.join(", ")}`));
             if (!decision.dangerous && suggestions.length) {
                 const label = suggestions.map((s) => s.replace(/^Bash\((.*?)(:\*)?\)$/, "$1")).join(", ");
                 items.push({ label: `Yes, and don't ask again for ${bold(label)} commands in ${bold(projectName)}`, value: "always" });

@@ -9,9 +9,9 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
-const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT } = await import("../src/permissions/sandbox");
+const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, accessNeeded, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT } = await import("../src/permissions/sandbox");
 const { pushesDefaultBranch } = await import("../src/permissions/bash-safety");
-const { BashTool, BashOutputTool, killAllShells } = await import("../src/tools/bash");
+const { BashTool, BashOutputTool, KillShellTool, killAllShells } = await import("../src/tools/bash");
 import type { Sandbox } from "../src/permissions/sandbox";
 
 afterAll(cleanup);
@@ -174,6 +174,58 @@ describe("needsHostAccess", () => {
     });
 });
 
+describe("accessNeeded", () => {
+    test.each([
+        ["npm install lodash", { network: "npm install" }],
+        ["bun add zod", { network: "bun add" }],
+        ["uv sync", { network: "uv sync" }],
+        ["python3 -m pip install -e .", { network: "python3 -m pip" }],
+        ["curl https://example.com", { network: "curl" }],
+        ["npx prettier --write .", { network: "npx" }],
+        ["git clone https://github.com/a/b", { network: "git clone" }],
+        ["git clone git@github.com:a/b.git", { host: "git clone" }],
+        ["git clone ssh://git@github.com/a/b https://x", { host: "git clone" }],
+        ["git fetch origin", { host: "git fetch" }],
+        ["npm publish", { host: "npm publish" }],
+        ["bun upgrade", { host: "bun upgrade" }],
+        ["uv tool install ruff", { host: "uv tool" }],
+        ["cargo add serde", { host: "cargo add" }],
+        ["npm install && gh pr create", { network: "npm install", host: "gh" }],
+        ["curl --version", {}],
+        ["curl http://localhost:3000/", {}],
+        ["npm test", {}],
+    ])("%p", (cmd, want) => {
+        expect(accessNeeded(cmd)).toEqual(want);
+    });
+
+    test("npx and bunx of a tool the project has installed need nothing; a version, a scope or pnpx do", () => {
+        const ws = real(tempDir());
+        mkdirSync(join(ws, "node_modules", ".bin"), { recursive: true });
+        mkdirSync(join(ws, "packages", "app"), { recursive: true });
+        writeFileSync(join(ws, "node_modules", ".bin", "jest"), "");
+        for (const cmd of ["npx jest --runInBand", "bunx jest", "npx --no-install jest", "cd packages/app && npx jest"]) expect(accessNeeded(cmd, ws)).toEqual({});
+        expect(accessNeeded("npx jest", join(ws, "packages", "app"))).toEqual({});
+        for (const cmd of ["npx jest@29", "npx @jest/core", "pnpx jest", "npx prettier", "cd $PKG && npx jest"]) expect(accessNeeded(cmd, ws).network).toBeDefined();
+        // Without a directory to look in, it's assumed to download.
+        expect(accessNeeded("npx jest").network).toBe("npx");
+    });
+});
+
+describe("Bash allowedHosts validation", () => {
+    const v = (allowedHosts: unknown) => BashTool.validate!({ command: "true", allowedHosts } as any, {} as any);
+    test("host names, wildcards and ports pass", () => {
+        expect(v(["registry.npmjs.org", "*.example.com", "example.com:8443", "10.0.0.5", "[::1]:5432"])).toBeUndefined();
+        expect(v(undefined)).toBeUndefined();
+    });
+    test("URLs, bare wildcards and non-strings don't", () => {
+        expect(v(["https://registry.npmjs.org"])).toContain('"https://registry.npmjs.org" isn\'t a host');
+        expect(v(["*", "*.com"])).toContain("aren't hosts");
+        expect(v([42])).toContain("42");
+        expect(v("registry.npmjs.org")).toBe("allowedHosts must be an array of host names");
+        expect(v(Array.from({ length: 31 }, (_, i) => `h${i}.example.com`))).toContain("at most 30");
+    });
+});
+
 describe("looksDestructive", () => {
     test.each([
         "rm build.log", "rm -rf dist", "cd x && rm -f y", "ls | xargs rm", "find . -name '*.o' -delete", "find . -exec rm {} \\;",
@@ -315,15 +367,87 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         try {
             const local = await bash(`curl -s http://127.0.0.1:${server.port}/`);
             expect(local.content).toBe("local ok");
-            const remote = await bash("curl -sS -m 5 -o /dev/null http://1.1.1.1/");
+            // Through the proxy, an unlisted host is refused and named.
+            const remote = await bash("curl -fsS -m 5 -o /dev/null http://1.1.1.1/");
             expect(remote.isError).toBe(true);
-            expect(remote.content).toContain(SANDBOX_HINT);
+            expect(remote.content).toContain('The sandbox refused connections to 1.1.1.1:80. If the command needs them, run it again with allowedHosts: ["1.1.1.1"]');
+            // Around it, nothing gets out.
+            const direct = await bash("curl --noproxy '*' -sS -m 5 -o /dev/null http://1.1.1.1/");
+            expect(direct.isError).toBe(true);
+            expect(direct.content).toContain(SANDBOX_HINT);
             const viaSocket = await bash(`/usr/bin/nc -U "${sock}" < /dev/null`);
             expect(viaSocket.content).not.toContain("hi");
         } finally {
             server.stop(true);
             unix.stop(true);
         }
+    });
+
+    test("reaches the hosts it lists, through its own proxy", async () => {
+        // A local server stands in for a remote host: listed as an IP, the proxy connects to it.
+        const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (r) => new Response(`via proxy ${new URL(r.url).pathname} ${r.headers.get("proxy-authorization") ?? "no-auth"}`) });
+        try {
+            const viaProxy = `NO_PROXY= no_proxy= curl -fsS -m 5 http://127.0.0.1:${server.port}/x`;
+            const open = await BashTool.run({ command: viaProxy, allowedHosts: ["127.0.0.1"] }, ctx());
+            // The proxy's credentials don't reach the server.
+            expect(open.content).toBe("via proxy /x no-auth");
+            const shut = await bash(viaProxy);
+            expect(shut.isError).toBe(true);
+            expect(shut.content).toContain(`run it again with allowedHosts: ["127.0.0.1:${server.port}"]`);
+            // Unsandboxed, allowedHosts changes nothing.
+            const plain = await BashTool.run({ command: "echo ${HTTPS_PROXY:-none}", allowedHosts: ["127.0.0.1"] }, ctx(null));
+            expect(plain.content).toBe("none");
+        } finally {
+            server.stop(true);
+        }
+    });
+
+    test("package caches it can write", async () => {
+        const r = await bash('for d in "$npm_config_cache" "$BUN_INSTALL_CACHE_DIR" "$UV_CACHE_DIR"; do mkdir -p "$d" && touch "$d/.w" && echo ok; done');
+        expect(r.content).toBe("ok\nok\nok");
+        expect((await bash("echo $npm_config_cache", null)).content).not.toContain("harness-sandbox-cache");
+    });
+
+    test("another sandboxed command can't read a running command's proxy password", async () => {
+        const started = await BashTool.run({ command: 'echo "$HTTPS_PROXY" > proxy-url.txt; sleep 5', run_in_background: true, allowedHosts: ["example.com"] }, ctx());
+        const id = started.content.match(/bash_\d+/)![0];
+        const pid = started.content.match(/pid (\d+)/)![1];
+        try {
+            await Bun.sleep(300);
+            const password = new URL(require("fs").readFileSync(join(ws, "proxy-url.txt"), "utf8").trim()).password;
+            expect(password.length).toBeGreaterThan(20);
+            // What ps reads (KERN_PROCARGS2: a process's arguments and environment); ps itself, being setuid, can't run in there.
+            const procargs = (target: string) => `/usr/bin/python3 -I -c 'import ctypes,os,sys; l=ctypes.CDLL(None); m=(ctypes.c_int*3)(1,49,${target}); n=ctypes.c_size_t(1<<20); b=ctypes.create_string_buffer(n.value); l.sysctl(m,3,b,ctypes.byref(n),None,0); sys.stdout.write(b.raw[:n.value].decode("latin1").replace(chr(0), chr(10)))'`;
+            const peek = await bash(`${procargs(pid!)}; ps eww -p ${pid}`);
+            expect(peek.content).toContain("sleep");
+            expect(peek.content).not.toContain(password);
+            // The same look at itself does show its own, so the check above could have seen one.
+            const self = await BashTool.run({ command: `${procargs("os.getpid()")} | grep "^HTTPS_PROXY="`, allowedHosts: ["example.com"] }, ctx());
+            expect(self.content).toMatch(/^HTTPS_PROXY=http:\/\/harness:[\w-]{20,}@127\.0\.0\.1:\d+$/);
+        } finally {
+            await KillShellTool.run({ shell_id: id }, ctx());
+        }
+    });
+
+    test("Corepack gets a home it can write only when the command can download", async () => {
+        const plain = await bash('echo "${COREPACK_HOME:-default}"');
+        expect(plain.content).toBe("default");
+        const net = await BashTool.run({ command: 'mkdir -p "$COREPACK_HOME" && touch "$COREPACK_HOME/.w" && echo "$COREPACK_HOME"', allowedHosts: ["registry.npmjs.org"] }, ctx());
+        expect(net.content).toContain("harness-sandbox-cache");
+    });
+
+    test("a background shell's proxy closes when it exits", async () => {
+        const started = await BashTool.run({ command: 'echo "$HTTPS_PROXY"', run_in_background: true, allowedHosts: ["example.com"] }, ctx());
+        const id = started.content.match(/bash_\d+/)![0];
+        await Bun.sleep(300);
+        const out = await BashOutputTool.run({ bash_id: id }, ctx());
+        const port = Number(out.content.match(/@127\.0\.0\.1:(\d+)/)![1]);
+        const connect = () => new Promise<boolean>((resolve) => {
+            const s = require("net").connect(port, "127.0.0.1");
+            s.once("connect", () => (s.destroy(), resolve(true)));
+            s.once("error", () => resolve(false));
+        });
+        expect(await connect()).toBe(false);
     });
 
     test("can't signal processes it didn't start, can its own", async () => {

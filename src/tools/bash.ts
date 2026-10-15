@@ -7,13 +7,32 @@ import { stripAnsi } from "../ui/ansi";
 import { redact } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
-import { blockedBySandbox, sandboxArgv, SANDBOX_HINT, type Sandbox } from "../permissions/sandbox";
+import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
+import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
 
 export { childEnv };
 
 const MAX_OUTPUT = 30_000;
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
+const MAX_HOSTS = 30;
+
+/**
+ * A sandboxed command's environment: package caches it can write and, with
+ * Seatbelt, its own proxy, open to the hosts it was approved with.
+ */
+async function sandboxedEnv(env: Record<string, string>, sandbox: Sandbox, hosts: string[] | undefined): Promise<{ env: Record<string, string>; proxy?: CommandProxy }> {
+    if (sandbox.kind !== "seatbelt") return { env: { ...env, ...sandboxCacheEnv() } };
+    const rules = (hosts ?? []).map(parseHostRule).filter((r): r is HostRule => r !== undefined);
+    const proxy = await startProxy(rules);
+    return { env: { ...env, ...sandboxCacheEnv(rules.length > 0), ...proxyEnv(proxy.url) }, proxy };
+}
+
+/** What to tell the model after a sandboxed command failed, if the sandbox looks like the reason. */
+function failureHint(sandbox: Sandbox, output: string, proxy: CommandProxy | undefined): string | undefined {
+    const hints = [proxy && refusedHint(proxy.refused()), blockedBySandbox(output) ? sandboxHint(sandbox.kind) : undefined].filter(Boolean);
+    return hints.length ? hints.join("\n") : undefined;
+}
 
 function pickShell(): string {
     const sh = process.env.SHELL ?? "";
@@ -130,7 +149,7 @@ function allowedRoots(ctx: ToolContext): string[] {
 
 let shellCounter = 0;
 
-export const BashTool: Tool<{ command: string; description?: string; timeout?: number; run_in_background?: boolean; dangerouslyDisableSandbox?: boolean }> = {
+export const BashTool: Tool<{ command: string; description?: string; timeout?: number; run_in_background?: boolean; dangerouslyDisableSandbox?: boolean; allowedHosts?: string[] }> = {
     name: "Bash",
     category: "execute",
     readOnly: false,
@@ -145,6 +164,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
 - run_in_background: true starts long-running processes (dev servers, watchers) and returns immediately; read their output with BashOutput and stop them with KillShell. Don't use '&' yourself.
 - Output over ${MAX_OUTPUT} characters is truncated in the middle.
 - Never run git commands that rewrite history or push unless the user asked. Never skip hooks (--no-verify) unless asked.
+- In auto mode commands run in a sandbox with no network except localhost. A command that needs the network (installing packages, cloning, downloading) lists the hosts it needs in allowedHosts: ["registry.npmjs.org"] for npm, pnpm or bun, ["pypi.org", "files.pythonhosted.org"] for pip or uv, the host in the URL for curl or git clone. They're reviewed with the command and open for it alone; a refused connection names the host to add.
 - Always write a short description (5-10 words) of what the command does.`,
     parameters: {
         type: "object",
@@ -156,7 +176,13 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
             dangerouslyDisableSandbox: {
                 type: "boolean",
                 description:
-                    "Auto mode only: run outside the sandbox (which has no network except localhost and allows writes only in the project and temp directories). Set it only after a command failed because of the sandbox; the command then goes to the safety reviewer.",
+                    "Auto mode only: run outside the sandbox (which has no network except localhost and the hosts in allowedHosts, and allows writes only in the project and temp directories). Set it only after a command failed because of the sandbox for a reason other than a missing host, or when it needs SSH keys, stored credentials or other programs; the command then goes to the safety reviewer.",
+            },
+            allowedHosts: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                    'Auto mode only: hosts this command may reach from the sandbox, e.g. ["registry.npmjs.org"]. Host names, optionally with a port (example.com:8443) or a leading wildcard (*.example.com). The safety reviewer sees them with the command; they\'re open for this command only.',
             },
         },
         required: ["command"],
@@ -164,32 +190,45 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
     title: (i) => `Bash(${(i.command ?? "").split("\n")[0]}${(i.command ?? "").includes("\n") ? " …" : ""})`,
     validate(input) {
         if (typeof input.command !== "string" || !input.command.trim()) return "command must be a non-empty string";
+        const hosts: unknown = input.allowedHosts;
+        if (hosts !== undefined) {
+            if (!Array.isArray(hosts)) return "allowedHosts must be an array of host names";
+            if (hosts.length > MAX_HOSTS) return `allowedHosts can list at most ${MAX_HOSTS} hosts`;
+            const bad = hosts.filter((h) => typeof h !== "string" || !parseHostRule(h));
+            if (bad.length) return `allowedHosts: ${bad.map((b) => JSON.stringify(b)).join(", ")} ${bad.length === 1 ? "isn't a host" : "aren't hosts"}. List host names like registry.npmjs.org, *.example.com or example.com:8443 (no URLs, paths or bare wildcards).`;
+        }
         return undefined;
     },
     async run(input, ctx) {
-        const env = childEnv(ctx.settings.env);
-        if (input.run_in_background) return startBackground(input.command, ctx, env);
-        const sandboxed = ctx.sandbox !== undefined;
+        let env = childEnv(ctx.settings.env);
+        let proxy: CommandProxy | undefined;
+        if (ctx.sandbox) ({ env, proxy } = await sandboxedEnv(env, ctx.sandbox, input.allowedHosts));
+        if (input.run_in_background) return startBackground(input.command, ctx, env, proxy);
         const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(1000, input.timeout ?? ctx.settings.bashTimeout ?? 120_000));
         let lastProgress = 0;
         let pending = "";
-        const res = await runShell({
-            command: input.command,
-            cwd: ctx.state.cwd,
-            timeoutMs,
-            signal: ctx.signal,
-            env,
-            sandbox: ctx.sandbox,
-            onData: (chunk) => {
-                pending += chunk;
-                const now = Date.now();
-                if (now - lastProgress > 100) {
-                    ctx.onProgress?.(redact(stripAnsi(pending)));
-                    pending = "";
-                    lastProgress = now;
-                }
-            },
-        });
+        let res: RunResult;
+        try {
+            res = await runShell({
+                command: input.command,
+                cwd: ctx.state.cwd,
+                timeoutMs,
+                signal: ctx.signal,
+                env,
+                sandbox: ctx.sandbox,
+                onData: (chunk) => {
+                    pending += chunk;
+                    const now = Date.now();
+                    if (now - lastProgress > 100) {
+                        ctx.onProgress?.(redact(stripAnsi(pending)));
+                        pending = "";
+                        lastProgress = now;
+                    }
+                },
+            });
+        } finally {
+            proxy?.close();
+        }
         let notes = "";
         if (res.newCwd && res.newCwd !== ctx.state.cwd) {
             if (allowedRoots(ctx).some((r) => isInside(res.newCwd!, r))) ctx.state.cwd = res.newCwd;
@@ -205,7 +244,8 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         else if (res.signal) out += `\n\nTerminated by signal ${res.signal}`;
         out += notes;
         const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
-        if (sandboxed && failed && !res.aborted && blockedBySandbox(res.output)) out += `\n\n${SANDBOX_HINT}`;
+        const hint = ctx.sandbox && failed && !res.aborted ? failureHint(ctx.sandbox, res.output, proxy) : undefined;
+        if (hint) out += `\n\n${hint}`;
         const lineCount = out.trim() ? out.trim().split("\n").length : 0;
         return {
             content: out.trim() || "(no output)",
@@ -255,10 +295,17 @@ export async function stopGroup(pid: number | undefined, graceMs: number): Promi
     return "killed";
 }
 
-function startBackground(command: string, ctx: ToolContext, env: Record<string, string>) {
+function startBackground(command: string, ctx: ToolContext, env: Record<string, string>, proxy: CommandProxy | undefined) {
     const id = `bash_${++shellCounter}`;
     const [file, ...args] = shellArgv(command, ctx.sandbox);
-    const child = spawn(file!, args, { cwd: ctx.state.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let child: ReturnType<typeof spawn>;
+    try {
+        child = spawn(file!, args, { cwd: ctx.state.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+        proxy?.close();
+        throw e;
+    }
+    const sandbox = ctx.sandbox;
     const shell: BackgroundShell = {
         id,
         command,
@@ -266,8 +313,13 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         output: "",
         readOffset: 0,
         exitCode: null,
-        sandboxed: ctx.sandbox !== undefined,
-        kill: (graceMs = KILL_GRACE_MS) => stopGroup(child.pid, graceMs),
+        sandboxed: sandbox !== undefined,
+        sandboxHint: sandbox ? () => failureHint(sandbox, shell.output, proxy) : undefined,
+        kill: async (graceMs = KILL_GRACE_MS) => {
+            const how = await stopGroup(child.pid, graceMs);
+            proxy?.close();
+            return how;
+        },
     };
     const onChunk = (b: Buffer) => {
         shell.output += b.toString("utf-8");
@@ -279,12 +331,15 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
     };
     child.stdout?.on("data", onChunk);
     child.stderr?.on("data", onChunk);
+    // The network goes with the shell: whatever it left running loses it.
     child.on("close", (code) => {
         shell.exitCode = code ?? -1;
+        proxy?.close();
     });
     child.on("error", (e) => {
         shell.output += `\n${e.message}`;
         shell.exitCode = 127;
+        proxy?.close();
     });
     ctx.state.shells.set(id, shell);
     return {
@@ -321,7 +376,8 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
             }
         }
         const status = sh.exitCode === null ? "running" : `exited with code ${sh.exitCode}`;
-        const hint = sh.sandboxed && sh.exitCode !== null && sh.exitCode !== 0 && blockedBySandbox(sh.output) ? `\n${SANDBOX_HINT}` : "";
+        const failedHint = sh.exitCode !== null && sh.exitCode !== 0 ? sh.sandboxHint?.() : undefined;
+        const hint = failedHint ? `\n${failedHint}` : "";
         return {
             content: `<status>${status}</status>\n<output>\n${truncateMiddle(fresh, MAX_OUTPUT) || "(no new output)"}\n</output>${hint}`,
             display: { summary: `${status}${fresh ? `, ${fresh.split("\n").length} new lines` : ""}`, body: fresh || undefined },

@@ -295,7 +295,8 @@ const SMALL: Record<string, RegExp[]> = {
     anthropic: [/^claude-haiku-5-5$/, /^claude-haiku/],
     openai: [/^gpt-6-luna$/, /luna/, /mini/],
     gemini: [/flash-lite/, /flash/],
-    vertex: [/^google\/gemini-[\d.]+-flash-lite$/, /^google\/gemini-[\d.]+-flash$/],
+    // The auto-mode reviewer: flash-lite let through actions that should have asked; 3.5 Flash didn't, and answers in a second or two.
+    vertex: [/^google\/gemini-3\.5-flash$/, /^google\/gemini-[\d.]+-flash$/, /^google\/gemini-[\d.]+-flash-lite$/],
     openrouter: [/^anthropic\/claude-haiku/, /mini/, /flash/],
     deepseek: [/flash/, /chat/],
     xai: [/mini|fast/],
