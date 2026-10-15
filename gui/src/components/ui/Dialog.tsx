@@ -23,15 +23,37 @@ export function Dialog(p: DialogProps) {
     );
 }
 
+/** Open dialogs, the topmost last: only it takes keys. */
+const stack: object[] = [];
+const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
+
 function DialogInner(p: DialogProps) {
     let box: HTMLDivElement | undefined;
     const previous = document.activeElement as HTMLElement | null;
     onMount(() => {
+        const me = {};
+        stack.push(me);
         const onKey = (e: KeyboardEvent) => {
+            if (stack[stack.length - 1] !== me || !box) return;
             if (e.key === "Escape") {
                 e.preventDefault();
                 e.stopPropagation();
                 p.onClose();
+            } else if (e.key === "Tab") {
+                // Tab stays in the dialog: what's behind it can't be reached while it's open.
+                const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.getClientRects().length > 0);
+                if (!items.length) {
+                    e.preventDefault();
+                    box.focus();
+                    return;
+                }
+                const first = items[0]!;
+                const last = items[items.length - 1]!;
+                const at = document.activeElement;
+                if (!box.contains(at) || (e.shiftKey ? at === first || at === box : at === last)) {
+                    e.preventDefault();
+                    (e.shiftKey ? last : first).focus();
+                }
             }
         };
         document.addEventListener("keydown", onKey, true);
@@ -42,6 +64,7 @@ function DialogInner(p: DialogProps) {
         });
         onCleanup(() => {
             document.removeEventListener("keydown", onKey, true);
+            stack.splice(stack.indexOf(me), 1);
             previous?.focus?.();
         });
     });

@@ -16,7 +16,7 @@ import { extname, join, normalize, resolve, sep } from "path";
 import type { ServerWebSocket } from "bun";
 import { Engine, RpcError, type EngineClient, type EngineOptions } from "./engine";
 import type { ClientMessage, Method, ServerEvent, ServerMessage } from "./protocol";
-import { redact } from "../util/redact";
+import { redact, registerSecret } from "../util/redact";
 import { wireReplacer } from "./timeline";
 
 export interface ServeOptions extends EngineOptions {
@@ -75,6 +75,8 @@ interface Conn {
 export async function startServer(o: ServeOptions = {}): Promise<RunningServer> {
     const host = o.host ?? "127.0.0.1";
     const token = o.token ?? randomBytes(32).toString("hex");
+    // Kept out of transcripts, tool output and the environment of the commands it runs.
+    registerSecret(token, "gui-token");
     const codes = new Map<string, number>();
     const log = o.log ?? (() => {});
     const engine = new Engine(o);

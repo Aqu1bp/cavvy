@@ -12,7 +12,8 @@ const [target, setTarget] = createSignal<number | undefined>();
 export const rewindTarget = { set: setTarget };
 
 export function RewindDialog() {
-    const id = () => app.activeId;
+    /** The session the dialog was opened for; it closes if another one is shown. */
+    const [id, setId] = createSignal<string>();
     const [chosen, setChosen] = createSignal<number>();
     const [plan, setPlan] = createSignal<RewindPlanInfo>();
     const [busy, setBusy] = createSignal(false);
@@ -25,11 +26,23 @@ export function RewindDialog() {
     createEffect(
         on(rewindOpen, (open) => {
             if (!open) return;
+            setId(app.activeId);
             setPlan(undefined);
+            // Through undefined, so the plan is fetched again even for the prompt chosen last time.
+            setChosen(undefined);
             setChosen(target());
             setTarget(undefined);
             void refetch();
         }),
+    );
+    createEffect(
+        on(
+            () => app.activeId,
+            (active) => {
+                if (rewindOpen() && active !== id()) close();
+            },
+            { defer: true },
+        ),
     );
     createEffect(
         on(chosen, async (index) => {
@@ -47,6 +60,7 @@ export function RewindDialog() {
     const go = async (code: boolean, conversation: boolean) => {
         const p = plan();
         if (!p || !id()) return;
+        const sid = id()!;
         const outside = p.restore.filter((r) => r.outside);
         if (code && outside.length && !confirming()) {
             setConfirming({ code, conversation });
@@ -55,8 +69,8 @@ export function RewindDialog() {
         setConfirming(undefined);
         setBusy(true);
         try {
-            const r = await rpc.call("session.rewind", { id: id()!, index: p.index, code, conversation });
-            if (conversation && !r.failed.length) handleFor(id())?.setDraft(r.text);
+            const r = await rpc.call("session.rewind", { id: sid, index: p.index, planId: p.planId, code, conversation });
+            if (conversation && !r.failed.length) handleFor(sid)?.setDraft(r.text);
             for (const f of r.failed) toast(`Couldn't restore ${f.path}: ${f.error}`, "error");
             toast(code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation ? " and the conversation" : ""}` : "Rewound the conversation; the prompt is back in the input box", "success");
             close();

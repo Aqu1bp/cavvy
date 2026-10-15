@@ -223,6 +223,8 @@ describe("headless runs", () => {
             const s = Session.create(proj);
             s.setModel("mock:m1");
             s.push({ role: "user", content: [{ type: "text", text: "earlier" }], meta: { kind: "prompt" } } as any);
+            // From an earlier run: this process is done with it, as that one would be.
+            s.release();
             // The default names a provider with no key, so only the session's model can work.
             writeFileSync(join(HARNESS_HOME, "settings.json"), JSON.stringify({ model: "anthropic:claude-opus-5-5" }));
             const r = await headless(["again", "-c", "--output-format", "json"], proj);

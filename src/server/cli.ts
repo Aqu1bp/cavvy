@@ -3,7 +3,8 @@
 //   harness gui                      start the server and open the GUI in your browser
 //   harness serve [--port n]         just the server (prints a link to open)
 //   harness serve --handshake        for the desktop app: prints one JSON line with the
-//                                    port and token on stdout, and exits when stdin closes
+//                                    port and token on stdout, and exits when a line
+//                                    arrives on stdin or it closes
 
 import { dirname, join, resolve } from "path";
 import { existsSync } from "fs";
@@ -33,7 +34,7 @@ Options:
   --host <addr>                   address to listen on (default 127.0.0.1; anything else exposes
                                   a server that runs commands as you, so only behind your own auth)
   --no-open / --open              don't / do open a browser
-  --handshake                     print {"port","token"} as one JSON line and exit when stdin closes
+  --handshake                     print {"port","token"} as one JSON line; exit on a line on stdin or when it closes
   --login-env                     take PATH from your login shell (for apps started outside a terminal)
   --dangerously-skip-permissions  allow bypass mode in the GUI
   --dev-origin <url>              also accept connections from this origin (a Vite dev server)`;
@@ -59,7 +60,10 @@ export async function serveCommand(sub: "gui" | "serve", args: string[], env: Se
     let handshake = false;
     let loginEnv = false;
     let allowBypass = false;
-    let token = process.env.HARNESS_GUI_TOKEN || undefined;
+    const token = process.env.HARNESS_GUI_TOKEN || undefined;
+    // Not for the commands the GUI runs: one could connect with it and answer its own permission prompts.
+    delete process.env.HARNESS_GUI_TOKEN;
+    if (token && token.length < 16) die("HARNESS_GUI_TOKEN must be at least 16 characters: anyone who can reach the port and guess it can run commands as you");
     const origins: string[] = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
@@ -109,13 +113,11 @@ export async function serveCommand(sub: "gui" | "serve", args: string[], env: Se
 
     if (handshake) {
         process.stdout.write(JSON.stringify({ type: "ready", port: srv.port, token: srv.token, version: APP_VERSION }) + "\n");
-        // The desktop app holds our stdin; when it goes away, so do we.
+        // The desktop app holds our stdin: it writes a line when it quits (and
+        // waits for us to close the sessions), and if it's gone, so are we.
         void (async () => {
-            const reader = Bun.stdin.stream().getReader();
             try {
-                while (!(await reader.read()).done) {
-                    // nothing is sent; just wait for the end
-                }
+                await Bun.stdin.stream().getReader().read();
             } catch {
                 // closed
             }

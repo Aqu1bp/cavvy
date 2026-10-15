@@ -137,12 +137,13 @@ export async function send(text: string, attachments: Attachment[] = []): Promis
 
 async function startIn(cwd: string) {
     try {
-        const h = await createSession(cwd);
+        const h = await createSession(cwd, app.homeMode);
         setApp("activeId", h.id);
         return h;
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            requestTrust(cwd, () => void 0);
+            // The message stays in the input box; send it again once the folder is trusted.
+            requestTrust(cwd, requestComposerFocus);
             return undefined;
         }
         throw e;
@@ -158,12 +159,23 @@ export function interrupt(id = app.activeId) {
     if (id) void rpc.call("session.interrupt", { id }).catch(reportError);
 }
 
-export function respond(id: string, interactionId: string, response: InteractionResponse) {
-    return rpc.call("session.respond", { id, interactionId, response }).catch(reportError);
+/** Whether the answer was taken. */
+export function respond(id: string, interactionId: string, response: InteractionResponse): Promise<boolean> {
+    return rpc.call("session.respond", { id, interactionId, response }).then(
+        () => true,
+        (e) => {
+            reportError(e);
+            return false;
+        },
+    );
 }
 
 export async function setModel(ref: string) {
     const id = app.activeId;
+    if (id && handleFor(id)?.view.state.busy) {
+        toast("Switch models once this response is done, or interrupt it first.", "warn");
+        return;
+    }
     try {
         if (id) await rpc.call("session.setModel", { id, ref, persist: true });
         else {
@@ -178,7 +190,8 @@ export async function setModel(ref: string) {
 export async function setMode(mode: PermissionModeId) {
     const id = app.activeId;
     if (!id) {
-        setApp("settings", "defaultMode", mode);
+        // For the sessions started from the home screen (the saved default is in Settings).
+        setApp("homeMode", mode);
         return;
     }
     // Shown at once, so pressing shift+tab twice quickly moves two steps; put back if the server refuses.

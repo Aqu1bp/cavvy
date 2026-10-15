@@ -3,8 +3,9 @@
 //! `bun build --compile`).
 //!
 //! Startup: the sidecar is started with `serve --handshake`, prints one JSON
-//! line with its port and a random token, and keeps running until its stdin
-//! closes (which happens when this app exits, however it exits). The webview
+//! line with its port and a random token, and keeps running until a line
+//! arrives on its stdin (this app quitting) or stdin closes (this app gone,
+//! however it went). The webview
 //! asks for the port and token with the `sidecar_info` command and connects
 //! to the server's WebSocket on 127.0.0.1 directly.
 //!
@@ -40,6 +41,8 @@ struct Sidecar {
     /** When it last (re)started, for giving up on a crash loop. */
     starts: Mutex<Vec<Instant>>,
     exiting: AtomicBool,
+    /// The server process has ended.
+    exited: AtomicBool,
 }
 
 /// How to reach the server. Waits for it to start (or restart).
@@ -95,6 +98,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
         Err(_) => cmd,
     };
     let (mut rx, child) = cmd.spawn().map_err(|e| format!("couldn't start the harness server: {e}"))?;
+    state.exited.store(false, Ordering::SeqCst);
     *state.child.lock().unwrap() = Some(child);
 
     let app = app.clone();
@@ -120,6 +124,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
                 CommandEvent::Error(e) => eprintln!("[harness] {e}"),
                 CommandEvent::Terminated(p) => {
                     let state = app.state::<Sidecar>();
+                    state.exited.store(true, Ordering::SeqCst);
                     state.info.send_replace(None);
                     *state.child.lock().unwrap() = None;
                     if state.exiting.load(Ordering::SeqCst) {
@@ -127,6 +132,9 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
                     }
                     eprintln!("[harness] server exited ({:?}); restarting", p.code);
                     tokio::time::sleep(Duration::from_millis(600)).await;
+                    if app.state::<Sidecar>().exiting.load(Ordering::SeqCst) {
+                        break;
+                    }
                     if let Err(e) = spawn_sidecar(&app) {
                         eprintln!("[harness] {e}");
                     }
@@ -142,10 +150,19 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
 fn stop_sidecar(app: &AppHandle) {
     let state = app.state::<Sidecar>();
     state.exiting.store(true, Ordering::SeqCst);
-    // Closing its stdin is enough (it exits and runs its SessionEnd hooks);
-    // killing it is the fallback for when it doesn't.
     let child = state.child.lock().unwrap().take();
-    if let Some(child) = child {
+    let Some(mut child) = child else { return };
+    // Asked to stop, it closes its sessions first (SessionEnd hooks, background
+    // shells, delegated tasks; it gives itself 8 seconds at most). It's killed
+    // only if it hasn't exited by then. (Its events arrive on the async
+    // runtime's threads, so waiting here doesn't hold them up.)
+    if child.write(b"quit\n").is_ok() {
+        let deadline = Instant::now() + Duration::from_secs(9);
+        while !state.exited.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if !state.exited.load(Ordering::SeqCst) {
         let _ = child.kill();
     }
 }
@@ -172,7 +189,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(Sidecar { info, child: Mutex::new(None), starts: Mutex::new(Vec::new()), exiting: AtomicBool::new(false) })
+        .manage(Sidecar { info, child: Mutex::new(None), starts: Mutex::new(Vec::new()), exiting: AtomicBool::new(false), exited: AtomicBool::new(false) })
         .invoke_handler(tauri::generate_handler![sidecar_info])
         .setup(|app| {
             spawn_sidecar(app.handle()).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;

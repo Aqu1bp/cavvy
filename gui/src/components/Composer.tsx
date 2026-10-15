@@ -13,8 +13,8 @@ import { Ring } from "./ui/bits";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
-/** Unsent text per session, so switching sessions doesn't lose it. */
-const drafts = new Map<string, string>();
+/** Unsent text and images per session, so switching sessions doesn't lose them. */
+const drafts = new Map<string, { text: string; attachments: Attachment[] }>();
 /** What was sent, for ↑ in an empty box. */
 const history: string[] = [];
 
@@ -36,7 +36,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const h = () => handleFor(p.sessionId);
     const st = () => h()?.view.state;
     const busy = () => Boolean(st()?.busy);
-    const mode = (): PermissionModeId => st()?.mode ?? app.settings.defaultMode ?? "default";
+    const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
     const shell = () => text().startsWith("!");
     const draftKey = () => p.sessionId ?? "home";
 
@@ -46,15 +46,22 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
     };
 
-    // Per-session drafts.
+    // Per-session drafts. Each session gets its own input box (it's made again
+    // when another session is shown), so the draft is kept when it goes away.
+    const keepDraft = (key: string) => {
+        if (text().trim() || attachments().length) drafts.set(key, { text: text(), attachments: attachments() });
+        else drafts.delete(key);
+    };
     createEffect(
         on(draftKey, (key, prev) => {
-            if (prev !== undefined) drafts.set(prev, text());
-            setText(drafts.get(key) ?? "");
-            setAttachments([]);
+            if (prev !== undefined) keepDraft(prev);
+            const d = drafts.get(key);
+            setText(d?.text ?? "");
+            setAttachments(d?.attachments ?? []);
             requestAnimationFrame(resize);
         }),
     );
+    onCleanup(() => keepDraft(draftKey()));
     // Text the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();

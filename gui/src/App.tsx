@@ -95,8 +95,10 @@ export function App() {
             if (isMod(e) && !e.altKey) {
                 const k = e.key.toLowerCase();
                 if (k === "k") return e.preventDefault(), setPaletteOpen(!paletteOpen());
-                if (k === "n" && !e.shiftKey) return e.preventDefault(), newSession(app.homeCwd);
                 if (k === ",") return e.preventDefault(), setSettingsTab(settingsTab() ? undefined : "general");
+                // Nothing behind an open dialog changes (it may be about the session in view).
+                if (document.querySelector(".dialog-backdrop")) return;
+                if (k === "n" && !e.shiftKey) return e.preventDefault(), newSession(app.homeCwd);
                 if (k === "b") return e.preventDefault(), toggleSidebar();
                 if (k === ".") return e.preventDefault(), togglePanel();
                 if (k === "/") return e.preventDefault(), setModelPickerOpen(true);

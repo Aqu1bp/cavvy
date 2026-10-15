@@ -10,7 +10,7 @@ import { APP_VERSION, harnessHome } from "../config/paths";
 import { loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
-import { findSessionAnywhere, listAllSessions, Session } from "../agent/session";
+import { findSessionAnywhere, listAllSessions, Session, SessionInUseError } from "../agent/session";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
@@ -385,12 +385,28 @@ export class Engine {
         try {
             session = Session.load(file);
         } catch (e) {
+            if (e instanceof SessionInUseError) throw new RpcError(e.message, "in_use");
             throw new RpcError(`Could not open the session: ${redact((e as Error).message)}`);
         }
-        const ws = this.workspaceFor(session.meta.cwd);
-        const rt = new Runtime(this, ws, session, { mode: this.defaultMode(ws), resumed: true });
+        let rt: Runtime;
+        try {
+            const ws = this.workspaceFor(session.meta.cwd);
+            rt = new Runtime(this, ws, session, { mode: this.defaultMode(ws), resumed: true });
+        } catch (e) {
+            // A folder still to be trusted, say: the terminal may open it meanwhile.
+            session.release();
+            throw e;
+        }
         this.runtimes.set(rt.id, rt);
         return rt;
+    }
+
+    /** A session no window shows and that has nothing running is closed, as quitting a terminal would, so a terminal can resume it. */
+    private unloadIfUnused(id: string) {
+        const rt = this.runtimes.get(id);
+        if (!rt?.idle || [...this.clients].some((c) => c.subs.has(id))) return;
+        this.runtimes.delete(id);
+        void rt.close().catch(() => undefined);
     }
 
     private runtime(id: unknown): Runtime {
@@ -583,9 +599,12 @@ export class Engine {
                 client.subs.add(rt.id);
                 return rt.snapshot();
             }
-            case "session.close":
-                client.subs.delete(str(p.id, "id"));
+            case "session.close": {
+                const id = str(p.id, "id");
+                client.subs.delete(id);
+                this.unloadIfUnused(id);
                 return null;
+            }
             case "session.send": {
                 const rt = this.runtime(p.id);
                 const images = Array.isArray(p.images) ? (p.images as { mediaType: unknown; data: unknown }[]).filter(validImage).map((i): ImagePart => ({ type: "image", mediaType: String(i.mediaType), data: String(i.data) })) : undefined;
@@ -600,6 +619,8 @@ export class Engine {
                 return null;
             case "session.setModel": {
                 const rt = this.runtime(p.id);
+                // As in the terminal: the turn in progress keeps its model (Claude Code and Codex can't take over half way).
+                if (rt.busy) throw new RpcError("Switch models once this response is done, or interrupt it first.", "busy");
                 if (!(await rt.setModel(str(p.ref, "ref"), { persist: p.persist !== false }))) throw new RpcError(`Couldn't switch to ${p.ref}`);
                 return null;
             }
@@ -622,7 +643,7 @@ export class Engine {
             case "session.rewindPlan":
                 return this.runtime(p.id).rewindPlan(num(p.index, -1));
             case "session.rewind":
-                return this.runtime(p.id).rewind(num(p.index, -1), Boolean(p.code), Boolean(p.conversation));
+                return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.changes":
                 return this.runtime(p.id).changes();
             case "session.toolOutput":

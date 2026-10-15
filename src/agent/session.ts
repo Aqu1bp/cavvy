@@ -3,10 +3,10 @@
 // "rewind" record cuts it back (/rewind).
 // Everything is passed through the redactor before it touches disk.
 
-import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync } from "fs";
+import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync, unlinkSync, writeSync } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
-import { ensureDir, paths, projectStateDir, APP_VERSION } from "../config/paths";
+import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
 import type { Message, Usage } from "../providers/types";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
@@ -121,6 +121,21 @@ export class Session {
         return this.persist;
     }
 
+    /** Done writing it (another session took its place, or it was closed): another process may open it now. */
+    release() {
+        if (!this.holding) return;
+        this.holding = false;
+        letGo(this.file);
+    }
+
+    private claim() {
+        if (this.holding) return;
+        hold(this.file);
+        this.holding = true;
+    }
+
+    /** This object has claimed the file (see hold()). */
+    private holding = false;
     private started = false;
     /** Lines held back until the first message, so idle launches leave no file. */
     private pending: Line[] = [];
@@ -133,8 +148,9 @@ export class Session {
         }
         try {
             if (!this.started) {
-                this.started = true;
                 ensureDir(projectStateDir(this.meta.cwd));
+                this.claim();
+                this.started = true;
                 if (!existsSync(this.file)) {
                     appendFileSync(this.file, redactedJson({ t: "meta", ...this.meta }) + "\n", { mode: 0o600 });
                     chmodSync(this.file, 0o600);
@@ -239,6 +255,9 @@ export class Session {
             }
         }
         if (!meta) throw new Error(`Not a session file: ${file}`);
+        const s = new Session(meta, { file });
+        // Before anything is written: another process may have it open (the GUI, another terminal).
+        s.claim();
         // End a torn last line, or the next record appended would join it and
         // both would be unreadable on the following load.
         if (text && !text.endsWith("\n")) {
@@ -248,7 +267,6 @@ export class Session {
                 // read-only file: nothing will be appended either
             }
         }
-        const s = new Session(meta, { file });
         s.started = true;
         for (const l of lines) {
             if (l.t === "msg") s.messages.push(l.m);
@@ -272,6 +290,116 @@ export class Session {
         }
         repairTail(s);
         return s;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One writer per session. Each process keeps its own copy of the history and
+// appends to the file, so two processes on one session (the GUI and a
+// terminal) would interleave their turns, and the one opening it second would
+// answer the other's running tool calls as interrupted. `<file>.lock` names
+// the process that has it open; one that has exited doesn't count.
+
+export class SessionInUseError extends Error {
+    readonly code = "in_use";
+    /** -1: a process that's claiming it right now. */
+    constructor(readonly pid: number) {
+        super(`This session is open in another ${APP_TITLE} process${pid > 0 ? ` (pid ${pid})` : ""}, in the app or a terminal. Close it there first.`);
+    }
+}
+
+/** Files this process has claimed, with how many Session objects hold each (an unloading one can overlap the next). */
+const held = new Map<string, number>();
+let releaseOnExit = false;
+const lockOf = (file: string) => `${file}.lock`;
+
+function lockPid(file: string): number | undefined {
+    try {
+        const pid = Number((JSON.parse(readFileSync(lockOf(file), "utf-8")) as { pid?: unknown }).pid);
+        return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function running(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+}
+
+/** The other running process that has this session open, if any. */
+export function sessionHolder(file: string): number | undefined {
+    const pid = lockPid(file);
+    if (pid !== undefined && pid !== process.pid && running(pid)) return pid;
+    // Just created and not written yet (the other process is between two calls).
+    if (pid === undefined && existsSync(lockOf(file))) {
+        try {
+            if (Date.now() - statSync(lockOf(file)).mtimeMs < 2000) return -1;
+        } catch {
+            // gone meanwhile
+        }
+    }
+    return undefined;
+}
+
+/** Claim the session for this process, or throw SessionInUseError. Without a lock (a read-only folder) it carries on, as persistence does. */
+function hold(file: string) {
+    const n = held.get(file);
+    if (n) {
+        held.set(file, n + 1);
+        return;
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const fd = openSync(lockOf(file), "wx", 0o600);
+            try {
+                writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+            } finally {
+                closeSync(fd);
+            }
+            held.set(file, 1);
+            if (!releaseOnExit) {
+                releaseOnExit = true;
+                process.on("exit", () => {
+                    for (const f of [...held.keys()]) unlock(f);
+                    held.clear();
+                });
+            }
+            return;
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "EEXIST") return;
+            const pid = sessionHolder(file);
+            if (pid) throw new SessionInUseError(pid);
+            // Left behind by a process that's gone: take it over.
+            try {
+                unlinkSync(lockOf(file));
+            } catch {
+                // someone else just did
+            }
+        }
+    }
+}
+
+function letGo(file: string) {
+    const n = held.get(file);
+    if (!n) return;
+    if (n > 1) {
+        held.set(file, n - 1);
+        return;
+    }
+    held.delete(file);
+    unlock(file);
+}
+
+function unlock(file: string) {
+    try {
+        if (lockPid(file) === process.pid) unlinkSync(lockOf(file));
+    } catch {
+        // already gone
     }
 }
 

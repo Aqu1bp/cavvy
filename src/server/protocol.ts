@@ -415,6 +415,8 @@ export interface RewindTargetInfo {
 
 export interface RewindPlanInfo {
     index: number;
+    /** Passed back to session.rewind, which restores exactly this plan (or refuses if the conversation moved on). */
+    planId: string;
     restore: { path: string; action: "write" | "delete"; outside: boolean }[];
     skipped: { path: string; reason: string }[];
     tracked: boolean;
@@ -483,7 +485,7 @@ export interface Methods {
     "session.compact": { params: { id: string; instructions?: string }; result: null };
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
-    "session.rewind": { params: { id: string; index: number; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string } };
+    "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string } };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };

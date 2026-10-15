@@ -265,3 +265,53 @@ describe("listSessions / findSession", () => {
         expect(findSession(cwd, "20260101-000000-aaaaaa")).toBeUndefined();
     });
 });
+
+describe("one writer per session", () => {
+    const holder = join(import.meta.dir, "fixtures", "hold-session.ts");
+
+    test("a session another process has open isn't opened (or written) until that process is gone", async () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.push(assistant("running it", [{ id: "c1", name: "Bash" }]));
+        s.release();
+        const child = Bun.spawn([process.execPath, "--no-env-file", holder, s.path], { stdin: "pipe", stdout: "pipe", env: process.env as Record<string, string> });
+        const first = await child.stdout.getReader().read();
+        expect(new TextDecoder().decode(first.value)).toContain("held");
+        const before = readFileSync(s.path, "utf-8");
+        expect(() => Session.load(s.path)).toThrow(/open in another Harness process \(pid \d+\)/);
+        // Nothing was written under the process that has it (such as answering its running tool call as interrupted).
+        expect(readFileSync(s.path, "utf-8")).toBe(before);
+        child.stdin.end();
+        await child.exited;
+        const again = Session.load(s.path);
+        expect(again.messages).toHaveLength(3);
+        again.release();
+        expect(existsSync(`${s.path}.lock`)).toBe(false);
+    });
+
+    test("a lock left by a process that has exited doesn't count", async () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.release();
+        const gone = Bun.spawn(["true"]);
+        await gone.exited;
+        writeFileSync(`${s.path}.lock`, JSON.stringify({ pid: gone.pid }));
+        const again = Session.load(s.path);
+        expect(JSON.parse(readFileSync(`${s.path}.lock`, "utf-8")).pid).toBe(process.pid);
+        again.release();
+    });
+
+    test("this process may load what it already has open; the lock goes with the last copy released", () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        expect(existsSync(`${s.path}.lock`)).toBe(true);
+        // A copy still closing (the GUI unloading it) overlapping the one reopened.
+        const again = Session.load(s.path);
+        expect(again.messages).toHaveLength(1);
+        s.release();
+        s.release();
+        expect(existsSync(`${s.path}.lock`)).toBe(true);
+        again.release();
+        expect(existsSync(`${s.path}.lock`)).toBe(false);
+    });
+});

@@ -4,7 +4,7 @@
 
 import { batch, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
-import type { GuiSettings, HelloResult, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary } from "@shared/protocol";
+import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri } from "../lib/platform";
@@ -60,6 +60,8 @@ export interface AppState {
     activeId?: string;
     /** The project new sessions start in. */
     homeCwd?: string;
+    /** The mode picked on the home screen, which new sessions start in; the saved default until then. */
+    homeMode?: PermissionModeId;
     seen: Record<string, number>;
 }
 
@@ -191,8 +193,8 @@ export async function openSession(id: string): Promise<SessionHandle> {
     return adopt(snap);
 }
 
-export async function createSession(cwd: string): Promise<SessionHandle> {
-    const snap = await rpc.call("session.create", { cwd });
+export async function createSession(cwd: string, mode?: PermissionModeId): Promise<SessionHandle> {
+    const snap = await rpc.call("session.create", { cwd, mode });
     return adopt(snap);
 }
 

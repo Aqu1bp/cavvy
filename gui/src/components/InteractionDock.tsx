@@ -16,11 +16,16 @@ function typing(): boolean {
     return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable));
 }
 
+/** A key pressed this soon after a card appears was meant for something else. */
+const SETTLE_MS = 400;
+
 /** Number keys and Esc, while this card is the one showing. */
 function useKeys(handler: (key: string) => boolean) {
     onMount(() => {
+        const shown = performance.now();
         const onKey = (e: KeyboardEvent) => {
             if (e.metaKey || e.ctrlKey || e.altKey || typing() || document.querySelector(".dialog-backdrop, .popover")) return;
+            if (performance.now() - shown < SETTLE_MS) return;
             if (handler(e.key)) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -82,7 +87,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     const answer = async (choice: PermissionInteraction["options"][number]["id"]) => {
         if (busy()) return;
         setBusy(true);
-        await respond(p.sessionId, p.it.id, { kind: "permission", choice, feedback: choice === "no" ? feedback() : undefined });
+        // Answered, the card goes away; if the answer didn't go through, it can be given again.
+        if (!(await respond(p.sessionId, p.it.id, { kind: "permission", choice, feedback: choice === "no" ? feedback() : undefined }))) setBusy(false);
     };
     useKeys((k) => {
         const i = Number(k);

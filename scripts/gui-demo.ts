@@ -3,7 +3,7 @@
 // GUI server on a fixed port.
 //
 //   bun run gui:demo                 then open the printed link
-//   bun run gui:demo --port 4600 --token dev    fixed link: http://127.0.0.1:4600/#token=dev
+//   bun run gui:demo --port 4600 --token <16+ characters>    a link that stays the same: http://127.0.0.1:4600/#token=<token>
 //
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
 // and running tests; "question", "plan" and "todo" show those flows.

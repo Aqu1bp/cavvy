@@ -162,6 +162,43 @@ describe("connecting", () => {
         ok.close();
     });
 
+    test("the token is kept out of transcripts and the commands the server runs", async () => {
+        const { redact } = await import("../src/util/redact");
+        const { childEnv } = await import("../src/util/env");
+        expect(redact(`token ${TOKEN}`)).not.toContain(TOKEN);
+        process.env.HARNESS_GUI_TOKEN = TOKEN;
+        try {
+            expect(Object.values(childEnv())).not.toContain(TOKEN);
+        } finally {
+            delete process.env.HARNESS_GUI_TOKEN;
+        }
+    });
+
+    test("--handshake: says where it listens, and stops cleanly when the app writes a line", async () => {
+        const p = Bun.spawn([process.execPath, "--no-env-file", join(import.meta.dir, "..", "src", "index.ts"), "serve", "--handshake"], { env: process.env as Record<string, string>, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        try {
+            const reader = p.stdout.getReader();
+            let out = "";
+            while (!out.includes("\n")) out += new TextDecoder().decode((await reader.read()).value);
+            const ready = JSON.parse(out.split("\n")[0]!);
+            expect(ready).toMatchObject({ type: "ready" });
+            expect(ready.port).toBeGreaterThan(0);
+            expect(ready.token).toHaveLength(64);
+            p.stdin.write("quit\n");
+            await p.stdin.flush();
+            const code = await Promise.race([p.exited, Bun.sleep(10_000).then(() => "still running")]);
+            expect(code).toBe(0);
+        } finally {
+            p.kill();
+        }
+    }, 20_000);
+
+    test("a short HARNESS_GUI_TOKEN is refused", () => {
+        const r = Bun.spawnSync([process.execPath, "--no-env-file", join(import.meta.dir, "..", "src", "index.ts"), "serve", "--handshake"], { env: { ...process.env, HARNESS_GUI_TOKEN: "dev" } as Record<string, string>, stdin: "ignore" });
+        expect(r.exitCode).toBe(1);
+        expect(r.stderr.toString()).toContain("at least 16 characters");
+    });
+
     test("refuses other origins and hosts", async () => {
         const evil = new Client(TOKEN, { Origin: "https://evil.example" });
         await expect(evil.opened()).rejects.toThrow();
@@ -312,11 +349,131 @@ describe("sessions", () => {
         expect(targets.map((t: { text: string }) => t.text)).toEqual(["demo", "first prompt"]);
         const plan = await c.call("session.rewindPlan", { id, index: targets[0].index });
         expect(plan.restore.map((r: { path: string; action: string }) => `${r.path}:${r.action}`).sort()).toEqual(["src/auth/index.ts:write", "src/auth/sso.ts:delete"]);
-        const r = await c.call("session.rewind", { id, index: targets[0].index, code: true, conversation: true });
+        // Only the plan last shown can be carried out.
+        await expect(c.call("session.rewind", { id, index: targets[0].index, planId: "nope", code: true, conversation: true })).rejects.toThrow(/changed since this was shown/);
+        expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(true);
+        const r = await c.call("session.rewind", { id, index: targets[0].index, planId: plan.planId, code: true, conversation: true });
         expect(r.text).toBe("demo");
         expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(false);
         expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
         await c.until(id, (v) => v.turns.filter((t) => t.prompt).length === 1);
+        c.close();
+    }, 30_000);
+
+    test("rewind leaves a file alone that changed after the plan was shown", async () => {
+        const dir = project();
+        const c = await client();
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "demo" });
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, done, 15_000);
+        const [t] = await c.call("session.rewindTargets", { id });
+        const plan = await c.call("session.rewindPlan", { id, index: t.index });
+        expect(plan.restore.some((r: { path: string }) => r.path === "src/auth/index.ts")).toBe(true);
+        // The user saves an edit while the dialog is open.
+        writeFileSync(join(dir, "src/auth/index.ts"), "// mine\n");
+        const r = await c.call("session.rewind", { id, index: t.index, planId: plan.planId, code: true, conversation: true });
+        expect(r.failed.map((f: { path: string }) => f.path)).toContain("src/auth/index.ts");
+        expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe("// mine\n");
+        // A plan is used once.
+        await expect(c.call("session.rewind", { id, index: t.index, planId: plan.planId, code: true, conversation: false })).rejects.toThrow(/changed since this was shown/);
+        c.close();
+    }, 30_000);
+
+    test("stopping a !command puts what was sent meanwhile back in the input box", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "!sleep 20" });
+        await c.until(id, (v) => v.state.busy);
+        expect((await c.call("session.send", { id, text: "after the command" })).queued).toBe(true);
+        await c.call("session.interrupt", { id });
+        await c.until(id, () => c.events.some((e) => e.type === "draft" && e.sessionId === id && e.text === "after the command"));
+        await c.until(id, (v) => done(v) && !v.state.queued.length);
+        await Bun.sleep(200);
+        expect(c.view(id).turns.some((t) => t.prompt?.text === "after the command")).toBe(false);
+        c.close();
+    }, 30_000);
+
+    test("what was sent during /compact runs after it", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        const compacting = c.call("session.compact", { id });
+        const sent = c.call("session.send", { id, text: "after compacting" });
+        expect((await sent).queued).toBe(true);
+        await compacting;
+        await c.until(id, (v) => v.turns.some((t) => t.prompt?.text === "after compacting") && done(v), 15_000);
+        c.close();
+    }, 30_000);
+
+    test("a tool's full output is there after a compaction", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project(), mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "demo" });
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, done, 15_000);
+        const tool = c.view(id).turns.flatMap(tools).find((t) => t.name === "Read")!;
+        const before = (await c.call("session.toolOutput", { id, toolId: tool.id })).output;
+        expect(before.length).toBeGreaterThan(0);
+        await c.call("session.compact", { id });
+        await c.until(id, done);
+        expect((await c.call("session.toolOutput", { id, toolId: tool.id })).output).toBe(before);
+        c.close();
+    }, 30_000);
+
+    test("a session no window shows and with nothing running is closed, so a terminal can open it", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        const lock = `${findSessionAnywhere(id)}.lock`;
+        expect(existsSync(lock)).toBe(true);
+        await c.call("session.close", { id });
+        for (let i = 0; i < 50 && existsSync(lock); i++) await Bun.sleep(100);
+        expect(existsSync(lock)).toBe(false);
+        // Opened again, it's the same conversation.
+        const snap = await c.call("session.open", { id });
+        expect(snap.turns.some((t: Turn) => t.prompt?.text === "first prompt")).toBe(true);
+        expect(existsSync(lock)).toBe(true);
+
+        // One that's waiting for an answer stays open.
+        const busy = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id: busy, text: "demo" });
+        await c.until(busy, (v) => v.state.interactions.length > 0);
+        await c.call("session.close", { id: busy });
+        await Bun.sleep(300);
+        const again = await c.call("session.open", { id: busy });
+        expect(again.state.interactions.length).toBe(1);
+        await c.call("session.interrupt", { id: busy });
+        c.close();
+    }, 30_000);
+
+    test("an answer must be one of the choices offered", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project(), mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "demo" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        const it = c.view(id).state.interactions[0]!;
+        expect(it.kind === "permission" && it.options.map((o) => o.id)).not.toContain("session-edits");
+        await expect(c.call("session.respond", { id, interactionId: it.id, response: { kind: "permission", choice: "session-edits" } })).rejects.toThrow(/isn't one of the choices/);
+        expect(c.view(id).state.mode).toBe("acceptEdits");
+        await c.call("session.interrupt", { id });
+        await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("the model isn't switched in the middle of a turn", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "demo" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        await expect(c.call("session.setModel", { id, ref: "mock:mock-haiku", persist: false })).rejects.toThrow(/once this response is done/);
+        expect(c.view(id).state.model?.id).toBe("mock-opus");
+        await c.call("session.interrupt", { id });
+        await c.until(id, done);
+        await c.call("session.setModel", { id, ref: "mock:mock-haiku", persist: false });
         c.close();
     }, 30_000);
 

@@ -164,13 +164,24 @@ function summarize(tools: ToolBlock[]): string {
     let agents = 0;
     let mcp = 0;
     const misc: string[] = [];
+    /** Changes that didn't happen: declined, or failed. */
+    let declined = 0;
+    const unchanged = new Set<string>();
     for (const t of tools) {
+        if (t.status === "denied") {
+            declined++;
+            continue;
+        }
         if (t.agent) {
             agents++;
             continue;
         }
         const i = t.input ?? {};
         const path = String(i.file_path ?? i.notebook_path ?? i.path ?? t.title);
+        if (t.status === "error" && ["Edit", "MultiEdit", "NotebookEdit", "Write"].includes(t.name)) {
+            unchanged.add(path);
+            continue;
+        }
         switch (t.name) {
             case "Read":
                 reads.add(path);
@@ -226,6 +237,8 @@ function summarize(tools: ToolBlock[]): string {
     if (agents) parts.push(agents === 1 ? "ran an agent" : `ran ${agents} agents`);
     if (mcp) parts.push(`used ${plural(mcp, "MCP tool")}`);
     parts.push(...misc);
+    if (unchanged.size) parts.push(unchanged.size === 1 ? `couldn't change ${short([...unchanged][0]!)}` : `couldn't change ${plural(unchanged.size, "file")}`);
+    if (declined && !parts.length) parts.push(`${plural(declined, "call")} declined`);
     const text = parts.slice(0, 3).join(", ") + (parts.length > 3 ? `, and ${parts.length - 3} more` : "");
     return text.charAt(0).toUpperCase() + text.slice(1);
 }

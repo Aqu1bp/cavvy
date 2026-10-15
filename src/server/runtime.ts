@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { canonical, FileHistory, resetToolState, rewindTargets } from "../agent/checkpoints";
+import { canonical, FileHistory, resetToolState, rewindTargets, type RestoreItem } from "../agent/checkpoints";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
@@ -24,7 +24,7 @@ import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tool
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, smallModelFor } from "../providers/models";
 import { costOf } from "../providers/pricing";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { modelRef, parseModelRef, textOf, toolCallsOf, type ImagePart, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
+import { modelRef, parseModelRef, textOf, toolCallsOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
@@ -116,6 +116,8 @@ export class Runtime {
     private titleAsked = false;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
+    /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
+    private rewindShown?: { id: string; index: number; message: Message; plan?: RestoreItem[] };
 
     // What the current turn is building
     private turnId?: string;
@@ -926,6 +928,8 @@ export class Runtime {
         const p = this.pending.get(interactionId);
         if (!p) throw new Error("That request was already answered or has expired.");
         if (p.interaction.kind !== r.kind) throw new Error("The answer doesn't match the request.");
+        // Only what was offered: "always" isn't, for a dangerous command.
+        if (p.interaction.kind === "permission" && r.kind === "permission" && !p.interaction.options.some((o) => o.id === r.choice)) throw new Error("That isn't one of the choices offered.");
         this.settle(interactionId, r);
     }
 
@@ -1170,12 +1174,16 @@ export class Runtime {
         if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
             this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${Math.round(elapsed / 1000)}s`);
         }
-        if (ac.signal.aborted) return this.returnQueued();
+        await this.runQueued(ac.signal.aborted);
+    }
+
+    /** After a turn, a `!command` or a compaction: the next message sent meanwhile, or all of them back to the input box after an interrupt. */
+    private async runQueued(aborted: boolean) {
+        if (aborted) return this.returnQueued();
         const next = this.queued.shift();
-        if (next) {
-            this.setState({ queued: this.queued.map((q) => q.text) });
-            await this.dispatch(next.text, next.images).catch((e) => this.notice(redact((e as Error).message), "error"));
-        }
+        if (!next) return;
+        this.setState({ queued: this.queued.map((q) => q.text) });
+        await this.dispatch(next.text, next.images).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
     /** After an interrupt, unsent messages go back to the input box instead of running. */
@@ -1273,11 +1281,7 @@ export class Runtime {
             this.setStatus("idle");
             this.flush();
         }
-        const next = this.queued.shift();
-        if (next) {
-            this.setState({ queued: this.queued.map((q) => q.text) });
-            await this.dispatch(next.text, next.images).catch((e) => this.notice(redact((e as Error).message), "error"));
-        }
+        await this.runQueued(ac.signal.aborted);
     }
 
     async compact(instructions?: string) {
@@ -1297,6 +1301,8 @@ export class Runtime {
             this.setState({ busy: false, activity: undefined });
             this.setStatus("idle");
         }
+        // Not awaited: session.compact answers once the compaction is done, not after the next turn.
+        void this.runQueued(ac.signal.aborted);
     }
 
     // -----------------------------------------------------------------------
@@ -1321,19 +1327,32 @@ export class Runtime {
         const plan = history && t.checkpoint !== undefined ? history.plan(t.checkpoint) : undefined;
         const root = canonical(this.ws.cwd);
         const rel = (p: string) => displayPath(p, root);
+        const planId = this.newId();
+        this.rewindShown = { id: planId, index, message: this.session.messages[index]!, plan };
         return {
             index,
+            planId,
             tracked: Boolean(plan),
             restore: (plan ?? []).filter((i) => i.action !== "skip").map((i) => ({ path: rel(i.path), action: i.action as "write" | "delete", outside: Boolean(i.outside) })),
             skipped: (plan ?? []).filter((i) => i.action === "skip").map((i) => ({ path: rel(i.path), reason: i.reason ?? "" })),
         };
     }
 
-    rewind(index: number, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string } {
+    /**
+     * Restore what rewindPlan showed (`planId`), as the terminal's /rewind does:
+     * a file changed since then is left alone (it fails, with the reason), and
+     * nothing happens if the conversation moved on.
+     */
+    rewind(index: number, planId: string, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string } {
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         const t = this.target(index);
+        const shown = this.rewindShown;
+        if (!shown || shown.id !== planId || shown.index !== index || this.session.messages[index] !== shown.message) {
+            throw new Error("The conversation changed since this was shown; nothing was rewound. Open Rewind again.");
+        }
+        this.rewindShown = undefined;
         const history = FileHistory.for(this.session);
-        const plan = history && t.checkpoint !== undefined ? history.plan(t.checkpoint) : undefined;
+        const plan = shown.plan;
         const restore = plan?.filter((i) => i.action !== "skip") ?? [];
         const skipped = plan?.filter((i) => i.action === "skip") ?? [];
         const root = canonical(this.ws.cwd);
@@ -1421,11 +1440,17 @@ export class Runtime {
     }
 
     toolOutput(toolId: string): string {
-        for (const m of this.session.messages) {
-            if (m.role !== "user") continue;
-            for (const p of m.content) if (p.type === "tool_result" && p.toolCallId === toolId) return redact(p.content);
-        }
-        throw new Error("That output is no longer in the conversation.");
+        const find = (messages: Message[]) => {
+            for (const m of messages) {
+                if (m.role !== "user") continue;
+                for (const p of m.content) if (p.type === "tool_result" && p.toolCallId === toolId) return p.content;
+            }
+            return undefined;
+        };
+        // From before a compaction, it's still in the transcript file (and still shown).
+        const out = find(this.session.messages) ?? readSegments(this.session.path).reduce<string | undefined>((hit, seg) => hit ?? find(seg.messages), undefined);
+        if (out === undefined) throw new Error("That output is no longer in the conversation.");
+        return redact(out);
     }
 
     exportMarkdown(): string {
@@ -1476,7 +1501,14 @@ export class Runtime {
         return fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
     }
 
-    /** SessionEnd hooks and background shells, when the server stops. */
+    /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
+    get idle(): boolean {
+        if (this.busy || this.queued.length || this.pending.size || this.switching) return false;
+        if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
+        return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
+    }
+
+    /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
         this.abort?.abort();
         this.cancelInteractions();
@@ -1484,5 +1516,6 @@ export class Runtime {
         this.flush();
         // Delegated tasks still running stop with the session.
         await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
+        this.session.release();
     }
 }
