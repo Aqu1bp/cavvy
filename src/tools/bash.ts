@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { BackgroundShell, Tool, ToolContext } from "./types";
 import { stripAnsi } from "../ui/ansi";
-import { redact, wholeLines } from "../util/redact";
+import { redact, lineRedactor } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
@@ -206,7 +206,8 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         if (input.run_in_background) return startBackground(input.command, ctx, env, proxy);
         const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(1000, input.timeout ?? ctx.settings.bashTimeout ?? 120_000));
         let lastProgress = 0;
-        let pending = "";
+        const lines = lineRedactor(stripAnsi);
+        let ready = "";
         let res: RunResult;
         try {
             res = await runShell({
@@ -217,13 +218,11 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
                 env,
                 sandbox: ctx.sandbox,
                 onData: (chunk) => {
-                    pending += chunk;
+                    ready += lines(chunk);
                     const now = Date.now();
-                    if (now - lastProgress <= 100) return;
-                    const [ready, rest] = wholeLines(pending);
-                    if (!ready) return;
-                    ctx.onProgress?.(redact(stripAnsi(ready)));
-                    pending = rest;
+                    if (!ready || now - lastProgress <= 100) return;
+                    ctx.onProgress?.(ready);
+                    ready = "";
                     lastProgress = now;
                 },
             });

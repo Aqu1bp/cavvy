@@ -29,7 +29,7 @@ import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitSnapshot } from "../util/git";
-import { redact, wholeLines } from "../util/redact";
+import { redact, lineRedactor } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, type ToolMeta } from "./history";
 import type {
@@ -121,6 +121,8 @@ export class Runtime {
     private titleAsked = false;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
+    /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
+    private closed = false;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
     private rewindShown?: { id: string; index: number; message: Message; count: number; plan?: RestoreItem[] };
 
@@ -258,7 +260,7 @@ export class Runtime {
     flush() {
         if (this.flushTimer) clearTimeout(this.flushTimer);
         this.flushTimer = undefined;
-        if (!this.outbox.length) return;
+        if (!this.outbox.length || this.closed) return;
         const ops = coalesce(this.outbox);
         this.outbox = [];
         this.batch++;
@@ -522,7 +524,8 @@ export class Runtime {
 
     rename(title: string) {
         const t = cleanTitle(title);
-        if (!t) return;
+        // A title still being made when it was closed.
+        if (!t || this.closed) return;
         this.session.setTitle(t);
         this.setState({ title: t });
         this.engine.sessionChanged(this);
@@ -1099,6 +1102,7 @@ export class Runtime {
     async send(text: string, images?: ImagePart[]): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
+        if (this.closed) throw new Error("This session was closed.");
         const trimmed = text.trim();
         if (!trimmed && !images?.length) return { queued: false };
         if (this.busy) {
@@ -1128,6 +1132,7 @@ export class Runtime {
     async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; images?: ImagePart[] } = {}) {
         if (!this.agent) {
             await this.ready.catch(() => undefined);
+            if (this.closed) return;
             if (!this.agent) {
                 this.notice("No model is selected. Add an API key in Settings → Providers, then pick a model.", "error");
                 return;
@@ -1195,6 +1200,7 @@ export class Runtime {
 
     /** After a turn, a `!command` or a compaction: the next message sent meanwhile, or all of them back to the input box after an interrupt. */
     private async runQueued(aborted: boolean) {
+        if (this.closed) return;
         if (aborted) return this.returnQueued();
         const next = this.queued.shift();
         if (!next) return;
@@ -1271,7 +1277,7 @@ export class Runtime {
         this.op({ op: "block", turnId: turn.id, block: { t: "shell", id: blockId, command, output: "", running: true } });
         this.setState({ busy: true, status: "running", activity: { label: "Running", since: Date.now(), detail: command.slice(0, 80) } });
         let status: TurnStatus = "done";
-        let pending = "";
+        const lines = lineRedactor();
         try {
             const res = await runShell({
                 command,
@@ -1281,9 +1287,8 @@ export class Runtime {
                 env: childEnv(this.settings().env),
                 // Line by line (the rest comes with the full output at the end).
                 onData: (chunk) => {
-                    const [ready, rest] = wholeLines(pending + chunk);
-                    pending = rest;
-                    if (ready) this.op({ op: "append", turnId: turn.id, blockId, field: "output", text: redact(ready) });
+                    const ready = lines(chunk);
+                    if (ready) this.op({ op: "append", turnId: turn.id, blockId, field: "output", text: ready });
                 },
             });
             const out = redact(res.output.replace(/\s+$/, ""));
@@ -1308,6 +1313,9 @@ export class Runtime {
     }
 
     async compact(instructions?: string) {
+        // On the model being switched to, as a prompt would be.
+        while (this.switching) await this.switching.catch(() => undefined);
+        if (this.closed) throw new Error("This session was closed.");
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         if (!this.agent) throw new Error("No model is selected.");
         if (this.session.messages.length < 2) throw new Error("Nothing to compact yet.");
@@ -1538,6 +1546,7 @@ export class Runtime {
         this.cancelInteractions();
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
+        this.closed = true;
         // Delegated tasks still running stop with the session.
         try {
             await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);

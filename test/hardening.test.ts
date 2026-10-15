@@ -13,7 +13,7 @@ const { bashRuleMatches, matchPath } = await import("../src/permissions/rules");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { sanitizeLine, wrapLine, truncate, width, stripAnsi } = await import("../src/ui/ansi");
 const { BashTool } = await import("../src/tools/bash");
-const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+const { lineRedactor, registerSecret, unregisterSecret } = await import("../src/util/redact");
 
 afterAll(cleanup);
 
@@ -30,6 +30,22 @@ describe("Bash progress", () => {
             expect(progress.join("")).toContain("[REDACTED test]");
             expect(progress.join("")).not.toContain(key.slice(0, 12));
             expect(JSON.stringify(r)).not.toContain(key);
+        } finally {
+            unregisterSecret(key);
+        }
+    });
+
+    test("output is shown a whole line at a time, and a line too long to wait for isn't kept", () => {
+        const key = "streamed-secret-9876543210";
+        registerSecret(key, "test");
+        try {
+            const lines = lineRedactor();
+            expect(lines(`one\n${key.slice(0, 10)}`)).toBe("one\n");
+            expect(lines(`${key.slice(10)}\ntwo`)).toBe("[REDACTED test]\n");
+            // No line break for a megabyte (`head -c 1M /dev/zero`): nothing is held on to or shown.
+            const long = lineRedactor();
+            for (let i = 0; i < 16; i++) expect(long(`${key.slice(0, 10)}${"0".repeat(64 * 1024)}`)).toBe("");
+            expect(long(`${key.slice(10)}\nafter\n`)).toBe("after\n");
         } finally {
             unregisterSecret(key);
         }

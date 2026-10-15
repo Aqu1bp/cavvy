@@ -201,6 +201,74 @@ describe("connecting", () => {
         await stopped;
     });
 
+    // These start one request while another is half way, so they talk to the engine directly.
+    async function engineWithSession(o: { unloadAfterMs?: number } = {}) {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine(o);
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        const cwd = project();
+        const snap = (await engine.handle(c, "session.create", { cwd })) as SessionSnapshot;
+        return { engine, c, cwd, id: snap.state.id, rt: engine.runtimes.get(snap.state.id)! };
+    }
+
+    async function whenIdle(rt: { idle: boolean }) {
+        for (let i = 0; i < 200 && !rt.idle; i++) await Bun.sleep(50);
+        expect(rt.idle).toBe(true);
+    }
+
+    test("a message waiting for a model switch when the server stops isn't run", async () => {
+        const { engine, c, cwd, id } = await engineWithSession();
+        const switched = engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
+        const sent = engine.handle(c, "session.send", { id, text: `!touch ${join(cwd, "ran")}` });
+        await engine.stop();
+        await switched.catch(() => undefined);
+        await expect(sent).rejects.toThrow(/closed/);
+        await Bun.sleep(300);
+        expect(existsSync(join(cwd, "ran"))).toBe(false);
+    });
+
+    test("a compaction asked for during a model switch runs on the new model", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        await engine.handle(c, "session.send", { id, text: "first prompt" });
+        await whenIdle(rt);
+        const before = mock.requests.length;
+        const switched = engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
+        await engine.handle(c, "session.compact", { id });
+        await switched;
+        // The compaction (with the session's tools, to reuse its cached prefix).
+        expect(mock.requests.slice(before).filter((r) => r.kind !== "title").map((r) => r.model)).toEqual(["mock-haiku"]);
+        await engine.stop();
+    });
+
+    test("a session opened again while it's being closed waits for that", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        await engine.handle(c, "session.send", { id, text: "first prompt" });
+        await whenIdle(rt);
+        const ended = join(cwd, "ended");
+        rt.ws.settings.hooks = { SessionEnd: [{ command: `sleep 0.5; touch '${ended}'` }] };
+        await engine.handle(c, "session.close", { id });
+        expect(engine.runtimes.has(id)).toBe(false);
+        await engine.handle(c, "session.open", { id });
+        // Not alongside the copy still closing (whose late title or notices would land in this one).
+        expect(existsSync(ended)).toBe(true);
+        expect(engine.runtimes.get(id)).not.toBe(rt);
+        await engine.stop();
+    });
+
+    test("a session whose window went away while it was being created is closed", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ unloadAfterMs: 50 });
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        const created = engine.handle(c, "session.create", { cwd: project() });
+        engine.dropClient(c);
+        const id = ((await created) as SessionSnapshot).state.id;
+        for (let i = 0; i < 40 && engine.runtimes.has(id); i++) await Bun.sleep(50);
+        expect(engine.runtimes.has(id)).toBe(false);
+        await engine.stop();
+    });
+
     test("a short HARNESS_GUI_TOKEN is refused", () => {
         const r = Bun.spawnSync([process.execPath, "--no-env-file", join(import.meta.dir, "..", "src", "index.ts"), "serve", "--handshake"], { env: { ...process.env, HARNESS_GUI_TOKEN: "dev" } as Record<string, string>, stdin: "ignore" });
         expect(r.exitCode).toBe(1);

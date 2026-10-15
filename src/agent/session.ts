@@ -3,7 +3,7 @@
 // "rewind" record cuts it back (/rewind).
 // Everything is passed through the redactor before it touches disk.
 
-import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync, linkSync, renameSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
@@ -359,12 +359,16 @@ function running(pid: number): boolean {
 
 /** The other running process that has this session open, if any. */
 export function sessionHolder(file: string): number | undefined {
-    const pid = lockPid(file);
+    return lockHolder(lockOf(file));
+}
+
+function lockHolder(lock: string): number | undefined {
+    const pid = pidIn(lock);
     if (pid !== undefined && pid !== process.pid && running(pid)) return pid;
-    // Just created and not written yet (the other process is between two calls).
-    if (pid === undefined && existsSync(lockOf(file))) {
+    // Just created and not written yet (where there are no hard links, the other process is between two calls).
+    if (pid === undefined && existsSync(lock)) {
         try {
-            if (Date.now() - statSync(lockOf(file)).mtimeMs < 2000) return -1;
+            if (Date.now() - statSync(lock).mtimeMs < 2000) return -1;
         } catch {
             // gone meanwhile
         }
@@ -452,31 +456,39 @@ function createLockInPlace(lock: string, body: string): boolean {
 
 /**
  * Remove a lock left by a process that's gone. Two processes can find the
- * same stale lock: it's moved aside (only one move succeeds) and checked
- * again, and if it was in fact the other process's new lock it goes back.
- * False if it can't be moved.
+ * same stale lock, and by the time the second removes it the first may have
+ * made its own: so it's removed only while holding `<lock>.takeover`, after
+ * checking it again. True to try again (the next attempt sees who has it);
+ * false if it can't be removed.
  */
 export function takeOver(lock: string): boolean {
-    const aside = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
+    const guard = `${lock}.takeover`;
+    let fd: number;
     try {
-        renameSync(lock, aside);
+        fd = openSync(guard, "wx", 0o600);
     } catch (e) {
-        return (e as NodeJS.ErrnoException).code === "ENOENT"; // someone else moved it first
-    }
-    const pid = pidIn(aside);
-    if (pid !== undefined && pid !== process.pid && running(pid)) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") return false;
+        // Another process is taking it over. One that crashed doing so left this behind.
         try {
-            linkSync(aside, lock);
+            if (Date.now() - statSync(guard).mtimeMs > 10_000) unlinkSync(guard);
         } catch {
-            // a third process made one meanwhile; it holds the session now
+            // gone meanwhile
+        }
+        return true;
+    }
+    try {
+        if (lockHolder(lock) === undefined) unlinkSync(lock);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "ENOENT";
+    } finally {
+        closeSync(fd);
+        try {
+            unlinkSync(guard);
+        } catch {
+            // already gone
         }
     }
-    try {
-        unlinkSync(aside);
-    } catch {
-        // already gone
-    }
-    return true;
 }
 
 function letGo(file: string) {

@@ -163,6 +163,8 @@ export class Engine {
     /** Folders whose configuration the user chose not to trust (this run). */
     private declined = new Set<string>();
     private unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    /** Sessions being unloaded (their SessionEnd hooks running): opened again once that's done. */
+    private closing = new Map<string, Promise<void>>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
 
@@ -178,7 +180,7 @@ export class Engine {
         this.stopping = true;
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
-        await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)));
+        await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
     }
 
@@ -426,7 +428,13 @@ export class Engine {
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
         if (!rt.idle) return this.unloadLater(id);
         this.runtimes.delete(id);
-        void rt.close().catch(() => undefined);
+        const done: Promise<void> = rt
+            .close()
+            .catch(() => undefined)
+            .finally(() => {
+                if (this.closing.get(id) === done) this.closing.delete(id);
+            });
+        this.closing.set(id, done);
     }
 
     private unloadLater(id: string) {
@@ -443,6 +451,18 @@ export class Engine {
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         for (const id of client.subs) this.unloadLater(id);
+    }
+
+    /** The window shows the session from now on. If it went away while the session was being set up, it's closed later. */
+    private watch(client: EngineClient, id: string) {
+        client.subs.add(id);
+        if (!this.clients.has(client)) this.unloadLater(id);
+    }
+
+    /** Before opening a session that's being unloaded: once that's done, if the server isn't stopping meanwhile. */
+    private async afterClosing(id: string) {
+        await this.closing.get(id);
+        if (this.stopping) throw new RpcError("The harness server is stopping.", "stopping");
     }
 
     private runtime(id: unknown): Runtime {
@@ -628,12 +648,14 @@ export class Engine {
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
-                client.subs.add(rt.id);
+                this.watch(client, rt.id);
                 return rt.snapshot() satisfies SessionSnapshot;
             }
             case "session.open": {
-                const rt = this.openSession(str(p.id, "id"));
-                client.subs.add(rt.id);
+                const id = str(p.id, "id");
+                await this.afterClosing(id);
+                const rt = this.openSession(id);
+                this.watch(client, rt.id);
                 return rt.snapshot();
             }
             case "session.close": {
@@ -672,6 +694,7 @@ export class Engine {
             case "session.rename": {
                 const id = str(p.id, "id");
                 const title = cleanTitle(str(p.title, "title"));
+                await this.afterClosing(id);
                 const rt = this.runtimes.get(id);
                 if (rt) rt.rename(title);
                 else if (title) {

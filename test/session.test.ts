@@ -336,23 +336,44 @@ describe("one writer per session", () => {
         again.release();
     });
 
-    test("taking over a lock that another process has just made its own puts it back", async () => {
-        // The lost race: this process saw a stale lock, and before it moved
+    test("taking over a lock that another process has just made its own leaves it", async () => {
+        // The lost race: this process saw a stale lock, and before it removed
         // it, another process replaced it with its own.
         const s = Session.create(project());
         s.push(user("hi"));
         s.release();
         const other = Bun.spawn(["sleep", "30"]);
         try {
-            const mine = JSON.stringify({ pid: other.pid, at: Date.now() });
-            writeFileSync(`${s.path}.lock`, mine);
+            const theirs = JSON.stringify({ pid: other.pid, at: Date.now() });
+            writeFileSync(`${s.path}.lock`, theirs);
             expect(takeOver(`${s.path}.lock`)).toBe(true);
-            expect(readFileSync(`${s.path}.lock`, "utf-8")).toBe(mine);
+            expect(readFileSync(`${s.path}.lock`, "utf-8")).toBe(theirs);
             expect(() => Session.load(s.path)).toThrow(/open in another Harness process/);
         } finally {
             other.kill();
             await other.exited;
         }
+    });
+
+    test("a stale lock another process is taking over is left to it", async () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.release();
+        const gone = Bun.spawn(["true"]);
+        await gone.exited;
+        const stale = JSON.stringify({ pid: gone.pid });
+        writeFileSync(`${s.path}.lock`, stale);
+        writeFileSync(`${s.path}.lock.takeover`, "");
+        expect(takeOver(`${s.path}.lock`)).toBe(true);
+        expect(readFileSync(`${s.path}.lock`, "utf-8")).toBe(stale);
+        expect(() => Session.load(s.path)).toThrow(/open in another Harness process/);
+        // One that crashed while taking it over doesn't block it for good.
+        const old = new Date(Date.now() - 60_000);
+        utimesSync(`${s.path}.lock.takeover`, old, old);
+        const again = Session.load(s.path);
+        expect(JSON.parse(readFileSync(`${s.path}.lock`, "utf-8")).pid).toBe(process.pid);
+        expect(existsSync(`${s.path}.lock.takeover`)).toBe(false);
+        again.release();
     });
 
     test("this process may load what it already has open; the lock goes with the last copy released", () => {

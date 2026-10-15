@@ -182,6 +182,8 @@ function chunks(text: string): string[] {
 export function startMockLlm(o: MockOptions = {}) {
     const delay = o.delayMs ?? 12;
     let calls = 0;
+    /** Each completion asked for: the model, and what it was for. */
+    const requests: { model: string; kind: "title" | "summary" | "turn" }[] = [];
     const server = Bun.serve({
         hostname: "127.0.0.1",
         port: o.port ?? 0,
@@ -221,6 +223,7 @@ export function startMockLlm(o: MockOptions = {}) {
             const enc = new TextEncoder();
             const id = `chatcmpl-${calls}`;
             const model = body.model ?? "mock-opus";
+            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary" });
             const stream = new ReadableStream({
                 async start(ctrl) {
                     const send = (obj: Json) => ctrl.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
@@ -253,7 +256,7 @@ export function startMockLlm(o: MockOptions = {}) {
             return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
         },
     });
-    return { url: `http://127.0.0.1:${server.port}/v1`, port: server.port, stop: () => server.stop(true) };
+    return { url: `http://127.0.0.1:${server.port}/v1`, port: server.port, requests, stop: () => server.stop(true) };
 }
 
 if (import.meta.main) {
