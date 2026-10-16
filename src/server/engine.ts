@@ -575,7 +575,7 @@ export class Engine {
         if (sortCliSession(links, source, entry.id, entry.originator) === "hidden") throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
         const existing = links.held.get(linkKey(source, entry.id));
         if (existing) {
-            await this.afterClosing(existing);
+            while (this.closing.has(existing)) await this.afterClosing(existing);
             const rt = this.openSession(existing);
             await rt.ready.catch(() => undefined);
             return rt;

@@ -401,6 +401,47 @@ describe("importing", () => {
         }
     });
 
+    test("reopening an import while deleting it leaves nothing open, and Undo keeps the imported conversation", async () => {
+        turnOn();
+        const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
+        const before = snapshotTree(CLAUDE);
+        const { e, c } = await engine();
+        try {
+            const first = (await e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id })) as SessionSnapshot;
+            const sid = first.state.id;
+            const file = findSessionAnywhere(sid)!;
+            const bytes = readFileSync(file);
+            const reopening = e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id });
+            const deleting = e.handle(c, "session.delete", { id: sid });
+            await reopening;
+            await deleting;
+            expect(e.runtimes.has(sid)).toBe(false);
+            expect(findSessionAnywhere(sid)).toBeUndefined();
+            expect(existsSync(`${file}.lock`)).toBe(false);
+            expect(e.cliSessionsList(cwd).sessions.find((s) => s.id === id)?.harnessId).toBeUndefined();
+
+            await e.handle(c, "session.restore", { id: sid });
+            expect(readFileSync(file)).toEqual(bytes);
+            expect(e.cliSessionsList(cwd).sessions.find((s) => s.id === id)?.harnessId).toBe(sid);
+            const restored = (await e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id })) as SessionSnapshot;
+            expect(restored.state.id).toBe(sid);
+            expect(restored.turns).toEqual(first.turns);
+            expect(rewindTargets(e.runtimes.get(sid)!.session.messages)).toEqual([]);
+
+            // The delete starts first this time: reopening waits, then finds it gone.
+            const deletingAgain = e.handle(c, "session.delete", { id: sid });
+            const refused = expect(e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id })).rejects.toMatchObject({ code: "not_found" });
+            await deletingAgain;
+            await refused;
+            expect(e.runtimes.has(sid)).toBe(false);
+            expect(findSessionAnywhere(sid)).toBeUndefined();
+            expect(existsSync(`${file}.lock`)).toBe(false);
+            expect(snapshotTree(CLAUDE)).toEqual(before);
+        } finally {
+            await e.stop();
+        }
+    });
+
     test("a CLI session Harness ran itself counts as in Harness", async () => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
