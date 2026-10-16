@@ -56,6 +56,8 @@ import type {
     InteractionResponse,
     ModelSummary,
     PermissionInteraction,
+    PlanLink,
+    PlanRef,
     RewindPlanInfo,
     RewindTargetInfo,
     SessionOp,
@@ -68,6 +70,7 @@ import type {
     WireFile,
 } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
+import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { SecretStore, secretValueError } from "../agent/secrets";
@@ -164,6 +167,8 @@ export class Runtime {
     model?: ModelInfo;
     client?: ProviderClient;
     mode: PermissionMode;
+    /** The mode it was in before it last entered plan mode (unknown when it started in plan mode). */
+    modeBeforePlan?: PermissionMode;
     effort?: Effort;
     busy = false;
     lastActive = Date.now();
@@ -178,6 +183,8 @@ export class Runtime {
     private queued: Queued[] = [];
     private queueSeq = 0;
     private pending = new Map<string, Pending>();
+    /** Plan requests answered by taking the plan to another session. */
+    private handoffs = new Set<string>();
     private ui: UiLog;
     /** Compactions so far: the transcript segment new prompts belong to. */
     private segment = 0;
@@ -338,6 +345,8 @@ export class Runtime {
             mcp: this.ws.mcpStatus(),
             filesChanged: this.filesChanged(),
             shells: [],
+            plan: this.planRef(this.latestPlan()),
+            planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
         };
@@ -869,6 +878,7 @@ export class Runtime {
         }
         const from = this.mode;
         this.mode = m;
+        if (m === "plan" && from !== "plan") this.modeBeforePlan = from;
         if (!opts.fromAgent && this.agent && from !== m) {
             // Before the first prompt only plan mode is news: the model has to know it may only plan. Any other
             // mode is where the session starts, so a note still queued (of plan mode, or one a rewind to the start kept) goes.
@@ -1559,13 +1569,76 @@ export class Runtime {
         if (!this.toolState.secrets?.forget(name)) throw new RpcError("This session doesn't hold a secret by that name.", "not_found");
     }
 
-    private async approvePlan(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string }> {
+    private async approvePlan(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string; handoff?: boolean }> {
         const toolId = this.runningTool("ExitPlanMode");
         if (toolId) this.patchBlock(toolId, { status: "awaiting" });
-        const r = await this.interact({ kind: "plan", id: this.newId(), toolId, plan: redact(plan) });
+        const id = this.newId();
+        // Kept in the session file, so it can still be saved or taken to a worktree once the card is gone.
+        const stored = this.session.addPlan(toolId ?? id, plan);
+        this.setState({ plan: this.planRef(stored) });
+        const r = await this.interact({ kind: "plan", id, toolId, plan: stored.text });
         if (toolId) this.patchBlock(toolId, { status: "running" });
+        if (this.handoffs.delete(id)) {
+            // Stop the source turn for every backend, and return queued input to the
+            // composer instead of dispatching it in the original working directory.
+            this.abort?.abort();
+            return { approved: false, feedback: r?.kind === "plan" ? r.feedback : undefined, handoff: true };
+        }
         if (r?.kind !== "plan") return { approved: false };
         return { approved: r.approved, mode: r.mode, feedback: r.feedback };
+    }
+
+    private planRef(p: { id: string; text: string; at: number } | undefined): PlanRef | undefined {
+        return p && { id: p.id, title: planTitle(p.text) || "Plan", at: p.at };
+    }
+
+    /** The plan presented last: one waiting on the card, else the last one recorded, else (older sessions) the last ExitPlanMode call. */
+    private latestPlan(): { id: string; text: string; at: number; interactionId?: string } | undefined {
+        const pending = [...this.pending.values()].map((p) => p.interaction).filter((i) => i.kind === "plan").at(-1);
+        if (pending?.kind === "plan") return { id: pending.toolId ?? pending.id, text: pending.plan, at: Date.now(), interactionId: pending.id };
+        const stored = this.session.plans.at(-1);
+        if (stored) return stored;
+        const calls = this.session.messages.flatMap((m) => (m.role === "assistant" ? toolCallsOf(m) : [])).filter((c) => c.name === "ExitPlanMode" && typeof c.input?.plan === "string");
+        const last = calls.at(-1);
+        return last && { id: last.id, text: redact(String(last.input.plan)), at: 0 };
+    }
+
+    /**
+     * A plan of this session's, by its id (the ExitPlanMode call's, or its request's), or the latest. The
+     * redacted text the card showed; `interactionId` while it's still waiting for an answer.
+     */
+    planText(ref?: string): { id: string; text: string; interactionId?: string } | undefined {
+        if (!ref) return this.latestPlan();
+        for (const p of this.pending.values()) {
+            const it = p.interaction;
+            if (it.kind === "plan" && (it.toolId === ref || it.id === ref)) return { id: it.toolId ?? it.id, text: it.plan, interactionId: it.id };
+        }
+        const stored = this.session.plans.find((p) => p.id === ref);
+        if (stored) return stored;
+        const find = (messages: Message[]) => {
+            for (const m of messages) {
+                if (m.role !== "assistant") continue;
+                const call = toolCallsOf(m).find((c) => c.id === ref && c.name === "ExitPlanMode" && typeof c.input?.plan === "string");
+                if (call) return { id: call.id, text: redact(String(call.input.plan)) };
+            }
+            return undefined;
+        };
+        // From before a compaction, it's still in the transcript file.
+        return find(this.session.messages) ?? readSegments(this.session.path).reduce<{ id: string; text: string } | undefined>((hit, seg) => hit ?? find(seg.messages), undefined);
+    }
+
+    /** Answer a waiting plan card without approving it: the plan is carried out elsewhere, so this turn stops, still in plan mode. */
+    handOffPlan(interactionId: string, note: string): boolean {
+        const p = this.pending.get(interactionId);
+        if (p?.interaction.kind !== "plan") return false;
+        this.handoffs.add(interactionId);
+        this.settle(interactionId, { kind: "plan", approved: false, feedback: redact(note) });
+        return true;
+    }
+
+    addPlanLink(link: PlanLink) {
+        this.session.addPlanLink(link);
+        this.setState({ planLinks: [...this.session.planLinks] });
     }
 
     // -----------------------------------------------------------------------

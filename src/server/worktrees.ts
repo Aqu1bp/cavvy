@@ -409,7 +409,7 @@ export function checkCreate(cwd: string): string {
 }
 
 /** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
-export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
+export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string; commit: string }> {
     const cwd = resolve(o.path);
     const main = checkCreate(cwd);
     const branch = checkBranch(cwd, o.branch);
@@ -431,7 +431,40 @@ export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promis
         if (/invalid reference|not a valid object|unknown revision/.test(r.stderr)) throw new RpcError("The base isn't a branch or commit in this repository.", "bad_base");
         throw new RpcError("Git couldn't create the worktree.", "git_failed");
     }
-    return { path: target.path, branch };
+    return { path: target.path, branch, commit };
+}
+
+/** `wanted`, or wanted-2, -3, … when a branch has that name already (only a suggestion: checkBranch decides). */
+export function suggestBranch(cwd: string, wanted: string): string {
+    const taken = (b: string) => runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${b}`]) !== undefined;
+    for (let n = 1; n < 100; n++) {
+        const b = n > 1 ? `${wanted}-${n}` : wanted;
+        if (!taken(b)) return b;
+    }
+    return `${wanted}-${Date.now().toString(36)}`;
+}
+
+/** The folder's current branch, or its commit (abbreviated) when HEAD is detached; undefined before the first commit. */
+export function currentBase(cwd: string): string | undefined {
+    const branch = runGit(cwd, ["branch", "--show-current"])?.trim();
+    if (branch && runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]) !== undefined) return branch;
+    return runGit(cwd, ["rev-parse", "--verify", "--quiet", "--short=12", "HEAD^{commit}"])?.trim() || undefined;
+}
+
+/** The managed worktree a folder is in (the deepest one), from Git's records; undefined outside one. */
+export function managedWorktreeOf(cwd: string): { worktree: WorktreeInfo; main: string } | undefined {
+    let all: WorktreeInfo[];
+    try {
+        all = listWorktrees(cwd);
+    } catch {
+        return undefined;
+    }
+    const main = all.find((w) => w.main);
+    const real = canonical(cwd);
+    const worktree = all
+        .filter((w) => w.managed && (isInside(resolve(cwd), resolve(w.path)) || isInside(real, canonical(w.path))))
+        .sort((a, b) => b.path.length - a.path.length)[0];
+    return worktree && main ? { worktree, main: main.path } : undefined;
 }
 
 /** Some branch, tag or other ref contains the commit. */
@@ -488,6 +521,45 @@ async function ignoredEntries(path: string, log?: Log): Promise<string[]> {
 
 const ignoredToken = (path: string, entries: string[]) => createHash("sha256").update([path, ...entries].join("\0")).digest("hex");
 
+/** The ignored files removal would delete, unless `deleteIgnored` is the token for exactly them (or there are none). */
+export async function ignoredWaiting(plan: Removal, deleteIgnored: string | undefined, log?: Log): Promise<Extract<RemoveWorktreeResult, { removed: false }> | undefined> {
+    if (!plan.exists) return undefined;
+    const entries = await ignoredEntries(plan.path, log);
+    const confirm = ignoredToken(plan.path, entries);
+    if (entries.length && deleteIgnored !== confirm) return { removed: false, ignored: entries.slice(0, IGNORED_SHOWN), total: entries.length, confirm };
+    return undefined;
+}
+
+/**
+ * Why a worktree's commits aren't safe on a remote, if they aren't: commits
+ * at its HEAD that no remote-tracking branch contains (`rev-list --not
+ * --remotes`). With no remote at all, that's every commit. Only refs and
+ * commits are read, never files, so no filter can run; nothing is fetched.
+ * Anything that can't be checked counts as not pushed.
+ */
+export async function unpushedReason(o: { path: string; worktree: string }): Promise<string | undefined> {
+    const cwd = resolve(o.path);
+    const repo = repoOf(cwd);
+    checkIdentity(repo, [cwd]);
+    const wanted = resolve(o.worktree);
+    const record = repo.records.find((r) => resolve(r.path) === wanted || canonical(r.path) === canonical(wanted));
+    if (!record) throw new RpcError(`${wanted} isn't one of this repository's worktrees.`, "not_found");
+    if (isDir(record.path)) checkIdentity(repo, [record.path]);
+    checkConfigTrust(repo, cwd, isDir(record.path) ? [record.path] : [], "remove");
+    const what = record.branch ? `Branch ${record.branch}` : "Its detached HEAD";
+    const unchecked = `Couldn't check whether ${record.path}'s commits are on a remote, so it's kept.`;
+    const head = record.head;
+    if (!head || !/^[0-9a-f]{40,64}$/.test(head)) return unchecked;
+    const remotes = runGit(repo.main, ["remote"]);
+    if (remotes === undefined) return unchecked;
+    if (!remotes.trim()) return `This repository has no remote, so none of the worktree's commits are on a remote branch. It's kept; you can still remove it from the worktree picker.`;
+    const r = await runGitAsync(repo.main, ["rev-list", "--count", head, "--not", "--remotes"], REMOVE_TIMEOUT_MS);
+    const count = r.code === 0 && !r.timedOut ? Number(r.stdout.trim()) : NaN;
+    if (!Number.isInteger(count)) return unchecked;
+    if (count > 0) return `${what} has ${count === 1 ? "a commit" : `${count} commits`} that ${count === 1 ? "isn't" : "aren't"} on any remote branch. Push ${count === 1 ? "it" : "them"} first, or remove the worktree from the worktree picker.`;
+    return undefined;
+}
+
 /**
  * `git worktree remove` without --force, so Git refuses when anything tracked
  * or untracked would be lost; the branch stays. Git would delete ignored files
@@ -496,11 +568,8 @@ const ignoredToken = (path: string, entries: string[]) => createHash("sha256").u
  * A folder that's already gone loses only its own record.
  */
 export async function runRemoval(plan: Removal, o: { deleteIgnored?: string } = {}, log?: Log): Promise<RemoveWorktreeResult> {
-    if (plan.exists) {
-        const entries = await ignoredEntries(plan.path, log);
-        const confirm = ignoredToken(plan.path, entries);
-        if (entries.length && o.deleteIgnored !== confirm) return { removed: false, ignored: entries.slice(0, IGNORED_SHOWN), total: entries.length, confirm };
-    }
+    const waiting = await ignoredWaiting(plan, o.deleteIgnored, log);
+    if (waiting) return waiting;
     // Untracked files count even where the user's config hides them from status.
     const r = await runGitAsync(plan.main, [...NO_HOOKS, "-c", "status.showUntrackedFiles=normal", "worktree", "remove", plan.exists ? canonical(plan.path) : plan.path], REMOVE_TIMEOUT_MS);
     if (r.timedOut) {
