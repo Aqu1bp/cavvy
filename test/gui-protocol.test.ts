@@ -451,6 +451,9 @@ describe("replay", () => {
         // A note of how it ended (an error) says it did.
         expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third], [{ index: 7, level: "error", text: "Boom.", at: 8 }])).toBeUndefined();
         expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third], [{ index: 6, level: "error", text: "Earlier.", at: 6 }])).toBe(6);
+        // Not one it went on after (a Stop hook kept it going after a warning).
+        const kept = user("<system-reminder>A Stop hook asked you to keep going</system-reminder>", "prompt", { meta: { kind: "reminder" } } as Partial<Message>);
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third, kept, calling], [{ index: 7, level: "warn", text: "Output limit.", at: 8 }])).toBe(6);
     });
 
     test("turns from before a compaction are kept, marked archived and not rewindable", () => {

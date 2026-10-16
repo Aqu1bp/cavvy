@@ -390,8 +390,11 @@ export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[], notice
     if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined) return undefined;
     const prompt = messages[rec.index];
     if (!prompt || !startsTurn(prompt) || messages.slice(rec.index + 1).some(startsTurn)) return undefined;
-    // Another prompt there (that one was rewound in a terminal, this one sent there), or the history says how it ended (an error).
-    if ((rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) || notices.some((n) => n.index > rec.index)) return undefined;
+    // Another prompt there (that one was rewound in a terminal, this one sent there).
+    if (rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) return undefined;
+    // A note of how it ended (an error), unless it went on after that (a Stop hook kept it going after a warning).
+    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder");
+    if (notices.some((n) => n.index > rec.index && !wentOn(n.index))) return undefined;
     const last = messages[messages.length - 1]!;
     if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;
     // Interrupted already (as a stop writes it, for tools too).
