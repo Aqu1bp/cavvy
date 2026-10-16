@@ -2,7 +2,7 @@
 // one line ("Read 3 files, searched 2 patterns · +13 −1"), which opens into
 // a row per call, which opens into the call's details.
 
-import { createMemo, createSignal, For, Match, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, on, Show, Switch, type JSX } from "solid-js";
 import {
     AlertTriangle,
     Bot,
@@ -31,6 +31,7 @@ import { now } from "../../lib/clock";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor } from "../../state/actions";
+import { findReveal } from "../../state/ui";
 import { Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
 import { DiffView } from "./DiffView";
@@ -275,6 +276,9 @@ const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streami
 
 export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; agents?: AgentRun[] }) {
     const [open, setOpen] = createSignal(prefs.expandActivity);
+    // Find opens it to one of its calls; a lone call then shows as its row, the title find matched.
+    const [found, setFound] = createSignal(false);
+    createEffect(on(findReveal, (r) => r && p.tools.some((t) => t.id === r.part) && (setOpen(true), setFound(true))));
     const runs = createMemo(() => (p.agents ?? []).filter((a) => p.tools.some((t) => t.agent && t.id === a.id)));
     const plain = createMemo(() => p.tools.filter((t) => !runs().some((a) => a.id === t.id)));
     const running = createMemo(() => plain().find(isLive));
@@ -293,7 +297,7 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
     });
     const failed = () => done().filter((t) => t.status === "error").length;
     const denied = () => done().filter((t) => t.status === "denied").length;
-    const single = () => done().length === 1 && steps().length === 1;
+    const single = () => done().length === 1 && steps().length === 1 && !found();
 
     return (
         <>
@@ -413,6 +417,7 @@ export function agentLine(a: AgentRun): string {
 /** "2 sub-agents · 1 working · 1 done", opening into a row per agent that opens its own view. */
 export function SubAgentsRow(p: { runs: AgentRun[] }) {
     const [open, setOpen] = createSignal(p.runs.some(agentLive));
+    createEffect(on(findReveal, (r) => r && p.runs.some((a) => a.id === r.part) && setOpen(true)));
     const counts = () => {
         const n = (s: AgentRun["status"][]) => p.runs.filter((a) => s.includes(a.status)).length;
         return [
@@ -453,7 +458,7 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
                 <div class="agl">
                     <For each={p.runs}>
                         {(a) => (
-                            <button class="agr" onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
+                            <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
                                 <span class="av">
                                     <Bot size={14} />
                                     <span class={`nd st-${a.status}`} />
@@ -529,6 +534,8 @@ export function OpenFileButton(p: { path: string; line?: number }) {
 /** One call, as a plain line; opens into its details. */
 export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
     const [open, setOpen] = createSignal(false);
+    // Shown by find: its whole title, where the match may be past the cut.
+    const found = () => findReveal()?.part === p.tool.id;
     const label = () => toolLabel(p.tool);
     const meta = () => {
         const t = p.tool;
@@ -537,7 +544,7 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
         return t.summary;
     };
     return (
-        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${p.nested ? "nested" : ""}`}>
+        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${p.nested ? "nested" : ""} ${found() ? "found" : ""}`} data-find={p.tool.id}>
             <div class="tool-head">
                 <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
                     <span class="tool-icon">

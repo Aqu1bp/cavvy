@@ -28,3 +28,13 @@ export const [terminalOpen, setTerminalOpen] = createSignal(false);
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there. */
 export const terminalActions: { runScript?: (cwd: string, script: { id: string; name: string }) => void } = {};
+
+/** The find bar over the conversation (⌘F), what it looks for, and a bump to take focus again. */
+export const [findOpen, setFindOpen] = createSignal(false);
+export const [findQuery, setFindQuery] = createSignal("");
+export const [findFocus, setFindFocus] = createSignal(0);
+export const openFind = () => (setFindOpen(true), setFindFocus((n) => n + 1));
+/** The row holding the match being shown: rows folded around it open for it. */
+export const [findReveal, setFindReveal] = createSignal<{ turnId: string; part: string } | undefined>();
+/** A message to show once its session is open (a ⌘K hit): where it is, and what was searched. */
+export const [jumpTarget, setJumpTarget] = createSignal<{ sessionId: string; seg: number; index: number; role: "user" | "assistant"; query: string } | undefined>();

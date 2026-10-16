@@ -137,6 +137,41 @@
     max-width: 45%;
 }
 
+/* A message hit: the session on one line, what was said under it. */
+.pal-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
+}
+
+.pal-line {
+    display: flex;
+    align-items: baseline;
+    gap: 11px;
+    min-width: 0;
+}
+
+.pal-snippet {
+    font-size: 0.82rem;
+    line-height: 1.4;
+    color: var(--fg-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+
+.pal-snippet mark {
+    color: var(--fg);
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
+    border-radius: 3px;
+    padding: 0 1px;
+}
+
 /* ---- Settings: providers ------------------------------------------- */
 
 .prov-quick {

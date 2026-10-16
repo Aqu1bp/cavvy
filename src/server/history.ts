@@ -463,15 +463,17 @@ export function replay(o: ReplayInput): Turn[] {
         const archived = si < segs.length - 1;
         let turn: Turn | undefined;
         const tools = new Map<string, ToolBlock>();
-        const start = (prompt: Turn["prompt"], at?: number) => {
+        const start = (prompt: Turn["prompt"], at?: number, index?: number) => {
             if (turn && turn.status === "running") turn.status = "done";
-            turn = { id: o.newId(), prompt, blocks: [], status: "done", startedAt: at, ...(archived ? { archived } : {}) };
+            turn = { id: o.newId(), prompt, blocks: [], status: "done", startedAt: at, ...(archived ? { archived } : {}), ...(index !== undefined ? { pos: { seg: si, index } } : {}) };
             turns.push(turn);
             return turn;
         };
-        const ensure = () => turn ?? start(undefined);
+        // A turn no prompt started (a reply carrying on after a compaction) still has its place.
+        const ensure = (index: number) => turn ?? start(undefined, undefined, index);
         if (si > 0) {
-            const t = start(undefined);
+            // Before any prompt of its segment: what a search finds there leads here.
+            const t = start(undefined, undefined, -1);
             t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false });
             turn = undefined;
         }
@@ -499,7 +501,7 @@ export function replay(o: ReplayInput): Turn[] {
                 const kind = m.meta?.kind ?? "prompt";
                 if (kind === "summary" || kind === "reminder") return;
                 if (kind === "interrupt") {
-                    const t = ensure();
+                    const t = ensure(index);
                     t.status = "aborted";
                     for (const b of t.blocks) if (b.t === "tool" && b.status === "running") b.status = "error";
                     return;
@@ -509,7 +511,7 @@ export function replay(o: ReplayInput): Turn[] {
                         if (p.type === "tool_result") applyResult(tools.get(p.toolCallId), p, o.ui);
                         else if (p.type === "text" && p.text.startsWith(STEERING)) {
                             const rec = o.ui.turn(si, index);
-                            const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at);
+                            const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at, index);
                             if (rec?.end) t.endedAt = rec.end;
                             if (rec?.status && rec.status !== "running") t.status = rec.status;
                         }
@@ -518,7 +520,7 @@ export function replay(o: ReplayInput): Turn[] {
                 }
                 const rec = o.ui.turn(si, index);
                 const imported = Boolean(m.meta?.imported);
-                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at);
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at, index);
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;
@@ -529,7 +531,7 @@ export function replay(o: ReplayInput): Turn[] {
                 }
                 return;
             }
-            const t = ensure();
+            const t = ensure(index);
             const backend = getProvider(m.provider ?? "")?.kind === "agent";
             if (backend && shown.has(t)) return;
             for (const p of m.content) {

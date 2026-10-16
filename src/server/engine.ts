@@ -36,6 +36,7 @@ import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validC
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
+import { searchSessions } from "./search";
 import type {
     CliSessionInfo,
     CliSessionsList,
@@ -55,6 +56,7 @@ import type {
     ServerEvent,
     SessionOp,
     SessionSnapshot,
+    SessionSearchResult,
     SessionSummary,
 } from "./protocol";
 import { PROTOCOL_VERSION } from "./protocol";
@@ -197,6 +199,8 @@ export class Engine {
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
+    /** Each window's latest search: an older one still reading stops. */
+    private searches = new WeakMap<EngineClient, number>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
     private refreshing?: Promise<ProviderListing[]>;
@@ -475,6 +479,37 @@ export class Engine {
             out.set(rt.id, { ...live, updatedAt: Math.max(live.updatedAt, disk?.updatedAt ?? 0) });
         }
         return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+    }
+
+    /** What was said in every session (archived ones marked), read from their files; see search.ts. */
+    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
+        if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
+        const seq = (this.searches.get(client) ?? 0) + 1;
+        this.searches.set(client, seq);
+        if (query.trim().length < 2) return { hits: [], partial: false };
+        const arch = new Set(readStore().archived ?? []);
+        const r = await searchSessions(query, {
+            limit: Math.max(1, Math.min(Math.floor(limit), 200)),
+            include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
+            stale: () => this.searches.get(client) !== seq || this.stopping,
+        });
+        if (r.stale) return { hits: [], partial: true, stale: true };
+        return {
+            partial: r.partial,
+            hits: r.hits.map((h) => ({
+                id: h.id,
+                title: redact(this.runtimes.get(h.id)?.title ?? h.title),
+                cwd: h.cwd,
+                projectName: basename(h.cwd) || h.cwd,
+                archived: arch.has(h.id),
+                seg: h.seg,
+                index: h.index,
+                role: h.role,
+                snippet: h.snippet,
+                ...(h.match ? { match: h.match } : {}),
+                at: h.at,
+            })),
+        };
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
@@ -1062,6 +1097,9 @@ export class Engine {
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
+            case "sessions.search":
+                // Awaited: it can reject before its first await (see providers.setKey below).
+                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
                 this.watch(client, rt.id);

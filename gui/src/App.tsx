@@ -14,7 +14,7 @@ import { AgentView } from "./components/Agents";
 import { RightPanel } from "./components/RightPanel";
 import { ReviewPane } from "./components/ReviewPane";
 import { TerminalPanel } from "./components/TerminalPanel";
-import { terminalOpen, setTerminalOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsNav, SettingsPage } from "./components/Settings";
@@ -166,6 +166,8 @@ export function App() {
                 if (k === ".") return e.preventDefault(), togglePanel();
                 if (k === "/") return e.preventDefault(), setModelPickerOpen(true);
                 if (k === "l") return e.preventDefault(), requestComposerFocus();
+                // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
+                if (k === "f" && !e.shiftKey && active() && !agent() && !settingsTab()) return e.preventDefault(), openFind();
                 if (k === "[" || (e.altKey && k === "arrowup")) return e.preventDefault(), cycleSession(-1);
                 if (k === "]" || (e.altKey && k === "arrowdown")) return e.preventDefault(), cycleSession(1);
             }

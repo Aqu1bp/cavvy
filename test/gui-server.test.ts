@@ -527,6 +527,30 @@ describe("connecting", () => {
 });
 
 describe("sessions", () => {
+    test("sessions.search finds a prompt and a reply, at the turn the session draws", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "explain the layout of the walrus module" });
+        await c.until(id, done);
+        const t = lastTurn(c.view(id));
+        const r = await c.call("sessions.search", { query: "LAYOUT OF THE WALRUS" });
+        expect(r.partial).toBe(false);
+        expect(r.hits).toHaveLength(1);
+        const hit = r.hits[0];
+        expect(hit).toMatchObject({ id, role: "user", archived: false, seg: 0 });
+        expect(hit.snippet.slice(hit.match[0], hit.match[1])).toBe("layout of the walrus");
+        expect(t.pos).toEqual({ seg: 0, index: hit.index });
+        expect(Math.abs(hit.at - t.startedAt!)).toBeLessThan(5000);
+        // The reply: in this session's turn too (other sessions said the same).
+        const replies = await c.call("sessions.search", { query: "a quick overview", limit: 200 });
+        const mine = replies.hits.find((h: { id: string }) => h.id === id);
+        expect(mine).toMatchObject({ role: "assistant", seg: 0 });
+        expect(mine.index).toBeGreaterThan(hit.index);
+        expect((await c.call("sessions.search", { query: "w" })).hits).toEqual([]);
+        await expect(c.call("sessions.search", { query: "w".repeat(201) })).rejects.toThrow(/200 characters/);
+        c.close();
+    });
+
     test("a prompt streams into the timeline, and the session gets a title", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });

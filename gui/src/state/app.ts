@@ -15,6 +15,7 @@ import { paths } from "./filelinks";
 import { toastMs } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
 import type { Attachment } from "./actions";
+import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
 
 export const rpc = new Rpc(credentials);
 rpc.retriesCredentials = isTauri;
@@ -225,21 +226,24 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
-/** Show a session in the main view. */
-export async function activate(id: string | undefined) {
+/** Show a session in the main view. `cwd` is its project, for one not in the lists (an old one found by search). */
+export async function activate(id: string | undefined, cwd?: string) {
+    // A jump waiting for another session doesn't wait any more.
+    if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (!id) {
         setApp("activeId", undefined);
         return;
     }
     try {
         const h = await openSession(id);
+        if (id !== app.activeId) setFindOpen(false);
         setApp("activeId", id);
         if (h.view.state.cwd) setApp("homeCwd", h.view.state.cwd);
         markSeen(id);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            const s = app.sessions.find((x) => x.id === id);
-            if (s) requestTrust(s.cwd, () => void activate(id));
+            const where = (app.sessions.find((x) => x.id === id) ?? app.archived.find((x) => x.id === id))?.cwd ?? cwd;
+            if (where) requestTrust(where, () => void activate(id, cwd));
             return;
         }
         reportError(e);

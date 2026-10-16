@@ -75,6 +75,85 @@
     animation: rise 180ms var(--ease-out);
 }
 
+/* ---- Find in the conversation (⌘F) ---------------------------------- */
+
+.find-bar {
+    position: absolute;
+    top: 10px;
+    right: calc(var(--lane-r) + 12px);
+    z-index: 26;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 36px;
+    padding: 0 6px 0 12px;
+    border-radius: 10px;
+    background: var(--pop);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    box-shadow: var(--shadow-pop);
+    animation: rise 160ms var(--ease-out);
+    max-width: calc(100% - 24px);
+}
+
+.find-bar input {
+    width: 220px;
+    min-width: 0;
+    flex: 1;
+    margin-left: 4px;
+    border: 0;
+    background: transparent;
+    font-size: 0.93rem;
+}
+
+.find-count {
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+    white-space: nowrap;
+    padding: 0 4px;
+}
+
+::highlight(find-match) {
+    background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+::highlight(find-current) {
+    background-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    color: var(--fg);
+}
+
+/* The tool row find is showing: all of its title and summary, not cut short. */
+.tool.found .tool-line .truncate,
+.agr.found .truncate {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+/* A turn opened from a search: marked for a moment. */
+.turn.flash {
+    animation: turn-flash 1.8s var(--ease-out);
+    border-radius: 12px;
+}
+
+@keyframes turn-flash {
+    0%,
+    30% {
+        background: color-mix(in srgb, var(--accent) 10%, transparent);
+        box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    100% {
+        background: transparent;
+        box-shadow: 0 0 0 8px transparent;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .turn.flash {
+        animation: none;
+        box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+}
+
 /* ---- Turns ----------------------------------------------------------- */
 
 .turn {

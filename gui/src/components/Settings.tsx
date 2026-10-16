@@ -9,7 +9,7 @@ import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
-import { mod, openExternal } from "../lib/platform";
+import { mod, openExternal, terminalShortcut } from "../lib/platform";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { MODES } from "./ModePicker";
 import { CrumbSep, TitleBar } from "./Header";
@@ -512,7 +512,8 @@ function Providers() {
 
 const SHORTCUTS: [string, string][] = [
     [`${mod}+N`, "New session"],
-    [`${mod}+K`, "Search sessions and actions"],
+    [`${mod}+K`, "Search sessions, messages and actions"],
+    [`${mod}+F`, "Find in the conversation"],
     [`${mod}+,`, "Settings"],
     [`${mod}+B`, "Toggle the sidebar"],
     [`${mod}+.`, "Toggle the side panel"],
@@ -520,6 +521,7 @@ const SHORTCUTS: [string, string][] = [
     [`${mod}+1…9`, "Pick a model (model picker open)"],
     [`${mod}+[  ${mod}+]`, "Previous / next session"],
     [`${mod}+L`, "Focus the input box"],
+    [terminalShortcut, "Toggle the terminal"],
     ["Shift+Tab", "Cycle permission mode"],
     ["Esc", "Interrupt (while working) · deny a permission · close"],
     ["1  2  3", "Answer the request on the composer"],
