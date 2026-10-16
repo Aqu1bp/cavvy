@@ -36,7 +36,7 @@ export function FolderPicker() {
                 <button class="icon-btn" title="Up" disabled={!listing()?.parent} onClick={() => listing()?.parent && setPath(listing()!.parent!)}>
                     <ArrowUp size={15} />
                 </button>
-                <input class="input mono" value={typed()} onInput={(e) => setTyped(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && setPath(typed())} spellcheck={false} />
+                <input aria-label="Folder path" class="input mono" value={typed()} onInput={(e) => setTyped(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && setPath(typed())} spellcheck={false} />
             </div>
             <div class="fp-list">
                 <Show when={!listing.loading} fallback={<Spinner />}>
