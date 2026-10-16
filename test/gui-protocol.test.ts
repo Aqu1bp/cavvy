@@ -750,3 +750,15 @@ test("a delegated task's effective effort is set once and survives agent-head re
     expect(records.filter((r) => r.t === "step").every((r) => r.block?.effort === undefined)).toBe(true);
     await engine.stop();
 });
+
+test("a reopened task comes back with its own sub-agents, whose calls are in its steps, not in a turn", () => {
+    const run = (id: string, parentId?: string): AgentRun => ({ id, turnId: "old", parentId, description: id, agentType: "general-purpose", status: "running", startedAt: 1, toolCount: 0, tokens: 0, blocks: [] });
+    const turns: Turn[] = [{ id: "t1", status: "done", endedAt: 50, blocks: [{ t: "tool", id: "task", name: "delegate", title: "delegate", status: "ok", agent: true }] }];
+    const recorded = new Map([run("task"), run("inner", "task"), run("innermost", "inner"), run("stray", "elsewhere")].map((a) => [a.id, a]));
+    const agents = agentsFromTurns(turns, undefined, recorded);
+    expect(agents.map((a) => [a.id, a.turnId, a.parentId, a.status, a.replayed])).toEqual([
+        ["task", "t1", undefined, "stopped", true],
+        ["inner", "t1", "task", "stopped", true],
+        ["innermost", "t1", "inner", "stopped", true],
+    ]);
+});

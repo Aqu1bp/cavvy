@@ -359,9 +359,7 @@ export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map
             if (b.t !== "tool") continue;
             const rec = recorded?.get(b.id);
             if (rec) {
-                // Nothing of it runs any more, and there's no task to stop.
-                const live = rec.status === "running" || rec.status === "waiting";
-                out.push({ ...rec, turnId: t.id, taskId: undefined, activity: undefined, replayed: true, blocks: rec.blocks.map(ended), ...(live ? { status: "stopped", endedAt: rec.endedAt ?? t.endedAt } : {}) });
+                out.push(restoredAgent(rec, t));
                 continue;
             }
             if (!b.agent) continue;
@@ -370,7 +368,19 @@ export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map
             out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt, ...(b.durationMs !== undefined && startedAt ? { endedAt: startedAt + b.durationMs } : {}), report: b.output && withoutActionsNote(b.output), replayed: true });
         }
     }
+    // A sub-agent's own (a delegated Codex task's) has its call in that one's steps, not in a turn: it comes back with it.
+    for (let i = 0; i < out.length && recorded; i++) {
+        const up = out[i]!;
+        const turn = turns.find((t) => t.id === up.turnId)!;
+        for (const rec of recorded.values()) if (rec.parentId === up.id && !out.some((a) => a.id === rec.id)) out.push(restoredAgent(rec, turn));
+    }
     return out;
+}
+
+/** A logged sub-agent as it comes back: nothing of it runs any more, and there's no task to stop. */
+function restoredAgent(rec: AgentRun, t: Turn): AgentRun {
+    const live = rec.status === "running" || rec.status === "waiting";
+    return { ...rec, turnId: t.id, taskId: undefined, activity: undefined, replayed: true, blocks: rec.blocks.map(ended), ...(live ? { status: "stopped", endedAt: rec.endedAt ?? t.endedAt } : {}) };
 }
 
 // ---------------------------------------------------------------------------
