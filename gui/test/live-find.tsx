@@ -6,6 +6,7 @@ import { ActivityGroup } from "../src/components/blocks/Activity";
 import { findMatches, textRanges } from "../src/lib/find";
 import { setFindReveal } from "../src/state/ui";
 import { checkEditorFind } from "./editor-find";
+import { checkTranscriptScroll } from "./transcript-scroll";
 import { checkPaletteDelete } from "./palette-delete";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
@@ -80,8 +81,8 @@ async function run() {
         dispose();
     }
 }
-run().then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => {
-    result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys; deleted palette hits";
+run().then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => {
+    result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);
