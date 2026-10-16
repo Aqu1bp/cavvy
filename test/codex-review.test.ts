@@ -73,6 +73,22 @@ test("completed reviewer approval patches the command without a prompt or prose 
     expect(records.filter((r) => r.t === "tool").every((r) => r.block === undefined)).toBe(true);
 });
 
+test("a secret in the reviewer's reason is redacted, even one that ends in a space", async () => {
+    const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+    const secret = "q7Zr2LmX9wPk4sVt ";
+    registerSecret(secret, "REVIEW_TOKEN");
+    process.env.FAKE_REVIEW_RATIONALE = `It runs with ${secret}`;
+    try {
+        const { events, records } = await run();
+        const approval = events.find((e) => e.type === "tool_approved");
+        expect(approval).toMatchObject({ reason: "Codex's reviewer (risk: low): It runs with [REDACTED REVIEW_TOKEN]" });
+        expect(JSON.stringify(records)).not.toContain(secret.trim());
+    } finally {
+        delete process.env.FAKE_REVIEW_RATIONALE;
+        unregisterSecret(secret);
+    }
+});
+
 test("approved guardian warnings stay silent without creating synthetic tool records", async () => {
     process.env.FAKE_REVIEW_NO_COMPLETED = "1";
     const { events, reopened } = await run();

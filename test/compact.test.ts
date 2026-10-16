@@ -118,7 +118,9 @@ test("a handoff frames attached files, and drops a whole file rather than cut a 
     expect(tight.text).toContain("Read these.");
     expect(tight.text).toContain("an attached file left out here, too long to include: b.txt");
     expect(tight.text).not.toContain("characters / ~");
-    expect(tight.shortenedChars).toBeGreaterThanOrEqual(3000);
+    // Exactly what b's entry was: the note of it isn't counted as kept.
+    const note = "\n[an attached file left out here, too long to include: b.txt]";
+    expect(tight.shortenedChars).toBe(whole.text.length - (tight.text.length - note.length));
 });
 
 test("a long paste (sent as a file part) is the user's own words: a handoff keeps it whole, and counts only what it cut", () => {
@@ -130,4 +132,17 @@ test("a long paste (sent as a file part) is the user's own words: a handoff keep
     // An attached file (not a paste) is cut to 4000 inside its frame: what's counted is what it lost, not the marker.
     const attached: Message = { role: "user", content: [{ type: "file", kind: "text", name: "notes.txt", size: findings.length, lines: 11, text: findings }] };
     expect(handoffTranscript([attached], 60_000).shortenedChars).toBe(findings.length - 4000);
+});
+
+test("a paste bigger than the whole budget keeps its head and tail inside its frame, and the count is only what was cut", () => {
+    const text = "HEAD " + "x".repeat(90_000) + " TAIL";
+    const paste: Message = { role: "user", content: [{ type: "file", kind: "text", name: "Pasted text", size: text.length, lines: 1, text, pasted: true }] };
+    const r = handoffTranscript([paste], 60_000);
+    expect(r.text.length).toBeLessThanOrEqual(60_000);
+    expect(r.text).toContain("HEAD ");
+    expect(r.text).toContain(" TAIL");
+    expect(r.text).toMatch(/<pasted-text boundary="[0-9a-f]+">\nHEAD [\s\S]*characters \/ ~[\s\S]* TAIL\n<\/pasted-text boundary="[0-9a-f]+">$/);
+    const body = r.text.slice(r.text.indexOf("\nHEAD "), r.text.lastIndexOf(" TAIL\n"));
+    const kept = (body.match(/x/g) ?? []).length + "HEAD  TAIL".length;
+    expect(r.shortenedChars).toBe(text.length - kept);
 });

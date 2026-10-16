@@ -291,7 +291,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             if (process.env.FAKE_REVIEW_APPROVE !== "1") return;
             const review = { threadId, turnId, reviewId: `rev-${turnId}`, targetItemId: cmd.id, action: { type: "command", command: shown, cwd: cmd.cwd, source: "shell" } };
             notify("item/autoApprovalReview/started", { ...review, review: { status: "inProgress" } });
-            if (process.env.FAKE_REVIEW_NO_COMPLETED !== "1") notify("item/autoApprovalReview/completed", { ...review, review: { status: "approved", riskLevel: "low", rationale: "The user requested this local test." } });
+            if (process.env.FAKE_REVIEW_NO_COMPLETED !== "1") notify("item/autoApprovalReview/completed", { ...review, review: { status: "approved", riskLevel: "low", rationale: process.env.FAKE_REVIEW_RATIONALE ?? "The user requested this local test." } });
             notify("guardianWarning", { threadId, message: "Automatic approval review approved (risk: low, authorization: high): The user requested this local test." });
             if (process.env.FAKE_REVIEW_MULTIPLE === "1") {
                 const completed = { ...review, reviewId: `rev-second-${turnId}`, review: { status: "approved", riskLevel: "medium", rationale: "The user also requested cleanup." } };

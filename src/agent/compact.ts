@@ -73,71 +73,84 @@ export function handoffTranscript(messages: Message[], maxChars: number): { text
     for (const i of order) {
         const b = blocks[i];
         if (!b?.text) continue;
-        const available = remaining - (selected.size ? 2 : 0);
-        let text = b.text;
-        let kept = b.keptChars;
-        if (text.length > available) {
-            // Only an oversized user message is cut again; capped assistant/tool blocks can wait.
-            if (!b.user || text.length <= maxChars) continue;
-            // The full omission marker bounds its digit counts, including the omitted lines.
-            kept = available - truncateMiddle(text, 0).length;
-            if (kept <= 0) continue;
-            text = truncateMiddle(text, kept);
-        }
-        selected.set(i, text);
-        remaining -= text.length + (selected.size > 1 ? 2 : 0);
-        shortenedChars -= kept;
+        // Each fits the whole budget (a user message is cut to it, in its parts): one that doesn't fit what's left is left out.
+        if (b.text.length > remaining - (selected.size ? 2 : 0)) continue;
+        selected.set(i, b.text);
+        remaining -= b.text.length + (selected.size > 1 ? 2 : 0);
+        shortenedChars -= b.keptChars;
     }
     return { text: [...selected].sort(([a], [b]) => a - b).map(([, text]) => text).join("\n\n"), shortenedChars };
 }
 
+/** One part of a transcript entry: its text, shown cut to `max` and wrapped (a frame, a tool's brackets). */
+interface EntryPart {
+    source: string;
+    max: number;
+    wrap: (text: string) => string;
+    /** An attached file's name: past the cap it goes whole. */
+    file?: string;
+    /** The user's own words (their text, or a paste): past the cap a handoff cuts it, inside its frame. */
+    words?: boolean;
+    gone?: boolean;
+}
+
+const shownPart = (x: EntryPart) => (x.gone ? "" : x.wrap(truncateMiddle(x.source, x.max)));
+/** What of its source a part keeps. */
+const keptOf = (x: EntryPart) => (x.gone ? 0 : Math.min(x.source.length, x.max));
+/** What a part shows besides its source (a frame, brackets), or would have, left out. */
+const wrapping = (x: EntryPart) => x.wrap(truncateMiddle(x.source, x.max)).length - truncateMiddle(x.source, x.max).length;
+
 /**
  * A message as a transcript entry, and how much of it that keeps (what a
  * handoff shortened is said). Past `cap`, whole attached files go (the last
- * first) rather than shortening the message through a frame.
+ * first) rather than shortening the message through a frame; for a handoff
+ * (`fit`), the user's words are then cut in the middle, inside their frame.
  */
-function renderForTranscript(m: Message, cap: number, wholeUserText = false): { text: string; originalChars: number; keptChars: number } {
-    const parts: { text: string; original: number; kept: number; file?: string }[] = [];
-    const part = (text: string, max: number, prefix = "", suffix = "") =>
-        parts.push({ text: prefix + truncateMiddle(text, max) + suffix, original: prefix.length + text.length + suffix.length, kept: prefix.length + Math.min(text.length, max) + suffix.length });
+function renderForTranscript(m: Message, cap: number, fit = false): { text: string; originalChars: number; keptChars: number } {
+    const parts: EntryPart[] = [];
+    const add = (source: string, max: number, wrap = (t: string) => t, more: Partial<EntryPart> = {}) => parts.push({ source, max, wrap, ...more });
+    const ownWords = fit && m.role === "user";
     for (const p of m.content) {
-        if (p.type === "text") part(p.text, wholeUserText && m.role === "user" ? p.text.length : 4000);
-        else if (p.type === "tool_call") part(JSON.stringify(p.input), 600, `[called ${p.name}: `, "]");
-        else if (p.type === "tool_result") part(p.content, 1500, `[${p.isError ? "error from" : "result of"} ${p.toolName}: `, "]");
-        else if (p.type === "image") part("[image]", 7);
+        if (p.type === "text") add(p.text, ownWords ? Infinity : 4000, undefined, { words: ownWords });
+        else if (p.type === "tool_call") add(JSON.stringify(p.input), 600, (t) => `[called ${p.name}: ${t}]`);
+        else if (p.type === "tool_result") add(p.content, 1500, (t) => `[${p.isError ? "error from" : "result of"} ${p.toolName}: ${t}]`);
+        else if (p.type === "image") add("[image]", Infinity);
         else if (p.type === "file") {
-            if (p.kind === "pdf") part(`[the user attached ${p.name} earlier; its contents aren't included here]`, Infinity);
-            else {
-                // Framed here too (shortened first), so a file can't pass for the transcript's own lines.
-                // A paste is the user's own words, as their text is.
-                const inner = truncateMiddle(p.text, wholeUserText && p.pasted ? p.text.length : 4000);
-                const text = framedText({ ...p, text: inner });
-                const kept = text.length - inner.length + Math.min(p.text.length, inner === p.text ? p.text.length : 4000);
-                parts.push({ text, original: text.length - inner.length + p.text.length, kept, file: p.name });
-            }
+            if (p.kind === "pdf") add(`[the user attached ${p.name} earlier; its contents aren't included here]`, Infinity);
+            // Framed here too (shortened first), so a file can't pass for the transcript's own lines. A paste is the user's own words.
+            else if (ownWords && p.pasted) add(p.text, Infinity, (t) => framedText({ ...p, text: t }), { words: true });
+            else add(p.text, 4000, (t) => framedText({ ...p, text: t }), { file: p.name });
         }
     }
     if (!parts.length) return { text: "", originalChars: 0, keptChars: 0 };
     const results = m.content.every((p) => p.type === "tool_result");
     const left: string[] = [];
+    const note = () => (left.length ? `[${left.length === 1 ? "an attached file" : `${left.length} attached files`} left out here, too long to include: ${left.join(", ")}]` : "");
     const render = () => {
-        const shown = parts.filter((x) => x.text).map((x) => x.text);
-        if (left.length) shown.push(`[${left.length === 1 ? "an attached file" : `${left.length} attached files`} left out here, too long to include: ${left.join(", ")}]`);
+        const shown = [...parts.map(shownPart), note()].filter(Boolean);
         return results ? shown.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${shown.join("\n")}`;
     };
     let text = render();
     for (let i = parts.length - 1; i >= 0 && text.length > cap; i--) {
         const x = parts[i]!;
-        if (!x.file || !x.text) continue;
+        if (!x.file || x.gone) continue;
+        x.gone = true;
         left.unshift(x.file);
-        x.text = "";
-        x.kept = 0;
         text = render();
     }
-    // What the entry adds (its role, line breaks, the note of files left out) counts as kept.
-    const cut = parts.reduce((n, x) => n + x.text.length - x.kept, 0);
-    const keptChars = text.length - cut;
-    return { text, originalChars: keptChars + parts.reduce((n, x) => n + x.original - x.kept, 0), keptChars };
+    for (let i = parts.length - 1; fit && i >= 0 && text.length > cap; i--) {
+        const x = parts[i]!;
+        if (!x.words) continue;
+        // The marker for cutting all of it is the longest one could be (its counts have the most digits).
+        x.max = Math.max(0, keptOf(x) - (text.length - cap) - truncateMiddle(x.source, 0).length);
+        text = render();
+    }
+    // What the entry adds (its role, line breaks, wrapping) counts as kept; markers and the note of files left out don't.
+    const kept = parts.reduce((n, x) => n + (x.gone ? 0 : keptOf(x) + wrapping(x)), 0);
+    const framing = text.length - parts.reduce((n, x) => n + shownPart(x).length, 0) - (left.length ? note().length + 1 : 0);
+    const original = parts.reduce((n, x) => n + x.source.length + wrapping(x), 0);
+    // (Each file left out had its line break too.)
+    return { text, originalChars: original + framing + left.length, keptChars: kept + framing };
 }
 
 /** The compaction request with a condensed transcript in place of the full history. */

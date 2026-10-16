@@ -637,7 +637,8 @@ class CodexTurn {
                 if (p.review?.status === "approved") {
                     // Without an item id there is no command block to attach the verdict to.
                     if (typeof p.targetItemId !== "string" || !p.targetItemId) break;
-                    const reason = redact(`Codex's reviewer (risk: ${String(p.review.riskLevel ?? "unknown")}): ${String(p.review.rationale ?? "No reason supplied.").trim()}`);
+                    // Redacted before it's trimmed: a secret can end in a space.
+                    const reason = `Codex's reviewer (risk: ${redact(String(p.review.riskLevel ?? "unknown"))}): ${redact(String(p.review.rationale ?? "No reason supplied.")).trim()}`;
                     const open = this.items.get(p.targetItemId);
                     if (open) this.emitApproval(p.targetItemId, reason, open.sub);
                     else {
