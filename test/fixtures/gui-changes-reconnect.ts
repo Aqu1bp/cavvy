@@ -17,6 +17,7 @@ const { useChanges, useGitChanges } = await import("../../gui/src/state/changes"
 const snapshot = { seq: 0, state: { id: "session", cwd: "/project", filesChanged: 1, busy: false }, turns: [], agents: [] };
 const changes = { files: [{ path: "file.ts", added: 1, removed: 0 }], added: 1, removed: 0, tracked: true };
 const gitChanges = { ...changes, repo: true, scope: "uncommitted", bases: [], more: 0 };
+const interruptedBootstrap = process.argv.includes("--interrupted-bootstrap");
 let currentChanges = changes;
 let currentGitChanges = gitChanges;
 let loaded = false;
@@ -35,6 +36,8 @@ class ServerSocket extends Socket {
             if (reconnecting) releaseHello = () => reply({});
             else reply({});
         } else if (["sessions.list", "projects.recent", "providers.list", "models.list"].includes(method)) {
+            // Leave the first bootstrap unfinished while a session is already open.
+            if (method === "providers.list" && interruptedBootstrap && !reconnecting) return;
             reply([]);
         } else if (method === "settings.get") {
             reply({});
@@ -64,6 +67,7 @@ try {
     await settle();
     Socket.instances[0]!.open();
     await settle();
+    assert.ok(Socket.instances[0]!.sent.some(({ method }) => method === "providers.list"));
     const handle = await openSession("session");
     const [harnessResource, gitResource] = createRoot((cleanup) => {
         dispose = cleanup;
@@ -83,6 +87,7 @@ try {
     }
     const beforeReconnect = reads;
     Socket.instances[0]!.close();
+    assert.equal(handle.ready(), false, "disconnect pauses reads on the cached handle");
     window.dispatchEvent(new Event("focus"));
     document.dispatchEvent(new Event("visibilitychange"));
     void refetchHarness();
@@ -90,7 +95,7 @@ try {
     await settle();
     assert.deepEqual(harness(), changes, "offline refresh keeps the previous Harness changes");
     assert.deepEqual(git(), gitChanges, "offline focus and visibility keep the previous Git changes");
-    assert.equal(toasts.length, 0, "offline read refreshes do not report an error");
+    assert.deepEqual(toasts.map((t) => t.message), interruptedBootstrap ? ["Disconnected from the harness server"] : [], "only the interrupted bootstrap reports an error, not offline reads");
     await assert.rejects(rpc.call("session.send", { id: handle.id, text: "offline mutation" }), /Not connected/);
     // Simulate the server unloading an idle session during a long disconnect.
     loaded = false;
@@ -113,6 +118,7 @@ try {
     currentGitChanges = { ...gitChanges, ...currentChanges };
     releaseHello();
     await settle();
+    assert.equal(handle.ready(), true, "reconnect makes the cached handle ready even if the first bootstrap was interrupted");
     assert.equal(opens, 2, "start() reopens the same handle after its startup refreshes");
     assert.equal(reads, beforeReconnect + 2, "an unchanged reopened snapshot still refreshes both resources once");
     assert.deepEqual(harness(), currentChanges);

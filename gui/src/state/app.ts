@@ -484,8 +484,6 @@ function onEvent(ev: ServerEvent) {
     }
 }
 
-let connectedOnce = false;
-
 export function start() {
     document.addEventListener("visibilitychange", () => {
         for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
@@ -504,8 +502,7 @@ export function start() {
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
                 void refreshModels().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
-                if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
-                connectedOnce = true;
+                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();
             } catch (e) {
