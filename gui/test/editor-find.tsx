@@ -26,7 +26,10 @@ export async function checkEditorFind(root: HTMLElement) {
         diff: { path: "src/edited.ts", status: "modified", added: 1, removed: 0, hunks: [{ oldStart: 9, oldLines: 0, newStart: 9, newLines: 1, lines: [{ t: "add", text: "edited text" }] }] },
     };
     const turn: Turn = {
-        id: "editor-turn", status: "done", prompt: { text: "Inspect the files" },
+        id: "editor-turn", status: "done", prompt: { text: "Inspect the files", images: 1, files: [
+            { kind: "text", name: "files-quokka.txt", size: 1024, lines: 3 },
+            { kind: "pdf", name: "files.pdf", size: 512 },
+        ] },
         blocks: [read, edit, { t: "text", id: "reply", text: "Inspect src/quokka.ts:12 near `src/quokka.ts:20` and [**quokka label**](src/quokka.ts:30)." }],
     };
     const state = { id: sessionId, cwd: "/fixture", interactions: [] } as unknown as SessionState;
@@ -63,6 +66,11 @@ export async function checkEditorFind(root: HTMLElement) {
     };
     try {
         await settle();
+        check(scope("prompt").querySelectorAll(".prompt-attachments .chip").length === 3, "prompt displays image, text and PDF attachment chips");
+        check(findMatches([turn], "files").length === 1 && textRanges(scope("prompt"), "files").length === 1, "attachment names do not duplicate a prompt match");
+        for (const label of ["files.pdf", "1 KB", "1 image"]) {
+            check(findMatches([turn], label).length === 0 && textRanges(col, label).length === 0, "attachment-only labels have no counted or painted matches");
+        }
         check(finishLookup && !scope("reply").querySelector("a[data-file]"), "file lookup stays pending while find starts");
         check(count() === "1 of 3" && current().toString() === "quokka", "find selects plain path text before lookup resolves");
         finishLookup();

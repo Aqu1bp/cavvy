@@ -131,6 +131,26 @@ describe("searching session files", () => {
         expect(turnFor(s.file, 0, 3)?.blocks.some((b) => b.t === "text" && b.text.includes("xylophone"))).toBe(true);
     });
 
+    test("attached files keep prompt and reply positions without searching their names or contents", async () => {
+        const files = [
+            { type: "file", kind: "text", name: "attachment-name-only.txt", size: 31, lines: 1, text: "attachment-content-only words", pasted: true },
+            { type: "file", kind: "pdf", name: "attachment-name-only.pdf", size: 9, mediaType: "application/pdf", data: "JVBERi0xLjcK" },
+        ];
+        const s = write([
+            prompt("attachment-position prompt", { content: [{ type: "text", text: "attachment-position prompt" }, ...files] }),
+            reply("attachment-position first reply"),
+            prompt("", { content: files }),
+            reply("attachment-position after files only"),
+        ]);
+        expect((await searchSessions("attachment-position prompt")).hits[0]).toMatchObject({ id: s.id, seg: 0, index: 0 });
+        const hit = (await searchSessions("attachment-position after files only")).hits[0]!;
+        expect(hit).toMatchObject({ id: s.id, seg: 0, index: 3 });
+        const turn = turnFor(s.file, hit.seg, hit.index)!;
+        expect(turn).toMatchObject({ pos: { seg: 0, index: 2 }, prompt: { text: "", index: 2 } });
+        expect(turn.prompt!.files).toEqual(files.map(({ kind, name, size, lines, pasted }) => ({ kind, name, size, ...(lines !== undefined ? { lines } : {}), ...(pasted ? { pasted } : {}) })));
+        for (const query of ["attachment-name-only", "attachment-content-only", "JVBERi0xLjcK"]) expect((await searchSessions(query)).hits).toEqual([]);
+    });
+
     test("rewinds drop what they cut; compactions start a segment, as replay counts", async () => {
         const s = write([
             prompt("alpha opening words"),

@@ -34,7 +34,7 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
                     </span>
                 </Show>
                 <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
-                    <span class="prompt-attachments">
+                    <span class="prompt-attachments" data-find-skip>
                         <Show when={p.turn.prompt?.images}>
                             <span class="chip tiny">{p.turn.prompt!.images} image{p.turn.prompt!.images === 1 ? "" : "s"}</span>
                         </Show>
