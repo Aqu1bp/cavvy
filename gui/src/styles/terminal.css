@@ -13,3 +13,4 @@
 .terminal-emulator { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .terminal-emulator .xterm { height: 100%; }
 .terminal-message { display: flex; align-items: center; justify-content: space-between; padding: 8px; gap: 8px; color: var(--fg-muted); font-size: 12px; }
+.terminal-tab-icon { vertical-align: -1px; color: var(--fg-muted); }

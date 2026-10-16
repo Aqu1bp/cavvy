@@ -17,6 +17,8 @@ interface Shell {
     /** Output held back while the window catches up: the latest of it only. */
     held: string;
     skipped: number;
+    /** Drops input given at open that hasn't been typed yet. */
+    cancelInput?: () => void;
 }
 
 /**
@@ -28,6 +30,14 @@ interface Shell {
 const MAX_UNACKED = 1_000_000;
 const RESUME_BELOW = 250_000;
 const KEEP = 250_000;
+
+/**
+ * Input given at open is typed once the shell has started: when its output
+ * (rc files, the first prompt) has paused this long, or at the latest after
+ * TYPE_BY. Typed earlier it would still run, but be echoed twice.
+ */
+const TYPE_QUIET_MS = 150;
+const TYPE_BY_MS = 3000;
 
 /** The terminal the shell was started from (an outer tmux, an editor's or another app's) isn't this one. */
 const OUTER_TERMINAL = /^(TMUX|TMUX_PANE|STY|TERM_PROGRAM|TERM_PROGRAM_VERSION|TERM_SESSION_ID|COLUMNS|LINES|WINDOWID|ITERM_.*|LC_TERMINAL|LC_TERMINAL_VERSION|VSCODE_.*|KITTY_.*|WEZTERM_.*|ALACRITTY_.*|GHOSTTY_.*|WT_SESSION|WT_PROFILE_ID|KONSOLE_.*|INSIDE_EMACS|ZED_TERM)$/;
@@ -55,7 +65,8 @@ export function terminalEnv(): Record<string, string> {
 export class Terminals {
     private shells = new Map<string, Shell>();
 
-    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown) {
+    /** `input` is typed into the new shell, as if by hand, once it's ready (see TYPE_QUIET_MS). */
+    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string } = {}) {
         const size = terminalSize(cols, rows);
         if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.shells.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
         if (this.shells.size >= 48 || [...this.shells.values()].filter((s) => s.owner === owner).length >= 12) throw new RpcError("Close a terminal before opening another (12 per window, across projects)", "limit");
@@ -69,6 +80,19 @@ export class Terminals {
         const decoder = new TextDecoder();
         let pending = "";
         let entry: Shell | undefined;
+        let input = opts.input;
+        let quiet: ReturnType<typeof setTimeout> | undefined;
+        let by: ReturnType<typeof setTimeout> | undefined;
+        const type = () => {
+            clearTimeout(quiet);
+            clearTimeout(by);
+            // Not into a shell that has since closed or exited.
+            if (input === undefined || !entry || this.shells.get(id) !== entry) return;
+            const text = input;
+            input = undefined;
+            entry.cancelInput = undefined;
+            entry.terminal.write(text);
+        };
         const flush = () => {
             if (!entry) return;
             if (entry.timer) clearTimeout(entry.timer);
@@ -80,6 +104,10 @@ export class Terminals {
         };
         const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
             pending += decoder.decode(bytes, { stream: true });
+            if (input !== undefined) {
+                clearTimeout(quiet);
+                quiet = setTimeout(type, TYPE_QUIET_MS);
+            }
             if (pending.length >= 32_768) flush();
             else if (entry && !entry.timer) entry.timer = setTimeout(flush, 16);
         } });
@@ -93,6 +121,14 @@ export class Terminals {
         const shellEntry: Shell = { owner, process: proc, terminal, unacked: 0, held: "", skipped: 0 };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
+        if (input !== undefined) {
+            by = setTimeout(type, TYPE_BY_MS);
+            shellEntry.cancelInput = () => {
+                clearTimeout(quiet);
+                clearTimeout(by);
+                input = undefined;
+            };
+        }
         void proc.exited.then((exitCode) => {
             if (this.shells.get(id) !== shellEntry) return;
             pending += decoder.decode();
@@ -139,6 +175,12 @@ export class Terminals {
     write(owner: Owner, id: string, data: string) {
         const s = this.owned(owner, id);
         if (typeof data !== "string" || data.length > 65_536) throw new RpcError("Terminal input is too large", "invalid");
+        // Ctrl+C, or typing of their own, before the shell is ready: the user has taken over, so the command isn't typed.
+        // (Not on the terminal's replies to the shell's queries, which start with ESC.)
+        if (s.cancelInput && !data.startsWith("\x1b")) {
+            s.cancelInput();
+            s.cancelInput = undefined;
+        }
         s.terminal.write(data);
     }
 

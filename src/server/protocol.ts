@@ -466,6 +466,30 @@ export interface GuiSettings {
 }
 
 // ---------------------------------------------------------------------------
+// Project scripts: named shell commands per project, kept in the Harness home
+// (never in the repository) and run only from the GUI, in a terminal tab.
+
+export const SCRIPT_ICONS = ["play", "test", "lint", "build", "setup", "debug"] as const;
+export type ScriptIcon = (typeof SCRIPT_ICONS)[number];
+export const SCRIPT_LIMITS = { name: 40, command: 2000, perProject: 50 } as const;
+
+export interface ProjectScript {
+    id: string;
+    name: string;
+    /** One line, typed into the shell as if by hand. */
+    command: string;
+    icon?: ScriptIcon;
+}
+
+export interface ProjectScripts {
+    /** What the list is keyed by: a repository's main checkout (shared by its worktrees), or the folder. */
+    project: string;
+    scripts: ProjectScript[];
+    /** The script run last here (the header button runs it). */
+    lastUsed?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Events
 
 export type ServerEvent =
@@ -478,7 +502,9 @@ export type ServerEvent =
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
     | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[] }
-    | { type: "models.changed" };
+    | { type: "models.changed" }
+    /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
+    | { type: "scripts.changed"; project: string };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -504,6 +530,14 @@ export interface Methods {
     "terminal.resize": { params: { id: string; cols: number; rows: number }; result: null };
     "terminal.close": { params: { id: string }; result: null };
     hello: { params: { client?: string }; result: HelloResult };
+    "scripts.list": { params: { cwd: string }; result: ProjectScripts };
+    /** Creates a script, or updates the one with `id`. */
+    "scripts.save": { params: { cwd: string; id?: string; name: string; command: string; icon?: ScriptIcon | null }; result: ProjectScript };
+    "scripts.delete": { params: { cwd: string; id: string }; result: null };
+    /** Every script's id, in the new order. */
+    "scripts.reorder": { params: { cwd: string; ids: string[] }; result: ProjectScripts };
+    /** Opens terminal `id` in `cwd` and types the stored script's command into it. */
+    "scripts.run": { params: { id: string; cwd: string; script: string; cols: number; rows: number }; result: { id: string; cwd: string; script: ProjectScript } };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };

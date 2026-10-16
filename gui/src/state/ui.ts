@@ -21,3 +21,6 @@ export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
 
 /** Bottom panel; hiding it keeps its shells running. */
 export const [terminalOpen, setTerminalOpen] = createSignal(false);
+
+/** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there. */
+export const terminalActions: { runScript?: (cwd: string, script: { id: string; name: string }) => void } = {};

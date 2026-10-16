@@ -367,3 +367,37 @@
     justify-content: flex-end;
     margin-top: 10px;
 }
+
+/* ---- Labelled form fields (the project script dialog) --------------- */
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.field-label {
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+}
+
+.field-hint {
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+}
+
+.field-error {
+    font-size: 0.893rem;
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    overflow-wrap: anywhere;
+}
+
+.script-icons {
+    display: flex;
+    gap: 4px;
+}
