@@ -33,20 +33,58 @@ export function knownSecrets(): string[] {
     return [...exact.keys()];
 }
 
+interface SecretSpan {
+    start: number;
+    end: number;
+    length: number;
+    label: string;
+}
+
 export function redact(text: string): string {
     if (!text) return text;
-    let out = text;
+    const spans: SecretSpan[] = [];
+    // Match the original text: replacing one value first can break a longer or overlapping value.
     for (const [secret, label] of exact) {
-        if (out.includes(secret)) out = out.split(secret).join(`[REDACTED ${label}]`);
+        let span: SecretSpan | undefined;
+        let start = text.indexOf(secret);
+        while (start >= 0) {
+            const end = start + secret.length;
+            if (span && start < span.end) span.end = end;
+            else {
+                span = { start, end, length: secret.length, label };
+                spans.push(span);
+            }
+            // A value can overlap itself. Advancing by its length would expose the final suffix.
+            start = text.indexOf(secret, start + 1);
+        }
     }
     for (const [re, label] of PATTERNS) {
         re.lastIndex = 0;
-        if (re.test(out)) {
-            re.lastIndex = 0;
-            out = out.replace(re, `[REDACTED ${label}]`);
+        for (let match; (match = re.exec(text)); ) {
+            spans.push({ start: match.index, end: match.index + match[0].length, length: match[0].length, label });
         }
     }
-    return out;
+    if (!spans.length) return text;
+    spans.sort((a, b) => a.start - b.start || b.length - a.length);
+    const out: string[] = [];
+    let cursor = 0;
+    let current = spans[0]!;
+    for (let i = 1; i < spans.length; i++) {
+        const next = spans[i]!;
+        if (next.start < current.end) {
+            current.end = Math.max(current.end, next.end);
+            if (next.length > current.length) {
+                current.length = next.length;
+                current.label = next.label;
+            }
+        } else {
+            out.push(text.slice(cursor, current.start), `[REDACTED ${current.label}]`);
+            cursor = current.end;
+            current = next;
+        }
+    }
+    out.push(text.slice(cursor, current.start), `[REDACTED ${current.label}]`, text.slice(current.end));
+    return out.join("");
 }
 
 /** Longer than this, the rest of a line isn't kept for showing (`head -c 1G /dev/zero` has no line breaks). */
@@ -55,7 +93,7 @@ const MAX_PARTIAL_LINE = 64 * 1024;
 /**
  * For output shown as it arrives: a key split between two pieces gets past
  * redact() in each. Keys don't span lines, so each piece returns the whole
- * lines it completes, redacted (after `prep`, such as stripping colors), and
+ * lines it completes, redacted before and after `prep` (such as stripping colors), and
  * the rest waits for more. A line too long to wait for isn't shown; the full
  * output, redacted whole at the end, still has it.
  */
@@ -77,7 +115,7 @@ export function lineRedactor(prep: (text: string) => string = (t) => t): (chunk:
             pending = "";
             skipping = true;
         }
-        return cut ? redact(prep(text.slice(0, cut))) : "";
+        return cut ? redact(prep(redact(text.slice(0, cut)))) : "";
     };
 }
 

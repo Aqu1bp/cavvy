@@ -4,10 +4,9 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { BackgroundShell, Tool, ToolContext } from "./types";
 import { stripAnsi } from "../ui/ansi";
-import { redact, lineRedactor } from "../util/redact";
+import { redact, lineRedactor, knownSecrets } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
-import { MAX_SECRET_BYTES } from "../agent/secrets";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
 import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
 import { finalSearch } from "../permissions/bash-safety";
@@ -29,8 +28,42 @@ function shellComplained(output: string, shell = pickShell()): boolean {
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
-/** A line still being written is held back up to this long (see BashOutput), like lineRedactor's. */
+/** Background lines beyond this bound are omitted, never released in raw pieces. */
 const MAX_PARTIAL_LINE = 64 * 1024;
+
+/** Each pipe owns its decoder and pending line: stderr mustn't split a stdout secret (or vice versa). */
+function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0) {
+    let pending = "";
+    let skipping = false;
+    let order = 0;
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk: string) => {
+        for (let start = 0; start < chunk.length; ) {
+            const lf = chunk.indexOf("\n", start);
+            const cr = chunk.indexOf("\r", start);
+            const nl = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
+            const end = nl < 0 ? chunk.length : nl + 1;
+            if (!skipping) {
+                if (!pending) order = nextOrder();
+                pending += chunk.slice(start, end);
+                if (pending.length > maxLine) {
+                    emit(overflow(pending), order);
+                    pending = "";
+                    skipping = true;
+                } else if (nl >= 0) {
+                    emit(redact(pending), order);
+                    pending = "";
+                }
+            }
+            if (nl >= 0) skipping = false;
+            start = end;
+        }
+    });
+    stream.on("end", () => {
+        if (pending) emit(redact(pending), order);
+        pending = "";
+    });
+}
 
 /**
  * A sandboxed command's environment: package caches it can write and, with
@@ -93,7 +126,12 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             detached: true,
             stdio: ["ignore", "pipe", "pipe"],
         });
-        let output = "";
+        const parts: { order: number; text: string }[] = [];
+        let retained = 0;
+        let sequence = 0;
+        const nextOrder = () => sequence++;
+        // Pending lines can finish out of order (notably stdout without a final newline).
+        const output = () => parts.sort((a, b) => a.order - b.order).map((p) => p.text).join("");
         let timedOut = false;
         let aborted = false;
         const killTree = () => {
@@ -112,19 +150,19 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             }, 2000).unref?.();
         };
         let capped = false;
-        const onChunk = (b: Buffer) => {
-            const s = b.toString("utf-8");
+        const onChunk = (s: string, order: number) => {
             if (!capped) {
-                output += s;
-                if (output.length >= MAX_KEPT) {
-                    capped = true;
-                    output = cutAtCap(output);
-                }
+                // The stream has redacted complete lines before this display-only cut.
+                const text = s.slice(0, MAX_KEPT - retained);
+                parts.push({ order, text });
+                retained += text.length;
+                capped = retained >= MAX_KEPT;
             }
             opts.onData?.(s);
         };
-        child.stdout?.on("data", onChunk);
-        child.stderr?.on("data", onChunk);
+        const overflow = (s: string) => cutAtCap(s) + "\n[Output line truncated]\n";
+        if (child.stdout) readShellStream(child.stdout, onChunk, MAX_OUTPUT * 20, overflow, nextOrder);
+        if (child.stderr) readShellStream(child.stderr, onChunk, MAX_OUTPUT * 20, overflow, nextOrder);
         const timer = setTimeout(() => {
             timedOut = true;
             killTree();
@@ -146,11 +184,11 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             } catch {
                 // ignore
             }
-            resolvePromise({ output, exitCode: code, signal: sig, timedOut, aborted, newCwd });
+            resolvePromise({ output: output(), exitCode: code, signal: sig, timedOut, aborted, newCwd });
         });
         child.on("error", (err) => {
             clearTimeout(timer);
-            resolvePromise({ output: output + `\n${err.message}`, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
+            resolvePromise({ output: output() + `\n${err.message}`, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
         });
     });
 }
@@ -159,18 +197,20 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
  * Output kept up to the cap ends where a chunk did, maybe partway through a
  * secret whose rest never arrives, so redaction wouldn't know it (and the
  * kept tail is what the model sees). Secrets don't span lines: cut at the
- * last line break. Without one near the end, drop as much as the longest
- * secret, which takes any part of one with it.
+ * last line break. Without one, redact complete values FIRST, then drop the
+ * possible unfinished suffix. Cutting raw text can split a complete value.
  */
 function cutAtCap(output: string): string {
+    const redacted = redact(output);
     const nl = output.lastIndexOf("\n");
-    if (nl !== -1 && output.length - nl <= MAX_SECRET_BYTES) return output.slice(0, nl + 1);
-    return output.slice(0, Math.max(0, output.length - MAX_SECRET_BYTES));
+    if (nl !== -1) return redact(output.slice(0, nl + 1));
+    const hold = knownSecrets().reduce((n, s) => Math.max(n, s.length - 1), 0);
+    return redacted.slice(0, Math.max(0, redacted.length - hold));
 }
 
 function cleanOutput(s: string): string {
     // Collapse carriage-return progress bars to their final state, strip ANSI.
-    const lines = stripAnsi(s)
+    const lines = stripAnsi(redact(s))
         .split("\n")
         .map((l) => {
             const parts = l.split("\r");
@@ -367,19 +407,20 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
             return how;
         },
     };
-    const onChunk = (b: Buffer) => {
-        shell.output += b.toString("utf-8");
+    const onChunk = (text: string) => {
+        shell.output += text;
         if (shell.output.length > BG_BUFFER) {
             let drop = shell.output.length - BG_BUFFER;
-            // From a line's start: the tail of a secret cut off here wouldn't be redacted.
+            // Only redacted, complete lines enter the ring; evict whole lines for readability.
             const nl = shell.output.indexOf("\n", drop);
             if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
             shell.output = shell.output.slice(drop);
             shell.readOffset = Math.max(0, shell.readOffset - drop);
         }
     };
-    child.stdout?.on("data", onChunk);
-    child.stderr?.on("data", onChunk);
+    const overflow = () => "[Output line omitted: exceeds 64 KiB]\n";
+    if (child.stdout) readShellStream(child.stdout, onChunk, MAX_PARTIAL_LINE, overflow);
+    if (child.stderr) readShellStream(child.stderr, onChunk, MAX_PARTIAL_LINE, overflow);
     // The network goes with the shell: whatever it left running loses it.
     child.on("close", (code) => {
         shell.exitCode = code ?? -1;
@@ -414,13 +455,8 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
     async run(input, ctx) {
         const sh = ctx.state.shells.get(input.bash_id);
         if (!sh) return { content: `No background shell with id ${input.bash_id}. Active: ${[...ctx.state.shells.keys()].join(", ") || "none"}`, isError: true };
-        // While it runs, a line still being written waits: half a secret now and half next time would each get past redaction.
-        let end = sh.output.length;
-        if (sh.exitCode === null) {
-            const nl = sh.output.lastIndexOf("\n", end - 1);
-            const lineStart = Math.max(nl + 1, sh.readOffset);
-            if (end - lineStart <= MAX_PARTIAL_LINE) end = lineStart;
-        }
+        // The stream only publishes redacted complete lines (or its final line at EOF).
+        const end = sh.output.length;
         let fresh = cleanOutput(sh.output.slice(sh.readOffset, end));
         sh.readOffset = end;
         if (input.filter) {

@@ -119,7 +119,7 @@ export const GrepTool: Tool<GrepInput> = {
         let out: string;
         if (rg) {
             // --null: a NUL after every printed path, so results can be filtered per file.
-            const args = ["--no-config", "--color=never", "--max-columns=500", "--max-columns-preview", "--null", "--with-filename"];
+            const args = ["--no-config", "--color=never", "--null", "--with-filename"];
             if (mode === "files_with_matches") args.push("-l");
             else if (mode === "count") args.push("-c");
             else {
@@ -157,7 +157,7 @@ export const GrepTool: Tool<GrepInput> = {
         const limit = input.head_limit ?? (mode === "content" ? 400 : 200);
         if (lines.length > limit) lines = lines.slice(0, limit);
         if (!total) return { content: "No matches found", display: { summary: "No matches" } };
-        let content = truncateMiddle(lines.join("\n"), 30_000);
+        let content = truncateMiddle(redact(lines.join("\n")), 30_000);
         if (total > lines.length) content += `\n(Showing ${lines.length} of ${total}. Narrow the search or raise head_limit.)`;
         const noun = mode === "files_with_matches" ? "file" : mode === "count" ? "file" : "line";
         return { content: redact(content), display: { summary: `Found ${total} ${noun}${total === 1 ? "" : "s"}` } };
@@ -207,7 +207,12 @@ export function filterRgOutput(stdout: string, mode: string, hidden: (path: stri
         const nl = stdout.indexOf("\n", nul);
         const end = nl < 0 ? stdout.length : nl;
         const path = stdout.slice(i, nul);
-        const rest = stdout.slice(nul + 1, end);
+        let rest = stdout.slice(nul + 1, end);
+        if (mode === "content") {
+            // rg must return the whole line: a preview can split a secret before we see it.
+            const prefix = rest.match(/^\d+[:-]/)?.[0] ?? "";
+            rest = redact(rest).slice(0, prefix.length + 500);
+        }
         i = end + 1;
         if (hide(path)) continue;
         out.push(path + (/^\d+-/.test(rest) ? "-" : ":") + rest);
@@ -264,7 +269,7 @@ async function jsGrep(input: GrepInput, target: string, mode: string, signal: Ab
             if (last >= 0 && from > last + 1) out.push("--");
             for (let i = from; i <= to; i++) {
                 const sep = hitSet.has(i) ? ":" : "-";
-                out.push(`${f}${sep}${num ? `${i + 1}${sep}` : ""}${lines[i]!.slice(0, 500)}`);
+                out.push(`${f}${sep}${num ? `${i + 1}${sep}` : ""}${redact(lines[i]!).slice(0, 500)}`);
             }
             last = Math.max(last, to);
         }

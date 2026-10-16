@@ -16,13 +16,15 @@ const MAX_TIMEOUT_MS = 600_000;
 export interface SecretToolHost {
     store: SecretStore;
     ask: SecretAsk;
+    /** Enforces the MCP tool's own rules before its side effects. */
+    authorize?(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined>;
     /** Checks the command (rules, mode, the user), then runs it with those secrets. */
     run(o: { command: string; names: string[]; description?: string; timeoutMs?: number }, signal: AbortSignal): Promise<ServerToolResult>;
 }
 
 export const SECRET_INSTRUCTIONS = `# Secrets (${MCP_SERVER_NAME})
 
-When a command needs a credential the user hasn't set up (an API token, a password), don't ask for it in the chat: call request_secret with the environment variable it becomes and what it's for. The user types it into a masked field and you get its name back, never the value. Your own shell doesn't have it: run commands that need it with run_with_secrets, writing $NAME in the command. Each such command is checked like a shell command and usually needs the user's approval. Its output comes back with the value replaced by [REDACTED …]; never try to print, encode or copy the value.`;
+When a command needs a credential the user hasn't set up (an API token, a password), don't ask for it in the chat: call request_secret with the environment variable it becomes and what it's for. The user types it into a masked field and you get its name back, never the value. Your own shell doesn't have it: run commands that need it with run_with_secrets, writing $NAME in the command. Each such command is checked like a shell command and usually needs the user's approval. Its output comes back with the value replaced by [REDACTED …]; never try to print, encode or copy the value. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command.`;
 
 const fail = (text: string): ServerToolResult => ({ text, isError: true });
 
@@ -32,7 +34,7 @@ export function secretTools(h: SecretToolHost): ServerTool[] {
             name: "request_secret",
             title: "Ask the user for a secret",
             description:
-                "Asks the user to type in a secret (an API token, a password) a command needs, without its value reaching you. name is the environment variable it becomes (e.g. GITHUB_TOKEN); purpose is one or two sentences on what it's for, shown to the user. You get back whether it was provided, never the value; use it with run_with_secrets. If the user declines, don't ask again unless they bring it up. Asking again for the same name replaces the value.",
+                "Asks the user to type in a secret (an API token, a password) a command needs, without its value reaching you. name is the environment variable it becomes (e.g. GITHUB_TOKEN); purpose is one or two sentences on what it's for, shown to the user. You get back whether it was provided, never the value; use it with run_with_secrets. If the user declines, don't ask again unless they bring it up. Asking again for the same name replaces the value. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command.",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -47,6 +49,8 @@ export function secretTools(h: SecretToolHost): ServerTool[] {
                 if (bad) return fail(bad);
                 const p = cleanPurpose(args.purpose);
                 if ("error" in p) return fail(p.error);
+                const denied = await h.authorize?.("request_secret", args, ctx.signal);
+                if (denied) return denied;
                 const r = await requestSecret({ store: h.store, ask: h.ask, name: args.name as string, purpose: redact(p.text), signal: ctx.signal, using: "run_with_secrets" });
                 return { text: r.text, isError: r.isError };
             },
@@ -54,7 +58,7 @@ export function secretTools(h: SecretToolHost): ServerTool[] {
         {
             name: "run_with_secrets",
             title: "Run a command with secrets",
-            description: `Runs one shell command in the session's folder with Harness's shell, with the named secrets (from request_secret) in its environment, and returns its output with their values redacted. Write $NAME in the command, never a value. It's checked like any shell command: deny rules and plan mode refuse it, and anything no rule allows asks the user, who sees the command as written. Redaction can't catch a value that's been deliberately transformed (split, reversed, re-encoded), so don't. timeout is in milliseconds (default 120000, max ${MAX_TIMEOUT_MS}).`,
+            description: `Runs one shell command in the session's folder with Harness's shell, with the named secrets (from request_secret) in its environment, and returns its output with their values redacted. Write $NAME in the command, never a value. It's checked like any shell command: deny rules and plan mode refuse it, and anything no rule allows asks the user, who sees the command as written. Redaction can't catch a value that's been deliberately transformed (split, reversed, re-encoded), so don't. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command. timeout is in milliseconds (default 120000, max ${MAX_TIMEOUT_MS}).`,
             inputSchema: {
                 type: "object",
                 properties: {
@@ -80,6 +84,8 @@ export function secretTools(h: SecretToolHost): ServerTool[] {
                 if (args.description !== undefined && typeof args.description !== "string") return fail("description must be a string.");
                 if (args.timeout !== undefined && (typeof args.timeout !== "number" || !Number.isFinite(args.timeout) || args.timeout <= 0)) return fail("timeout must be a positive number of milliseconds.");
                 const timeoutMs = args.timeout === undefined ? undefined : Math.min(MAX_TIMEOUT_MS, args.timeout as number);
+                const denied = await h.authorize?.("run_with_secrets", args, ctx.signal);
+                if (denied) return denied;
                 const r = await h.run({ command, names: [...new Set(names as string[])], description: args.description as string | undefined, timeoutMs }, ctx.signal);
                 return { text: redact(r.text), isError: r.isError };
             },

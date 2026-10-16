@@ -37,25 +37,26 @@ function useKeys(handler: (key: string) => boolean) {
 
 export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
     const first = () => p.items[0];
+    // State patches replace objects; only a new interaction should clear input.
     return (
-        <Show when={first()} keyed>
-            {(it) => (
-                <div class={`tab itab itab-${it.kind} ${it.kind === "permission" && it.dangerous ? "danger" : ""}`} role="alertdialog" aria-label="Waiting for you">
+        <Show when={first()?.id} keyed>
+            {(_id) => (
+                <div class={`tab itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
                         <div class="itab-count">1 of {p.items.length} waiting</div>
                     </Show>
                     <Switch>
-                        <Match when={it.kind === "permission"}>
-                            <PermissionCard sessionId={p.sessionId} it={it as PermissionInteraction} />
+                        <Match when={first()!.kind === "permission"}>
+                            <PermissionCard sessionId={p.sessionId} it={first() as PermissionInteraction} />
                         </Match>
-                        <Match when={it.kind === "question"}>
-                            <QuestionCard sessionId={p.sessionId} it={it as QuestionInteraction} />
+                        <Match when={first()!.kind === "question"}>
+                            <QuestionCard sessionId={p.sessionId} it={first() as QuestionInteraction} />
                         </Match>
-                        <Match when={it.kind === "plan"}>
-                            <PlanCard sessionId={p.sessionId} it={it as PlanInteraction} />
+                        <Match when={first()!.kind === "plan"}>
+                            <PlanCard sessionId={p.sessionId} it={first() as PlanInteraction} />
                         </Match>
-                        <Match when={it.kind === "secret"}>
-                            <SecretCard sessionId={p.sessionId} it={it as SecretInteraction} />
+                        <Match when={first()!.kind === "secret"}>
+                            <SecretCard sessionId={p.sessionId} it={first() as SecretInteraction} />
                         </Match>
                     </Switch>
                 </div>

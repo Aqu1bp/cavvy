@@ -18,13 +18,14 @@ const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 // harness sets itself: a "secret" by one of these names would be a way in.
 const RESERVED = new Set([
     "PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "OLDPWD", "TMPDIR", "TERM", "LANG", "TZ", "IFS", "ENV", "CDPATH", "FPATH", "MANPATH",
-    "PS1", "PS2", "PS3", "PS4", "PROMPT_COMMAND", "SHELLOPTS", "GLOBIGNORE", "HISTFILE", "ZDOTDIR", "MAIL", "MAILPATH",
+    "PS1", "PS2", "PS3", "PS4", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE", "HISTFILE", "ZDOTDIR", "MAIL", "MAILPATH",
+    "GCONV_PATH", "LOCPATH", "LUA_INIT", "LUA_PATH", "LUA_CPATH", "R_ENVIRON", "R_ENVIRON_USER", "R_PROFILE", "R_PROFILE_USER", "R_LIBS", "R_LIBS_USER", "R_LIBS_SITE",
     "PAGER", "EDITOR", "VISUAL", "BROWSER", "SSH_AUTH_SOCK", "SSH_ASKPASS", "SUDO_ASKPASS", "DISPLAY",
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CURL_HOME", "WGETRC",
-    "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "CLASSPATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "GOFLAGS", "RUSTFLAGS", "CARGO_HOME", "RUSTUP_HOME",
-    "PERL5LIB", "PERL5OPT", "PERLLIB", "RUBYOPT", "RUBYLIB", "COREPACK_HOME", "UV_CACHE_DIR", "PIP_CACHE_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CURL_HOME", "WGETRC", "SSLKEYLOGFILE", "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_ENGINES", "OPENSSL_MODULES",
+    "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "CLASSPATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "GOFLAGS", "GODEBUG", "RUSTFLAGS", "CARGO_HOME", "RUSTUP_HOME",
+    "PERL5LIB", "PERL5OPT", "PERLLIB", "PERL_LOCAL_LIB_ROOT", "PERL_MB_OPT", "PERL_MM_OPT", "RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_HOME", "GEM_PATH", "COREPACK_HOME", "UV_CACHE_DIR", "PIP_CACHE_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
 ]);
-const RESERVED_PREFIXES = ["LD_", "DYLD_", "GIT_", "HARNESS", "BASH_", "ZSH_", "LC_", "NPM_CONFIG_", "BUN_", "PYTHON", "CLAUDE_", "CODEX_", "ANTHROPIC_", "OPENAI_"];
+const RESERVED_PREFIXES = ["LUA_INIT_", "LUA_PATH_", "LUA_CPATH_", "LD_", "DYLD_", "GIT_", "HARNESS", "BASH_", "ZSH_", "LC_", "NPM_CONFIG_", "BUN_", "PYTHON", "CLAUDE_", "CODEX_", "ANTHROPIC_", "OPENAI_"];
 
 /** Why `name` can't be a secret's name, or undefined if it can. */
 export function secretNameError(name: unknown): string | undefined {
@@ -40,8 +41,10 @@ export function secretValueError(value: unknown): string | undefined {
     if (typeof value !== "string") return "The value must be text.";
     if (value.length < MIN_SECRET_LENGTH) return `The value is shorter than ${MIN_SECRET_LENGTH} characters, too short to keep out of the output.`;
     if (Buffer.byteLength(value) > MAX_SECRET_BYTES) return `The value is longer than ${MAX_SECRET_BYTES / 1024} KiB.`;
-    // Output is redacted a line at a time as it streams, so a value can't span lines.
-    if (/[\0\r\n]/.test(value)) return "The value can't contain line breaks or NUL characters.";
+    // Reject malformed UTF-16 before the interaction settles: encoding the registered forms must not throw.
+    if (!value.isWellFormed()) return "The value must be well-formed Unicode text.";
+    // Streaming redaction needs unbroken values; terminal controls can also alter their displayed text.
+    if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) return "The value can't contain control characters, line breaks or NUL characters.";
     return undefined;
 }
 

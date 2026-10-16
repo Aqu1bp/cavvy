@@ -882,7 +882,7 @@ export class Agent {
             instructions.push(orchestrationInstructions(caller, this.oneShot));
         }
         if (store && ask) {
-            tools.push(...secretTools({ store, ask, run: (o, signal) => this.runWithSecrets(o, signal) }));
+            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeSecretTool(name, input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
             instructions.push(SECRET_INSTRUCTIONS);
         }
         this.serverTools = tools;
@@ -1233,6 +1233,22 @@ export class Agent {
         if (o.contextTokens) this.contextTokens = o.contextTokens;
         this.lastUsageTotal = this.session.messages.length;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
+    }
+
+    /** The CLI auto-approves our MCP tools, so their explicit rules must be enforced here. */
+    private async authorizeSecretTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
+        const refuse = (text: string): ServerToolResult => ({ text, isError: true });
+        const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, secretToolTitle(name, input));
+        // Like the command check below, explicit asks still apply in bypass mode.
+        const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
+        if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
+        if (signal.aborted) return refuse("Interrupted by user");
+        if (decision.behavior !== "ask" || !decision.rule) return undefined;
+        if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
+        const answer = await this.o.host.askPermission({ tool, input, title: tool.title(input), decision: { ...decision, suggestions: [] }, signal });
+        if (signal.aborted) return refuse("Interrupted by user");
+        if (!answer.allow) return refuse("The user declined this tool call. Don't retry it; wait for the user to say how to proceed.");
+        return undefined;
     }
 
     /**

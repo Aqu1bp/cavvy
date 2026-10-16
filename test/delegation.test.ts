@@ -1262,13 +1262,20 @@ describe("the app", () => {
     test("a stopped sub-agent's prompt is withdrawn, and one still queued isn't shown", async () => {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
-        (app as any).renderLive = () => {};
         app.session = Session.create(cwd, { persist: false });
         const shown: string[] = [];
+        const seen = new Set<object>();
+        // Observe the visible dialog, not its construction: all interactive
+        // prompts now share a queue, including questions and masked inputs.
+        (app as any).renderLive = () => {
+            const current = (app as any).dialogs.at(-1);
+            if (!current || seen.has(current)) return;
+            seen.add(current);
+            shown.push(current.render(100, 30).join("\n").match(/Bash\(\w+\)/)?.[0] ?? "unknown");
+        };
         const dialog = (app as any).permissionDialog.bind(app);
-        (app as any).permissionDialog = (r: PermissionRequest) => (shown.push(r.title), dialog(r));
         const ask = (title: string, signal?: AbortSignal): Promise<PermissionResponse> =>
-            (app as any).askPermission({ tool: { name: "Bash", category: "execute" }, input: { command: "ls" }, title, decision: { behavior: "ask" }, agentLabel: "Watch (gemini:gemini-test)", signal });
+            (app as any).askPermission({ tool: { name: "Bash", category: "execute" }, input: { command: "ls", description: title }, title, decision: { behavior: "ask" }, agentLabel: "Watch (gemini:gemini-test)", signal });
         const stopped = new AbortController();
         const first = ask("Bash(one)", stopped.signal);
         const second = ask("Bash(two)", stopped.signal);
@@ -1279,7 +1286,7 @@ describe("the app", () => {
         expect(await first).toEqual({ allow: false });
         expect(await second).toEqual({ allow: false });
         // The next one in line is another agent's: it's shown.
-        await until(() => shown.length === 2);
+        await until(() => shown.includes("Bash(three)"));
         expect(shown).toEqual(["Bash(one)", "Bash(three)"]);
         (app as any).dialogs.at(-1).cancel();
         expect(await another).toEqual({ allow: false });
@@ -1397,6 +1404,44 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(mcpResults().at(-1)).toMatchObject({ isError: false, text: "[REDACTED RULE_TOKEN]" });
         expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
     });
+
+    for (const tool of ["request_secret", "run_with_secrets"]) {
+        for (const rule of [`mcp__harness__${tool}`, "mcp__harness", "mcp__harness__*"]) {
+            test(`${tool} honors its own deny rule ${rule} before asking or running`, async () => {
+                const secrets = new SecretStore();
+                secrets.set("OWN_RULE_TOKEN", "zq7Xv9Lr2Wm4Kp8T");
+                let secretPrompts = 0;
+                process.env.FAKE_SCENARIO = "mcp";
+                const args = tool === "request_secret" ? { name: "OWN_RULE_TOKEN", purpose } : { command: "echo ran > own-rule-result.txt", secrets: ["OWN_RULE_TOKEN"] };
+                calls([{ tool, args }]);
+                const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { deny: [rule], allow: ["Bash"] } } });
+                t.switchMode("bypassPermissions");
+                await t.run("go");
+                expect(mcpResults().at(-1)).toMatchObject({ isError: true, text: expect.stringContaining(rule) });
+                expect(secretPrompts).toBe(0);
+                expect(t.asked).toHaveLength(0);
+                expect(existsSync(join(cwd, "own-rule-result.txt"))).toBe(false);
+            });
+        }
+        test(`${tool} honors its own ask rule before the secret card or Bash allow`, async () => {
+            const secrets = new SecretStore();
+            secrets.set("OWN_RULE_TOKEN", "zq7Xv9Lr2Wm4Kp8T");
+            let secretPrompts = 0;
+            process.env.FAKE_SCENARIO = "mcp";
+            const args = tool === "request_secret" ? { name: "OWN_RULE_TOKEN", purpose } : { command: "echo ran > own-rule-result.txt", secrets: ["OWN_RULE_TOKEN"] };
+            calls([{ tool, args }]);
+            const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { ask: [`mcp__harness__${tool}`], allow: ["Bash"] } }, ask: () => ({ allow: false }) });
+            t.switchMode("bypassPermissions");
+            await t.run("go");
+            expect(mcpResults().at(-1)?.isError).toBe(true);
+            expect(t.asked).toHaveLength(1);
+            expect(t.asked[0]!.tool.name).toBe(`mcp__harness__${tool}`);
+            expect(t.asked[0]!.decision.suggestions).toEqual([]);
+            expect(t.asked[0]!.signal).toBeInstanceOf(AbortSignal);
+            expect(secretPrompts).toBe(0);
+            expect(existsSync(join(cwd, "own-rule-result.txt"))).toBe(false);
+        });
+    }
 
     test("in auto mode it asks, rather than applying the sandbox's rules to a command that runs outside it", async () => {
         const secrets = new SecretStore();

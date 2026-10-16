@@ -274,6 +274,28 @@ describe("asking for a secret in a GUI session", () => {
         a.close();
     }, 30_000);
 
+    test("ill-formed Unicode and control characters return bad_secret without settling the card", async () => {
+        const a = await client();
+        const id = await a.open("session.create", { cwd: project() });
+        try {
+            await a.call("session.send", { id, text: "use a secret" });
+            const ask = await a.secretAsk(id);
+            for (const suffix of ["\ud800", "\udc00", "\u001b", "\u007f", "\u0085", "\u2028"]) {
+                const value = `zq7Xv9Lr2Wm4Kp8T${suffix}`;
+                const err = await respond(a, id, ask.id, { kind: "secret", value }).then(() => undefined, (e) => e);
+                expect(err?.code).toBe("bad_secret");
+                expect(err.message).not.toContain(value);
+                expect(a.view(id).state.interactions.map((i) => i.id)).toEqual([ask.id]);
+                expect(a.view(id).state.secrets).toEqual([]);
+            }
+            await respond(a, id, ask.id, { kind: "secret" });
+            await a.until(id, done);
+        } finally {
+            await a.call("session.interrupt", { id });
+            a.close();
+        }
+    }, 30_000);
+
     test("a command run with secrets (run_with_secrets) names them on its permission card, with no 'always'", async () => {
         const { BashTool } = await import("../src/tools/bash");
         const a = await client();

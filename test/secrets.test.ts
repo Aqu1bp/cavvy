@@ -31,6 +31,9 @@ const OTHER = "test-secret-456-def";
 // The first name a value is stored under labels it for good, so each test that checks a label has a value of its own.
 let fakes = 0;
 const fake = () => `test-secret-${++fakes}00-xyz`;
+const noFragments = (text: string, value: string) => {
+    for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));
+};
 const tempDir = (prefix?: string) => realpathSync(rawTempDir(prefix));
 /** `printf %s VALUE | cksum`, so a command can show it got the value without printing it. */
 const cksum = (v: string) => Bun.spawnSync(["sh", "-c", 'printf %s "$1" | cksum | awk \'{print $1, $2}\'', "sh", v]).stdout.toString().trim();
@@ -180,7 +183,7 @@ describe("RequestSecret and Bash", () => {
 
     test("output past the size cap can't end partway through the value", async () => {
         const { ctx, secrets } = toolCtx();
-        const v = fake();
+        const v = "dY4hS8uA9kW2nC7Q";
         secrets.set("CAP_TOKEN", v);
         // The cap is 600,000 characters: filler up to just under it, then the value's start in the chunk that crosses it,
         // and its rest a moment later (in a chunk that isn't kept).
@@ -188,26 +191,26 @@ describe("RequestSecret and Bash", () => {
         for (const filler of ["yes aaaaaaaaa | head -c 599997", "head -c 599997 /dev/zero | tr '\\0' a"]) {
             const r = await bash(ctx, straddle(filler));
             expect(r.content).toContain("aaaaaaaaa");
-            expect(r.content).not.toContain(v.slice(0, 6));
-            expect(r.display?.body ?? "").not.toContain(v.slice(0, 6));
+            noFragments(r.content, v);
+            noFragments(r.display?.body ?? "", v);
         }
     });
 
     test("a background line still being written waits, so a read can't split the value", async () => {
         const { ctx, secrets } = toolCtx();
-        const v = fake();
+        const v = "cW7vP2jN9rT4mK8F";
         secrets.set("HALF_TOKEN", v);
         const started = await bash(ctx, `printf 'half: %s' "$(printf %s "$HALF_TOKEN" | cut -c1-6)"; sleep 0.6; printf '%s\n' "$(printf %s "$HALF_TOKEN" | cut -c7-)"`, { run_in_background: true });
         const id = /\b(bash_\d+)\b/.exec(started.content)![1]!;
         await Bun.sleep(250);
         const early = await BashOutputTool.run({ bash_id: id }, ctx);
         expect(early.content).toContain("<status>running</status>");
-        expect(early.content).not.toContain(v.slice(0, 6));
+        noFragments(JSON.stringify(early), v);
         const sh = ctx.state.shells.get(id)!;
         for (let i = 0; i < 100 && sh.exitCode === null; i++) await Bun.sleep(20);
         const late = await BashOutputTool.run({ bash_id: id }, ctx);
         expect(late.content).toContain("half: [REDACTED HALF_TOKEN]");
-        expect(late.content).not.toContain(v.slice(6));
+        noFragments(JSON.stringify(late), v);
     });
 
     test("a file holding a secret isn't copied into the rewind history", async () => {
