@@ -22,6 +22,8 @@ export function FindBar(p: {
     show: (turnId: string) => void;
     anchor: () => FindAnchor | undefined;
     clearAnchor: () => void;
+    /** Commit an explicit scroll before ResizeObserver can restore the old reading anchor. */
+    onNavigate?: () => void;
 }) {
     let input: HTMLInputElement | undefined;
     const [text, setText] = createSignal(findQuery());
@@ -92,10 +94,11 @@ export function FindBar(p: {
         const view = scroller.getBoundingClientRect();
         const dock = parseFloat(getComputedStyle(scroller).getPropertyValue("--dock-h")) || 0;
         // Below the bar, above the composer.
-        if (box.top >= view.top + BAR_ROOM && box.bottom <= view.bottom - dock - 24) return;
+        if (box.top >= view.top + BAR_ROOM && box.bottom <= view.bottom - dock - 24) { p.onNavigate?.(); return; }
         // With its prompt when the turn fits that far, else a third of the way down.
         const top = turn?.getBoundingClientRect().top ?? box.top;
         scroller.scrollTop += box.bottom - top < view.height - dock - BAR_ROOM - 48 ? top - view.top - BAR_ROOM : box.top - view.top - (view.height - dock) / 3;
+        p.onNavigate?.();
     };
 
     const go = (i: number) => {
