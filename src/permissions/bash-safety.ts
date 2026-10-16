@@ -1438,9 +1438,9 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     const plain = !a.unparsable && !a.hasSubstitution && !a.unsafeExpansion;
     // Words count by position, so not when one can turn into more or fewer (an
     // expansion, a glob: `--exclude dir*/.env`) or isn't the command's (`<.env`).
-    // And only when nothing on the line can change what `rg` or `grep` is: every command is a
-    // read-only one, written out (no `PATH=./bin grep`, `path=./bin;`, `. ./defs.sh`, `hash`).
-    const plainLine = a.commands.every((c) => c.argv[0] === effectiveArgv(c.argv)[0] && isReadOnlySimple(c.argv) && !runs(c.argv[0], "hash"));
+    // And only when nothing on the line can change what `rg` or `grep` is: the line is read-only
+    // (all of notReadOnly's checks: `printf 'x%n' PATH` assigns), each command written out (no `PATH=./bin grep`, `path=./bin;`, `. ./defs.sh`, `hash`).
+    const plainLine = isReadOnlyCommand(cmd) && a.commands.every((c) => c.argv[0] === effectiveArgv(c.argv)[0] && !runs(c.argv[0], "hash"));
     const fixed = (c: SimpleCommand) => plain && plainLine && !c.redirectMayFail && !c.expands?.length && !c.globbed?.length;
     const excluded = a.commands.map((c) => new Set(fixed(c) ? exclusionWords(c.argv) : []));
     messageWords(a).forEach((m, k) => m.forEach((i) => excluded[k]!.add(i)));
