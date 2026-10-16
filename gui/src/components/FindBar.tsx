@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
-import { clearPaint, findMatches, MAX_MATCHES, paintMatches, textRanges, type FindMatch } from "../lib/find";
+import { clearPaint, findMatches, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
 import { findFocus, findQuery, setFindOpen, setFindQuery, setFindReveal } from "../state/ui";
 
 /** The top of the view the bar covers (prompts sit on the right, under it). */
@@ -86,6 +86,8 @@ export function FindBar(p: {
         current = ranges[Math.min(m.n, ranges.length - 1)];
         repaint();
         if (!scroll) return;
+        // Inside a box that scrolls on its own first, then the transcript.
+        if (current) revealInBoxes(current, scroller);
         const box = (current ?? el).getBoundingClientRect();
         const view = scroller.getBoundingClientRect();
         const dock = parseFloat(getComputedStyle(scroller).getPropertyValue("--dock-h")) || 0;

@@ -251,7 +251,7 @@ describe("searching session files", () => {
             clearSearchCache();
             expect((await searchSessions("sierra", { include: only })).hits).toHaveLength(1);
             const kept = searchCacheSize();
-            expect(kept).toMatchObject({ docs: 1, turnTimes: 1, records: 50 });
+            expect(kept).toMatchObject({ docs: 1, turnTimes: 1, records: 51 });
             expect(kept.chars).toBeGreaterThan(3000 * 32 + 2 * 1007);
             // Over the limits: given back, not kept.
             SEARCH_LIMITS.cacheChars = 50_000;
@@ -263,6 +263,42 @@ describe("searching session files", () => {
             Object.assign(SEARCH_LIMITS, limits);
             clearSearchCache();
         }
+    });
+
+    test("GUI logs with no turn in them still count against the cache's limit", async () => {
+        const limits = { ...SEARCH_LIMITS };
+        try {
+            const ids = new Set<string>();
+            for (let i = 0; i < 3; i++) {
+                const s = write([prompt(`xenon empty log ${i}`)]);
+                ids.add(s.id);
+                const ui = join(projectStateDir(s.cwd), "ui");
+                mkdirSync(ui, { recursive: true });
+                // Empty, or only tool records: no turn times.
+                writeFileSync(join(ui, `${s.id}.jsonl`), i === 0 ? "" : JSON.stringify({ t: "tool", id: "c1", summary: "x" }) + "\n");
+            }
+            SEARCH_LIMITS.cacheTurnTimes = 2;
+            clearSearchCache();
+            expect((await searchSessions("xenon empty log", { include: (id) => ids.has(id) })).hits).toHaveLength(3);
+            const kept = searchCacheSize();
+            expect(kept.turnTimes).toBeLessThanOrEqual(2);
+            expect(kept.records).toBeLessThanOrEqual(2);
+            expect(kept.records).toBe(kept.turnTimes);
+        } finally {
+            Object.assign(SEARCH_LIMITS, limits);
+            clearSearchCache();
+        }
+    });
+
+    test("a symlinked ui folder isn't followed either", async () => {
+        const s = write([prompt("yankee real prompt")]);
+        const elsewhere = tempDir("harness-search-uidir-");
+        writeFileSync(join(elsewhere, `${s.id}.jsonl`), JSON.stringify({ t: "turn", seg: 0, index: 0, at: 4_242 }) + "\n");
+        symlinkSync(elsewhere, join(projectStateDir(s.cwd), "ui"));
+        clearSearchCache();
+        const h = (await searchSessions("yankee real prompt")).hits[0]!;
+        expect(h.id).toBe(s.id);
+        expect(h.at).not.toBe(4_242);
     });
 
     test("symlinked project folders, session files and GUI logs aren't followed", async () => {

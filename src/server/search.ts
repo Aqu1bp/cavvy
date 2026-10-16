@@ -34,7 +34,7 @@ export const SEARCH_LIMITS = {
     budgetBytes: 768 * 1024 * 1024,
     /** What's kept across queries, in characters (each piece of text, its folded copy, and a cost per entry, turn start and session). */
     cacheChars: 64 * 1024 * 1024,
-    /** Turn times kept across queries, in records. */
+    /** Turn times kept across queries, in records (and one for each log). */
     cacheTurnTimes: 200_000,
 };
 
@@ -327,11 +327,16 @@ function remember(file: string, doc: Doc) {
     }
 }
 
+/** A log's place in the cache: its records, and one for itself (a log with none still takes room). */
+const timesCost = (turns: TurnTimes["turns"]) => 1 + turns.length;
+
 /** When each prompt started, from the GUI's log next to the transcript (ui/<id>.jsonl). */
 async function turnTimes(sessionFile: string, id: string, ctl: Control): Promise<TurnTimes["turns"]> {
     const file = join(dirname(sessionFile), "ui", `${id}.jsonl`);
     let st;
     try {
+        // The ui folder as well as the log: a link to a folder elsewhere isn't followed either.
+        if (!plainStat(dirname(file))?.isDirectory()) return [];
         st = plainStat(file);
     } catch {
         return [];
@@ -356,15 +361,15 @@ async function turnTimes(sessionFile: string, id: string, ctl: Control): Promise
     ).catch(() => false);
     if (!done) return turns;
     const old = times.get(file);
-    if (old) cachedTimes -= old.turns.length;
+    if (old) cachedTimes -= timesCost(old.turns);
     times.delete(file);
     times.set(file, { size: st.size, mtimeMs: st.mtimeMs, turns });
-    cachedTimes += turns.length;
+    cachedTimes += timesCost(turns);
     // Oldest first out, by records (one log can hold many).
     for (const [f, t] of times) {
         if (cachedTimes <= SEARCH_LIMITS.cacheTurnTimes) break;
         times.delete(f);
-        cachedTimes -= t.turns.length;
+        cachedTimes -= timesCost(t.turns);
     }
     return turns;
 }

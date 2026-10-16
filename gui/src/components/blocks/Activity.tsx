@@ -363,25 +363,34 @@ function RunningRow(p: { tool: ToolBlock }) {
     const tail = () => (p.tool.progress ? stripAnsi(p.tool.progress).trimEnd().split("\n").slice(-4).join("\n") : undefined);
     return (
         <>
-            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""}`}>
+            {/* Find counts a running call by its argument: the verb, the timer and the output's tail change as it runs. */}
+            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""}`} data-find={p.tool.id}>
                 <span class="slot">
                     <Show when={p.tool.status === "awaiting"} fallback={<ToolIcon name={p.tool.name} size={16} />}>
                         <Hand size={16} />
                     </Show>
                 </span>
-                <span class={p.tool.status === "awaiting" ? "wverb" : "wverb shimmer"}>{verb()}</span>
+                <span class={p.tool.status === "awaiting" ? "wverb" : "wverb shimmer"} data-find-skip>
+                    {verb()}
+                </span>
                 <Show when={label().arg && p.tool.status !== "streaming"}>
                     <span class="warg mono truncate">{label().arg}</span>
                 </Show>
                 <Show when={p.tool.status === "streaming" && p.tool.receiving}>
-                    <span class="warg truncate">{tokens(p.tool.receiving!)} chars</span>
+                    <span class="warg truncate" data-find-skip>
+                        {tokens(p.tool.receiving!)} chars
+                    </span>
                 </Show>
                 <Show when={p.tool.startedAt}>
-                    <span class="wtime num">{duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}</span>
+                    <span class="wtime num" data-find-skip>
+                        {duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}
+                    </span>
                 </Show>
             </div>
             <Show when={tail()}>
-                <pre class="activity-tail">{tail()}</pre>
+                <pre class="activity-tail" data-find-skip>
+                    {tail()}
+                </pre>
             </Show>
         </>
     );
@@ -581,7 +590,9 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                 <Show when={toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
             </div>
             <Show when={!open() && p.tool.status === "running" && p.tool.progress}>
-                <pre class="activity-tail nested">{stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(-6).join("\n")}</pre>
+                <pre class="activity-tail nested" data-find-skip>
+                    {stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(-6).join("\n")}
+                </pre>
             </Show>
             <Show when={open()}>
                 <div class="tool-detail">

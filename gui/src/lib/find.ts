@@ -38,8 +38,11 @@ function blockText(b: Block): string | undefined {
             return plain(b.text);
         case "tool": {
             const l = toolLabel(b);
-            // A sub-agent's row starts with its task, not the word "Agent".
+            // A sub-agent's row starts with its task, not the word "Agent", running or not.
             if (b.agent) return typeof b.input?.description === "string" && b.input.description.trim() ? b.input.description.trim() : l.arg;
+            // Still running: its argument, which its live row shows as long as it runs (nothing while the call is still arriving).
+            if (b.status === "running" || b.status === "awaiting") return l.arg;
+            if (b.status === "streaming") return undefined;
             // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
             const meta = b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
             return [l.verb, l.arg, meta].filter(Boolean).join(" ");
@@ -132,6 +135,24 @@ export function textRanges(root: Node, query: string): Range[] {
         out.push(r);
     }
     return out;
+}
+
+/**
+ * Scrolls each box between the match and `outer` that scrolls (a long shell
+ * output, a wide code line) so the match is in it, innermost first; the
+ * transcript itself is placed by the caller.
+ */
+export function revealInBoxes(r: Range, outer: Element) {
+    for (let el = r.startContainer.parentElement; el && el !== outer; el = el.parentElement) {
+        const cs = getComputedStyle(el);
+        const sy = el.scrollHeight > el.clientHeight && /auto|scroll/.test(cs.overflowY);
+        const sx = el.scrollWidth > el.clientWidth && /auto|scroll/.test(cs.overflowX);
+        if (!sx && !sy) continue;
+        const box = r.getBoundingClientRect();
+        const view = el.getBoundingClientRect();
+        if (sy && (box.top < view.top || box.bottom > view.bottom)) el.scrollTop += box.top - view.top - (view.height - box.height) / 2;
+        if (sx && (box.left < view.left || box.right > view.right)) el.scrollLeft += box.left - view.left - (view.width - box.width) / 2;
+    }
 }
 
 const canPaint = () => typeof CSS !== "undefined" && "highlights" in CSS && typeof Highlight !== "undefined";
