@@ -40,7 +40,7 @@ import { claudeMcpServers } from "./claude-mcp";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
-/** How long Claude Code may take to connect to the harness's MCP server before the prompt goes without it (changeable for tests). */
+/** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background sub-agents once the prompt is answered (changeable for tests). */
@@ -468,13 +468,17 @@ class ClaudeTurn {
         const answered = new Promise<Record<string, any>>((resolve) => this.controls.set(id, resolve));
         this.proc.send({ type: "control_request", request_id: id, request: { subtype: "mcp_set_servers", servers } });
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const r = await Promise.race([answered, this.proc.exited.then(() => undefined), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), attachTiming.timeoutMs)))]);
+        let timedOut = false;
+        const r = await Promise.race([answered, this.proc.exited.then(() => undefined), new Promise<undefined>((resolve) => (timer = setTimeout(() => {
+            timedOut = true;
+            resolve(undefined);
+        }, attachTiming.timeoutMs)))]);
         clearTimeout(timer);
         this.controls.delete(id);
         if (this.aborted) return;
         // CLI errors may echo arbitrary env/header values; names and static reasons only.
         const failed = !r || r.subtype !== "success" ? Object.keys(servers) : Object.keys(servers).filter((name) => r.response?.errors?.[name]);
-        if (failed.length) warn(`Claude Code couldn't connect to MCP servers: ${failed.map((name) => redact(name)).join(", ")}.`);
+        if (failed.length) warn(`Claude Code ${timedOut ? "timed out waiting for" : "couldn't connect to"} MCP servers: ${failed.map((name) => redact(name)).join(", ")}.`);
     }
 
     async run(content: unknown[]): Promise<BackendResult> {

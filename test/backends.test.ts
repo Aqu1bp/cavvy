@@ -24,7 +24,7 @@ const { deniedWithin } = await import("../src/permissions/rules");
 const { stopTiming } = await import("../src/backends/cli");
 const { backendActionsNote } = await import("../src/agent/agent");
 const { withoutActionsNote } = await import("../src/server/history");
-const { backgroundTiming } = await import("../src/backends/claude-code");
+const { attachTiming, backgroundTiming } = await import("../src/backends/claude-code");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -1550,6 +1550,28 @@ describe("Claude Code MCP approval boundary", () => {
             expect(payloads()).toEqual([]);
         });
     }
+
+    for (const response of ["hang", "1", "exit"]) test(`MCP attachment distinguishes timeout from refusal or exit (${response})`, async () => {
+        const previousTimeout = attachTiming.timeoutMs;
+        attachTiming.timeoutMs = response === "hang" ? 50 : 5000;
+        process.env.FAKE_MCP_REFUSE = response;
+        try {
+            const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => ({ approved: config() }) });
+            expect(await run("hello")).toBe(response === "exit" ? "error" : "done");
+            const warning = response === "hang" ? "warn: Claude Code timed out waiting for MCP servers: approved." : "warn: Claude Code couldn't connect to MCP servers: approved.";
+            expect(notices(events)).toContain(warning);
+            expect(notices(events).some((n) => n.includes("timed out"))).toBe(response === "hang");
+            expect(JSON.stringify(events)).not.toContain(sentinel);
+            if (response === "hang") {
+                // A slow server is awaited again on the next turn, with the same bounded wait.
+                expect(await run("again")).toBe("done");
+                expect(notices(events).filter((n) => n === warning)).toHaveLength(2);
+            }
+        } finally {
+            attachTiming.timeoutMs = previousTimeout;
+            delete process.env.FAKE_MCP_REFUSE;
+        }
+    });
 
     test("only the manager's approved set reaches stdin, and approval changes apply next turn", async () => {
         const { McpManager } = await import("../src/mcp/manager");
