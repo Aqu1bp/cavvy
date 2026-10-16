@@ -183,3 +183,13 @@ describe("key reports that aren't keys", () => {
         expect(keys.filter((k) => k.name !== "unknown")).toEqual([{ name: "text", text: "a" }]);
     });
 });
+
+test("backend background waiting uses the TUI's live status and clears it", () => {
+    const { app } = testApp();
+    const text = "Waiting for background command: Run checks · Esc to stop it";
+    (app as any).onAgentEvent({ type: "activity", text });
+    expect((app as any).status).toBe(text);
+    (app as any).onAgentEvent({ type: "activity" });
+    expect((app as any).status).toBeUndefined();
+    app.session?.release();
+});
