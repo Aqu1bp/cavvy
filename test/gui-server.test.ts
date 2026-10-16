@@ -990,6 +990,8 @@ describe("sub-agents", () => {
             expect(v.agents).toHaveLength(1);
             const a = v.agents[0]!;
             expect([a.description, a.status, a.report]).toEqual(["Count the files", "done", "CHILD_REPORT: 2 files."]);
+            // Its tokens, even those Codex reported before the spawn said whose they were.
+            expect(a.tokens).toBe(5050);
             // Its warning and error show on its chip, not as the session's.
             expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
             const turn = lastTurn(v);
@@ -1007,11 +1009,12 @@ describe("sub-agents", () => {
         }
     }, 45_000);
 
-    test("Codex's own sub-agent messaged after it answered: running again, asking as itself, and its new answer is its report", async () => {
+    for (const twice of ["1", "silent"])
+    test(`Codex's own sub-agent messaged after it answered: running again, asking as itself, and ${twice === "1" ? "its new answer is its report" : "stopped before answering, its earlier answer isn't its report"}`, async () => {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("codex", { path: fakeCodex() });
         process.env.FAKE_SCENARIO = "subagent";
-        process.env.FAKE_CHILD_TWICE = "1";
+        process.env.FAKE_CHILD_TWICE = twice;
         try {
             const c = await client();
             const id = await c.open("session.create", { cwd: project() });
@@ -1030,8 +1033,12 @@ describe("sub-agents", () => {
             const a = v.agents[0]!;
             expect(ask.kind === "permission" && [ask.agentLabel, ask.agentId]).toEqual(["Count the files", a.id]);
             expect(during).toEqual(["waiting", undefined, undefined]);
-            expect([a.status, a.report]).toEqual(["done", "CHILD_REPORT: 3 tests."]);
+            expect([a.status, a.report]).toEqual(twice === "1" ? ["done", "CHILD_REPORT: 3 tests."] : ["stopped", undefined]);
             expect(a.blocks.flatMap((b) => (b.t === "tool" ? [`${b.name}:${b.status}`] : []))).toEqual(["Bash:ok", "Bash:ok"]);
+            // Where its latest turn starts: what the chip takes its last words from (the first answer is before it).
+            const from = a.blocks.findIndex((b) => b.id === a.turnAfter);
+            expect(a.blocks.slice(0, from + 1).some((b) => b.t === "text" && b.text === "CHILD_REPORT: 2 files.")).toBe(true);
+            expect(a.blocks.slice(from + 1).some((b) => b.t === "text" && b.text === "CHILD_REPORT: 2 files.")).toBe(false);
             c.close();
         } finally {
             delete process.env.FAKE_SCENARIO;

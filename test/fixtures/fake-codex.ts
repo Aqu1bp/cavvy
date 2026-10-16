@@ -26,7 +26,8 @@
 //                     asks from its thread under untrusted), says something, answers and has usage of its own;
 //                     FAKE_CHILD_EARLY=1 sends its first events before the spawn says which thread is whose;
 //                     FAKE_RESUME_AGENT=1 resumes the sub-agent (of an earlier turn) instead of spawning it;
-//                     FAKE_CHILD_TWICE=1 messages it after it answered, and it works again
+//                     FAKE_CHILD_TWICE=1 messages it after it answered, and it works again (=silent: and is
+//                     interrupted before it answers)
 //                     elicit: an MCP tool call Codex asks about (an elicitation of its own, FAKE_ELICIT=approval,
 //                     the default), or an MCP server's form (FAKE_ELICIT=form) or link (FAKE_ELICIT=url)
 //                     web: a web search whose query comes only when it completes
@@ -200,7 +201,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("item/completed", { threadId, turnId, item: activity("completed") });
         } else notify("item/completed", { threadId, turnId, item: { ...wait, status: "completed", agentsStates: { [child]: { status: "completed", message: "CHILD_REPORT: 2 files." } } } });
         // FAKE_CHILD_TWICE=1: messaged after it answered, the sub-agent works again (a second turn of its thread).
-        if (process.env.FAKE_CHILD_TWICE === "1") {
+        const twice = process.env.FAKE_CHILD_TWICE;
+        if (twice === "1" || twice === "silent") {
             const send = { type: "collabAgentToolCall", id: `send-${turnId}`, tool: "sendInput", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [child], prompt: "Now count the tests.", model: null, reasoningEffort: null, agentsStates: {} };
             notify("item/started", { threadId, turnId, item: send });
             notify("item/completed", { threadId, turnId, item: { ...send, status: "completed" } });
@@ -211,8 +213,11 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
             const d = runsItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: again, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
             notify("item/completed", { threadId: child, turnId: again, item: { ...cmd, status: d === "accept" ? "completed" : "declined", exitCode: d === "accept" ? 0 : null, aggregatedOutput: d === "accept" ? "ok\n" : null } });
-            notify("item/completed", { threadId: child, turnId: again, item: { type: "agentMessage", id: "c-msg3", text: "CHILD_REPORT: 3 tests.", phase: "final_answer" } });
-            notify("turn/completed", { threadId: child, turn: { id: again, rootTurnId: turnId, status: "completed", error: null } });
+            if (twice === "silent") notify("turn/completed", { threadId: child, turn: { id: again, rootTurnId: turnId, status: "interrupted", error: null } });
+            else {
+                notify("item/completed", { threadId: child, turnId: again, item: { type: "agentMessage", id: "c-msg3", text: "CHILD_REPORT: 3 tests.", phase: "final_answer" } });
+                notify("turn/completed", { threadId: child, turn: { id: again, rootTurnId: turnId, status: "completed", error: null } });
+            }
         }
         async function childRest() {
             // What only concerns the sub-agent's thread: a warning, an error it recovers from, a compaction.

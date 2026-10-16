@@ -19,7 +19,7 @@ const { checkAgentCli } = await import("../src/backends/index");
 const { applyHunks, codexPolicy, changePreview } = await import("../src/backends/codex");
 const trust = await import("../src/config/trust");
 const { claudeRule, claudePermissions } = await import("../src/backends/claude-code");
-const { untrustedArgs, requestedPaths } = await import("../src/backends/codex");
+const { untrustedArgs, requestedPaths, elicitationForm } = await import("../src/backends/codex");
 const { deniedWithin } = await import("../src/permissions/rules");
 const { stopTiming } = await import("../src/backends/cli");
 const { backendActionsNote } = await import("../src/agent/agent");
@@ -674,6 +674,9 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
             expect(spawnEnd).toBeLessThan(events.indexOf(sub[0]!));
             // Asking before Codex said whose thread it is: a sub-agent of Codex's all the same.
             expect(asked.map((a) => a.agentLabel)).toEqual([early === "all" ? "Codex sub-agent" : "Count the files"]);
+            // Its usage shows on it once, counted once.
+            expect(sub.flatMap((e) => (e.event.type === "usage" ? [e.event.usage.outputTokens] : []))).toEqual([50]);
+            expect(usageOf(session).outputTokens).toBe(30 + 50);
         });
 
     test("a sub-agent Codex announces with an item of its own (multi_agent_v2) shows the same way", async () => {
@@ -813,6 +816,16 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         ]);
         expect(elicitations()).toEqual([{ action: "accept", content: { color: "blue", count: 3, ok: true, tags: ["a", "b"] }, _meta: null }]);
 
+        // Typed outside what a field allows (not one of its choices; not a number), required or not: declined, saying why.
+        for (const [field, typed] of [["color", "purple"], ["How many", "lots"]] as const) {
+            rmSync(LOG, { force: true });
+            const wrong = { ...answers, [field]: [typed] };
+            const c = await makeAgent({ provider: "codex", ui: { askQuestion: async (q: string) => Object.entries(wrong).find(([k]) => q.split("\n").at(-1)!.startsWith(k))?.[1] } });
+            expect(await c.run("go")).toBe("done");
+            expect(elicitations()).toEqual([{ action: "decline", content: null, _meta: null }]);
+            expect(notices(c.events).join("\n")).toMatch(/Declined the probe MCP server's form: the answer for "(color|count)" isn't one it allows/);
+        }
+
         // A required field left unanswered (dismissed), or nobody to ask: declined.
         for (const ui of [{ askQuestion: async () => undefined }, {}]) {
             rmSync(LOG, { force: true });
@@ -820,6 +833,23 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
             expect(await b.run("go")).toBe("done");
             expect(elicitations()).toEqual([{ action: "decline", content: null, _meta: null }]);
         }
+    });
+
+    test("an MCP server's form: what's typed outside what a field allows isn't sent as its value", () => {
+        const form = elicitationForm({
+            type: "object",
+            properties: {
+                color: { type: "string", enum: ["red", "blue"], enumNames: ["Red", "Blue"] },
+                tags: { type: "array", items: { enum: ["a", "b"] }, maxItems: 1 },
+                count: { type: "integer", minimum: 1, maximum: 5 },
+                name: { type: "string", minLength: 2, maxLength: 4 },
+            },
+        })!;
+        const parse = (key: string, answer: string[]) => form.find((f) => f.key === key)!.parse(answer);
+        expect([parse("color", ["Blue"]), parse("color", ["blue"]), parse("color", ["purple"])]).toEqual(["blue", "blue", undefined]);
+        expect([parse("tags", ["a"]), parse("tags", ["a", "c"]), parse("tags", ["a", "b"])]).toEqual([["a"], undefined, undefined]);
+        expect([parse("count", ["5"]), parse("count", ["0"]), parse("count", ["6"]), parse("count", ["2.5"])]).toEqual([5, undefined, undefined, undefined]);
+        expect([parse("name", ["Ann"]), parse("name", ["A"]), parse("name", ["Annabel"])]).toEqual(["Ann", undefined, undefined]);
     });
 
     test("an MCP server's link: the question shows it; done accepts", async () => {

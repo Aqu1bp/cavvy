@@ -857,7 +857,7 @@ export class Runtime {
         // A new turn of one that had ended (Codex's, messaged after it answered): it's running again, and its next answer is its report.
         if (e.type === "request_start" && a.endedAt !== undefined && a.status !== "running" && a.status !== "waiting") {
             this.agentText.delete(id);
-            this.agentPatch(id, { status: "running", endedAt: undefined, report: undefined });
+            this.agentPatch(id, { status: "running", endedAt: undefined, report: undefined, turnAfter: a.blocks.at(-1)?.id ?? a.turnAfter });
         }
         switch (e.type) {
             case "request_start":
@@ -922,7 +922,9 @@ export class Runtime {
         this.agentText.delete(id);
         const a = this.view.agents.find((x) => x.id === id);
         if (!a) return;
-        const said = [...a.blocks].reverse().find((b) => b.t === "text" && b.text.trim());
+        // Said in its latest turn (not an answer of an earlier one, when this one gave none). Gone from the list: all of it is.
+        const from = a.turnAfter ? a.blocks.findIndex((b) => b.id === a.turnAfter) + 1 : 0;
+        const said = a.blocks.slice(from).reverse().find((b) => b.t === "text" && b.text.trim());
         const status: AgentRun["status"] = reason === "aborted" ? "stopped" : reason === "done" || reason === "max_turns" ? "done" : "failed";
         // Its last word is its report; one ending again (Claude Code saying so twice) takes the later.
         const report = (a.report === undefined || a.endedAt !== undefined) && said?.t === "text" ? said.text : undefined;

@@ -709,8 +709,11 @@ class CodexTurn {
             return;
         }
         this.host.usage(usage, {});
+        // Counted above: what the sub-agent's chip shows (kept until it's known whose thread this is).
+        const shown: AgentEvent = { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0 };
         const sub = this.subs.get(thread!);
-        if (sub) this.subEmit(sub, { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0 });
+        if (sub) this.subEmit(sub, shown);
+        else this.keep(thread!, SHOWN_USAGE, shown);
     }
 
     /** What one of Codex's sub-agents' threads (or a thread not known yet) says. */
@@ -718,14 +721,13 @@ class CodexTurn {
         const sub = this.subs.get(thread);
         if (!sub) {
             // Not known as a sub-agent (yet): kept a while, in case a spawn names it; a reviewer's never shows.
-            if (!SHOWN_FROM_SUBAGENTS.has(method)) return;
-            const q = this.unclaimed.get(thread) ?? [];
-            if (!this.unclaimed.has(thread) && this.unclaimed.size >= 50) return;
-            if (q.length < 500) q.push([method, p]);
-            this.unclaimed.set(thread, q);
+            if (SHOWN_FROM_SUBAGENTS.has(method)) this.keep(thread, method, p);
             return;
         }
         switch (method) {
+            case SHOWN_USAGE:
+                this.subEmit(sub, p);
+                break;
             case "turn/started":
                 sub.turnId = typeof p.turn?.id === "string" ? p.turn.id : sub.turnId;
                 if (!sub.nested) this.subEmit(sub, { type: "request_start" });
@@ -758,6 +760,14 @@ class CodexTurn {
                 break;
             }
         }
+    }
+
+    /** An event of a thread not known as a sub-agent's yet, for when it is. */
+    private keep(thread: string, method: string, p: unknown) {
+        const q = this.unclaimed.get(thread) ?? [];
+        if (!this.unclaimed.has(thread) && this.unclaimed.size >= 50) return;
+        if (q.length < 500) q.push([method, p]);
+        this.unclaimed.set(thread, q);
     }
 
     /** A file change's patch as Codex streams it: what its approval is checked against. */
@@ -955,7 +965,7 @@ class CodexTurn {
         if (sub) this.subEmit(sub, e);
         else this.host.emit(e);
         // Over at once, as a spawn call is; then what its sub-agent did shows under it.
-        this.endItem(id, open, item.kind === "started" ? "The sub-agent started; what it does shows under it." : "The sub-agent was messaged; what it does shows under it.", false);
+        this.endItem(id, open, item.kind === "started" ? "The sub-agent started; what it does shows under it." : "Codex went back to the sub-agent; what it does shows under it.", false);
         this.claimThreads([thread], id, label, sub);
     }
 
@@ -1125,6 +1135,11 @@ class CodexTurn {
         for (const [i, f] of form.entries()) {
             const picked = (answers[i] ?? []).filter((x) => x !== LEAVE_EMPTY);
             const value = picked.length ? f.parse(picked) : undefined;
+            if (value === undefined && picked.length) {
+                // Not an answer the form allows (typed outside its choices, out of range): not sent as one.
+                this.host.emit({ type: "notice", level: "warn", message: `Declined ${server ? `the ${server} MCP server's` : "an MCP server's"} form: the answer for "${f.key}" isn't one it allows.` });
+                return reply("decline");
+            }
             if (value === undefined) {
                 if (f.required) return reply("decline");
                 continue;
@@ -1279,6 +1294,9 @@ function writtenPaths(changes: FileChange[]): string[] {
     return [...new Set(changes.flatMap((c) => (c.movePath ? [c.path, c.movePath] : [c.path])))];
 }
 
+/** A sub-agent's usage, already counted, kept for its chip until its thread is claimed (not a Codex method). */
+const SHOWN_USAGE = "harness/subagentUsage";
+
 /** Notifications about any thread's actions (its reviewer's verdicts): shown whichever thread they're for. */
 const ANY_THREAD = new Set(["guardianWarning", "item/autoApprovalReview/started", "item/autoApprovalReview/completed"]);
 
@@ -1356,8 +1374,8 @@ export function elicitationForm(schema: any): FormField[] | undefined {
         const label = typeof s.title === "string" && s.title.trim() ? s.title.trim() : key;
         const question = `${label}${typeof s.description === "string" && s.description.trim() ? ` (${s.description.trim()})` : ""}${req ? "" : " (optional)"}`;
         const skip = req ? [] : [{ label: LEAVE_EMPTY }];
-        // Choices: labels shown, values sent.
-        const choices = (list: { value: string; label: string }[]) => (picked: string) => list.find((c) => c.label === picked)?.value ?? list.find((c) => c.value === picked)?.value ?? picked;
+        // Choices: labels shown, values sent; something typed that isn't one of them isn't a value.
+        const choices = (list: { value: string; label: string }[]) => (picked: string) => list.find((c) => c.label === picked)?.value ?? list.find((c) => c.value === picked)?.value;
         const enumOf = (x: any): { value: string; label: string }[] | undefined => {
             if (Array.isArray(x?.oneOf)) return x.oneOf.filter((o: any) => typeof o?.const === "string").map((o: any) => ({ value: o.const, label: typeof o.title === "string" ? o.title : o.const }));
             if (Array.isArray(x?.anyOf)) return x.anyOf.filter((o: any) => typeof o?.const === "string").map((o: any) => ({ value: o.const, label: typeof o.title === "string" ? o.title : o.const }));
@@ -1370,7 +1388,13 @@ export function elicitationForm(schema: any): FormField[] | undefined {
             const list = enumOf(s.items);
             if (!list) return undefined;
             const value = choices(list);
-            out.push(field(list.map((c) => ({ label: c.label })), true, (a) => a.map(value)));
+            out.push(
+                field(list.map((c) => ({ label: c.label })), true, (a) => {
+                    const v = a.map(value);
+                    const n = v.length;
+                    return v.every((x) => x !== undefined) && !(typeof s.minItems === "number" && n < s.minItems) && !(typeof s.maxItems === "number" && n > s.maxItems) ? v : undefined;
+                }),
+            );
         } else if (s.type === "string" && enumOf(s)) {
             const list = enumOf(s)!;
             const value = choices(list);
@@ -1382,11 +1406,13 @@ export function elicitationForm(schema: any): FormField[] | undefined {
             out.push(
                 field(defaults, false, (a) => {
                     const n = Number(a[0]!.trim());
-                    return a[0]!.trim() && Number.isFinite(n) && (!integer || Number.isInteger(n)) ? n : undefined;
+                    const inRange = !(typeof s.minimum === "number" && n < s.minimum) && !(typeof s.maximum === "number" && n > s.maximum);
+                    return a[0]!.trim() && Number.isFinite(n) && (!integer || Number.isInteger(n)) && inRange ? n : undefined;
                 }),
             );
         } else if (s.type === "string") {
-            out.push(field(defaults, false, (a) => a[0]));
+            const fits = (v: string) => !(typeof s.minLength === "number" && v.length < s.minLength) && !(typeof s.maxLength === "number" && v.length > s.maxLength);
+            out.push(field(defaults, false, (a) => (fits(a[0]!) ? a[0] : undefined)));
         } else return undefined;
     }
     return out;

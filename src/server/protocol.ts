@@ -136,6 +136,8 @@ export interface AgentRun {
     /** How many earlier blocks were dropped to keep the list short. */
     dropped?: number;
     report?: string;
+    /** The last block of its earlier turns, when it started another (Codex's, messaged after it answered): its report is from what follows. */
+    turnAfter?: string;
     /** From before the session was reopened: only the call and its result are known. */
     replayed?: boolean;
 }
