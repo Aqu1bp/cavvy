@@ -8,7 +8,7 @@ test("bun test's preload isolates the home and disables the keychain", () => {
     delete env.HARNESS_HOME;
     delete env.HARNESS_NO_KEYCHAIN;
     const root = join(import.meta.dir, "..");
-    const r = Bun.spawnSync([process.execPath, "test", "./test/fixtures/preload-probe.test.ts"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync([process.execPath, "--no-env-file", "test", "./test/fixtures/preload-probe.test.ts"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     expect(r.stderr.toString()).toContain("1 pass");
     expect(r.exitCode).toBe(0);
 }, 20_000);
