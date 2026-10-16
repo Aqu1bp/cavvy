@@ -41,6 +41,7 @@
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
+// FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 //
 // Token usage is each thread's running total, kept beside the log as Codex keeps it with the thread. Like
 // Codex 0.163 (checked against it with a stand-in model server), it reports the last usage again on
@@ -352,7 +353,7 @@ async function handle(m: any) {
             return reply({
                 config: { model: null, mcp_servers: { ...userMcp, ...projectMcp } },
                 origins: {},
-                ...(process.env.FAKE_NO_CONFIG_LAYERS === "1" ? {} : { layers: [
+                ...(process.env.FAKE_NO_CONFIG_LAYERS === "1" ? {} : { layers: process.env.FAKE_CONFIG_LAYERS ? JSON.parse(process.env.FAKE_CONFIG_LAYERS) : [
                     { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp } },
                     { name: { type: "project", dotCodexFolder: `${cwd}/.codex` }, config: { mcp_servers: projectMcp } },
                 ] }),
