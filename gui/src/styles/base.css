@@ -827,11 +827,11 @@ select:focus-visible {
     .slim.cur,
     .navi.on:not(:focus-visible),
     .segmented button.on:not(:focus-visible),
-    .menu-item.sel,
-    .menu-item.current,
+    .menu-item.sel:not(:focus-visible),
+    .menu-item.current:not(:focus-visible),
     .mr.sel,
     .mr.on,
-    .rw-item.on,
+    .rw-item.on:not(:focus-visible),
     .rf-row.on {
         outline: 1px solid SelectedItem;
         outline-offset: -1px;
@@ -843,8 +843,11 @@ select:focus-visible {
     }
 
     .toggle.on {
-        outline: 1px solid Highlight;
         background: Highlight;
+    }
+
+    .toggle.on:not(:focus-visible) {
+        outline: 1px solid Highlight;
     }
 
     .toggle-knob {
