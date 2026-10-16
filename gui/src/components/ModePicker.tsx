@@ -2,7 +2,7 @@ import { For, Show } from "solid-js";
 import { ChevronDown, Eye, FastForward, Hand, ShieldAlert, Zap } from "lucide-solid";
 import { MODE_LABELS, type PermissionModeId } from "@shared/protocol";
 import { setMode } from "../state/actions";
-import { Popover } from "./ui/Popover";
+import { Menu } from "./ui/Menu";
 import type { ComposerMenu } from "./ModelPicker";
 
 export const MODES: PermissionModeId[] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
@@ -41,8 +41,8 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                 <span>{MODE_LABELS[p.mode].label}</span>
                 <ChevronDown size={14} class="chv" />
             </button>
-            <Popover open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={344}>
-                <div class="mode-menu" role="menu" aria-label="Permission mode">
+            <Menu label="Permission mode" open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={344}>
+                <div class="mode-menu">
                     <div class="menu-head">
                         <span>Permission mode</span>
                         <kbd>⇧Tab</kbd>
@@ -77,7 +77,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                         }}
                     </For>
                 </div>
-            </Popover>
+            </Menu>
         </>
     );
 }

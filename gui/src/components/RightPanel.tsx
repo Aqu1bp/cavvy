@@ -15,7 +15,7 @@ import { useChanges, useGitChanges } from "../state/changes";
 import { canReveal, copyText, revealPath } from "../lib/platform";
 import { duration, plural, tildify } from "../lib/format";
 import { now } from "../lib/clock";
-import { Popover } from "./ui/Popover";
+import { Menu } from "./ui/Menu";
 
 const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
 const ran = (a: AgentRun) => duration((a.endedAt ?? (live(a) ? now() : a.startedAt)) - a.startedAt);
@@ -44,22 +44,22 @@ function Workspace(p: { handle: SessionHandle }) {
                     <ChevronDown size={16} />
                 </span>
             </button>
-            <Popover open={menu()} anchor={() => row} onClose={close} width={232}>
+            <Menu label="Workspace actions" open={menu()} anchor={() => row} onClose={close} width={232}>
                 <Show when={canReveal}>
-                    <button class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
+                    <button role="menuitem" class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
                         <FolderOpen size={14} /> Reveal in Finder
                     </button>
                 </Show>
-                <button class="menu-item compact" onClick={async () => (close(), (await copyText(st().cwd)) && toast(`Copied ${tildify(st().cwd, app.hello?.homeDir)}`, "success"))}>
+                <button role="menuitem" class="menu-item compact" onClick={async () => (close(), (await copyText(st().cwd)) && toast(`Copied ${tildify(st().cwd, app.hello?.homeDir)}`, "success"))}>
                     <Copy size={14} /> Copy folder path
                 </button>
-                <button class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
                     <SquarePen size={14} /> New session in {st().projectName}
                 </button>
-                <button class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
                     <Plug size={14} /> MCP servers
                 </button>
-            </Popover>
+            </Menu>
             <Show when={st().branch}>
                 <span class="prow lock" title="Git branch">
                     <GitBranch size={16} />
@@ -114,17 +114,18 @@ function ProposedPlan(p: { handle: SessionHandle }) {
                                 <span class="truncate grow">{pl().title}</span>
                                 <span class={`meta ${waiting() ? "tone-warn" : ""}`}>{waiting() ? "Needs you" : ""}</span>
                             </button>
-                            <Popover open={menu()} anchor={() => row} onClose={() => setMenu(false)} width={260}>
-                                <button class="menu-item compact" onClick={() => open("view")}>
+                            <Menu label="Plan actions" open={menu()} anchor={() => row} onClose={() => setMenu(false)} width={260}>
+                                <button role="menuitem" class="menu-item compact" onClick={() => open("view")}>
                                     <ClipboardList size={14} /> Read the plan
                                 </button>
-                                <button class="menu-item compact" disabled={!info()?.git} title={info()?.notGit ?? (info()?.git ? "Implement the plan in a new worktree" : info.loading ? "Checking the repository…" : "Repository information unavailable")} onClick={() => open("worktree")}>
+                                <button role="menuitem" class="menu-item compact" disabled={!info()?.git} title={info()?.notGit ?? (info()?.git ? "Implement the plan in a new worktree" : info.loading ? "Checking the repository…" : "Repository information unavailable")} onClick={() => open("worktree")}>
                                     <FolderGit2 size={14} /> Implement in a new worktree…
                                 </button>
-                                <button class="menu-item compact" onClick={() => open("save")}>
+                                <button role="menuitem" class="menu-item compact" onClick={() => open("save")}>
                                     <Save size={14} /> Save plan…
                                 </button>
                                 <button
+                                    role="menuitem"
                                     class="menu-item compact"
                                     onClick={async () => {
                                         setMenu(false);
@@ -134,7 +135,7 @@ function ProposedPlan(p: { handle: SessionHandle }) {
                                 >
                                     <Copy size={14} /> Copy plan
                                 </button>
-                            </Popover>
+                            </Menu>
                         </>
                     )}
                 </Show>
