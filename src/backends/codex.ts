@@ -391,8 +391,10 @@ class CodexTurn {
             }
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
-            // Codex's own config) back off it. Other tiers set in Codex (flex) are left alone.
-            const fastTier = t.fastMode && t.model.supportsFastMode ? t.model.fastModeTier : undefined;
+            // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
+            const tierFor = (fast: boolean | undefined) => (fast && t.model.supportsFastMode ? t.model.fastModeTier : undefined);
+            const fastTier = tierFor(t.fastMode);
+            /** The thread's tier as last reported or set. */
             let tierNow: string | null | undefined;
             const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
@@ -436,10 +438,14 @@ class CodexTurn {
                     const input = this.input(note ? `${note}\n\n${text}` : text, images);
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
+                    // The speed as it is now too: a sub-agent's session may have changed it since (its turn restarting, a queued message).
+                    const tier = tierFor(this.host.fastMode?.() ?? t.fastMode);
+                    const serviceTier = tier ?? (typeof tierNow === "string" && FAST_TIERS.has(tierNow) ? null : undefined);
                     await this.waitFor(async () => {
-                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier: fastTier ?? (typeof tierNow === "string" && FAST_TIERS.has(tierNow) ? null : undefined), approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                     });
+                    if (serviceTier !== undefined) tierNow = serviceTier ?? "default";
                     this.turnId = undefined;
                     if (this.aborted || this.status === "failed") break;
                     images = [];

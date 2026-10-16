@@ -876,6 +876,7 @@ export class Agent {
         const host: BackendHost = {
             emit: (e) => this.emitFromBackend(e),
             mode: () => this.o.mode.get(),
+            fastMode: () => this.fastMode(),
             permission: async (req) => {
                 const a = await this.backendPermission(req, signal);
                 if (!a.allow && a.stop) declined = true;

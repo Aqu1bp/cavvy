@@ -81,6 +81,8 @@ interface Opts {
     trusted?: boolean;
     session?: InstanceType<typeof Session>;
     queued?: string[][];
+    /** In place of queued: the messages waiting when the turn ends. */
+    drainQueued?: () => string[];
 }
 
 async function makeAgent(o: Opts) {
@@ -103,7 +105,7 @@ async function makeAgent(o: Opts) {
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
         host: {
-            drainQueued: () => queued.shift() ?? [],
+            drainQueued: o.drainQueued ?? (() => queued.shift() ?? []),
             emit: (e) => events.push(e),
             ui: o.ui ?? {},
             askPermission: o.ask
@@ -959,6 +961,21 @@ describe("fast mode backend wiring", () => {
             if (want === null) expect(turn.params.serviceTier).toBeNull();
             else expect("serviceTier" in turn.params).toBe(false);
         }
+    });
+
+    test("codex: a speed change between the turns of one run (a queued message after it) applies to the next turn", async () => {
+        // Changed as the first turn ends, when the message waiting after it is taken.
+        let change = () => {};
+        const waiting = [["and then this"], ["and this"]];
+        const drainQueued = () => (waiting.length === 2 && change(), waiting.shift() ?? []);
+        const a = await makeAgent({ provider: "codex", model: { supportsFastMode: true, fastModeTier: "priority" }, settings: { fastMode: true }, drainQueued });
+        change = () => a.session.setFastMode(false);
+        await a.run("first");
+        const [first, second, third] = received().filter((m) => m.method === "turn/start").map((m) => m.params);
+        expect(first.serviceTier).toBe("priority");
+        // Off the fast tier once; the thread is on standard after that.
+        expect(second.serviceTier).toBeNull();
+        expect("serviceTier" in third).toBe(false);
     });
 
     test("codex: fast, then standard in the same session, ends with the thread back on standard", async () => {
