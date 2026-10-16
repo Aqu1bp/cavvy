@@ -11,9 +11,7 @@ export function gitArgv(args: string[]): string[] {
 }
 
 export function gitEnv(): Record<string, string> {
-    // No lazy fetches: in a partial clone, reading a missing object would
-    // otherwise reach out to the promisor remote (and run its transport).
-    return childEnv({ GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" });
+    return childEnv({ GIT_OPTIONAL_LOCKS: "0" });
 }
 
 function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined {

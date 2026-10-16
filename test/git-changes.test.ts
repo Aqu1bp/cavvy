@@ -598,6 +598,35 @@ describe("outside a repository", () => {
 });
 
 describe("repository config never runs a program", () => {
+    test("in a partial clone, a missing old blob is never fetched", async () => {
+        const src = repo({ "f.txt": "v1\n" });
+        write(src, "f.txt", "v2\n");
+        git(src, "commit", "-q", "-am", "v2");
+        git(src, "config", "uploadpack.allowFilter", "true");
+        const pc = join(realpathSync(iso.home), `pc-${n++}`);
+        git(iso.home, "clone", "-q", "--filter=blob:none", `file://${src}`, pc);
+        // Every fetch from the promisor remote goes through this, and leaves a mark.
+        const mark = join(realpathSync(iso.home), `pc-fetched-${n++}`);
+        const script = join(realpathSync(iso.home), `pc-upload-pack-${n++}.sh`);
+        writeFileSync(script, `#!/bin/sh\ntouch '${mark}'\nexec git-upload-pack "$@"\n`, { mode: 0o755 });
+        git(pc, "config", "remote.origin.uploadpack", script);
+        // The first commit's blob wasn't cloned; branch scope against it needs that blob.
+        git(pc, "branch", "-q", "old", "HEAD~1");
+        write(pc, "f.txt", "v3\n");
+        const v1 = git(src, "rev-parse", "HEAD~1:f.txt").trim();
+        const has = () => Bun.spawnSync(gitArgv(["cat-file", "-e", v1]), { cwd: pc, env: { ...gitEnv(), GIT_NO_LAZY_FETCH: "1" }, stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+        expect(has()).toBe(false);
+
+        await gitChanges(pc, { scope: "branch", base: "old" }).catch(() => undefined);
+        await gitChanges(pc, { scope: "uncommitted" });
+        expect(existsSync(mark)).toBe(false);
+        expect(has()).toBe(false);
+
+        // Control: plain git in the same clone does fetch it, so the test would notice.
+        git(pc, "cat-file", "-p", v1);
+        expect(existsSync(mark)).toBe(true);
+    });
+
     test("filters, textconv, external diff and fsmonitor stay unrun", async () => {
         const marks = tempDir("harness-marks-");
         const dir = repo({ "a.txt": "hi\n", "b.txt": "same size\n", ".gitattributes": "* filter=evil diff=evil\n" });

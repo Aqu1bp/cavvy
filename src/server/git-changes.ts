@@ -91,8 +91,11 @@ async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: 
     const env: Record<string, string> = { ...gitEnv(), ...o.env };
     // Where the repository is comes from cwd alone, not from a variable the server happened to inherit.
     for (const k of REPO_VARS) delete env[k];
-    // No transport at all, so nothing can be fetched (and no ssh command run) even where git
-    // predates GIT_NO_LAZY_FETCH: listing protocols allows only those, and this one doesn't exist.
+    // No lazy fetches: in a partial clone, reading a missing object would otherwise reach out
+    // to the promisor remote (and run its transport). And no transport at all, so nothing can
+    // be fetched (and no ssh command run) even where git predates GIT_NO_LAZY_FETCH: listing
+    // protocols allows only those, and this one doesn't exist.
+    env.GIT_NO_LAZY_FETCH = "1";
     env.GIT_ALLOW_PROTOCOL = "harness-none";
     const proc = Bun.spawn(gitArgv(args), {
         cwd,
