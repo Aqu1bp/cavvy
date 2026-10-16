@@ -3,6 +3,7 @@ import { mock } from "bun:test";
 import { strict as assert } from "node:assert";
 import { createRoot } from "../../gui/node_modules/solid-js/dist/solid.js";
 import { createComposerDraft } from "../../gui/src/lib/composer-draft";
+import { pastedText, readAttachment, type Attachment } from "../../gui/src/lib/attachments";
 import { RpcError } from "../../gui/src/lib/rpc";
 
 const notices: { text: string; action?: { run: () => void } }[] = [];
@@ -33,7 +34,7 @@ function submit() {
     const submitted = draft.capture();
     return send(submitted.draft.text, submitted.draft.attachments, {
         sent: () => draft.clearSent(submitted),
-    }).then((ok) => { if (ok) draft.clearSent(submitted); return ok; });
+    }).then((ok) => { if (ok) draft.clearSent(submitted, ok === "command"); return ok; });
 }
 mock.module("../../gui/src/state/app", () => ({
     app, rpc, reportError: (e: unknown) => errors.push(e),
@@ -55,7 +56,24 @@ mock.module("../../gui/src/state/ui", () => Object.fromEntries([
     "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab",
 ].map((name) => [name, noop])));
 const { send } = await import("../../gui/src/state/actions");
-const attachments = [{ name: "image", mediaType: "image/png", data: "image-data", preview: "preview" }];
+const textFile = "# attached notes\n";
+const pdf = "%PDF-1.4\n%%EOF\n";
+const longPaste = "pasted line\n".repeat(101);
+const attachments: Attachment[] = [
+    { kind: "image", size: 10, name: "image", mediaType: "image/png", data: "image-data", preview: "preview" },
+    await readAttachment(new File([textFile], "notes.md"), []),
+    await readAttachment(new File([pdf], "report.pdf"), []),
+    pastedText(longPaste, []),
+];
+const wire = {
+    images: [{ mediaType: "image/png", data: "image-data" }],
+    files: [
+        { name: "notes.md", data: btoa(textFile) },
+        { name: "report.pdf", data: btoa(pdf) },
+        { name: "Pasted text", data: btoa(longPaste), pasted: true },
+    ],
+};
+const newerAttachments = [...attachments, pastedText("new paste\n".repeat(101), attachments)];
 let sent = 0;
 assert.equal(await send("/oops", attachments, { sent: () => sent++ }), false);
 assert.equal(errors.length, 0);
@@ -69,7 +87,7 @@ notices[0]!.action!.run();
 await Bun.sleep(0);
 assert.equal(sent, 1);
 assert.deepEqual(calls.at(-1), { method: "session.send", params: {
-    id: "original", text: "/oops", images: [{ mediaType: "image/png", data: "image-data" }], literal: true,
+    id: "original", text: "/oops", ...wire, literal: true,
 } });
 
 failure = new RpcError("Disconnected", "disconnected");
@@ -79,7 +97,7 @@ assert.equal(notices.length, 1);
 
 // Home checks before creating a session. Exercise actual drafts and cleanup,
 // including typing while a literal retry's RPC is still pending.
-for (const recovery of ["literal", "corrected", "newer-text", "newer-images"] as const) {
+for (const recovery of ["literal", "corrected", "newer-text", "newer-files"] as const) {
     app.activeId = undefined;
     composer = mount("home");
     composer.setText("/oops");
@@ -105,7 +123,7 @@ for (const recovery of ["literal", "corrected", "newer-text", "newer-images"] as
         await Bun.sleep(0);
         assert.equal(app.activeId, undefined);
         if (recovery === "newer-text") composer.setText("newer draft");
-        if (recovery === "newer-images") composer.setAttachments([{ ...attachments[0]!, data: "new-image" }]);
+        if (recovery === "newer-files") composer.setAttachments(newerAttachments);
         pending.resolve();
         await Bun.sleep(0);
         pendingSend = undefined;
@@ -114,15 +132,15 @@ for (const recovery of ["literal", "corrected", "newer-text", "newer-images"] as
     assert.equal(app.activeId, "created");
     assert.deepEqual(calls.at(-1), { method: "session.send", params: {
         id: "created", text: recovery === "corrected" ? "corrected message" : "/oops",
-        images: [{ mediaType: "image/png", data: "image-data" }],
+        ...wire,
         literal: recovery === "corrected" ? undefined : true,
     } });
     // The active session is empty; only newer unsent work remains on Home.
     assert.equal(composer.text(), "");
     composer.dispose();
     composer = mount("home");
-    assert.equal(composer.text(), recovery === "newer-text" ? "newer draft" : recovery === "newer-images" ? "/oops" : "");
-    assert.deepEqual(composer.attachments(), recovery === "newer-images" ? [{ ...attachments[0]!, data: "new-image" }] : recovery === "newer-text" ? attachments : []);
+    assert.equal(composer.text(), recovery === "newer-text" ? "newer draft" : recovery === "newer-files" ? "/oops" : "");
+    assert.deepEqual(composer.attachments(), recovery === "newer-files" ? newerAttachments : recovery === "newer-text" ? attachments : []);
     composer.setText("");
     composer.setAttachments([]);
     composer.dispose();
@@ -172,3 +190,29 @@ const beforeFailure = created;
 assert.equal(await send("/oops"), false);
 assert.equal(created, beforeFailure);
 assert.equal(errors.at(-1), commandFailure);
+
+// Local commands do not send files. They keep the attachment draft even when
+// /new unmounts its composer, while removing the handled command text.
+for (const command of ["/cost", "/new"]) {
+    app.activeId = "command-session";
+    composer = mount("command-session");
+    composer.setText(command);
+    composer.setAttachments(attachments);
+    calls.length = 0;
+    const before = created;
+    assert.equal(await submit(), "command");
+    assert.equal(created, before);
+    assert.deepEqual(calls, []);
+    composer.dispose();
+    composer = mount("command-session");
+    assert.equal(composer.text(), "");
+    assert.deepEqual(composer.attachments(), attachments);
+    // The next send can consist only of the files the command left behind.
+    app.activeId = "command-session";
+    failure = undefined;
+    assert.equal(await submit(), true);
+    assert.deepEqual(calls.at(-1), { method: "session.send", params: { id: "command-session", text: "", ...wire, literal: undefined } });
+    assert.deepEqual(composer.attachments(), []);
+    composer.dispose();
+    composer = undefined;
+}

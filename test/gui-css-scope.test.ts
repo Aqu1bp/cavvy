@@ -18,15 +18,17 @@ function classes(source: string): Set<string> {
 
 test("project-scripts bare CSS classes do not target other components", async () => {
     const bare = new Set<string>();
-    // This feature owns the final sections of these sheets. Shared UI utilities
-    // are outside them; only selectors with no component scope are guarded.
+    // Stop at the next section so unrelated features appended later aren't treated
+    // as project-script styles; only selectors with no component scope are guarded.
     for (const [sheet, marker] of [
         ["layout.css", "/* ---- Project scripts (title line)"],
         ["overlays.css", "/* ---- Labelled form fields (the project script dialog)"],
     ] as const) {
         const css = readFileSync(join(gui, "styles", sheet), "utf8");
         expect(css).toContain(marker);
-        const section = css.slice(css.indexOf(marker)).replace(/\/\*[\s\S]*?\*\//g, "");
+        const start = css.indexOf(marker);
+        const end = css.indexOf("/* ----", start + marker.length);
+        const section = css.slice(start, end < 0 ? undefined : end).replace(/\/\*[\s\S]*?\*\//g, "");
         for (const rule of section.matchAll(/(?:^|[{}])\s*([^{}]+)\{/g)) {
             for (const selector of rule[1]!.split(",")) {
                 const match = /^\.([\w-]+)$/.exec(selector.trim());

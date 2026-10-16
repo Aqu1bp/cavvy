@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
-import { interrupt, send, setMode, type Attachment } from "../state/actions";
+import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
 import { cost, tokens } from "../lib/format";

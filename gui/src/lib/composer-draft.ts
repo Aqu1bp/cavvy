@@ -36,7 +36,7 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
             if (cleared.attachments.length) composerDrafts.set(submitted.key, cleared);
             else composerDrafts.delete(submitted.key);
         }
-        // Each edit replaces the draft, so a late retry cannot clear newer typing or images.
+        // Each edit replaces the draft, so a late retry cannot clear newer typing or attachments.
         if (!disposed && key() === submitted.key && draft() === submitted.draft) setDraft(cleared);
     };
     const setText = (value: string | ((text: string) => string)) => {

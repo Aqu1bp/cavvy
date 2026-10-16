@@ -2,16 +2,30 @@
 import { strict as assert } from "node:assert";
 import { createRoot } from "../../gui/node_modules/solid-js/dist/solid.js";
 import { composerDrafts, createComposerDraft } from "../../gui/src/lib/composer-draft";
+import { isLongPaste, pastedText, readAttachment } from "../../gui/src/lib/attachments";
 
 function mount(key: string, wasDeleted?: (key: string) => boolean) {
     return createRoot((dispose) => ({ ...createComposerDraft(() => key, wasDeleted), dispose }));
 }
-const image = { name: "image", mediaType: "image/png", data: "image-data", preview: "preview" };
+const image = await readAttachment(new File([new Uint8Array([137, 80, 78, 71])], "image.png", { type: "image/png" }), []);
+assert.equal(image.kind, "image");
+const textFile = await readAttachment(new File(["first line\nsecond line\n"], "notes.txt"), []);
+const pdf = await readAttachment(new File(["%PDF-1.7\n"], "document.pdf"), []);
+const refused = await readAttachment(new File([new Uint8Array([0])], "binary.bin"), []);
+const longText = "a line of pasted text\n".repeat(100);
+assert.equal(isLongPaste(longText), true);
+const paste = pastedText(longText, []);
+assert.equal(textFile.kind, "text");
+assert.equal(pdf.kind, "pdf");
+assert.equal(refused.kind, "refused");
+assert.equal(paste.kind, "text");
+assert.ok(paste.kind === "text" && paste.pasted);
+const files = [image, textFile, pdf, paste];
 
 // Home unmounts when a successful send opens the session, before its completion callback runs.
 const home = mount("home");
 home.setText("send this");
-home.setAttachments([image]);
+home.setAttachments(files);
 const submitted = home.capture();
 const pending = Promise.withResolvers<boolean>();
 const finish = pending.promise.then((ok) => { if (ok) home.clearSent(submitted); });
@@ -70,7 +84,7 @@ afterToast.dispose();
 // Successful mounted sends clear both UI and the next saved draft.
 const active = mount("active");
 active.setText("message");
-active.setAttachments([image]);
+active.setAttachments(files);
 active.clearSent(active.capture());
 assert.equal(active.text(), "");
 assert.deepEqual(active.attachments(), []);
@@ -134,3 +148,68 @@ assert.deepEqual(undone.attachments(), []);
 undone.setText("after undo");
 undone.dispose();
 assert.equal(composerDrafts.get("deleted-session")?.text, "after undo");
+
+// Unsent files retain their contents and chip metadata when switching sessions.
+const withFiles = mount("files");
+withFiles.setText("review these");
+withFiles.setAttachments([...files, refused]);
+withFiles.dispose();
+const keptFiles = mount("files");
+assert.equal(keptFiles.text(), "review these");
+assert.deepEqual(keptFiles.attachments(), [...files, refused]);
+keptFiles.setAttachments(files);
+const fileSubmission = keptFiles.capture();
+// A refused send never clears the draft, including after it is saved and reopened.
+keptFiles.dispose();
+const refusedSend = mount("files");
+assert.equal(refusedSend.text(), fileSubmission.draft.text);
+assert.deepEqual(refusedSend.attachments(), files);
+refusedSend.clearSent(refusedSend.capture());
+assert.equal(refusedSend.text(), "");
+assert.deepEqual(refusedSend.attachments(), []);
+refusedSend.dispose();
+const clearedFiles = mount("files");
+assert.equal(clearedFiles.text(), "");
+assert.deepEqual(clearedFiles.attachments(), []);
+clearedFiles.dispose();
+
+// New files or a long paste added during a send belong to the next draft.
+for (const added of [textFile, pdf, paste]) {
+    const draft = mount(`added-${added.name}`);
+    draft.setText("message");
+    draft.setAttachments([image]);
+    const sent = draft.capture();
+    draft.setAttachments((attachments) => [...attachments, added]);
+    draft.clearSent(sent);
+    assert.equal(draft.text(), "message");
+    assert.deepEqual(draft.attachments(), [image, added]);
+    draft.dispose();
+    const reopened = mount(`added-${added.name}`);
+    assert.deepEqual(reopened.attachments(), [image, added]);
+    reopened.dispose();
+}
+
+// Local commands consume only the command text; they never submit the attached files.
+for (const lifecycle of ["mounted", "disposed", "replaced"] as const) {
+    const key = `local-${lifecycle}`;
+    const draft = mount(key);
+    draft.setText("/context");
+    draft.setAttachments([...files, refused]);
+    const submitted = draft.capture();
+    if (lifecycle !== "mounted") draft.dispose();
+    const replacement = lifecycle === "replaced" ? mount(key) : undefined;
+    replacement?.setText("newer message");
+    replacement?.dispose();
+    draft.clearSent(submitted, true);
+    if (lifecycle === "mounted") {
+        assert.equal(draft.text(), "");
+        assert.deepEqual(draft.attachments(), [...files, refused]);
+        draft.dispose();
+    }
+    const reopened = mount(key);
+    assert.equal(reopened.text(), lifecycle === "replaced" ? "newer message" : "");
+    assert.deepEqual(reopened.attachments(), [...files, refused]);
+    reopened.dispose();
+}
+
+if (image.kind === "image") URL.revokeObjectURL(image.preview);

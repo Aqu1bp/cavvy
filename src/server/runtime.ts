@@ -64,7 +64,6 @@ import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./time
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { SecretStore, secretValueError } from "../agent/secrets";
-import { RpcError } from "./rpc-error";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
