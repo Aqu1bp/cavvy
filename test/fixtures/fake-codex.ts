@@ -438,6 +438,19 @@ async function handle(m: any) {
             // The thread's last usage again, with that earlier turn's id.
             repeatUsage(p.threadId);
             return;
+        case "thread/fork": {
+            // A copy of the thread, under a new id. Like Codex 0.163's, it carries on the thread's running
+            // usage total (its next report's total includes what the original spent), and reports nothing now.
+            if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
+            await startMcp(p.config);
+            const id = `thr-fork-${Math.random().toString(36).slice(2, 8)}`;
+            const u = usageOf.get(p.threadId);
+            if (u) {
+                usageOf.set(id, { ...u });
+                if (usageFile) writeFileSync(usageFile, JSON.stringify(Object.fromEntries(usageOf)));
+            }
+            return reply({ thread: { id }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: "default" });
+        }
         case "turn/start": {
             // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);

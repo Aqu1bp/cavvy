@@ -21,6 +21,18 @@ export interface SessionMeta {
     version: string;
     /** Frozen system prompt; reused on resume so the prompt prefix stays identical. */
     system?: string;
+    /** Made by forking another session (src/agent/fork.ts). */
+    forkOf?: ForkOrigin;
+}
+
+export interface ForkOrigin {
+    id: string;
+    /** The original's title when it was forked. */
+    title: string;
+    /** Messages copied from it. */
+    messages: number;
+    /** When it was forked: prompts checkpointed before this are the original's (their file history is there). */
+    at: number;
 }
 
 
@@ -69,7 +81,7 @@ export interface TurnNotice {
     at: number;
 }
 
-type Line =
+export type Line =
     | ({ t: "meta" } & SessionMeta)
     | { t: "msg"; m: Message }
     | { t: "model"; model: string }
@@ -82,7 +94,7 @@ type Line =
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number; folder?: string }
+    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean; folder?: string }
     /** This session was brought in from a Claude Code or Codex session (the first messages). */
     | ({ t: "import" } & ImportRecord)
     /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
@@ -105,6 +117,8 @@ export interface ImportRecord {
     messages: number;
     /** Earlier messages of the CLI session that weren't. */
     omitted: number;
+    /** Provenance copied into a fork, not ownership of the imported CLI session. */
+    inherited?: true;
 }
 
 /**
@@ -115,6 +129,8 @@ export interface ImportRecord {
 export interface BackendSession {
     id: string;
     synced: number;
+    /** Shared with a fork: never continued in place, only forked (the next turn gets a new id). */
+    fork?: boolean;
 }
 
 export interface SessionSummary {
@@ -126,6 +142,11 @@ export interface SessionSummary {
     title: string;
     messages: number;
     model?: string;
+}
+
+/** A new session's id: when it was made, and a random suffix. */
+export function newSessionId(): string {
+    return `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${randomBytes(3).toString("hex")}`;
 }
 
 export class Session {
@@ -174,8 +195,7 @@ export class Session {
     }
 
     static create(cwd: string, opts: { persist?: boolean; system?: string; strictWrites?: boolean } = {}): Session {
-        const id = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${randomBytes(3).toString("hex")}`;
-        const s = new Session({ id, cwd, createdAt: Date.now(), version: APP_VERSION, system: opts.system }, opts);
+        const s = new Session({ id: newSessionId(), cwd, createdAt: Date.now(), version: APP_VERSION, system: opts.system }, opts);
         for (const provider of ["claude-code", "codex"]) s.setAccount(provider, defaultAccount(provider));
         return s;
     }
@@ -228,12 +248,15 @@ export class Session {
     private started = false;
     /** Lines held back until the first message, so idle launches leave no file. */
     private pending: Line[] = [];
+    /** An append failed, maybe half way: the next one starts on a line of its own (blank lines are skipped on load). */
+    private torn = false;
 
-    private write(line: Line) {
-        if (!this.persist || this.released) return;
+    /** Whether it's on disk now. */
+    private write(line: Line): boolean {
+        if (!this.persist || this.released) return false;
         if (!this.started && line.t !== "msg" && !existsSync(this.file)) {
             this.pending.push(line);
-            return;
+            return false;
         }
         try {
             if (!this.started) {
@@ -246,11 +269,16 @@ export class Session {
                 }
             }
             const lines = [...this.pending.splice(0), line];
-            appendFileSync(this.file, lines.map((l) => redactedJson(l) + "\n").join(""));
+            // Not joined to what a failed one left, or both would be unreadable (and this one said to be saved).
+            appendFileSync(this.file, (this.torn ? "\n" : "") + lines.map((l) => redactedJson(l) + "\n").join(""));
+            this.torn = false;
+            return true;
         } catch (error) {
             // Imports must stop on a failed write before recording completion.
             if (this.strictWrites) throw error;
             // Persistence is best effort; the session keeps working in memory.
+            this.torn = true;
+            return false;
         }
     }
 
@@ -331,6 +359,11 @@ export class Session {
         this.write({ t: "import", ...rec });
     }
 
+    /** The stored owner of a native thread, even if the account's configured folder has changed. */
+    backendFolder(provider: string): string | undefined {
+        return this.backendFolders.get(provider);
+    }
+
     /** A removed/re-added account or a changed Default home cannot inherit the previous home's thread. */
     backendSession(provider: string, folder: string | undefined): BackendSession | undefined {
         const current = this.backends.get(provider);
@@ -346,9 +379,20 @@ export class Session {
         const cur = this.backends.get(provider);
         if (cur?.id === id && cur.synced === synced && folder === this.backendFolders.get(provider)) return;
         if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
-        this.backends.set(provider, { id, synced });
+        // Still the shared one (the backend never answered with its fork): it stays shared.
+        const fork = cur?.id === id && cur.fork ? { fork: true } : {};
+        this.backends.set(provider, { id, synced, ...fork });
         if (folder) this.backendFolders.set(provider, folder);
-        this.write({ t: "backend", provider, id, synced, ...(folder ? { folder } : {}) });
+        this.write({ t: "backend", provider, id, synced, ...fork, ...(folder ? { folder } : {}) });
+    }
+
+    /** A fork is to share this backend session: from now on it's only forked, never continued in place. False if that couldn't be saved. */
+    markBackendForked(provider: string): boolean {
+        const cur = this.backends.get(provider);
+        if (!cur) return false;
+        this.backends.set(provider, { ...cur, fork: true });
+        const folder = this.backendFolders.get(provider);
+        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true, ...(folder ? { folder } : {}) });
     }
 
     /** A sub-agent's backend session (passed up to the session that's saved). */
@@ -421,7 +465,7 @@ export class Session {
             if (!raw.trim()) continue;
             try {
                 const l = JSON.parse(raw) as Line;
-                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system };
+                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}) };
                 else lines.push(l);
             } catch {
                 // a torn final line from a crash; ignore it
@@ -459,7 +503,7 @@ export class Session {
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
-                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length });
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}) });
                 else s.backends.delete(l.provider);
                 if (l.id && typeof l.folder === "string") s.backendFolders.set(l.provider, l.folder);
                 else s.backendFolders.delete(l.provider);
@@ -580,7 +624,7 @@ function holderIn(lock: string, body: string): number | undefined {
 }
 
 /** Claim the session for this process, or throw SessionInUseError. Without a lock (a read-only folder) it carries on, as persistence does. */
-function hold(file: string) {
+export function hold(file: string) {
     const n = held.get(file);
     if (n) {
         held.set(file, n + 1);
@@ -711,7 +755,7 @@ export function releaseSession(file: string) {
     letGo(file);
 }
 
-function letGo(file: string) {
+export function letGo(file: string) {
     const n = held.get(file);
     if (!n) return;
     if (n > 1) {
@@ -887,8 +931,8 @@ export function cliLinks(file: string): CliLink[] {
                 if (wanted) {
                     try {
                         const l = JSON.parse(Buffer.concat(parts).toString("utf-8")) as Line;
-                        if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") out.push({ provider: l.source, id: l.id, kind: "import" });
-                        else if (l.t === "backend" && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id, kind: "backend" });
+                        if (l.t === "import" && !l.inherited && typeof l.source === "string" && typeof l.id === "string") out.push({ provider: l.source, id: l.id, kind: "import" });
+                        else if (l.t === "backend" && !l.fork && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id, kind: "backend" });
                         else if (l.t === "subagent" && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id, kind: "subagent" });
                     } catch {
                         // torn line

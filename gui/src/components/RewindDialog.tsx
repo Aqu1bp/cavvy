@@ -12,6 +12,7 @@ const names = (backends: string[]) => backends.join(" and ");
 
 /** What answering the prompt changed in files, as far as Harness knows. */
 function changedLabel(t: RewindTargetInfo): string {
+    if (t.forked) return "from before the fork";
     // Claude Code and Codex change files with their own tools: Harness doesn't see what they did.
     const untracked = t.backends?.length ? `${names(t.backends)} changes not tracked` : undefined;
     if (!t.tracked) return untracked ?? "files not tracked";
@@ -127,6 +128,12 @@ export function RewindDialog() {
                         </div>
                         <Show when={plan()}>
                             <div class="rw-plan">
+                                <Show when={plan()!.forked}>
+                                    <div class="rw-file warn">
+                                        <AlertTriangle size={13} />
+                                        <span class="small">This prompt is from before the fork. Files changed before the fork can only be restored from the original session.</span>
+                                    </div>
+                                </Show>
                                 <Show when={plan()!.backends?.length}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
@@ -136,8 +143,8 @@ export function RewindDialog() {
                                         </span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.tracked ? (plan()!.backends?.length ? "Harness itself made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then weren't tracked; only the conversation can be restored."}</div>}>
-                                    <div class="small">Harness changed {plural(plan()!.restore.length, "file")} since then:</div>
+                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "Harness has no tracked file changes to undo since the fork; only the conversation can be restored." : plan()!.tracked ? (plan()!.backends?.length ? "Harness itself made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then weren't tracked; only the conversation can be restored."}</div>}>
+                                    <div class="small">Harness changed {plural(plan()!.restore.length, "file")} {plan()!.forked ? "in this session since the fork" : "since then"}:</div>
                                     <For each={plan()!.restore}>
                                         {(r) => (
                                             <div class="rw-file">
