@@ -293,7 +293,10 @@ function configKeys(cwd: string, scope: string[]): string[] | undefined {
     return runGit(cwd, ["config", ...scope, "--list", "--name-only", "-z"])?.split("\0").filter(Boolean);
 }
 
-/** A worktree's own config.worktree (used only with extensions.worktreeConfig); [] when it has none, undefined when it can't be read. */
+/**
+ * A worktree's own config.worktree (used only with extensions.worktreeConfig), from the git dir its folder's
+ * .git leads to (core.worktree doesn't move that); [] when it has none, undefined when it can't be read.
+ */
 function perWorktreeKeys(dir: string): string[] | undefined {
     const file = runGit(dir, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"])?.replace(/\n$/, "");
     if (!file) return undefined;
@@ -314,7 +317,8 @@ function perWorktreeKeys(dir: string): string[] | undefined {
  * that worktree's folder is trusted (or one containing it): trusting a
  * sibling says nothing about it. A refusal names the folder to trust.
  */
-function checkConfigTrust(main: string, cwd: string, worktrees: string[], action: "create" | "remove") {
+function checkConfigTrust(repo: Repo, cwd: string, worktrees: string[], action: "create" | "remove") {
+    const main = repo.main;
     const refuse = (whose: string, folder: string, keys: string[] | undefined) => {
         // Only section names: a key's middle part can be a URL with credentials in it.
         const sections = keys ? [...new Set(keys.map((k) => k.split(".")[0]))].slice(0, 6).join(", ") : "";
@@ -331,17 +335,21 @@ function checkConfigTrust(main: string, cwd: string, worktrees: string[], action
         if (!risky || risky.length) throw refuse("This repository's Git configuration", cwd, risky);
     }
     if (runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() !== "true") return;
-    // Each folder as the worktree it's in: trusting a subfolder isn't trusting its worktree's config.
-    const roots = new Set<string>();
-    for (const dir of [main, cwd, ...worktrees].filter(isDir)) {
-        const root = runGit(dir, ["rev-parse", "--show-toplevel"])?.replace(/\n$/, "");
-        if (!root) throw refuse(`The worktree configuration of ${dir}`, dir, undefined);
-        roots.add(canonical(root));
-    }
+    // Each folder as the registered worktree it's in (Git's own records, not --show-toplevel, which the
+    // repository's core.worktree can point anywhere): trusting a subfolder isn't trusting its worktree's config.
+    const registered = repo.records.filter((r) => !r.bare && isDir(r.path)).map((r) => canonical(r.path));
+    const worktreeOf = (dir: string) => {
+        const real = canonical(dir);
+        return registered.filter((w) => isInside(real, w)).sort((a, b) => b.length - a.length)[0];
+    };
+    const roots = new Set<string>([canonical(main), ...worktrees.filter(isDir).map(canonical)]);
+    const own = worktreeOf(cwd);
+    if (!own) throw refuse(`The worktree configuration for ${cwd}`, cwd, undefined);
+    roots.add(own);
     for (const dir of roots) {
         if (trustedByUser(dir)) continue;
-        const own = perWorktreeKeys(dir);
-        const risky = own && notInert(own);
+        const keys = perWorktreeKeys(dir);
+        const risky = keys && notInert(keys);
         if (!risky || risky.length) throw refuse(`The worktree configuration of ${dir}`, dir, risky);
     }
 }
@@ -350,7 +358,7 @@ function checkConfigTrust(main: string, cwd: string, worktrees: string[], action
 export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
     const cwd = resolve(o.path);
     const repo = repoOf(cwd);
-    checkConfigTrust(repo.main, cwd, [], "create");
+    checkConfigTrust(repo, cwd, [], "create");
     const branch = checkBranch(cwd, o.branch);
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
     const commit = resolveBase(cwd, o.base);
@@ -404,7 +412,7 @@ export function planRemoval(o: { path: string; worktree: string; inUse: (path: s
     if (record.locked !== undefined) throw new RpcError(`${record.path} is locked${record.locked ? ` (${record.locked})` : ""}. Unlock it with git worktree unlock first.`, "locked");
     if (o.inUse(record.path)) throw new RpcError(`A Harness session is open in ${record.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
     // Git's status runs in the worktree itself, and runs clean filters on files whose stat changed.
-    checkConfigTrust(repo.main, cwd, exists ? [record.path] : [], "remove");
+    checkConfigTrust(repo, cwd, exists ? [record.path] : [], "remove");
     // A detached HEAD's commit is kept only by the worktree's own HEAD and reflog, which go with it.
     if (record.detached && !reachable(repo.main, record.head)) throw new RpcError(`${record.path} is on a detached HEAD whose commit isn't on any branch. Create a branch for it first.`, "unreachable");
     return { main: repo.main, path: record.path, exists };

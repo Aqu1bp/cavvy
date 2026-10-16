@@ -677,4 +677,32 @@ describe("review fixes", () => {
         trustFolder(a.path);
         expect((await createWorktree({ path: sub, branch: "next" })).branch).toBe("next");
     });
+
+    /** B's own config.worktree points core.worktree at `to` and sets a clean filter; B's a.txt looks changed. */
+    async function redirected(name: string, to: (main: string, a: string) => string) {
+        const { main, mark, script } = withFilterScript(name);
+        const a = await createWorktree({ path: main, branch: "a" });
+        const b = await createWorktree({ path: main, branch: "b" });
+        git(main, "config", "extensions.worktreeConfig", "true");
+        writeFileSync(join(b.path, "..", "..", "..", ".git", "worktrees", "b", "config.worktree"), `[core]\n\tworktree = ${to(main, a.path)}\n[filter "evil"]\n\tclean = '${script}'\n`);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(join(b.path, "a.txt"), later, later);
+        return { main, a: a.path, b: b.path, mark };
+    }
+
+    test("core.worktree in a worktree's own config can't redirect the audit to the main worktree", async () => {
+        const { main, b, mark } = await redirected("redirect-main", (main) => main);
+        await expect(removeWorktree({ path: main, worktree: b, inUse: noop })).rejects.toMatchObject({ code: "needs_trust", folder: b });
+        expect(existsSync(mark)).toBe(false);
+        expect(existsSync(b)).toBe(true);
+    });
+
+    test("nor to a trusted sibling", async () => {
+        const { main, a, b, mark } = await redirected("redirect-sibling", (_main, a) => a);
+        trustFolder(a);
+        await expect(removeWorktree({ path: main, worktree: b, inUse: noop })).rejects.toMatchObject({ code: "needs_trust", folder: b });
+        await expect(removeWorktree({ path: a, worktree: b, inUse: noop })).rejects.toMatchObject({ code: "needs_trust", folder: b });
+        expect(existsSync(mark)).toBe(false);
+        expect(existsSync(b)).toBe(true);
+    });
 });
