@@ -4,6 +4,7 @@
 import { closeSync, existsSync, lstatSync, openSync, readlinkSync, readSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
 
 export interface SimpleCommand {
     text: string;
@@ -448,7 +449,6 @@ const DANGEROUS: [RegExp, string][] = [
     [/\b((ba|z|da|k)?sh\s+-c|eval)\s+["']?\$\(\s*(curl|wget)\b/, "runs a downloaded script"],
     [/\bsudo\b/, "runs with elevated privileges"],
     [/\bsecurity\s+(find-generic-password|find-internet-password|dump-keychain|export)\b/, "reads secrets from the keychain"],
-    [/\.harness\/(credentials|providers)\.json/, "touches the harness credential store"],
     [/\bgit\s+push\b[^\n]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)/, "force-pushes to a remote"],
     [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)/, "discards uncommitted work"],
     [/\b(crontab\s+-r|launchctl\s+(unload|remove|bootout))\b/, "removes scheduled jobs or system services"],
@@ -536,9 +536,22 @@ function dangerousArgv(argv0: string[]): string | undefined {
     return undefined;
 }
 
+/**
+ * A path pattern for text that `spellings` folded: on a case-insensitive
+ * volume `~/.AWS/credentials` and `~/.harneſſ` name the real thing, and the
+ * spellings are lower-cased, so the pattern ignores case too.
+ */
+function anyCase(re: RegExp): RegExp {
+    return CASE_INSENSITIVE_FS && !re.flags.includes("i") ? new RegExp(re.source, re.flags + "i") : re;
+}
+
+/** Matched in every spelling of the command, like SENSITIVE. */
+const CREDENTIAL_STORE = anyCase(/\.harness\/(credentials|providers)\.json/);
+
 /** Returns a reason if the command matches a known-catastrophic pattern. */
 export function dangerousReason(cmd: string, depth = 0): string | undefined {
     for (const [re, reason] of DANGEROUS) if (re.test(cmd)) return reason;
+    if (spellings(cmd).some((t) => CREDENTIAL_STORE.test(t))) return "touches the harness credential store";
     if (depth > 4) return undefined;
     const a = analyzeCommand(cmd);
     for (const c of a.commands) {
@@ -555,7 +568,7 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
 /** What sensitiveTarget() calls a project's .env file. */
 export const ENV_FILE = "a .env file";
 
-const SENSITIVE: [RegExp, string][] = [
+const SENSITIVE = ([
     [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)\b)([.*?[][\w.*?[\]-]*)?(?=$|[\s'";|&)>])/, ENV_FILE],
     [/(^|[\s'"=:/~])\.(ssh|aws|gnupg|azure)(\/|\b)|\.kube\/config|\.docker\/config\.json|\.config\/gcloud/, "a credentials directory"],
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
@@ -567,13 +580,19 @@ const SENSITIVE: [RegExp, string][] = [
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
-];
+] satisfies [RegExp, string][]).map(([re, what]): [RegExp, string] => [anyCase(re), what]);
 
 function matchSensitive(text: string, harnessHome?: string): string | undefined {
-    for (const [re, what] of SENSITIVE) if (re.test(text)) return what;
+    // Every spelling counts. The lower-cased one is no wider than the volume, so
+    // `.env.ｅxample`, which only the wider fold makes a template, still asks.
+    const texts = spellings(text);
+    for (const t of texts) for (const [re, what] of SENSITIVE) if (re.test(t)) return what;
     if (harnessHome) {
-        const esc = harnessHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (new RegExp(`(^|[\\s'"=:])${esc}(?=$|[/\\s'";|&)])`).test(text)) return "the harness credential store";
+        for (const h of spellings(harnessHome)) {
+            const esc = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const re = anyCase(new RegExp(`(^|[\\s'"=:])${esc}(?=$|[/\\s'";|&)])`));
+            if (texts.some((t) => re.test(t))) return "the harness credential store";
+        }
     }
     return undefined;
 }
@@ -770,10 +789,12 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: 
 export function configTarget(cmd: string, harnessHome?: string): string | undefined {
     if (isReadOnlyCommand(cmd)) return undefined;
     const unquoted = analyzeCommand(cmd).commands.map((c) => c.argv.join(" ")).join(" ; ");
-    for (const text of [cmd, unquoted]) {
+    // In every spelling: on a case-insensitive volume `.harneſſ/` is `.harness/`.
+    const homes = harnessHome ? spellings(harnessHome) : [];
+    for (const text of [cmd, unquoted].flatMap(spellings)) {
         if (CONFIG_PATH.test(text)) return "harness or git configuration";
         if (GIT_EXEC_CONFIG.test(text)) return "git settings that run programs";
-        if (harnessHome && text.includes(harnessHome)) return "harness configuration";
+        if (homes.some((h) => text.includes(h))) return "harness configuration";
     }
     return undefined;
 }

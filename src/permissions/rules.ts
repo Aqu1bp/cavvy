@@ -11,10 +11,7 @@
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
 import { analyzeCommand, effectiveArgv, onlySafeAssignments, substitutionBodies } from "./bash-safety";
-import { canonical } from "../util/files";
-
-/** macOS and Windows filesystems are case-insensitive by default. */
-const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
+import { CASE_FOLDS, canonical } from "../util/files";
 
 export interface ParsedRule {
     tool: string;
@@ -99,25 +96,26 @@ function resolvedPattern(pat: string): string {
 }
 
 /**
- * Deny/ask rules (`strict` false) are matched generously: case-insensitively
- * on case-insensitive filesystems, where `.ENV` and `.env` are the same file,
- * and also with symlinks in the rule's own path resolved. Allow rules stay exact.
+ * Deny/ask rules (`strict` false) are matched generously: in every spelling
+ * on case-insensitive filesystems, where `.ENV` and `.env`, or `ſecrets` and
+ * `secrets`, are the same file (see CASE_FOLDS), and also with symlinks in
+ * the rule's own path resolved. Allow rules stay exact.
  */
 export function matchPath(spec: string, absPath: string, root: string, generous = false): boolean {
     const raw = pathPattern(spec, root);
     const pats = generous ? [...new Set([raw, resolvedPattern(raw)])] : [raw];
-    return pats.some((pat) => {
-        let target = absPath;
-        if (generous && CASE_INSENSITIVE_FS) {
-            pat = pat.toLowerCase();
-            target = target.toLowerCase();
-        }
-        if (globToRegex(pat).test(target)) return true;
-        // "dir/" or "dir" should cover everything under it (at any depth for a bare name).
-        if (/[*?]/.test(spec)) return false;
-        const dir = pat.replace(/\/+$/, "");
-        return globToRegex(dir).test(target) || globToRegex(dir + "/**").test(target);
-    });
+    const folds: readonly ((s: string) => string)[] = generous ? CASE_FOLDS : [(s) => s];
+    return pats.some((p) =>
+        folds.some((fold) => {
+            const pat = fold(p);
+            const target = fold(absPath);
+            if (globToRegex(pat).test(target)) return true;
+            // "dir/" or "dir" should cover everything under it (at any depth for a bare name).
+            if (/[*?]/.test(spec)) return false;
+            const dir = pat.replace(/\/+$/, "");
+            return globToRegex(dir).test(target) || globToRegex(dir + "/**").test(target);
+        }),
+    );
 }
 
 function matchCommandSpec(spec: string, command: string): boolean {
@@ -247,10 +245,9 @@ function couldMatchWithin(pattern: string[], dir: string[]): boolean {
  * it. Rules for other tools don't count.
  */
 export function deniedWithin(rules: string[], dir: string, root: string, access: "read" | "write"): string | undefined {
-    const fold = (p: string) => (CASE_INSENSITIVE_FS ? p.toLowerCase() : p);
-    // "/a/b" -> ["", "a", "b"]; the root itself is just [""].
-    const segments = (p: string) => fold(p.replace(/\/+$/, "")).split("/");
-    const dirs = [...new Set([dir, canonical(dir)])].map(segments);
+    // "/a/b" -> ["", "a", "b"]; the root itself is just [""]. In every spelling, as matchPath has it.
+    const segments = (p: string, fold: (s: string) => string) => fold(p.replace(/\/+$/, "")).split("/");
+    const dirs = [...new Set([dir, canonical(dir)])];
     for (const raw of rules) {
         const r = parseRule(raw);
         const kinds = r.tool === "*" ? ["Edit", "Read"] : EDIT_TOOLS.has(r.tool) ? ["Edit"] : READ_TOOLS.has(r.tool) ? ["Read"] : [];
@@ -259,7 +256,7 @@ export function deniedWithin(rules: string[], dir: string, root: string, access:
         const pat = pathPattern(r.spec, root);
         // A plain path also covers everything under it, as matchPath has it.
         const pats = [pat, resolvedPattern(pat)].flatMap((x) => (/[*?]/.test(r.spec!) ? [x] : [x, `${x.replace(/\/+$/, "")}/**`]));
-        if (pats.some((x) => dirs.some((d) => couldMatchWithin(segments(x), d)))) return raw;
+        if (CASE_FOLDS.some((f) => pats.some((x) => dirs.some((d) => couldMatchWithin(segments(x, f), segments(d, f)))))) return raw;
     }
     return undefined;
 }

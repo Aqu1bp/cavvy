@@ -16,6 +16,7 @@ process.env.HARNESS_HOME = H;
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { paths } = await import("../src/config/paths");
+const { caselessFold, spellings, CASE_INSENSITIVE_FS } = await import("../src/util/files");
 
 /** Workspace root and a directory outside it. Never touches the real home. */
 const W = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-ws-")));
@@ -407,16 +408,59 @@ describe("harness and git config edits", () => {
         expect(check(T("Read"), { file_path: join(W, ".harness", "settings.json") }).behavior).toBe("allow");
     });
 
-    // BUG (case-insensitive filesystems, e.g. macOS default APFS): the config
-    // regexes are case-sensitive and canonical() only fixes the case of paths
-    // that already exist. In a project with no .harness/ yet, writing
-    // .HARNESS/settings.local.json is auto-allowed in acceptEdits, and the
-    // harness will then load it as .harness/settings.local.json, so the model
-    // can grant itself permissions. Same for .MCP.json.
-    (caseInsensitiveFs ? test : test.skip)("case variants of config paths ask on case-insensitive filesystems", () => {
+    // canonical() only shows the real name of a folder that exists. In a project
+    // with no .harness/ yet, a write to a name the volume opens as .harness would
+    // plant settings the harness then loads as its own, and the model could grant
+    // itself permissions. APFS matches names by Unicode case folding, not
+    // toLowerCase: .harneſſ (long s), .harneẞ and .harneß are .harness there.
+    (caseInsensitiveFs ? test : test.skip)("case and Unicode variants of config paths ask on case-insensitive filesystems", () => {
         expect(existsSync(join(W, ".harness"))).toBe(false);
-        expect(check(T("Write"), write(join(W, ".HARNESS", "settings.local.json")), "acceptEdits").behavior).toBe("ask");
-        expect(check(T("Write"), write(join(W, ".MCP.json")), "acceptEdits").behavior).toBe("ask");
+        const variants = [
+            join(".HARNESS", "settings.local.json"),
+            join(".harne\u017F\u017F", "settings.local.json"), // ſ LATIN SMALL LETTER LONG S
+            join(".harne\u1E9E", "settings.local.json"), // ẞ LATIN CAPITAL LETTER SHARP S
+            join(".harne\u00DF", "settings.json"), // ß
+            join(".Harne\u017Fs", "commands", "x.md"),
+            ".MCP.json",
+            ".mcp.j\u017Fon",
+            join(".CLAUDE", "settings.json"),
+            join(".GIT", "hooks", "pre-commit"),
+            join("pkg", ".harne\u017F\u017F", "agents", "x.md"),
+            // Wider than APFS on purpose: compatibility letters (fullwidth ｈ), invisible characters, dotless ı.
+            join(".\uFF48arness", "settings.json"),
+            join(".har\u200Bness", "settings.json"),
+            join(".\uFF43odex", "config.toml"),
+            join(".g\u0131t", "config"),
+        ];
+        for (const rel of variants) {
+            const d = check(T("Write"), write(join(W, rel)), "acceptEdits");
+            expect([rel, d.behavior]).toEqual([rel, "ask"]);
+            expect(d.reason).toMatch(/configures the harness or git/);
+        }
+    });
+
+    test.each(["stra\u00DFe.md", "\u017Fome/file.ts", "docs/\uFF48arness.md", "\u212Aelvin.txt", ".harne\u017F\u017Fes/x", ".mcp.j\u017Fon.bak", "src/.g\u0131t-keep"])("look-alike %p with unusual letters is a normal edit", (rel) => {
+        expect(check(T("Write"), write(join(W, rel)), "acceptEdits").behavior).toBe("allow");
+    });
+
+    (CASE_INSENSITIVE_FS ? test.skip : test)("on a case-sensitive volume other spellings are other files", () => {
+        for (const rel of [join(".HARNESS", "settings.json"), join(".harne\u017F\u017F", "settings.json"), ".mcp.j\u017Fon"]) {
+            expect(check(T("Write"), write(join(W, rel)), "acceptEdits").behavior).toBe("allow");
+        }
+    });
+
+    (caseInsensitiveFs ? test : test.skip)("a harness home that doesn't exist yet is protected in other spellings too", () => {
+        const home = join(W, "fresh-home");
+        process.env.HARNESS_HOME = home;
+        try {
+            expect(existsSync(home)).toBe(false);
+            const odd = join(W, "fre\u017Fh-HOME");
+            expect(check(T("Write"), write(join(odd, "settings.json")), "acceptEdits").behavior).toBe("ask");
+            expect(check(T("Read"), { file_path: join(odd, "credentials.json") }).behavior).toBe("deny");
+            expect(check(T("Read"), { file_path: join(W, "fre\u017Fh-home", "provider\u017F.json") }).behavior).toBe("deny");
+        } finally {
+            process.env.HARNESS_HOME = H;
+        }
     });
 });
 
@@ -667,6 +711,22 @@ describe("Bash", () => {
     test("cat .env* asks like cat .env", () => {
         expect(check(T("Bash"), bash("cat .env*")).behavior).toBe("ask");
     });
+
+    (caseInsensitiveFs ? test : test.skip)("credential files and config named in other spellings ask on case-insensitive filesystems", () => {
+        for (const cmd of ["cat ~/.HARNESS/credentials.json", "cat ~/.harne\u017F\u017F/credentials.json", `cat ${H.replace(/s/g, "\u017F")}/credentials.json`, "cat ~/.AWS/credentials", "cat ~/.\u017F\u017Fh/config", "cat ~/.\u212Aube/config", "cat .ENV", "cat .Env.Local"]) {
+            expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "ask"]);
+        }
+        expect(check(T("Bash"), bash("cat ~/.harne\u017F\u017F/providers.json"), "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
+        // An allow rule for the program doesn't cover writing config under another spelling.
+        settings.permissions!.allow = ["Bash(cp:*)"];
+        for (const cmd of ["cp x .harne\u017F\u017F/settings.local.json", "cp x .HARNESS/settings.json", "cp x .mcp.j\u017Fon", "cp x .har\u200Bness/settings.json"]) {
+            const d = check(T("Bash"), bash(cmd));
+            expect([cmd, d.behavior]).toEqual([cmd, "ask"]);
+            expect(d.reason).toMatch(/harness or git configuration/);
+        }
+        expect(check(T("Bash"), bash("cp x stra\u00DFe.txt")).behavior).toBe("allow");
+        for (const cmd of ["cat .env.example", "cat .ENV.Sample", "cat README.md", "cat ~/.a\u0175s/x"]) expect(check(T("Bash"), bash(cmd)).behavior).toBe("allow");
+    });
 });
 
 describe("network, MCP and other tools", () => {
@@ -753,6 +813,18 @@ describe("reads", () => {
     test("a symlink to a .env file is treated as sensitive", () => {
         expect(check(T("Read"), { file_path: join(W, "innocent.txt") }, "auto").behavior).toBe("ask");
     });
+
+    (caseInsensitiveFs ? test : test.skip)("credential files in other spellings ask on case-insensitive filesystems", () => {
+        for (const p of [join(W, ".ENV"), join(W, ".Env.local"), "~/.\u017F\u017Fh/id_rsa", "~/.AWS/credentials", "~/.\u212Aube/config", "~/.docker/config.j\u017Fon", "~/Library/\u212Aeychain\u017F/login.keychain-db"]) {
+            const d = check(T("Read"), { file_path: p }, "auto");
+            expect([p, d.behavior]).toEqual([p, "ask"]);
+        }
+        // Only what the volume itself would open as a template is exempt: the wider fold
+        // makes .env.ｅxample (fullwidth e) a template, but it's a file of its own.
+        expect(check(T("Read"), { file_path: join(W, ".env.\uFF45xample") }).behavior).toBe("ask");
+        expect(check(T("Read"), { file_path: join(W, ".ENV.Example") }).behavior).toBe("allow");
+        expect(check(T("Grep"), { pattern: "x", path: "~/.A\u0175s" }, "auto").behavior).toBe("allow"); // ŵ isn't w anywhere
+    });
 });
 
 describe("ask rules and session allows", () => {
@@ -771,5 +843,64 @@ describe("ask rules and session allows", () => {
         expect(check(T("WebFetch"), { url: "https://api.example.com/" })).toMatchObject({ behavior: "allow", rule: "WebFetch(domain:example.com)" });
         expect(settings.permissions!.allow).toEqual([]);
         expect(new PermissionChecker(() => settings, W).check(T("Bash"), bash("npm test"), "default", W).behavior).toBe("ask");
+    });
+});
+
+describe("rules in other spellings", () => {
+    (caseInsensitiveFs ? test : test.skip)("deny and ask rules match every spelling the volume would open; allow rules stay exact", () => {
+        settings.permissions!.deny = ["Edit(secrets/**)"];
+        settings.permissions!.ask = ["Read(docs/**)"];
+        for (const rel of ["SECRETS/k", "\u017Fecrets/k", "\uFF53ecrets/k"]) {
+            expect([rel, check(T("Write"), write(join(W, rel)), "acceptEdits").behavior]).toEqual([rel, "deny"]);
+        }
+        expect(check(T("Read"), { file_path: join(W, "doc\u017F", "a.md") }, "auto")).toMatchObject({ behavior: "ask", rule: "Read(docs/**)" });
+        expect(check(T("Write"), write(join(W, "src", "secrets.ts")), "acceptEdits").behavior).toBe("allow");
+        settings.permissions!.allow = ["Edit(lib/**)"];
+        expect(check(T("Write"), write(join(W, "lib", "a.ts"))).behavior).toBe("allow");
+        expect(check(T("Write"), write(join(W, "LIB", "a.ts"))).behavior).toBe("ask");
+    });
+
+    (caseInsensitiveFs ? test : test.skip)("a folder grant is refused when a deny rule covers it in another spelling", async () => {
+        const { deniedWithin } = await import("../src/permissions/rules");
+        expect(deniedWithin(["Read(secrets/**)"], join(W, "\u017Fecrets"), W, "read")).toBe("Read(secrets/**)");
+        expect(deniedWithin(["Read(.env)"], join(W, "\u017Frc"), W, "read")).toBe("Read(.env)");
+        expect(deniedWithin(["Read(secrets/**)"], join(W, "docs"), W, "read")).toBeUndefined();
+    });
+});
+
+describe("caselessFold", () => {
+    test("folds the letters APFS folds that toLowerCase doesn't", () => {
+        expect(caselessFold(".harne\u017F\u017F")).toBe(".harness"); // ſ
+        expect(caselessFold(".harne\u1E9E")).toBe(".harness"); // ẞ
+        expect(caselessFold(".harne\u00DF")).toBe(".harness"); // ß
+        expect(caselessFold(".mcp.j\u017Fon")).toBe(".mcp.json");
+        expect(caselessFold("\u212Aube")).toBe("kube"); // Kelvin sign
+        expect(caselessFold("\uFB05 \uFB06 \uFB01 \uFB00")).toBe("st st fi ff"); // ligatures
+        expect(caselessFold(".HARNESS/Settings.JSON")).toBe(".harness/settings.json");
+    });
+
+    test("and more than APFS does: compatibility forms, invisible characters, dotless i", () => {
+        expect(caselessFold(".\uFF48\uFF41\uFF52\uFF4E\uFF45\uFF53\uFF53")).toBe(".harness"); // fullwidth
+        expect(caselessFold(".\uFF28ARNESS")).toBe(".harness");
+        expect(caselessFold(".har\u200Bness\uFEFF\u00AD")).toBe(".harness");
+        expect(caselessFold(".g\u0131t")).toBe(".git");
+        expect(caselessFold("caf\u00E9")).toBe(caselessFold("cafe\u0301")); // NFC and NFD
+    });
+
+    test("ASCII is only lower-cased, and folding again changes nothing", () => {
+        const p = "/Users/Me/Project-1/src/Main_v2.ts";
+        expect(caselessFold(p)).toBe(p.toLowerCase());
+        let changed = 0;
+        for (let cp = 0; cp <= 0xffff; cp++) {
+            if (cp >= 0xd800 && cp <= 0xdfff) continue;
+            const f = caselessFold(String.fromCodePoint(cp));
+            if (caselessFold(f) !== f) changed++;
+        }
+        expect(changed).toBe(0);
+    });
+
+    test("spellings: lower-cased and folded where the volume ignores case, as given elsewhere", () => {
+        expect(spellings(".Harne\u017F\u017F")).toEqual(CASE_INSENSITIVE_FS ? [".harne\u017F\u017F", ".harness"] : [".Harne\u017F\u017F"]);
+        expect(spellings("src/a.ts")).toEqual(["src/a.ts"]);
     });
 });
