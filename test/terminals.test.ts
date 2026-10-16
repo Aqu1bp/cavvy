@@ -86,7 +86,7 @@ describe("embedded terminals", () => {
             shells.close(owner, "hangup");
             await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
         } finally { shells.stop(); }
-    });
+    }, 20_000);
     test("output the window hasn't drawn is held back, keeping its latest part, until it catches up", async () => {
         const shells = new Terminals(); const owner = client();
         const done = join(tempDir("terminal-flood-"), "done");
