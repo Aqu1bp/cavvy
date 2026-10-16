@@ -582,6 +582,29 @@ export interface CreateWorktreeParams {
     folder?: string;
     /** An absolute path the user chose elsewhere: it mustn't exist yet, and its parent must. */
     location?: string;
+    /** Run the project's setup script in the new worktree (the dialog's choice); nothing runs when it's absent. */
+    setup?: boolean;
+    /** The exact setup preview accepted at Create time; setup is skipped if it no longer matches. */
+    setupScript?: Pick<ProjectScript, "id" | "command">;
+}
+
+export interface CreateWorktreeResult {
+    path: string;
+    branch: string;
+    /** The setup script may start, once, from this window: scripts.run with `setup: ticket`, soon. */
+    setup?: { ticket: string; script: ProjectScript };
+    /** Setup was asked for but won't run, and why (the worktree was created all the same). */
+    setupError?: string;
+}
+
+/** What the New worktree dialog says about the setup script. */
+export interface SetupInfo {
+    /** The repository's main checkout: trusting it lets the setup script run. */
+    main: string;
+    /** The script marked to run in each worktree created from the GUI, if any. */
+    script?: ProjectScript;
+    /** Trusted by the user (not only for having nothing to protect). */
+    trusted: boolean;
 }
 
 export interface AccountInfo {
@@ -834,6 +857,8 @@ export interface ProjectScript {
     /** One line, typed into the shell as if by hand. */
     command: string;
     icon?: ScriptIcon;
+    /** Typed into a new terminal tab of each worktree created from the GUI (one script per project at most); only ever `true`. */
+    runOnWorktreeCreate?: boolean;
 }
 
 export interface ProjectScripts {
@@ -895,12 +920,17 @@ export interface Methods {
     hello: { params: { client?: string }; result: HelloResult };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };
     /** Creates a script, or updates the one with `id`. */
-    "scripts.save": { params: { cwd: string; id?: string; name: string; command: string; icon?: ScriptIcon | null }; result: ProjectScript };
+    "scripts.save": { params: { cwd: string; id?: string; name: string; command: string; icon?: ScriptIcon | null; runOnWorktreeCreate?: boolean }; result: ProjectScript };
     "scripts.delete": { params: { cwd: string; id: string }; result: null };
     /** Every script's id, in the new order. */
     "scripts.reorder": { params: { cwd: string; ids: string[] }; result: ProjectScripts };
-    /** Opens terminal `id` in `cwd`; the stored script's command is typed into it once the window arms it (terminal.arm) and the shell is reading. */
-    "scripts.run": { params: { id: string; cwd: string; script: string; cols: number; rows: number }; result: { id: string; cwd: string; script: ProjectScript } };
+    /**
+     * Opens terminal `id` in `cwd`; the stored script's command is typed into it once the window arms it (terminal.arm) and the shell is reading.
+     * `setup`: the ticket projects.createWorktree gave this window, to run the setup script in the new worktree (once).
+     */
+    "scripts.run": { params: { id: string; cwd: string; script: string; cols: number; rows: number; setup?: string }; result: { id: string; cwd: string; script: ProjectScript } };
+    /** The setup script of the repository `cwd` is in, and whether it may run there. */
+    "scripts.setupInfo": { params: { cwd: string }; result: SetupInfo };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
     "sessions.search": { params: { query: string; limit?: number; archived?: boolean }; result: SessionSearchResult };
@@ -961,7 +991,7 @@ export interface Methods {
     "projects.inspect": { params: { path: string }; result: ProjectInfo };
     "projects.worktrees": { params: { path: string }; result: WorktreeInfo[] };
     /** `git worktree add -b`, with the repository's hooks off. */
-    "projects.createWorktree": { params: CreateWorktreeParams; result: { path: string; branch: string } };
+    "projects.createWorktree": { params: CreateWorktreeParams; result: CreateWorktreeResult };
     /**
      * `git worktree remove` without --force, for a managed worktree; its branch is kept. `path` is any folder in
      * the repository. With ignored files in it, nothing happens until `deleteIgnored` is the `confirm` it returned.
