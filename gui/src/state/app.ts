@@ -405,6 +405,10 @@ export async function activate(id: string | undefined, cwd?: string) {
         return;
     }
     const connection = openingConnection = connectionVersion;
+    // A pick that turns out to be gone (a stale search hit) goes back to where you were.
+    const prior = app.activeId && app.activeId !== id ? { id: app.activeId, cwd: app.homeCwd } : undefined;
+    // Restoring the selection after a reload is silent; a pick says why it went nowhere.
+    const picked = app.activeId !== id;
     batch(() => {
         setApp("activeId", id);
         setApp("opening", id ? { id, visible: false, error: undefined } : undefined);
@@ -431,6 +435,12 @@ export async function activate(id: string | undefined, cwd?: string) {
         if (!current()) return;
         if (e instanceof RpcError && e.code === "not_found") {
             forgetSession(id);
+            if (picked) reportError(e);
+            if (prior && handles.has(prior.id)) batch(() => {
+                setApp("activeId", prior.id);
+                if (prior.cwd) setApp("homeCwd", prior.cwd);
+            });
+            else if (prior && !wasDeleted(prior.id)) void activate(prior.id, prior.cwd);
             return;
         }
         const error = safeRenderText(e instanceof Error ? e.message : String(e));
