@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { Archive, ArrowRight, Bot, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
-import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion, wasDeleted } from "../state/app";
+import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs, THEMES } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
@@ -170,8 +170,9 @@ export function CommandPalette() {
             .map((x) => x.e);
         // Below the rest, as they come: the messages that say it.
         const said = hits();
-        // Removal events can arrive while the palette or its request is open.
-        const messages: Entry[] = said.hits.filter((h) => !wasDeleted(h.id)).map((h, i) => ({
+        // Fresh answers are authoritative, even if a capped session list missed
+        // an Undo. The generation check above drops answers predating deletion.
+        const messages: Entry[] = said.hits.map((h, i) => ({
             id: `m-${h.id}-${h.seg}-${h.index}-${i}`,
             section: "Messages",
             label: h.title,

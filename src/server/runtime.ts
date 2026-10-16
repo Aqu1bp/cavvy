@@ -1100,7 +1100,9 @@ export class Runtime {
         }
         if (current) this.addBlock({ t: "compact", id: this.newId(), summary: redact(summary), auto: true });
         else {
-            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false }], status: "done", startedAt: Date.now(), pos: { seg: this.segment, index: -1 } };
+            // A backend-only marker has no place in the unchanged transcript;
+            // giving it this segment's position would intercept earlier search hits.
+            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false }], status: "done", startedAt: Date.now(), ...(!this.backendModel() ? { pos: { seg: this.segment, index: -1 } } : {}) };
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });

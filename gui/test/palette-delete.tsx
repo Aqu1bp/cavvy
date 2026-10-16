@@ -30,6 +30,13 @@ export async function checkPaletteDelete(root: HTMLElement) {
         id: `palette-${id}`, title: `Fixture ${id}`, cwd: "/fixture", projectName: "fixture", archived: false,
         seg: 0, index: 1, role: "assistant", snippet: "palettequokka reply", match: [0, 13], at: Date.now(),
     }));
+    const available = new Set(hits.map((h) => h.id));
+    const answer = (): SessionSearchResult => ({ hits: hits.filter((h) => available.has(h.id)), partial: false });
+    const send = (ev: ServerEvent) => {
+        if (ev.type === "sessions.remove") available.delete(ev.id);
+        if (ev.type === "sessions.upsert") available.add(ev.session.id);
+        event(ev);
+    };
     const summary = (hit: SessionSearchHit, archived = false): SessionSummary => ({
         id: hit.id, cwd: hit.cwd, title: hit.title, projectName: hit.projectName, archived,
         createdAt: hit.at, updatedAt: hit.at, messages: 2, status: "idle", pinned: false, settled: false, live: false,
@@ -45,10 +52,10 @@ export async function checkPaletteDelete(root: HTMLElement) {
     rpc.call = (async (method: string, params: any) => {
         if (method === "sessions.search") {
             if (defer) return new Promise<SessionSearchResult>((resolve) => { pending.push(resolve); });
-            return { hits, partial: false };
+            return answer();
         }
         if (method === "sessions.list") {
-            const rows = listed.filter((s) => s.archived === !!params.archived);
+            const rows = listed.filter((s) => s.archived === !!params.archived).slice(0, params.limit);
             if (deferLists) return new Promise((resolve) => { pendingLists.push(() => resolve(rows)); });
             return rows;
         }
@@ -81,43 +88,50 @@ export async function checkPaletteDelete(root: HTMLElement) {
         await until(() => messageRows().length === 3);
         check(document.querySelector(".palette .pal-section")?.textContent === "Messages", "message hits retain their section");
         setJumpTarget({ sessionId: hits[0]!.id, seg: 0, index: 1, role: "assistant", query: "palettequokka" });
-        event({ type: "sessions.remove", id: hits[0]!.id });
+        send({ type: "sessions.remove", id: hits[0]!.id });
         await until(() => messageRows().length === 2);
         check(!jumpTarget() && !rows().some((r) => r.textContent?.includes("Fixture removed")), "deletion drops the displayed hit and pending jump");
 
         defer = true;
         type("palettequokka reply");
         const beforeDelete = await nextSearch();
-        event({ type: "sessions.remove", id: hits[1]!.id });
-        event({ type: "sessions.upsert", session: summary(hits[1]!) });
+        send({ type: "sessions.remove", id: hits[1]!.id });
+        send({ type: "sessions.upsert", session: summary(hits[1]!) });
         check(!wasDeleted(hits[1]!.id), "Undo upsert clears its deletion marker");
         beforeDelete({ hits, partial: false });
         const afterUndo = await nextSearch();
         check(messageRows().length === 0, "Undo cannot revive displayed hits or pending replies from before deletion");
-        afterUndo({ hits, partial: false });
+        afterUndo(answer());
         await until(() => messageRows().length === 2);
         check(messageRows().some((r) => r.textContent?.includes("Fixture late")), "fresh search finds the restored session without changing the query");
 
         defer = false;
-        event({ type: "sessions.remove", id: hits[1]!.id });
+        send({ type: "sessions.remove", id: hits[1]!.id });
         await until(() => messageRows().length === 1);
         connection("reconnecting", 1);
         // Undo happened elsewhere while disconnected: no upsert reaches this window.
-        listed = [summary(hits[0]!), summary(hits[1]!, true)];
+        available.add(hits[0]!.id);
+        available.add(hits[1]!.id);
+        const recent = Array.from({ length: 300 }, (_, i) => ({ ...summary(hits[0]!), id: `recent-${i}`, updatedAt: hits[0]!.at + 300 - i }));
+        listed = [...recent, summary(hits[0]!), summary(hits[1]!, true)];
         connection("open", 0);
-        await until(() => !wasDeleted(hits[0]!.id) && !wasDeleted(hits[1]!.id));
-        check(app.sessions.some((s) => s.id === hits[0]!.id) && app.archived.some((s) => s.id === hits[1]!.id), "reconnect sees restored active and archived sessions");
+        await until(() => app.sessions.length === 300 && !wasDeleted(hits[1]!.id));
+        check(wasDeleted(hits[0]!.id) && !app.sessions.some((s) => s.id === hits[0]!.id), "the restored 301st session remains outside the capped reconnect list");
+        check(app.archived.some((s) => s.id === hits[1]!.id), "reconnect sees the restored archived session");
+        type("palettequokka");
         await until(() => messageRows().length === 3);
+        check(messageRows().some((r) => r.textContent?.includes("Fixture removed")), "a fresh search finds the restored 301st session despite its old marker");
 
         // A list fetched before a deletion must not clear the newer marker.
+        listed = [summary(hits[0]!), summary(hits[1]!, true)];
         deferLists = true;
         const refresh = refreshSessions();
         await until(() => pendingLists.length === 2);
-        event({ type: "sessions.remove", id: hits[0]!.id });
+        send({ type: "sessions.remove", id: hits[0]!.id });
         for (const finish of pendingLists.splice(0)) finish();
         await refresh;
         check(wasDeleted(hits[0]!.id) && !app.sessions.some((s) => s.id === hits[0]!.id), "stale list does not undo a deletion received during refresh");
-        event({ type: "sessions.remove", id: hits[1]!.id });
+        send({ type: "sessions.remove", id: hits[1]!.id });
         await until(() => messageRows().length === 1);
 
         const input = document.querySelector<HTMLInputElement>(".palette input")!;

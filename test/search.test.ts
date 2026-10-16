@@ -10,11 +10,12 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { searchSessions, snippetAround, clearSearchCache, searchCacheSize, SEARCH_LIMITS } = await import("../src/server/search");
 const { paths, projectStateDir } = await import("../src/config/paths");
-const { readSegments, replay, STEERING, UiLog } = await import("../src/server/history");
+const { readSegments, replay, STEERING, UiLog, promptKey } = await import("../src/server/history");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { Engine } = await import("../src/server/engine");
 const { writeImportedSession } = await import("../src/server/cli-import");
 import type { SessionSearchResult, Turn } from "../src/server/protocol";
+import type { UserMessage } from "../src/providers/types";
 
 afterAll(() => iso.cleanup());
 
@@ -45,9 +46,9 @@ function write(records: Rec[], o: { cwd?: string; age?: number; id?: string } = 
 }
 
 /** The turn replay draws for a session file, found the way the GUI finds a hit's (gui/src/lib/find.ts turnAt). */
-function turnFor(file: string, seg: number, index: number): Turn | undefined {
+function turnFor(file: string, seg: number, index: number, ui = new UiLog(file, "x", false)): Turn | undefined {
     const segments = readSegments(file);
-    const turns = replay({ segments, current: segments[segments.length - 1]!.messages, ui: new UiLog(file, "x", false), meta: () => ({ title: "" }), newId: (() => { let i = 0; return () => `t${++i}`; })() });
+    const turns = replay({ segments, current: segments[segments.length - 1]!.messages, ui, meta: () => ({ title: "" }), newId: (() => { let i = 0; return () => `t${++i}`; })() });
     let best: Turn | undefined;
     for (const t of turns) if (t.pos && (t.pos.seg < seg || (t.pos.seg === seg && t.pos.index <= index))) best = t;
     return best;
@@ -254,6 +255,35 @@ describe("searching session files", () => {
         mkdirSync(ui, { recursive: true });
         writeFileSync(join(ui, `${s.id}.jsonl`), [{ t: "turn", seg: 0, index: 0, at: 1_000 }, { t: "turn", seg: 0, index: 0, at: 5_000 }].map((r) => JSON.stringify(r)).join("\n") + "\n");
         expect((await searchSessions("lima replaced")).hits[0]).toMatchObject({ index: 0, at: 5_000 });
+    });
+
+    test("prompt-key and end records keep search times and replay positions, including steering and saved backend steps", async () => {
+        const first = prompt("turn-log first prompt");
+        const steering = results("log-call", "ok", "turn-log steering");
+        const next = prompt("turn-log next prompt");
+        const answer = reply("turn-log backend answer");
+        (answer.m as { provider: string }).provider = "claude-code";
+        const s = write([first, toolCall("log-call"), steering, reply("turn-log steered answer"), { t: "compact", summary: "Earlier work." }, next, answer]);
+        const ui = new UiLog(s.file, s.id, false);
+        for (const [seg, index, at, msg] of [[0, 0, 1000, first], [0, 2, 2000, steering], [1, 0, 3000, next]] as const) {
+            ui.write({ t: "turn", seg, index, at });
+            const key = promptKey(msg.m as UserMessage);
+            ui.write({ t: "turn", seg, index, at, prompt: key });
+            if (seg === 1) ui.write({ t: "step", seg, index, prompt: key, block: { t: "text", id: "saved-reply", text: "turn-log backend answer" }, after: null });
+            ui.write({ t: "turn", seg, index, at, prompt: key, end: at + 500, status: "done" });
+        }
+        ui.write({ t: "state", messages: 2, contextTokens: 100 });
+        const restored = new UiLog(s.file, s.id);
+        for (const [query, seg, index, start, at] of [
+            ["turn-log first prompt", 0, 0, 0, 1000], ["turn-log steering", 0, 2, 2, 2000],
+            ["turn-log steered answer", 0, 3, 2, 2000], ["turn-log backend answer", 1, 1, 0, 3000],
+        ] as const) {
+            const hit = (await searchSessions(query)).hits[0]!;
+            expect(hit).toMatchObject({ id: s.id, seg, index, at });
+            const turn = turnFor(s.file, hit.seg, hit.index, restored)!;
+            expect(turn).toMatchObject({ pos: { seg, index: start }, startedAt: at, endedAt: at + 500, status: "done" });
+            if (seg === 1) expect(turn.blocks).toContainEqual(expect.objectContaining({ t: "text", text: query }));
+        }
     });
 
     test("a reply's time is its own turn's, not one a rewind took away", async () => {

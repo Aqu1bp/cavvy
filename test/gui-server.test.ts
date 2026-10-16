@@ -12,7 +12,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { AgentRun, Block, CliSessionsList, InteractionResponse, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, CliSessionsList, InteractionResponse, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 
 const TOKEN = "test-token-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
@@ -1495,12 +1495,26 @@ describe("reopening a Claude Code session", () => {
     test("after Claude Code compacts its own context, later turns still come back (the transcript itself wasn't compacted)", async () => {
         try {
             const { c, id } = await claudeCodeSession("write", "acceptEdits");
+            const hitFor = async (query: string) => (await c.call<SessionSearchResult>("sessions.search", { query, limit: 200 })).hits.find((h) => h.id === id)!;
+            const target = (turns: Turn[], h: { seg: number; index: number }) => turns.filter((t) => t.pos && (t.pos.seg < h.seg || (t.pos.seg === h.seg && t.pos.index <= h.index))).at(-1)!;
+            const before = await hitFor("map the auth module");
+            expect(target(c.view(id).turns, before).prompt?.text).toBe("map the auth module");
             await c.call("session.compact", { id });
+            await c.until(id, (v) => v.turns.some((t) => t.blocks.some((b) => b.t === "compact")));
+            const after = await hitFor("map the auth module");
+            expect(after).toMatchObject({ seg: 0, index: 0, at: before.at });
+            const first = target(c.view(id).turns, after);
+            expect(first.prompt?.text).toBe("map the auth module");
+            expect(first.startedAt).toBe(after.at);
+            expect(c.view(id).turns.find((t) => !t.prompt && t.blocks.some((b) => b.t === "compact"))!.pos).toBeUndefined();
             // (Calls of their own: the fake's ids are the same each turn.)
             process.env.FAKE_SCENARIO = "agent";
             await c.call("session.send", { id, text: "and the tests?" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
             const live = structuredClone(c.view(id));
+            const next = await hitFor("and the tests?");
+            expect(next).toMatchObject({ seg: 0, index: 2 });
+            expect(target(live.turns, next)).toMatchObject({ prompt: { text: "and the tests?" }, startedAt: next.at });
             // Its history is all still there: nothing is out of reach of rewind.
             expect(live.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.prompt!.index, Boolean(t.archived)])).toEqual([
                 ["map the auth module", 0, false],
@@ -1508,8 +1522,10 @@ describe("reopening a Claude Code session", () => {
             ]);
             expect((await c.call<any[]>("session.rewindTargets", { id })).map((t) => t.index)).toEqual([2, 0]);
             const snap = await reopened(id);
-            const prompted = (v: { turns: Turn[] }) => v.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.endedAt, t.blocks.filter((b) => b.t !== "notice").map(step)]);
+            const prompted = (v: { turns: Turn[] }) => v.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.pos, t.startedAt, t.endedAt, t.blocks.filter((b) => b.t !== "notice").map(step)]);
             expect(prompted(snap)).toEqual(prompted(live));
+            expect(target(snap.turns, after).prompt?.text).toBe("map the auth module");
+            expect(target(snap.turns, next).prompt?.text).toBe("and the tests?");
             expect(tools(snap.turns.find((t) => t.prompt?.text === "and the tests?")!).map((b) => `${b.name}:${b.status}`)).toEqual(["Task:ok"]);
             expect(snap.agents.map((a) => [a.description, a.status, a.blocks.length > 0])).toEqual([["Map auth", "done", true]]);
             c.close();
