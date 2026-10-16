@@ -15,13 +15,13 @@ import { expandCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, type Effort, type Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
-import { AutoClassifier } from "../permissions/classifier";
+import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
 import { BUILTIN_TOOLS } from "../tools/index";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
-import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, smallModelFor } from "../providers/models";
+import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
 import { costOf } from "../providers/pricing";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, toolCallsOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
@@ -31,7 +31,7 @@ import { displayPath } from "../util/files";
 import { gitSnapshot } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
-import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, type ToolMeta } from "./history";
+import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, withoutActionsNote, type ToolMeta } from "./history";
 import type {
     AgentRun,
     Block,
@@ -396,11 +396,15 @@ export class Runtime {
     }
 
     /** One-shot completion on a cheap model (reviewer, titles, page summaries), or the session's own with `main`. */
-    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean }): Promise<string> {
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
         const smallRef = this.settings().smallModel;
-        if (opts?.main) {
+        if (opts?.review) {
+            // The reviewer, or with none the session's own model.
+            const r = await reviewTarget(this.settings().reviewModel);
+            if (r) ({ model, client } = r);
+        } else if (opts?.main) {
             // the session's own model
         } else if (smallRef) {
             const p = parseModelRef(smallRef);
@@ -417,14 +421,14 @@ export class Runtime {
             if (small) model = small;
         }
         const res = await client.stream(
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal },
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
             this.session.recordUsage(modelRef(model), res.usage, costOf(res.usage, model).usd);
             this.setState({ cost: this.session.cost, ...this.tokenTotals() });
         }
-        return textOf(res);
+        return opts?.review ? reviewText(res) : textOf(res);
     }
 
     tools(): Tool<any>[] {
@@ -745,7 +749,7 @@ export class Runtime {
         // A Task's result is its sub-agent's report (a delegated task's comes when it settles). One
         // still working (Claude Code's in the background) only says it started: its report comes when it ends.
         const sub = call.name === "Task" ? this.view.agents.find((a) => a.id === call.id) : undefined;
-        if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(call.id, { report: redact(result.content) });
+        if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(call.id, { report: redact(withoutActionsNote(result.content)) });
         if (patch.diff || b?.category === "edit") this.setState({ filesChanged: this.filesChanged() });
         this.syncShells();
     }
@@ -889,7 +893,7 @@ export class Runtime {
         if (task)
             void task.settled.then(() => {
                 if (!task.result) return;
-                this.agentPatch(id, { report: redact(task.result.report), status: task.status === "cancelled" ? "stopped" : task.status === "failed" ? "failed" : "done" });
+                this.agentPatch(id, { report: redact(withoutActionsNote(task.result.report)), status: task.status === "cancelled" ? "stopped" : task.status === "failed" ? "failed" : "done" });
             });
     }
 

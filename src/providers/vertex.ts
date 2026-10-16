@@ -36,6 +36,8 @@ export interface GcloudResult {
     code: number;
     stdout: string;
     stderr: string;
+    /** Killed for taking longer than the time it was given. */
+    timedOut?: boolean;
 }
 
 /**
@@ -49,12 +51,16 @@ export async function runGcloud(args: string[], opts: { timeoutMs?: number; sign
     if (!bin) throw new GcloudError(`The Google Cloud CLI (gcloud) isn't installed. Install it from ${GCLOUD_INSTALL_URL}, then run: gcloud auth login`, true);
     const proc = Bun.spawn([bin, ...args, "--quiet"], { cwd: homedir(), env: { ...childEnv(), CLOUDSDK_CORE_DISABLE_FILE_LOGGING: "true" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const kill = () => proc.kill();
-    const timer = setTimeout(kill, opts.timeoutMs ?? 30_000);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        kill();
+    }, opts.timeoutMs ?? 30_000);
     opts.signal?.addEventListener("abort", kill, { once: true });
     try {
         const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
         if (opts.signal?.aborted) throw new ProviderError("aborted");
-        return { code, stdout, stderr };
+        return timedOut ? { code, stdout, stderr, timedOut } : { code, stdout, stderr };
     } finally {
         clearTimeout(timer);
         opts.signal?.removeEventListener("abort", kill);
@@ -116,7 +122,8 @@ export class GcloudTokens {
         }
         const cred = r.code === 0 ? parseCredential(r.stdout) : undefined;
         if (!cred) {
-            throw new ProviderError(`gcloud couldn't get a token for ${this.account}: ${gcloudMessage(r.stderr)}. Sign in again with: gcloud auth login ${this.account}`, 401);
+            const why = r.timedOut ? "it didn't answer in 30s" : gcloudMessage(r.stderr);
+            throw new ProviderError(`gcloud couldn't get a token for ${this.account}: ${why}. Sign in again with: gcloud auth login ${this.account}`, 401);
         }
         registerSecret(cred.token, "vertex");
         this.token = cred.token;

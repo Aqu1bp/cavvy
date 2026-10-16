@@ -27,14 +27,14 @@ import { loadSettings, loadScope, addPermissionRule, onConfigWarning } from "../
 import { APP_TITLE, APP_VERSION } from "../config/paths";
 import { MODE_INFO, nextMode, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
-import { AutoClassifier } from "../permissions/classifier";
+import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
 import { BUILTIN_TOOLS } from "../tools/index";
 import type { Tool, ToolState, TodoItem } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
-import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
+import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { formatTokens, formatUsd } from "../providers/pricing";
@@ -428,12 +428,15 @@ export class App {
         this.classifier.setComplete(this.client ? (system, prompt, signal, opts) => this.complete(system, prompt, signal, opts) : undefined);
     }
 
-    /** One-shot completion on a cheap model (classifier, summaries), or with `main` on the session's model. */
-    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean }): Promise<string> {
+    /** One-shot completion on a cheap model (summaries), the auto-mode reviewer with `review`, or with `main` on the session's model. */
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
         const smallRef = this.settings.smallModel;
-        if (opts?.main) {
+        if (opts?.review) {
+            const r = await reviewTarget(this.settings.reviewModel);
+            if (r) ({ model, client } = r);
+        } else if (opts?.main) {
             // the session's own model
         } else if (smallRef) {
             const p = parseModelRef(smallRef);
@@ -451,14 +454,14 @@ export class App {
         }
         const res = await client.stream(
             // Not a session message, so redact here (WebFetch pages, reviewer prompts).
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal },
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
             const { costOf } = await import("../providers/pricing");
             this.session.recordUsage(modelRef(model), res.usage, costOf(res.usage, model).usd);
         }
-        return textOf(res);
+        return opts?.review ? reviewText(res) : textOf(res);
     }
 
     tools(): Tool<any>[] {

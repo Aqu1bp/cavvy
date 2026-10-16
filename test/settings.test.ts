@@ -121,6 +121,18 @@ describe("settings scopes", () => {
         expect(s.permissions?.ask ?? []).toContain("Write");
     });
 
+    test("the auto-mode reviewer comes only from the user's settings, even in a trusted folder", () => {
+        const cwd = project();
+        write(paths.projectSettings(cwd), { reviewModel: "openrouter:tiny-model" });
+        write(paths.localSettings(cwd), { reviewModel: "openrouter:tiny-model" });
+        expect(settings.loadSettings(cwd).reviewModel).toBeUndefined();
+        expect(settings.loadSettings(cwd, { trusted: false }).reviewModel).toBeUndefined();
+        write(paths.userSettings(), { reviewModel: "anthropic:claude-sonnet-5-5" });
+        expect(settings.loadSettings(cwd).reviewModel).toBe("anthropic:claude-sonnet-5-5");
+        expect(settings.loadSettings(cwd, { trusted: false }).reviewModel).toBe("anthropic:claude-sonnet-5-5");
+        rmSync(paths.userSettings());
+    });
+
     test("no files: empty settings", () => {
         const cwd = project();
         expect(settings.loadSettings(cwd)).toEqual({});

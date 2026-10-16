@@ -30,8 +30,10 @@ export interface HookConfig {
 export interface Settings {
     /** Default model as "provider:model". */
     model?: string;
-    /** Cheaper model used for the auto-mode classifier, titles and summaries. */
+    /** Cheaper model used for titles and summaries. */
     smallModel?: string;
+    /** The auto-mode reviewer ("provider:model"). Unset: Claude Sonnet 5.5 with an Anthropic key, else the session's model. User settings only. */
+    reviewModel?: string;
     effort?: Effort;
     permissions?: {
         allow?: string[];
@@ -204,13 +206,16 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
  * Merge user < project < local. Permission lists concatenate; objects merge.
  * In an untrusted folder only the user's own settings apply, plus the
  * project's and local file's deny/ask rules (they can only make things
- * stricter, and /permissions can save local rules in any folder).
+ * stricter, and /permissions can save local rules in any folder). The
+ * auto-mode reviewer comes from the user's settings alone, in any folder: a
+ * project shouldn't choose who checks the actions taken in it.
  */
 export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Settings {
     const trusted = opts.trusted ?? true;
+    const user = loadScope("user", cwd);
     const layers = trusted
-        ? [loadScope("user", cwd), loadScope("project", cwd), loadScope("local", cwd)]
-        : [loadScope("user", cwd), restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(loadScope("local", cwd))];
+        ? [user, loadScope("project", cwd), loadScope("local", cwd)]
+        : [user, restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(loadScope("local", cwd))];
     const merged: Settings = {};
     for (const s of layers) {
         const { permissions, env, mcpServers, hooks, ...rest } = s;
@@ -232,6 +237,8 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
             }
         }
     }
+    if (user.reviewModel) merged.reviewModel = user.reviewModel;
+    else delete merged.reviewModel;
     return merged;
 }
 

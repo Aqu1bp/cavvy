@@ -84,6 +84,7 @@ export interface SessionSummary {
     updatedAt: number;
     title: string;
     messages: number;
+    model?: string;
 }
 
 export class Session {
@@ -557,6 +558,8 @@ const MSG_PREFIX = '{"t":"msg"';
 interface SessionHead {
     cwd?: string;
     title?: string;
+    /** The model it last used ("provider:id"). */
+    model?: string;
     first?: string;
     /** The index of the message `first` came from; -1 once a compaction keeps it as the title. */
     firstAt?: number;
@@ -583,7 +586,7 @@ function sessionHead(file: string): SessionHead {
         let wanted: boolean | undefined;
         const decide = () => {
             const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|model|backend)"/.test(prefix);
+            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend)"/.test(prefix);
             if (!wanted) parts = [Buffer.from(prefix, "latin1")];
         };
         for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
@@ -631,6 +634,7 @@ function readHeadLine(raw: string, head: SessionHead) {
     }
     if (l.t === "meta") head.cwd = l.cwd;
     else if (l.t === "title") head.title = l.title;
+    else if (l.t === "model") head.model = l.model;
     else if (l.t === "msg") {
         if (!head.first && l.m.role === "user" && (l.m.meta?.kind ?? "prompt") === "prompt") {
             head.first = l.m.meta?.display ?? textOf(l.m);
@@ -682,6 +686,7 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
                 updatedAt: mtimeMs,
                 title: (head.title ?? head.first ?? "(untitled)").replace(/\s+/g, " ").trim().slice(0, 120),
                 messages: head.count,
+                model: head.model,
             });
         } catch {
             // skip unreadable files
@@ -740,6 +745,7 @@ export function listAllSessions(limit = 200): SessionSummary[] {
                 updatedAt: mtimeMs,
                 title: (head.title ?? head.first ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim().slice(0, 120),
                 messages: head.count,
+                model: head.model,
             });
         } catch {
             // skip unreadable files

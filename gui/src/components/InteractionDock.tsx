@@ -1,13 +1,12 @@
 // What the agent is waiting on you for: a permission, a question, a plan.
-// Shown above the input box. Its buttons never take focus by themselves, so
-// an Enter meant for the input can't approve anything; the number keys and
-// Esc work when you're not typing.
+// A tab on the composer's top edge, the box it blocks. Its buttons never take
+// focus by themselves, so an Enter meant for the input can't approve
+// anything; the number keys and Esc work when you're not typing.
 
-import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { AlertTriangle, Bot, ClipboardList, FilePen, Globe, MessageCircleQuestion, Plug, ShieldAlert, SquareTerminal, Zap } from "lucide-solid";
+import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { AlertTriangle, Bot, ClipboardList, FilePen, Globe, MessageCircleQuestion, Plug, ShieldAlert, SquareTerminal } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
-import { CodeBlock } from "./blocks/CodeBlock";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
@@ -36,14 +35,14 @@ function useKeys(handler: (key: string) => boolean) {
     });
 }
 
-export function InteractionDock(p: { sessionId: string; items: Interaction[] }) {
+export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
     const first = () => p.items[0];
     return (
         <Show when={first()} keyed>
             {(it) => (
-                <div class={`dock dock-${it.kind} ${it.kind === "permission" && it.dangerous ? "danger" : ""}`} role="alertdialog" aria-label="Waiting for you">
+                <div class={`tab itab itab-${it.kind} ${it.kind === "permission" && it.dangerous ? "danger" : ""}`} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
-                        <div class="dock-count">1 of {p.items.length} waiting</div>
+                        <div class="itab-count">1 of {p.items.length} waiting</div>
                     </Show>
                     <Switch>
                         <Match when={it.kind === "permission"}>
@@ -62,20 +61,44 @@ export function InteractionDock(p: { sessionId: string; items: Interaction[] }) 
     );
 }
 
+/** An option's label, with `code` in mono. */
+function Label(p: { text: string }) {
+    return <For each={p.text.split(/(`[^`]+`)/)}>{(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono">{part.slice(1, -1)}</span> : part)}</For>;
+}
+
+function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.Element }) {
+    return (
+        <>
+            <div class="itab-head">
+                <span class="itab-icon">{p.icon}</span>
+                <span class="itab-title">{p.title}</span>
+                <Show when={p.aside}>
+                    <span class="itab-aside truncate" title={p.aside}>
+                        {p.aside}
+                    </span>
+                </Show>
+            </div>
+            <Show when={p.sub}>
+                <div class="itab-sub">{p.sub}</div>
+            </Show>
+        </>
+    );
+}
+
 function PermIcon(p: { it: PermissionInteraction }) {
     return (
-        <Switch fallback={<ShieldAlert size={16} />}>
+        <Switch fallback={<ShieldAlert size={14} />}>
             <Match when={p.it.toolName === "Bash"}>
-                <SquareTerminal size={16} />
+                <SquareTerminal size={14} />
             </Match>
             <Match when={p.it.category === "edit"}>
-                <FilePen size={16} />
+                <FilePen size={14} />
             </Match>
             <Match when={p.it.toolName === "WebFetch"}>
-                <Globe size={16} />
+                <Globe size={14} />
             </Match>
             <Match when={p.it.category === "mcp"}>
-                <Plug size={16} />
+                <Plug size={14} />
             </Match>
         </Switch>
     );
@@ -104,104 +127,108 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         }
         return false;
     });
+    const order = () => {
+        // On screen: Deny, then the broader choices, then Allow once at the end, where the eye lands.
+        const opts = p.it.options.map((o, i) => ({ o, key: i + 1 }));
+        return [...opts.filter((x) => x.o.id === "no"), ...opts.filter((x) => x.o.id !== "no" && x.o.id !== "yes"), ...opts.filter((x) => x.o.id === "yes")];
+    };
     return (
         <>
-            <div class="dock-head">
-                <span class="dock-icon">
-                    <PermIcon it={p.it} />
-                </span>
-                <div class="dock-titles">
-                    <div class="dock-title">{p.it.heading}</div>
-                    <Show when={p.it.agentLabel}>
-                        <div class="dock-sub">
+            <Head
+                icon={<PermIcon it={p.it} />}
+                title={p.it.heading}
+                aside={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
+                sub={
+                    p.it.agentLabel ? (
+                        <>
                             <Bot size={12} /> Requested by sub-agent ·{" "}
                             <Show when={p.it.agentId} fallback={p.it.agentLabel}>
                                 <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
                                     {p.it.agentLabel}
                                 </button>
                             </Show>
-                        </div>
-                    </Show>
-                </div>
-            </div>
-            <Show when={p.it.dangerous}>
-                <div class="dock-warn">
-                    <AlertTriangle size={14} /> {p.it.reason ?? "This action looks potentially destructive."}
-                </div>
-            </Show>
-            <div class="dock-body">
+                        </>
+                    ) : undefined
+                }
+            />
+            <div class="itab-body">
+                <Show when={p.it.dangerous}>
+                    <div class="itab-warn">
+                        <AlertTriangle size={14} /> {p.it.reason ?? "This action looks potentially destructive."}
+                    </div>
+                </Show>
                 <Show when={p.it.command !== undefined}>
-                    <CodeBlock code={p.it.command!} lang="bash" bare maxHeight={220} />
+                    <pre class="itab-code mono">{p.it.command}</pre>
                     <Show when={p.it.description}>
-                        <div class="dock-desc">{p.it.description}</div>
+                        <div class="itab-desc">{p.it.description}</div>
                     </Show>
                     <Show when={p.it.hosts?.length}>
-                        <div class="dock-desc">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
+                        <div class="itab-desc">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
                     </Show>
                 </Show>
                 <Show when={p.it.diff}>
-                    <DiffView diff={p.it.diff!} header maxLines={40} class="dock-diff" />
+                    <DiffView diff={p.it.diff!} header maxLines={40} class="itab-diff" />
                 </Show>
                 <Show when={!p.it.diff && p.it.path}>
-                    <div class="dock-path mono">{p.it.path}</div>
+                    <div class="itab-code mono">{p.it.path}</div>
                 </Show>
                 <Show when={p.it.url}>
-                    <div class="dock-path mono">{p.it.url}</div>
+                    <div class="itab-code mono">{p.it.url}</div>
                     <Show when={p.it.description}>
-                        <div class="dock-desc">{p.it.description}</div>
+                        <div class="itab-desc">{p.it.description}</div>
                     </Show>
                 </Show>
                 <Show when={p.it.json}>
-                    <div class="dock-path">{p.it.title}</div>
-                    <CodeBlock code={p.it.json!} lang="json" bare maxHeight={200} />
+                    <div class="itab-desc">{p.it.title}</div>
+                    <pre class="itab-code mono">{p.it.json}</pre>
                 </Show>
                 <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json}>
-                    <div class="dock-path">{p.it.title}</div>
+                    <div class="itab-desc">{p.it.title}</div>
                 </Show>
                 <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash"}>
-                    <div class="dock-desc">{p.it.reason}</div>
+                    <div class="itab-desc">{p.it.reason}</div>
                 </Show>
-                <Show when={p.it.classifierReason}>
-                    <div class="dock-auto">
-                        <Zap size={13} /> Auto mode asked you because: {p.it.classifierReason}
-                    </div>
+                <Show when={feedback() !== undefined}>
+                    <textarea
+                        class="itab-feedback"
+                        rows={2}
+                        placeholder="Tell it what to do instead (optional), then press Enter"
+                        value={feedback()}
+                        onInput={(e) => setFeedback(e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                void answer("no");
+                            } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setFeedback(undefined);
+                            }
+                        }}
+                        ref={(el) => requestAnimationFrame(() => el.focus())}
+                    />
                 </Show>
             </div>
-            <Show when={feedback() !== undefined}>
-                <textarea
-                    class="dock-feedback"
-                    rows={2}
-                    autofocus
-                    placeholder="Tell it what to do instead (optional), then press Enter"
-                    value={feedback()}
-                    onInput={(e) => setFeedback(e.currentTarget.value)}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            void answer("no");
-                        } else if (e.key === "Escape") {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setFeedback(undefined);
-                        }
-                    }}
-                    ref={(el) => requestAnimationFrame(() => el.focus())}
-                />
-            </Show>
-            <div class="dock-actions">
-                <For each={p.it.options}>
-                    {(o, i) => (
-                        <button
-                            class={`btn ${o.id === "yes" ? "primary" : o.id === "no" ? "ghost" : "secondary"}`}
-                            disabled={busy()}
-                            onClick={() => {
-                                if (o.id === "no" && feedback() === undefined) setFeedback("");
-                                else void answer(o.id);
-                            }}
-                        >
-                            <span class="truncate">{o.id === "no" && feedback() !== undefined ? "Deny" : o.label}</span>
-                            <kbd>{o.id === "no" ? "Esc" : i() + 1}</kbd>
-                        </button>
+            <div class="itab-actions">
+                <For each={order()}>
+                    {({ o, key }) => (
+                        <>
+                            <button
+                                class={`pbtn ${o.id === "yes" ? "primary" : o.id === "no" ? "quiet" : "outlined"}`}
+                                disabled={busy()}
+                                title={o.label.replaceAll("`", "")}
+                                onClick={() => {
+                                    if (o.id === "no" && feedback() === undefined) setFeedback("");
+                                    else void answer(o.id);
+                                }}
+                            >
+                                <span class="truncate">{o.id === "no" && feedback() !== undefined ? "Deny" : <Label text={o.label} />}</span>
+                                <kbd>{o.id === "no" ? "Esc" : key}</kbd>
+                            </button>
+                            <Show when={o.id === "no"}>
+                                <span class="spacer" />
+                            </Show>
+                        </>
                     )}
                 </For>
             </div>
@@ -232,49 +259,44 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
     });
     return (
         <>
-            <div class="dock-head">
-                <span class="dock-icon">
-                    <MessageCircleQuestion size={16} />
-                </span>
-                <div class="dock-titles">
-                    <div class="dock-title">{p.it.question}</div>
-                    <div class="dock-sub">{p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"}</div>
+            <Head icon={<MessageCircleQuestion size={14} />} title={p.it.question} aside={p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <div class="itab-body">
+                <div class="q-options">
+                    <For each={p.it.options}>
+                        {(o, i) => (
+                            <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} onClick={() => toggle(o.label)}>
+                                <kbd>{i() + 1}</kbd>
+                                <span class="q-text">
+                                    <span class="q-label">{o.label}</span>
+                                    <Show when={o.description}>
+                                        <span class="q-desc">{o.description}</span>
+                                    </Show>
+                                </span>
+                            </button>
+                        )}
+                    </For>
                 </div>
-            </div>
-            <div class="q-options">
-                <For each={p.it.options}>
-                    {(o, i) => (
-                        <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} onClick={() => toggle(o.label)}>
-                            <kbd>{i() + 1}</kbd>
-                            <span class="q-text">
-                                <span class="q-label">{o.label}</span>
-                                <Show when={o.description}>
-                                    <span class="q-desc">{o.description}</span>
-                                </Show>
-                            </span>
-                        </button>
-                    )}
-                </For>
-            </div>
-            <div class="q-other">
                 <input
+                    class="itab-input"
                     value={other()}
                     placeholder="Something else…"
+                    aria-label="Your own answer"
                     onInput={(e) => setOther(e.currentTarget.value)}
                     onKeyDown={(e) => {
                         if (e.key === "Enter" && other().trim()) void submit([...picked(), other().trim()]);
                     }}
                 />
             </div>
-            <div class="dock-actions">
+            <div class="itab-actions">
+                <button class="pbtn quiet" onClick={() => void submit(undefined)}>
+                    Skip <kbd>Esc</kbd>
+                </button>
+                <span class="spacer" />
                 <Show when={p.it.multi || other().trim()}>
-                    <button class="btn primary" disabled={!picked().length && !other().trim()} onClick={() => void submit([...picked(), ...(other().trim() ? [other().trim()] : [])])}>
+                    <button class="pbtn primary" disabled={!picked().length && !other().trim()} onClick={() => void submit([...picked(), ...(other().trim() ? [other().trim()] : [])])}>
                         Answer
                     </button>
                 </Show>
-                <button class="btn ghost" onClick={() => void submit(undefined)}>
-                    Skip <kbd>Esc</kbd>
-                </button>
             </div>
         </>
     );
@@ -295,46 +317,41 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     });
     return (
         <>
-            <div class="dock-head">
-                <span class="dock-icon">
-                    <ClipboardList size={16} />
-                </span>
-                <div class="dock-titles">
-                    <div class="dock-title">Plan ready for review</div>
-                    <div class="dock-sub">Nothing has been changed yet</div>
+            <Head icon={<ClipboardList size={14} />} title="Plan ready for review" aside="Nothing has been changed yet" />
+            <div class="itab-body">
+                <div class="plan-body" ref={body}>
+                    <Markdown text={p.it.plan} />
                 </div>
+                <Show when={feedback() !== undefined}>
+                    <textarea
+                        class="itab-feedback"
+                        rows={3}
+                        placeholder="What should change in the plan?"
+                        value={feedback()}
+                        onInput={(e) => setFeedback(e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                void reject();
+                            }
+                        }}
+                        ref={(el) => requestAnimationFrame(() => el.focus())}
+                    />
+                </Show>
             </div>
-            <div class="plan-body" ref={body}>
-                <Markdown text={p.it.plan} />
-            </div>
-            <Show when={feedback() !== undefined}>
-                <textarea
-                    class="dock-feedback"
-                    rows={3}
-                    placeholder="What should change in the plan?"
-                    value={feedback()}
-                    onInput={(e) => setFeedback(e.currentTarget.value)}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            void reject();
-                        }
-                    }}
-                    ref={(el) => requestAnimationFrame(() => el.focus())}
-                />
-            </Show>
-            <div class="dock-actions">
-                <button class="btn primary" onClick={() => void approve("acceptEdits")}>
-                    Approve, auto-accept edits <kbd>1</kbd>
+            <div class="itab-actions">
+                <button class="pbtn quiet" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
+                    {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
                 </button>
-                <button class="btn secondary" onClick={() => void approve("default")}>
-                    Approve, ask for edits <kbd>2</kbd>
-                </button>
-                <button class="btn secondary" onClick={() => void approve("auto")}>
+                <span class="spacer" />
+                <button class="pbtn outlined" onClick={() => void approve("auto")}>
                     Auto mode <kbd>3</kbd>
                 </button>
-                <button class="btn ghost" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
-                    {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
+                <button class="pbtn outlined" onClick={() => void approve("default")}>
+                    Approve, ask for edits <kbd>2</kbd>
+                </button>
+                <button class="pbtn primary" onClick={() => void approve("acceptEdits")}>
+                    Approve, auto-accept edits <kbd>1</kbd>
                 </button>
             </div>
         </>

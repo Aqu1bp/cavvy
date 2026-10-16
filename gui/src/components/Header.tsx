@@ -1,128 +1,157 @@
-import { createSignal, Show } from "solid-js";
-import { Archive, Copy, FileDiff, FolderGit2, GitBranch, History, MoreHorizontal, PanelLeftOpen, PanelRight, Share, Shrink } from "lucide-solid";
+// The title line above the conversation: where you are (project / session),
+// the session's menu on its title, and the panel toggle.
+
+import { createSignal, For, Show, type JSX } from "solid-js";
+import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareTerminal } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { archive, exportSession, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, exportSession, newSession, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { setRewindOpen } from "../state/ui";
 import { copyText, isTauri, mod, os } from "../lib/platform";
-import { tildify, usd } from "../lib/format";
+import { tildify } from "../lib/format";
+import { Monogram } from "./Sidebar";
 import { Popover } from "./ui/Popover";
-import { Ring } from "./ui/bits";
+
+type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
+
+export function sessionTitle(h?: SessionHandle): string {
+    return h?.view.state.title ?? h?.view.turns.find((t) => t.prompt)?.prompt?.text.slice(0, 80) ?? "New session";
+}
+
+/** The frame every main view shares: room for the traffic lights when the sidebar is hidden, the sidebar toggle, then the crumbs. */
+export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
+    return (
+        <header class={`header ${!prefs.sidebar && isTauri && os === "macos" ? "traffic" : ""}`} data-tauri-drag-region>
+            <Show when={!prefs.sidebar}>
+                <button class="hb" title={`Show sidebar (${mod}+B)`} aria-label="Show sidebar" onClick={toggleSidebar}>
+                    <PanelLeft size={16} />
+                </button>
+            </Show>
+            <nav class="crumbs" aria-label="Breadcrumb" data-tauri-drag-region>
+                {p.children}
+            </nav>
+            <span class="grow" data-tauri-drag-region />
+            {p.end}
+        </header>
+    );
+}
+
+export function Crumb(p: { children: JSX.Element; onClick?: () => void; title?: string }) {
+    return (
+        <Show when={p.onClick} fallback={<span class="bc static">{p.children}</span>}>
+            <button class="bc" title={p.title} onClick={p.onClick}>
+                {p.children}
+            </button>
+        </Show>
+    );
+}
+
+export const CrumbSep = () => (
+    <span class="bc-sep" aria-hidden="true">
+        /
+    </span>
+);
 
 export function Header(p: { handle?: SessionHandle }) {
     const [editing, setEditing] = createSignal(false);
     const [menuOpen, setMenuOpen] = createSignal(false);
-    let moreBtn: HTMLButtonElement | undefined;
+    let titleBtn: HTMLButtonElement | undefined;
     const st = () => p.handle?.view.state;
-    const title = () => st()?.title ?? p.handle?.view.turns.find((t) => t.prompt)?.prompt?.text.slice(0, 80) ?? "New session";
-    const ctx = () => {
-        const s = st();
-        return s?.model?.contextWindow ? s.contextTokens / s.model.contextWindow : 0;
+    const close = () => setMenuOpen(false);
+    const copy = async (text: string, done: string) => {
+        close();
+        if (await copyText(text)) toast(done, "success");
     };
+
     return (
-        <header class={`header ${!prefs.sidebar && isTauri && os === "macos" ? "traffic" : ""}`} data-tauri-drag-region>
-            <Show when={!prefs.sidebar}>
-                <button class="icon-btn" title={`Show sidebar (${mod}+B)`} onClick={toggleSidebar}>
-                    <PanelLeftOpen size={16} />
-                </button>
-            </Show>
-            <Show when={st()} fallback={<div class="header-title muted" data-tauri-drag-region>New session</div>}>
-                <div class="header-main" data-tauri-drag-region>
-                    <Show
-                        when={!editing()}
-                        fallback={
-                            <input
-                                class="title-input"
-                                value={title()}
-                                ref={(el) => requestAnimationFrame(() => (el.focus(), el.select()))}
-                                onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                        void rename(st()!.id, e.currentTarget.value);
+        <TitleBar
+            end={
+                <Show when={st()}>
+                    <button class={`hb ${prefs.panel ? "on" : ""}`} title={`Toggle panel (${mod}+.)`} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
+                        <PanelRight size={16} />
+                    </button>
+                </Show>
+            }
+        >
+            <Show when={st()} fallback={<span class="bc static current">New session</span>}>
+                {(s) => (
+                    <>
+                        <Crumb title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
+                            <Monogram name={s().projectName} size={14} />
+                            <span class="truncate">{s().projectName}</span>
+                        </Crumb>
+                        <CrumbSep />
+                        <Show
+                            when={!editing()}
+                            fallback={
+                                <input
+                                    class="title-input"
+                                    value={sessionTitle(p.handle)}
+                                    aria-label="Session name"
+                                    ref={(el) => requestAnimationFrame(() => (el.focus(), el.select()))}
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                            void rename(s().id, e.currentTarget.value);
+                                            setEditing(false);
+                                        } else if (e.key === "Escape") setEditing(false);
+                                    }}
+                                    onBlur={(e) => {
+                                        if (!editing()) return;
+                                        void rename(s().id, e.currentTarget.value);
                                         setEditing(false);
-                                    } else if (e.key === "Escape") setEditing(false);
-                                }}
-                                onBlur={(e) => {
-                                    void rename(st()!.id, e.currentTarget.value);
-                                    setEditing(false);
-                                }}
-                            />
-                        }
-                    >
-                        <button class="header-title truncate" title="Rename" onClick={() => setEditing(true)}>
-                            {title()}
-                        </button>
-                    </Show>
-                    <span class="header-chips" data-tauri-drag-region>
-                        <span class="meta" title={st()!.cwd}>
-                            <FolderGit2 size={14} /> {st()!.projectName}
-                        </span>
-                        <Show when={st()!.branch}>
-                            <span class="meta" title="Git branch">
-                                <GitBranch size={14} /> {st()!.branch}
+                                    }}
+                                />
+                            }
+                        >
+                            <button ref={titleBtn} class={`bct ${menuOpen() ? "open" : ""}`} aria-haspopup="menu" aria-expanded={menuOpen()} title="Session actions" onClick={() => setMenuOpen(!menuOpen())} onDblClick={() => (close(), setEditing(true))}>
+                                <span class="truncate">{sessionTitle(p.handle)}</span>
+                                <ChevronDown size={14} class="chv" />
+                            </button>
+                        </Show>
+                        <Show when={!s().trusted}>
+                            <span class="pill warn" title="This folder's own configuration (hooks, MCP servers, permission rules) is ignored">
+                                <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
-                        <Show when={!st()!.trusted}>
-                            <span class="meta warn" title="This folder's configuration is ignored">
-                                untrusted
-                            </span>
-                        </Show>
-                    </span>
-                </div>
+                        <Popover open={menuOpen()} anchor={() => titleBtn} onClose={close} width={244}>
+                            <For
+                                each={[
+                                    { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },
+                                    { icon: History, label: "Rewind…", run: () => void (close(), setRewindOpen(true)) },
+                                    {
+                                        icon: Shrink,
+                                        label: "Compact conversation",
+                                        disabled: s().busy,
+                                        run: () => void (close(), rpc.call("session.compact", { id: s().id }).catch(reportError)),
+                                    },
+                                ] as MenuEntry[]}
+                            >
+                                {(it) => (
+                                    <button class="menu-item compact" disabled={it.disabled} onClick={it.run}>
+                                        <it.icon size={14} /> {it.label}
+                                    </button>
+                                )}
+                            </For>
+                            <div class="menu-sep" />
+                            <button class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
+                                <Share size={14} /> Copy as Markdown
+                            </button>
+                            <button class="menu-item compact" onClick={() => void copy(`harness --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
+                                <SquareTerminal size={14} /> Copy resume command
+                            </button>
+                            <button class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
+                                <FolderOpen size={14} /> Copy folder path
+                            </button>
+                            <div class="menu-sep" />
+                            <button class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
+                                <Archive size={14} /> Archive
+                            </button>
+                        </Popover>
+                    </>
+                )}
             </Show>
-            <span class="grow" data-tauri-drag-region />
-            <Show when={st()}>
-                <div class="header-actions">
-                    <Show when={st()!.filesChanged}>
-                        <button class={`chip-btn ${prefs.panel && prefs.panelTab === "changes" ? "active" : ""}`} onClick={() => togglePanel("changes")} title="Files changed in this session">
-                            <FileDiff size={15} /> {st()!.filesChanged} {st()!.filesChanged === 1 ? "file" : "files"}
-                        </button>
-                    </Show>
-                    <button class={`chip-btn ${prefs.panel && prefs.panelTab === "context" ? "active" : ""}`} onClick={() => togglePanel("context")} title="Context and cost">
-                        <Ring value={ctx()} size={15} stroke={2.2} />
-                        <span>{st()!.cost > 0 ? usd(st()!.cost) : `${Math.round(ctx() * 100)}%`}</span>
-                    </button>
-                    <button class={`icon-btn ${prefs.panel ? "active" : ""}`} title={`Toggle panel (${mod}+.)`} onClick={() => togglePanel()}>
-                        <PanelRight size={18} />
-                    </button>
-                    <button ref={moreBtn} class="icon-btn" title="More" onClick={() => setMenuOpen(!menuOpen())}>
-                        <MoreHorizontal size={18} />
-                    </button>
-                    <Popover open={menuOpen()} anchor={() => moreBtn} onClose={() => setMenuOpen(false)} align="end" width={230}>
-                        <button class="menu-item compact" onClick={() => { setMenuOpen(false); setRewindOpen(true); }}>
-                            <History size={14} /> Rewind…
-                        </button>
-                        <button
-                            class="menu-item compact"
-                            disabled={st()!.busy}
-                            onClick={() => {
-                                setMenuOpen(false);
-                                void rpc.call("session.compact", { id: st()!.id }).catch(reportError);
-                            }}
-                        >
-                            <Shrink size={14} /> Compact conversation
-                        </button>
-                        <button class="menu-item compact" onClick={() => { setMenuOpen(false); void exportSession(st()!.id); }}>
-                            <Share size={14} /> Copy as Markdown
-                        </button>
-                        <button
-                            class="menu-item compact"
-                            onClick={async () => {
-                                setMenuOpen(false);
-                                if (await copyText(`harness --resume ${st()!.id}`)) toast("Copied a command that resumes this session in the terminal", "success");
-                            }}
-                        >
-                            <Copy size={14} /> Copy resume command
-                        </button>
-                        <div class="menu-sep" />
-                        <div class="menu-note mono">{tildify(st()!.cwd, app.hello?.homeDir)}</div>
-                        <div class="menu-sep" />
-                        <button class="menu-item compact" onClick={() => { setMenuOpen(false); void archive(st()!.id, true); }}>
-                            <Archive size={14} /> Archive
-                        </button>
-                    </Popover>
-                </div>
-            </Show>
-        </header>
+        </TitleBar>
     );
 }
+

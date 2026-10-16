@@ -10,6 +10,8 @@ export interface AnthropicTraits {
     effort: Effort[];
     /** Supports thinking.display = "updates" (between-tool progress notes). */
     displayUpdates: boolean;
+    /** How to ask for no extended thinking, where the model allows it (Sonnet 5.5 refuses "disabled"). */
+    thinkingOff?: "between_tools";
     /** Server-side refusal fallback ("default" form). */
     fallbacks: boolean;
     /** Supports the dynamic-filtering web search tool version. */
@@ -33,7 +35,7 @@ const TABLE: [RegExp, AnthropicTraits][] = [
     [/^claude-opus-5(?!-)/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(5, 25) }],
     [/^claude-opus-4-[78]/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(5, 25) }],
     [/^claude-opus-4-6/, { adaptive: true, effort: NO_XHIGH, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(5, 25) }],
-    [/^claude-sonnet-5-5/, { adaptive: true, effort: ALL, displayUpdates: true, fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(2, 10, 0.2) }],
+    [/^claude-sonnet-5-5/, { adaptive: true, effort: ALL, displayUpdates: true, thinkingOff: "between_tools", fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(2, 10, 0.2) }],
     [/^claude-sonnet-5(?!-)/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(2, 10) }],
     [/^claude-sonnet-4-6/, { adaptive: true, effort: NO_XHIGH, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(3, 15) }],
     [/^claude-haiku-5-5/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(0.1, 0.5) }],

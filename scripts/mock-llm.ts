@@ -8,6 +8,7 @@
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
+//   "note"           a sub-agent that writes a file (asks permission in Manual mode)
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -87,6 +88,14 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             { text: tests ? TESTS_REPORT : AUTH_REPORT },
         ];
         return steps[toolRounds];
+    }
+    if (/\bnote\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "I'll have a sub-agent write it.",
+                calls: [{ name: "Task", args: { description: "Write the release note", prompt: "Subtask: write a note in NOTES.md.", subagent_type: "general-purpose", model: "mock:mock-haiku" } }],
+            };
+        return { text: "The note is in `NOTES.md`." };
     }
     if (/\bagents?\b/.test(p)) {
         if (toolRounds === 0)
@@ -171,6 +180,7 @@ function titleFor(prompt: string): string {
     if (/\bquestion\b/.test(p)) return "Choose an identity protocol";
     if (/\btodo\b/.test(p)) return "Track SSO tasks";
     if (/\bagents?\b/.test(p)) return "Review auth with agents";
+    if (/\bnote\b/.test(p)) return "Write a release note";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 

@@ -42,18 +42,18 @@ export function CopyButton(p: { text: () => string; label?: string; class?: stri
     );
 }
 
-/** A circle showing how full something is (the context window). */
-export function Ring(p: { value: number; size?: number; stroke?: number; title?: string }) {
+/** A circle showing how full something is (the context window). Neutral: grey until it's nearly full. */
+export function Ring(p: { value: number; size?: number; stroke?: number; title?: string; neutral?: boolean }) {
     const size = p.size ?? 18;
     const stroke = p.stroke ?? 2.5;
     const r = (size - stroke) / 2;
     const c = 2 * Math.PI * r;
     const v = () => Math.max(0, Math.min(1, p.value));
-    const tone = () => (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warning)" : "var(--accent)");
+    const tone = () => (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warning)" : p.neutral ? "var(--fg-muted)" : "var(--accent)");
     return (
         <svg class="ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={p.title}>
             <title>{p.title}</title>
-            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border-strong)" stroke-width={stroke} />
+            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={p.neutral ? "color-mix(in srgb, var(--fg-muted) 28%, transparent)" : "var(--border-strong)"} stroke-width={stroke} />
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tone()} stroke-width={stroke} stroke-linecap="round" stroke-dasharray={`${c * v()} ${c}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
         </svg>
     );

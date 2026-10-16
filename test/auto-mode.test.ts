@@ -38,6 +38,8 @@ interface Run {
     reviews: ClassifierInput[];
     asked: number;
     results: string[];
+    /** Times the reviewer heard that the user decided. */
+    decided: number;
 }
 
 /**
@@ -56,7 +58,7 @@ async function runAuto(opts: {
     /** Messages the user sends while the first tools run. */
     queued?: string[];
 }): Promise<Run> {
-    const run: Run = { events: [], reviews: [], asked: 0, results: [] };
+    const run: Run = { events: [], reviews: [], asked: 0, results: [], decided: 0 };
     const settings = { autoCompact: false, ...opts.settings } as any;
     let n = 0;
     const agent = new Agent({
@@ -65,7 +67,7 @@ async function runAuto(opts: {
         client: { stream: async (req: ChatRequest) => opts.script(req, ++n) } as any,
         settings: () => settings,
         checker: new PermissionChecker(() => settings, opts.ws, () => ((opts.sandbox ?? true) ? "seatbelt" : undefined)),
-        classifier: { classify: async (c: ClassifierInput) => (run.reviews.push(c), opts.verdict?.(c) ?? { decision: "allow", reason: "routine" }) } as any,
+        classifier: { classify: async (c: ClassifierInput) => (run.reviews.push(c), opts.verdict?.(c) ?? { decision: "allow", reason: "routine" }), userDecided: () => run.decided++ } as any,
         tools: (opts.tools ?? ["Bash", "Read", "Task"]).map(tool),
         mode: { get: () => "auto", set() {} },
         toolState: { cwd: opts.ws, projectRoot: opts.ws, fileState: new Map(), todos: [], shells: new Map() } as any,
@@ -138,7 +140,7 @@ describe.skipIf(!seatbelt)("sandboxed commands (Seatbelt)", () => {
         }
     });
 
-    test("approved by the user after the reviewer escalated, it still runs sandboxed", async () => {
+    test("approved by the user after the reviewer sent it their way, it still runs sandboxed", async () => {
         const ws = workspace();
         let n = 0;
         const settings = { autoCompact: false } as any;
@@ -148,7 +150,7 @@ describe.skipIf(!seatbelt)("sandboxed commands (Seatbelt)", () => {
             client: { stream: async () => (n++ === 0 ? toolCall("c1", "Bash", { command: "rm a.txt && sh w.sh" }) : text("done")) } as any,
             settings: () => settings,
             checker: new PermissionChecker(() => settings, ws, () => "seatbelt"),
-            classifier: { classify: async () => ({ decision: "escalate", reason: "deletes a file" }) } as any,
+            classifier: { classify: async () => ({ decision: "ask", reason: "deletes a file" }), userDecided() {} } as any,
             tools: [tool("Bash")],
             mode: { get: () => "auto", set() {} },
             toolState: { cwd: ws, projectRoot: ws, fileState: new Map(), todos: [], shells: new Map() } as any,
@@ -212,7 +214,7 @@ describe("what the reviewer is told", () => {
             ws,
             prompt: "summarize the open issues",
             sandbox: false,
-            verdict: () => ({ decision: "escalate", reason: "push not requested" }),
+            verdict: () => ({ decision: "ask", reason: "push not requested" }),
             script: (req) => {
                 const last = req.messages.at(-1);
                 if (req.system === "PARENT") return last?.meta?.kind === "tool_results" ? text("parent done") : toolCall("t1", "Task", { description: "Issues", prompt: task, subagent_type: "general-purpose" });
@@ -222,7 +224,7 @@ describe("what the reviewer is told", () => {
         expect(r.reviews).toHaveLength(1);
         expect(r.reviews[0]!.context.requests).toEqual(["summarize the open issues"]);
         expect(r.reviews[0]!.context.delegatedTask).toBe(task);
-        // Escalated, then refused at the prompt: it never ran.
+        // Sent to the user, then refused at the prompt: it never ran.
         expect(r.asked).toBe(1);
     });
 
@@ -255,6 +257,33 @@ describe("what the reviewer is told", () => {
         const ws = workspace();
         const r = await runAuto({ ws, prompt: "add lodash", sandbox: false, verdict: () => ({ decision: "allow", reason: "ok", warning: "reviewer fell back" }), script: oneCommand({ command: "touch lodash.installed" }) });
         expect(r.events.filter((e) => e.type === "notice").map((e) => e.message)).toContain("reviewer fell back");
+    });
+});
+
+describe("the reviewer's verdicts", () => {
+    test("a block goes back to the agent with the reason and a warning not to work around it; the user isn't asked", async () => {
+        const ws = workspace();
+        const r = await runAuto({ ws, prompt: "clean up", sandbox: false, verdict: () => ({ decision: "block", reason: "deletes files the developer didn't name" }), script: oneCommand({ command: "rm a.txt" }) });
+        expect(r.asked).toBe(0);
+        expect(r.decided).toBe(0);
+        expect(existsSync(join(ws, "a.txt"))).toBe(true);
+        expect(r.results[0]).toStartWith("Auto mode's safety reviewer blocked this: deletes files the developer didn't name\nDon't try to get the same result another way");
+        expect(r.results[0]).toContain("stop and tell the user what you need and why");
+        expect(r.events.find((e) => e.type === "tool_end")?.result.isError).toBe(true);
+    });
+
+    test("sent to the user (the reviewer couldn't decide, or kept blocking), their answer resets the reviewer's count", async () => {
+        const ws = workspace();
+        const r = await runAuto({ ws, prompt: "clean up", sandbox: false, verdict: () => ({ decision: "ask", reason: "no answer in 5s" }), script: oneCommand({ command: "rm a.txt" }) });
+        expect(r.asked).toBe(1);
+        expect(r.decided).toBe(1);
+        expect(existsSync(join(ws, "a.txt"))).toBe(true);
+    });
+
+    test("allowed, the approval says how long the review took", async () => {
+        const ws = workspace();
+        const r = await runAuto({ ws, prompt: "add lodash", sandbox: false, verdict: () => ({ decision: "allow", reason: "routine", ms: 840 }), script: oneCommand({ command: "touch lodash.installed" }) });
+        expect(r.events.find((e) => e.type === "tool_approved")).toMatchObject({ reason: "routine (reviewed in 0.8s)" });
     });
 });
 

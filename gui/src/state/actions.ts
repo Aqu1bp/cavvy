@@ -5,7 +5,7 @@ import { RpcError } from "../lib/rpc";
 import { copyText, pickFolder } from "../lib/platform";
 import { activate, app, createSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setRewindOpen, setSettingsTab } from "./ui";
+import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
 export interface Attachment {
     name: string;
@@ -86,10 +86,16 @@ function clientCommand(id: string | undefined, text: string): boolean {
     }
 }
 
-/** Show a sub-agent's activity in the side panel, or the list of them. */
+/** Show a sub-agent's own view, or (with none) the session's lineage in the panel. */
 export function openAgents(agentId?: string) {
-    setAgentFocus(agentId);
-    setPrefs({ panel: true, panelTab: "agents" });
+    if (agentId) return setAgentFocus(agentId);
+    setAgentFocus(undefined);
+    setPrefs("panel", true);
+}
+
+/** The docked review pane, on a file when one is given. */
+export function openReview(path?: string) {
+    setReview({ path });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */
@@ -221,15 +227,19 @@ export async function pin(id: string, pinned: boolean) {
     await rpc.call("session.pin", { id, pinned }).catch(reportError);
 }
 
+/** Set aside (or back in play). Sending to it puts it back too. */
+export async function settle(id: string, settled: boolean) {
+    await rpc.call("session.settle", { id, settled }).catch(reportError);
+}
+
 export async function archive(id: string, archived: boolean) {
     await rpc.call("session.archive", { id, archived }).catch(reportError);
     if (archived && app.activeId === id) newSession(app.homeCwd);
     toast(archived ? "Session archived" : "Session restored", "info", archived ? { label: "Undo", run: () => void archive(id, false) } : undefined);
 }
 
-export function togglePanel(tab?: typeof prefs.panelTab) {
-    if (tab && (!prefs.panel || prefs.panelTab !== tab)) setPrefs({ panel: true, panelTab: tab });
-    else setPrefs("panel", !prefs.panel);
+export function togglePanel() {
+    setPrefs("panel", !prefs.panel);
 }
 
 export function toggleSidebar() {

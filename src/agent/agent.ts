@@ -221,6 +221,11 @@ function untilAborted<T>(p: Promise<T>, signal: AbortSignal, fallback: T): Promi
     return Promise.race([p, aborted]).finally(() => signal.removeEventListener("abort", onAbort!));
 }
 
+/** What the agent hears when the auto-mode reviewer blocks an action. */
+export function blockedByReviewer(reason: string): string {
+    return `Auto mode's safety reviewer blocked this: ${reason || "it isn't routine"}\nDon't try to get the same result another way (another command, a script, a split or encoded form): that will be blocked too. If a clearly safer approach does the job, take it; if not, stop and tell the user what you need and why.`;
+}
+
 function isAbort(e: unknown, signal?: AbortSignal): boolean {
     if (signal?.aborted) return true;
     const err = e as { name?: string; message?: string };
@@ -1280,7 +1285,9 @@ export class Agent {
             try {
                 const v = await this.o.classifier.classify({ toolName: tool.name, input, cwd: this.state.cwd, context: this.reviewContext(), sandboxed: sandbox }, signal);
                 if (v.warning) this.emit({ type: "notice", level: "warn", message: v.warning });
-                if (v.decision === "allow") return { tool, input, sandbox, auto: v.reason };
+                if (v.decision === "allow") return { tool, input, sandbox, auto: v.ms === undefined ? v.reason : `${v.reason} (reviewed in ${(v.ms / 1000).toFixed(1)}s)` };
+                // Told why, the agent can take a safer way (the user decides once blocks pile up).
+                if (v.decision === "block") return { result: this.errorResult(call, blockedByReviewer(v.reason)) };
                 classifierReason = v.reason;
             } catch (e) {
                 if (isAbort(e, signal)) return { result: this.errorResult(call, "Interrupted") };
@@ -1304,6 +1311,8 @@ export class Agent {
         }
         const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id });
         if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user") };
+        // The reviewer sent it to the user, who has now decided: its blocks count afresh.
+        if (classifierReason !== undefined) this.o.classifier?.userDecided();
         if (answer.setMode) {
             const from = this.o.mode.get();
             this.o.mode.set(answer.setMode);

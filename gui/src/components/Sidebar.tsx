@@ -1,136 +1,221 @@
-import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
-import { Archive, ArchiveRestore, Check, CircleAlert, CircleDot, FolderOpen, Hand, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, User } from "lucide-solid";
+// The session list. Sessions still in play are cards: the project, what it's
+// about, and its branch and model. Ones you've settled fold into a list at the
+// bottom; sending to one brings it back.
+
+import { createMemo, createSignal, For, Show } from "solid-js";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Undo2 } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { activate, app, isUnread } from "../state/app";
-import { archive, chooseProject, newSession, openProject, pin, rename, toggleSidebar } from "../state/actions";
+import { activate, app, handleFor, isUnread } from "../state/app";
+import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setPaletteOpen, setSettingsTab } from "../state/ui";
-import { ago, dayGroup } from "../lib/format";
+import { ago, duration, monogram, since } from "../lib/format";
 import { now } from "../lib/clock";
 import { isTauri, mod, os } from "../lib/platform";
 import { Popover } from "./ui/Popover";
-import { Logo, Spinner } from "./ui/bits";
+import { ProviderIcon } from "./ui/ProviderIcon";
 
-function StatusMark(p: { s: SessionSummary }) {
+/** Cards shown before "Show more". */
+const PAGE = 25;
+
+export function Monogram(p: { name: string; size?: number }) {
     return (
-        <span class="sess-mark">
-            <Switch>
-                <Match when={p.s.status === "running"}>
-                    <Spinner size={13} class="tone-accent" />
-                </Match>
-                <Match when={p.s.status === "waiting"}>
-                    <Hand size={14} class="tone-warn" />
-                </Match>
-                <Match when={p.s.status === "error"}>
-                    <CircleAlert size={14} class="tone-err" />
-                </Match>
-            </Switch>
+        <span class="mg" style={p.size ? { width: `${p.size}px`, height: `${p.size}px`, "font-size": `${(p.size * 0.47).toFixed(1)}px` } : undefined} aria-hidden="true">
+            {monogram(p.name)}
         </span>
     );
 }
 
-function SessionRow(p: { s: SessionSummary }) {
+function branchOf(s: SessionSummary): string | undefined {
+    if (s.id === app.activeId) return handleFor(s.id)?.view.state.branch;
+    return handleFor(s.id)?.view.state.branch ?? app.projects.find((p) => p.path === s.cwd)?.branch;
+}
+
+/** What it's doing, when that's worth a word; otherwise its card shows how long ago. */
+function statusWord(s: SessionSummary): { text: string; tone: string } | undefined {
+    if (s.status === "waiting") return { text: "Needs you", tone: "warn" };
+    if (s.status === "running") {
+        const since = handleFor(s.id)?.view.state.activity?.since;
+        const ms = since ? now() - since : 0;
+        return { text: ms >= 1000 ? `Working ${duration(ms).replace(/ \d+s$/, "")}` : "Working", tone: "info" };
+    }
+    if (s.status === "error") return { text: "Stopped", tone: "err" };
+    return undefined;
+}
+
+/** The model it last used: the open session's own, else the one it was saved with. */
+function modelOf(s: SessionSummary): string | undefined {
+    return handleFor(s.id)?.view.state.model?.ref ?? s.model;
+}
+
+function useRename(s: () => SessionSummary) {
     const [editing, setEditing] = createSignal(false);
-    const [menuOpen, setMenuOpen] = createSignal(false);
-    let more: HTMLButtonElement | undefined;
-    const active = () => app.activeId === p.s.id;
-    const unread = () => isUnread(p.s);
+    const input = () => (
+        <input
+            class="sess-rename"
+            value={s().title}
+            aria-label="Session name"
+            ref={(el) => requestAnimationFrame(() => (el.focus(), el.select()))}
+            onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                    void rename(s().id, e.currentTarget.value);
+                    setEditing(false);
+                } else if (e.key === "Escape") setEditing(false);
+            }}
+            onBlur={(e) => {
+                if (!editing()) return;
+                void rename(s().id, e.currentTarget.value);
+                setEditing(false);
+            }}
+        />
+    );
+    return { editing, setEditing, input };
+}
+
+function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; onRename: () => void }) {
+    const close = () => p.setOpen(false);
     return (
-        <div class={`sess ${active() ? "active" : ""} ${unread() ? "unread" : ""} ${menuOpen() ? "menu-open" : ""}`}>
-            <Show
-                when={!editing()}
-                fallback={
-                    <input
-                        class="sess-rename"
-                        value={p.s.title}
-                        ref={(el) => requestAnimationFrame(() => (el.focus(), el.select()))}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                                void rename(p.s.id, e.currentTarget.value);
-                                setEditing(false);
-                            } else if (e.key === "Escape") setEditing(false);
-                        }}
-                        onBlur={(e) => {
-                            void rename(p.s.id, e.currentTarget.value);
-                            setEditing(false);
-                        }}
-                    />
-                }
-            >
-                <button class="sess-main" onClick={() => void activate(p.s.id)} onDblClick={() => setEditing(true)} title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}>
-                    <StatusMark s={p.s} />
-                    <span class="sess-title truncate">{p.s.title}</span>
-                    <Show when={prefs.groupBy === "date" && app.projects.length > 1}>
-                        <span class="sess-proj truncate">{p.s.projectName}</span>
-                    </Show>
-                    <Show when={unread()}>
-                        <span class="dot accent" title="New activity" />
-                    </Show>
+        <Popover open={p.open} anchor={p.anchor} onClose={close} align="end" width={220}>
+            <button class="menu-item compact" onClick={() => (close(), p.onRename())}>
+                <Pencil size={14} /> Rename
+            </button>
+            <button class="menu-item compact" onClick={() => (close(), void pin(p.s.id, !p.s.pinned))}>
+                {p.s.pinned ? <PinOff size={14} /> : <Pin size={14} />} {p.s.pinned ? "Unpin" : "Pin"}
+            </button>
+            <Show when={!p.s.archived}>
+                <button class="menu-item compact" onClick={() => (close(), void settle(p.s.id, !p.s.settled))}>
+                    {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
-                <span class="sess-actions">
-                    <button class="icon-btn" title={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
-                        <Show when={p.s.pinned} fallback={<Pin size={13} />}>
-                            <PinOff size={13} />
-                        </Show>
-                    </button>
-                    <button ref={more} class="icon-btn" title="More" onClick={() => setMenuOpen(!menuOpen())}>
-                        <MoreHorizontal size={14} />
-                    </button>
-                </span>
-                <Popover open={menuOpen()} anchor={() => more} onClose={() => setMenuOpen(false)} align="end" width={200}>
-                    <button class="menu-item compact" onClick={() => { setMenuOpen(false); setEditing(true); }}>
-                        <Pencil size={14} /> Rename
-                    </button>
-                    <button class="menu-item compact" onClick={() => { setMenuOpen(false); void pin(p.s.id, !p.s.pinned); }}>
-                        {p.s.pinned ? <PinOff size={14} /> : <Pin size={14} />} {p.s.pinned ? "Unpin" : "Pin"}
-                    </button>
-                    <button class="menu-item compact" onClick={() => { setMenuOpen(false); newSession(p.s.cwd); }}>
-                        <Plus size={14} /> New session in {p.s.projectName}
-                    </button>
-                    <div class="menu-sep" />
-                    <button class="menu-item compact" onClick={() => { setMenuOpen(false); void archive(p.s.id, !p.s.archived); }}>
-                        {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
-                    </button>
-                </Popover>
             </Show>
+            <button class="menu-item compact" onClick={() => (close(), newSession(p.s.cwd))}>
+                <Plus size={14} /> <span class="truncate">New session in {p.s.projectName}</span>
+            </button>
+            <div class="menu-sep" />
+            <button class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
+                {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
+            </button>
+        </Popover>
+    );
+}
+
+function SessionCard(p: { s: SessionSummary }) {
+    const r = useRename(() => p.s);
+    const [menu, setMenu] = createSignal(false);
+    let el: HTMLDivElement | undefined;
+    let more: HTMLButtonElement | undefined;
+    const current = () => app.activeId === p.s.id;
+    const word = () => statusWord(p.s);
+    const unread = () => isUnread(p.s) && !current();
+    const provider = () => modelOf(p.s)?.split(":")[0];
+    // Working in the background: it's fine, it can recede.
+    const recede = () => p.s.status === "running" && !current();
+    return (
+        <div
+            ref={el}
+            class={`card ${current() ? "cur" : ""} ${recede() ? "rec" : ""} ${menu() ? "menu-open" : ""}`}
+            onContextMenu={(e) => (e.preventDefault(), setMenu(true))}
+        >
+            <button class="card-hit" onClick={() => void activate(p.s.id)} onDblClick={() => r.setEditing(true)} aria-current={current() ? "page" : undefined} title={`${p.s.title}\n${p.s.cwd}`}>
+                <span class="l1">
+                    <Monogram name={p.s.projectName} />
+                    <span class="truncate">{p.s.projectName}</span>
+                    <Show when={word()} fallback={<span class={`st when ${unread() ? "unread" : ""}`}>{(now(), since(p.s.updatedAt))}</span>}>
+                        {(w) => <span class={`st tone-${w().tone}`}>{w().text}</span>}
+                    </Show>
+                </span>
+                <Show when={!r.editing()} fallback={<span class="l2" />}>
+                    <span class="l2 truncate">
+                        <Show when={p.s.pinned}>
+                            <Pin size={12} class="card-pin" />
+                        </Show>
+                        {p.s.title}
+                    </span>
+                </Show>
+                <span class="l3">
+                    <span class="truncate">{branchOf(p.s)}</span>
+                    <Show when={provider()}>
+                        {(id) => (
+                            <span class="card-model" title={modelOf(p.s)}>
+                                <ProviderIcon id={id()} name={app.models.find((g) => g.provider === id())?.providerName} size={14} />
+                            </span>
+                        )}
+                    </Show>
+                </span>
+            </button>
+            <button ref={more} class="hb sm card-more" title="More" aria-label={`More for ${p.s.title}`} onClick={() => setMenu(!menu())}>
+                <MoreHorizontal size={14} />
+            </button>
+            <Show when={r.editing()}>
+                <div class="card-rename">{r.input()}</div>
+            </Show>
+            <RowMenu s={p.s} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
 
-/** The OS account name, if it names a person (not root or a placeholder). */
-function personName(user?: string): string | undefined {
-    if (!user || /^(root|unknown|admin|user|nobody)$/i.test(user)) return undefined;
-    const words = user.replace(/[._-]+/g, " ").trim().split(/\s+/).filter(Boolean);
-    return words.map((w) => w[0]!.toUpperCase() + w.slice(1)).join(" ") || undefined;
+function SessionRow(p: { s: SessionSummary }) {
+    const r = useRename(() => p.s);
+    const [menu, setMenu] = createSignal(false);
+    let more: HTMLButtonElement | undefined;
+    const current = () => app.activeId === p.s.id;
+    return (
+        <div class={`slim ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={(e) => (e.preventDefault(), setMenu(true))}>
+            <Show
+                when={!r.editing()}
+                fallback={
+                    <>
+                        <Monogram name={p.s.projectName} />
+                        {r.input()}
+                    </>
+                }
+            >
+                <button
+                    class="slim-hit"
+                    onClick={() => void activate(p.s.id)}
+                    onDblClick={() => r.setEditing(true)}
+                    aria-current={current() ? "page" : undefined}
+                    title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
+                >
+                    <Monogram name={p.s.projectName} />
+                    <Show when={p.s.pinned}>
+                        <Pin size={12} class="slim-pin" />
+                    </Show>
+                    <span class="truncate">{p.s.title}</span>
+                </button>
+                <span class="slim-end">
+                    <span class="t">{(now(), since(p.s.updatedAt))}</span>
+                    <span class="slim-acts">
+                        <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
+                            <Show when={p.s.pinned} fallback={<Pin size={13} />}>
+                                <PinOff size={13} />
+                            </Show>
+                        </button>
+                        <button ref={more} class="hb sm" title="More" aria-label="More" onClick={() => setMenu(!menu())}>
+                            <MoreHorizontal size={14} />
+                        </button>
+                    </span>
+                </span>
+            </Show>
+            <RowMenu s={p.s} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
+        </div>
+    );
 }
 
-function initials(name: string): string {
-    const parts = name.split(" ");
-    return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : parts[0]!.slice(0, 1)).toUpperCase();
+/** The top line, level with the traffic lights (macOS): hide, then the name. Shared with the Settings sidebar. */
+export function SidebarTop() {
+    return (
+        <div class="side-top" data-tauri-drag-region>
+            <button class="hb" title={`Hide sidebar (${mod}+B)`} aria-label="Hide sidebar" onClick={toggleSidebar}>
+                <PanelLeftClose size={17} />
+            </button>
+            <span class="brand" data-tauri-drag-region>
+                Harness
+            </span>
+        </div>
+    );
 }
 
-export function Sidebar() {
-    const [showArchived, setShowArchived] = createSignal(false);
-    const [filterOpen, setFilterOpen] = createSignal(false);
-    let filterBtn: HTMLButtonElement | undefined;
-    const list = () => (showArchived() ? app.archived : app.sessions);
-    const pinned = createMemo(() => (showArchived() ? [] : list().filter((s) => s.pinned)));
-    const groups = createMemo(() => {
-        const rest = showArchived() ? list() : list().filter((s) => !s.pinned);
-        const out: { label: string; sessions: SessionSummary[] }[] = [];
-        const by = new Map<string, SessionSummary[]>();
-        for (const s of rest) {
-            const k = prefs.groupBy === "project" ? s.projectName : dayGroup(s.updatedAt);
-            if (!by.has(k)) {
-                by.set(k, []);
-                out.push({ label: k, sessions: by.get(k)! });
-            }
-            by.get(k)!.push(s);
-        }
-        return out;
-    });
-    const waiting = () => app.sessions.filter((s) => s.status === "waiting").length;
-
+export function SidebarFrame(p: { children: any; class?: string }) {
     let dragStart = 0;
     let widthStart = 0;
     const onResize = (e: PointerEvent) => {
@@ -146,108 +231,152 @@ export function Sidebar() {
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", up);
     };
+    return (
+        <aside class={`sidebar ${isTauri && os === "macos" ? "traffic" : ""} ${p.class ?? ""}`} aria-label="Sessions">
+            <SidebarTop />
+            {p.children}
+            <div class="resize-handle" onPointerDown={onResize} onDblClick={() => setPrefs("sidebarWidth", 260)} />
+        </aside>
+    );
+}
+
+export function Sidebar() {
+    const [showArchived, setShowArchived] = createSignal(false);
+    const [viewOpen, setViewOpen] = createSignal(false);
+    const [shown, setShown] = createSignal(PAGE);
+    let viewBtn: HTMLButtonElement | undefined;
+
+    const pinnedFirst = (list: SessionSummary[]) => [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)];
+    const cards = createMemo(() => (showArchived() ? [] : pinnedFirst(app.sessions.filter((s) => !s.settled))));
+    const settledList = createMemo(() => (showArchived() ? [] : app.sessions.filter((s) => s.settled)));
+    const byProject = createMemo(() => {
+        const out: { name: string; cwd: string; sessions: SessionSummary[] }[] = [];
+        const by = new Map<string, SessionSummary[]>();
+        for (const s of cards()) {
+            if (!by.has(s.projectName)) {
+                by.set(s.projectName, []);
+                out.push({ name: s.projectName, cwd: s.cwd, sessions: by.get(s.projectName)! });
+            }
+            by.get(s.projectName)!.push(s);
+        }
+        return out;
+    });
 
     return (
-        <aside class={`sidebar ${isTauri && os === "macos" ? "traffic" : ""}`}>
-            <div class="sidebar-top" data-tauri-drag-region>
-                <div class="brand" data-tauri-drag-region>
-                    <Logo size={24} />
-                    <span class="brand-name">Harness</span>
-                </div>
-                <span class="grow" data-tauri-drag-region />
-                <button class="icon-btn" title={`Hide sidebar (${mod}+B)`} onClick={toggleSidebar}>
-                    <PanelLeftClose size={17} />
+        <SidebarFrame>
+            <div class="side-tools">
+                <button class="side-search" title={`Search sessions and actions (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
+                    <Search size={16} />
+                    <span>Search</span>
+                    <span class="side-kbd">{mod}K</span>
                 </button>
-            </div>
-            <nav class="side-nav">
-                <button class="nav-item" title={`New session (${mod}+N)`} onClick={() => newSession(app.homeCwd)}>
-                    <Plus size={17} />
-                    <span>New session</span>
+                <button ref={viewBtn} class={`hb ${viewOpen() ? "on" : ""}`} title="View options" aria-label="View options" onClick={() => setViewOpen(!viewOpen())}>
+                    <ListFilter size={16} />
                 </button>
                 <button
-                    class="nav-item"
+                    class="hb"
+                    title="Open project…"
+                    aria-label="Open project"
                     onClick={async () => {
                         const path = await chooseProject();
                         if (path) void openProject(path);
                     }}
                 >
-                    <FolderOpen size={17} />
-                    <span>Open project…</span>
+                    <FolderPlus size={16} />
                 </button>
-                <button class="nav-item" title={`Search (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
-                    <Search size={17} />
-                    <span>Search</span>
+                <button class="hb" title={`New session (${mod}+N)`} aria-label="New session" onClick={() => newSession(app.homeCwd)}>
+                    <SquarePen size={16} />
                 </button>
-            </nav>
-            <div class="side-section-head">
-                <span>{showArchived() ? "Archived" : "Sessions"}</span>
-                <Show when={waiting()}>
-                    <span class="badge warn" title="Sessions waiting for you">
-                        {waiting()}
-                    </span>
-                </Show>
-                <span class="grow" />
-                <button class="icon-btn" title="New session" onClick={() => newSession(app.homeCwd)}>
-                    <Plus size={16} />
-                </button>
-                <button ref={filterBtn} class="icon-btn" title="View options" onClick={() => setFilterOpen(!filterOpen())}>
-                    <ListFilter size={15} />
-                </button>
-                <Popover open={filterOpen()} anchor={() => filterBtn} onClose={() => setFilterOpen(false)} align="end" width={210}>
-                    <div class="menu-head">Group by</div>
+                <Popover open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
+                    <div class="menu-head">Group</div>
                     <button class="menu-item compact" onClick={() => setPrefs("groupBy", "date")}>
-                        <CircleDot size={14} /> Date <Show when={prefs.groupBy === "date"}><Check size={14} class="menu-check" /></Show>
+                        <span class="menu-label">Most recent first</span>
+                        <Show when={prefs.groupBy === "date"}>
+                            <Check size={14} class="menu-check" />
+                        </Show>
                     </button>
                     <button class="menu-item compact" onClick={() => setPrefs("groupBy", "project")}>
-                        <Layers size={14} /> Project <Show when={prefs.groupBy === "project"}><Check size={14} class="menu-check" /></Show>
+                        <span class="menu-label">By project</span>
+                        <Show when={prefs.groupBy === "project"}>
+                            <Check size={14} class="menu-check" />
+                        </Show>
                     </button>
                     <div class="menu-sep" />
-                    <button class="menu-item compact" onClick={() => { setShowArchived(!showArchived()); setFilterOpen(false); }}>
+                    <button class="menu-item compact" onClick={() => (setShowArchived(!showArchived()), setViewOpen(false))}>
                         <Archive size={14} /> {showArchived() ? "Show active sessions" : `Show archived (${app.archived.length})`}
                     </button>
                 </Popover>
             </div>
-            <div class="side-scroll">
-                <Show when={pinned().length}>
-                    <div class="side-group">
-                        <div class="side-group-label">
-                            <Pin size={13} /> Pinned <span class="count">{pinned().length}</span>
-                        </div>
-                        <For each={pinned()}>{(s) => <SessionRow s={s} />}</For>
+
+            <nav class="side-list" aria-label="Session list">
+                <Show when={showArchived()}>
+                    <div class="shelf">
+                        <span>Archived</span>
+                        <i />
+                        <button class="shelf-btn" onClick={() => setShowArchived(false)}>
+                            Done
+                        </button>
                     </div>
+                    <For each={app.archived}>{(s) => <SessionRow s={s} />}</For>
                 </Show>
-                <For each={groups()}>
-                    {(g) => (
-                        <div class="side-group">
-                            <div class="side-group-label">{g.label}</div>
-                            <For each={g.sessions}>{(s) => <SessionRow s={s} />}</For>
-                        </div>
-                    )}
-                </For>
-                <Show when={!list().length}>
-                    <div class="side-empty">{showArchived() ? "Nothing archived." : app.conn === "open" ? "No sessions yet. Start one from the composer." : "Connecting…"}</div>
+                <Show
+                    when={prefs.groupBy === "project"}
+                    fallback={
+                        <>
+                            <For each={cards().slice(0, shown())}>{(s) => <SessionCard s={s} />}</For>
+                            <Show when={cards().length > shown()}>
+                                <button class="slim more" onClick={() => setShown((n) => n + PAGE)}>
+                                    <Plus size={14} />
+                                    <span>Show {Math.min(PAGE, cards().length - shown())} more</span>
+                                </button>
+                            </Show>
+                        </>
+                    }
+                >
+                    <For each={byProject()}>
+                        {(g) => (
+                            <>
+                                <div class="shelf">
+                                    <span class="truncate">{g.name}</span>
+                                    <i />
+                                    <button class="shelf-btn" title={`New session in ${g.name}`} aria-label={`New session in ${g.name}`} onClick={() => newSession(g.cwd)}>
+                                        <Plus size={13} />
+                                    </button>
+                                </div>
+                                <For each={g.sessions}>{(s) => <SessionCard s={s} />}</For>
+                            </>
+                        )}
+                    </For>
                 </Show>
-            </div>
-            <div class="sidebar-foot">
-                <div class="profile" title={app.hello ? `${app.hello.user}@${app.hello.host}\n${app.hello.home}` : undefined}>
-                    <span class={`avatar ${personName(app.hello?.user) ? "" : "anon"}`}>
-                        <Show when={personName(app.hello?.user)} fallback={<User size={16} />}>
-                            {(n) => initials(n())}
-                        </Show>
-                    </span>
-                    <span class="profile-text">
-                        <span class="profile-name truncate">{personName(app.hello?.user) ?? "You"}</span>
-                        <span class="profile-sub">
-                            <span class={`conn conn-${app.conn}`} />
-                            <span class="truncate">{app.conn === "open" ? (app.hello?.host ?? "This computer") : "Reconnecting…"}</span>
-                        </span>
-                    </span>
-                </div>
-                <button class="icon-btn" title={`Settings (${mod}+,)`} onClick={() => setSettingsTab("general")}>
+                <Show when={settledList().length}>
+                    <div class="side-grow" />
+                    <button class="shelf settled-head" aria-expanded={prefs.settledOpen} onClick={() => setPrefs("settledOpen", !prefs.settledOpen)}>
+                        <span>Settled</span>
+                        <i />
+                        <ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
+                    </button>
+                    <Show when={prefs.settledOpen}>
+                        <For each={settledList()}>{(s) => <SessionRow s={s} />}</For>
+                    </Show>
+                </Show>
+                <Show when={!showArchived() && !cards().length && !settledList().length}>
+                    <div class="side-empty">{app.conn === "open" ? "No sessions yet. Start one from the composer." : "Connecting…"}</div>
+                </Show>
+                <Show when={showArchived() && !app.archived.length}>
+                    <div class="side-empty">Nothing archived.</div>
+                </Show>
+            </nav>
+
+            <div class="side-foot">
+                <span class={`conn conn-${app.conn}`} />
+                <span class="side-foot-text truncate" title={app.hello ? `${app.hello.user}@${app.hello.host}\n${app.hello.home}` : undefined}>
+                    {app.conn === "open" ? "This computer" : "Reconnecting…"}
+                </span>
+                <span class="grow" />
+                <button class="hb lg" title={`Settings (${mod}+,)`} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
                 </button>
             </div>
-            <div class="resize-handle" onPointerDown={onResize} />
-        </aside>
+        </SidebarFrame>
     );
 }

@@ -9,12 +9,13 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
-const { agentsFromTurns, replay, runsAgent, UiLog } = await import("../src/server/history");
+const { agentsFromTurns, replay, runsAgent, UiLog, withoutActionsNote } = await import("../src/server/history");
 const { DELEGATE_TOOL } = await import("../src/agent/delegation");
 const { mergePath } = await import("../src/server/login-env");
 const { Session, listAllSessions, findSessionAnywhere } = await import("../src/agent/session");
 const { Engine } = await import("../src/server/engine");
-import type { AgentRun, SessionState, Turn } from "../src/server/protocol";
+const { getProvider } = await import("../src/providers/registry");
+import type { AgentRun, SessionState, SessionSummary, Turn } from "../src/server/protocol";
 import type { Message } from "../src/providers/types";
 
 afterAll(() => iso.cleanup());
@@ -234,6 +235,33 @@ describe("replay", () => {
         expect([edit.diff?.added, edit.diff?.removed]).toEqual([1, 1]);
     });
 
+    test("a backend's note of what it did stays in history but not in the transcript", () => {
+        const note = "[Claude Code used: Bash(bun test), Edit(src/a.ts)]";
+        const segs = [
+            {
+                messages: [
+                    user("fix it"),
+                    { role: "assistant", provider: "claude-code", model: "opus", content: [{ type: "text", text: "Fixed and tested." }, { type: "text", text: note }] },
+                    user("again"),
+                    { role: "assistant", provider: "codex", model: "gpt", content: [{ type: "text", text: "[Codex used: Read(a.ts)]" }] },
+                    user("and you?"),
+                    // Another model's reply is left as written, even if it looks like one.
+                    { role: "assistant", provider: "p", model: "m", content: [{ type: "text", text: note }] },
+                ] as Message[],
+            },
+        ];
+        let n = 0;
+        const turns = replay({ segments: segs, current: segs[0]!.messages, ui: new UiLog(join(tempDir(), "z.jsonl"), "z", false), meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+        expect(turns.map((t) => t.blocks.map((b) => (b.t === "text" ? b.text : b.t)))).toEqual([["Fixed and tested."], [], [note]]);
+    });
+
+    test("an agent's report loses the note wherever it sits, and keeps text that only resembles it", () => {
+        expect(withoutActionsNote("Done.\n\n[Claude Code used: Read(a.ts), Grep(x])]")).toBe("Done.");
+        expect(withoutActionsNote("It was stopped. Its last message:\nHalf done.\n\n[Codex used: Bash(ls)]\n\n(It stopped at its limit of 200 model turns.)")).toBe("It was stopped. Its last message:\nHalf done.\n\n(It stopped at its limit of 200 model turns.)");
+        expect(withoutActionsNote("[Claude Code used: Bash(ls)]")).toBe("");
+        for (const kept of ["See [Codex used: x] in the log.", "[Gemini used: Read(a.ts)]", "Done.\n[Codex used: Bash(ls)]"]) expect(withoutActionsNote(kept)).toBe(kept);
+    });
+
     test("turns from before a compaction are kept, marked archived and not rewindable", () => {
         const segs = [{ messages: [user("old prompt")] }, { summary: "Summary.", messages: [user("Summary.", "prompt", { meta: { kind: "summary" } } as Partial<Message>), user("new prompt")] }];
         let n = 0;
@@ -276,7 +304,7 @@ describe("login shell PATH", () => {
 describe("engine", () => {
     test("with no models, listing doesn't loop (each list used to broadcast a change that asked for another)", async () => {
         let fetched = 0;
-        const engine = new Engine({ listModels: async () => (fetched++, []) });
+        const engine = new Engine({ listModels: async (o) => (o?.cachedOnly || fetched++, []) });
         const events: string[] = [];
         const client = { subs: new Set<string>(), send: (e: { type: string }) => events.push(e.type) };
         engine.clients.add(client as never);
@@ -296,6 +324,52 @@ describe("engine", () => {
         // Asking for a refresh still refreshes.
         await engine.handle(client as never, "models.list", { refresh: true });
         expect(fetched).toBe(2);
+        await engine.stop();
+    });
+    test("the model picker gets last run's lists at once, not after the slowest provider; the fresh ones replace them", async () => {
+        const provider = getProvider("anthropic")!;
+        const listing = (id: string, status: "cached" | "ok") => ({ provider, status, models: [{ provider: "anthropic", id }] });
+        let release!: () => void;
+        const slow = new Promise<void>((r) => (release = r));
+        const engine = new Engine({ listModels: async (o) => (o?.cachedOnly ? [listing("claude-old", "cached")] : (await slow, [listing("claude-new", "ok")])) });
+        const events: string[] = [];
+        const client = { subs: new Set<string>(), send: (e: { type: string }) => events.push(e.type) };
+        engine.clients.add(client as never);
+        const ids = async () => ((await engine.handle(client as never, "models.list", {})) as { models: { id: string }[] }[]).flatMap((p) => p.models.map((m) => m.id));
+        expect(await ids()).toEqual(["claude-old"]);
+        expect(events).not.toContain("models.changed");
+        release();
+        await engine.handle(client as never, "models.list", { refresh: false });
+        for (let i = 0; i < 20 && !events.includes("models.changed"); i++) await Bun.sleep(5);
+        expect(events).toContain("models.changed");
+        expect(await ids()).toEqual(["claude-new"]);
+        await engine.stop();
+    });
+
+    test("with nothing cached, the picker waits for the providers", async () => {
+        const provider = getProvider("anthropic")!;
+        const engine = new Engine({ listModels: async (o) => (o?.cachedOnly ? [] : [{ provider, status: "ok" as const, models: [{ provider: "anthropic", id: "claude-new" }] }]) });
+        const client = { subs: new Set<string>(), send: () => {} };
+        const got = (await engine.handle(client as never, "models.list", {})) as { models: { id: string }[] }[];
+        expect(got.flatMap((p) => p.models.map((m) => m.id))).toEqual(["claude-new"]);
+        await engine.stop();
+    });
+
+    test("a settled session is listed as settled, with the model it last used, until it's moved back", async () => {
+        const a = Session.create(join(tempDir(), "proj-settle"));
+        a.push({ role: "user", content: [{ type: "text", text: "set me aside" }], meta: { kind: "prompt" } });
+        a.setModel("openai:gpt-6");
+        const engine = new Engine({ listModels: async () => [] });
+        const upserts: SessionSummary[] = [];
+        const client = { subs: new Set<string>(), send: (e: { type: string; session?: SessionSummary }) => e.type === "sessions.upsert" && upserts.push(e.session!) };
+        engine.clients.add(client as never);
+        const find = async () => ((await engine.handle(client as never, "sessions.list", {})) as SessionSummary[]).find((s) => s.id === a.meta.id);
+        expect(await find()).toMatchObject({ settled: false, model: "openai:gpt-6" });
+        await engine.handle(client as never, "session.settle", { id: a.meta.id, settled: true });
+        expect(upserts.at(-1)).toMatchObject({ id: a.meta.id, settled: true });
+        expect(await find()).toMatchObject({ settled: true, pinned: false, archived: false });
+        await engine.handle(client as never, "session.settle", { id: a.meta.id, settled: false });
+        expect(await find()).toMatchObject({ settled: false });
         await engine.stop();
     });
 });

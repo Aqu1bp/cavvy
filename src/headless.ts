@@ -9,13 +9,13 @@ import { buildSystemPrompt } from "./agent/system-prompt";
 import { loadSettings, type Effort, type Settings } from "./config/settings";
 import type { PermissionMode } from "./permissions/modes";
 import { PermissionChecker } from "./permissions/checker";
-import { AutoClassifier } from "./permissions/classifier";
+import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "./permissions/classifier";
 import { McpManager } from "./mcp/manager";
 import { BUILTIN_TOOLS } from "./tools/index";
 import type { Tool, ToolState } from "./tools/types";
 import { killAllShells } from "./tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "./tools/web-tools";
-import { cachedListings, clientFor, defaultModelFrom, listAllModels, lookupModel, resolveModelInfo, smallModelFor } from "./providers/models";
+import { cachedListings, clientFor, defaultModelFrom, listAllModels, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "./providers/models";
 import { getProvider, resolveBaseUrl } from "./providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type Usage } from "./providers/types";
 import { addUsage, costOf, emptyUsage } from "./providers/pricing";
@@ -146,17 +146,18 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         }
         return { client, model: smallModelFor(model!.provider, listings) ?? model! };
     };
-    const complete = async (system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean }) => {
-        const s = opts?.main ? { client, model: model! } : await smallClient();
+    const complete = async (system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }) => {
+        // The reviewer (with none, the session's own model), the session's model, or the small one.
+        const s = opts?.review ? ((await reviewTarget(settings.reviewModel)) ?? { client, model: model! }) : opts?.main ? { client, model: model! } : await smallClient();
         // Not a session message, so redact here (WebFetch pages, reviewer prompts).
-        const res = await s.client.stream({ model: s.model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal }, () => {});
+        const res = await s.client.stream({ model: s.model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) }, () => {});
         if (res.usage) {
             const c = costOf(res.usage, s.model).usd;
             session.recordUsage(modelRef(s.model), res.usage, c);
             totalCost += c;
             totalUsage = addUsage(totalUsage, res.usage);
         }
-        return textOf(res);
+        return opts?.review ? reviewText(res) : textOf(res);
     };
 
     // --append-system-prompt isn't frozen in: the agent adds this run's to every request.

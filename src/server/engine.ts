@@ -77,12 +77,13 @@ export class RpcError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// The GUI's own state: recent projects, pinned and archived sessions.
+// The GUI's own state: recent projects, pinned, settled and archived sessions.
 
 interface GuiStore {
     recent?: { path: string; at: number }[];
     pinned?: string[];
     archived?: string[];
+    settled?: string[];
 }
 
 const storeFile = () => join(harnessHome(), "gui.json");
@@ -173,7 +174,7 @@ export class Engine {
     }
 
     async start() {
-        void this.refreshListings();
+        void this.firstListings();
     }
 
     async stop() {
@@ -230,6 +231,26 @@ export class Engine {
 
     /** Listed at least once since the server started (an empty list is then really empty). */
     private listed = false;
+    /** Last run's lists, read without asking any provider; whether they were shown before the fresh ones came. */
+    private cachedListings?: Promise<boolean>;
+
+    /**
+     * Until the providers have answered, what was cached last time (of any
+     * age), so the model picker doesn't wait for the slowest of them (a gcloud
+     * that doesn't answer held it up for 30s). The fresh lists replace it.
+     */
+    private firstListings(): Promise<unknown> {
+        const fresh = this.refreshListings();
+        this.cachedListings ??= (this.o.listModels ?? listAllModels)({ cachedOnly: true }).then(
+            (l) => {
+                if (this.listed || !l.length) return this.listed;
+                this.listings = l;
+                return true;
+            },
+            () => false,
+        );
+        return Promise.race([this.cachedListings, fresh.then(() => true)]).then((shown): unknown => (shown ? undefined : fresh));
+    }
 
     refreshListings(force = false): Promise<ProviderListing[]> {
         if (this.refreshing && !force) return this.refreshing;
@@ -348,6 +369,8 @@ export class Engine {
             status: rt.status,
             pinned: (store.pinned ?? []).includes(rt.id),
             archived: (store.archived ?? []).includes(rt.id),
+            settled: (store.settled ?? []).includes(rt.id),
+            model: rt.session.model,
             live: true,
         };
     }
@@ -356,9 +379,10 @@ export class Engine {
         const store = readStore();
         const pinned = new Set(store.pinned ?? []);
         const arch = new Set(store.archived ?? []);
+        const settled = new Set(store.settled ?? []);
         const out = new Map<string, SessionSummary>();
         for (const s of listAllSessions(limit + arch.size)) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), live: false });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false });
         }
         for (const rt of this.runtimes.values()) {
             if (!rt.session.messages.length && !rt.busy) continue;
@@ -575,6 +599,7 @@ export class Engine {
         return {
             model: s.model,
             smallModel: s.smallModel,
+            reviewModel: s.reviewModel,
             effort: s.effort,
             defaultMode: s.permissions?.defaultMode,
             showThinking: s.showThinking,
@@ -589,6 +614,7 @@ export class Engine {
         updateSettings("user", cwd, (s) => {
             if ("model" in patch) s.model = patch.model || undefined;
             if ("smallModel" in patch) s.smallModel = patch.smallModel || undefined;
+            if ("reviewModel" in patch) s.reviewModel = patch.reviewModel || undefined;
             if ("effort" in patch) s.effort = patch.effort && EFFORT_LEVELS.includes(patch.effort as Effort) ? (patch.effort as Effort) : undefined;
             if ("showThinking" in patch) s.showThinking = Boolean(patch.showThinking);
             if ("autoCompact" in patch) s.autoCompact = patch.autoCompact !== false;
@@ -668,6 +694,13 @@ export class Engine {
                 const rt = this.runtime(p.id);
                 const images = Array.isArray(p.images) ? (p.images as { mediaType: unknown; data: unknown }[]).filter(validImage).map((i): ImagePart => ({ type: "image", mediaType: String(i.mediaType), data: String(i.data) })) : undefined;
                 this.remember(rt.ws.cwd);
+                // Set aside, it's back in play once you send to it.
+                if ((readStore().settled ?? []).includes(rt.id)) {
+                    updateStore((s) => {
+                        s.settled = (s.settled ?? []).filter((x) => x !== rt.id);
+                    });
+                    this.sessionChanged(rt);
+                }
                 return rt.send(str(p.text ?? "", "text"), images?.length ? images : undefined);
             }
             case "session.interrupt":
@@ -727,10 +760,11 @@ export class Engine {
                 this.runtime(p.id).dequeue(num(p.index, -1));
                 return null;
             case "session.pin":
+            case "session.settle":
             case "session.archive": {
                 const id = str(p.id, "id");
-                const key = method === "session.pin" ? "pinned" : "archived";
-                const on = Boolean(method === "session.pin" ? p.pinned : p.archived);
+                const key = method === "session.pin" ? "pinned" : method === "session.settle" ? "settled" : "archived";
+                const on = Boolean(p[key]);
                 updateStore((s) => {
                     const list = new Set(s[key] ?? []);
                     if (on) list.add(id);
@@ -754,7 +788,8 @@ export class Engine {
             case "session.export":
                 return { markdown: this.runtime(p.id).exportMarkdown() };
             case "models.list":
-                if (p.refresh || !this.listed) await this.refreshListings(Boolean(p.refresh));
+                if (p.refresh) await this.refreshListings(true);
+                else if (!this.listed) await this.firstListings();
                 return this.modelsList();
             case "providers.list":
                 return this.providersList();

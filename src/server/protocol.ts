@@ -351,6 +351,10 @@ export interface SessionSummary {
     status: SessionStatus;
     pinned: boolean;
     archived: boolean;
+    /** Set aside: done with for now, listed apart from the sessions still in play. */
+    settled: boolean;
+    /** The model it last used ("provider:id"). */
+    model?: string;
     /** Loaded in the server right now. */
     live: boolean;
 }
@@ -432,6 +436,8 @@ export interface ChangesInfo {
 export interface GuiSettings {
     model?: string;
     smallModel?: string;
+    /** The auto-mode reviewer. Unset: Claude Sonnet 5.5 with an Anthropic key, else the session's model. */
+    reviewModel?: string;
     effort?: EffortLevel;
     defaultMode?: PermissionModeId;
     showThinking?: boolean;
@@ -489,6 +495,7 @@ export interface Methods {
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };
+    "session.settle": { params: { id: string; settled: boolean }; result: null };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
     /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };

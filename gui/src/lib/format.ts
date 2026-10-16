@@ -92,3 +92,24 @@ export function langOf(path: string): string | undefined {
     };
     return ext ? map[ext] : undefined;
 }
+
+/** "now", "5m", "3h", "2d", "1w", "4mo", "2y": for narrow places like the sidebar. */
+export function since(ms: number, now = Date.now()): string {
+    const s = Math.max(0, Math.round((now - ms) / 1000));
+    if (s < 45) return "now";
+    if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m`;
+    if (s < 86400) return `${Math.round(s / 3600)}h`;
+    const d = Math.floor(s / 86400);
+    if (d < 7) return `${d}d`;
+    if (d < 35) return `${Math.floor(d / 7)}w`;
+    if (d < 365) return `${Math.max(1, Math.floor(d / 30))}mo`;
+    return `${Math.floor(d / 365)}y`;
+}
+
+/** Two letters for a project: "my-own-harness" -> "MH", "api" -> "AP". */
+export function monogram(name: string): string {
+    const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+    if (!words.length) return "?";
+    const s = words.length > 1 ? words[0]![0]! + words[words.length - 1]![0]! : words[0]!.slice(0, 2);
+    return s.toUpperCase();
+}

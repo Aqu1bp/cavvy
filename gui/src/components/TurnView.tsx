@@ -1,13 +1,13 @@
 import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, ChevronRight, FileDiff, Info, RotateCcw, SquareTerminal } from "lucide-solid";
-import type { Block, CompactBlock, FileDiff as Diff, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { basename, clock, duration, plural, stripAnsi } from "../lib/format";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, Info, MessageSquareText, RotateCcw, SquareTerminal } from "lucide-solid";
+import type { AgentRun, Block, CompactBlock, FileDiff as Diff, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
+import { duration, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
-import { prefs, setPrefs } from "../state/prefs";
-import { ActivityGroup, groupBlocks } from "./blocks/Activity";
+import { prefs } from "../state/prefs";
+import { openReview } from "../state/actions";
+import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
-import { DiffStat } from "./blocks/DiffView";
-import { CopyButton, Logo, Spinner } from "./ui/bits";
+import { CopyButton, Spinner } from "./ui/bits";
 
 export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }) {
     const [expanded, setExpanded] = createSignal(false);
@@ -43,18 +43,22 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
     );
 }
 
-function Thinking(p: { block: ThinkingBlock; live: boolean }) {
+/** The model's reasoning, as a work-log row: "Thought for 41s", opening into the text. */
+export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const [open, setOpen] = createSignal(false);
     const label = () => (p.live ? "Thinking" : p.block.durationMs && p.block.durationMs >= 1500 ? `Thought for ${duration(p.block.durationMs)}` : "Thought briefly");
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
-            <div class={`thinking ${open() ? "open" : ""}`}>
-                <button class="activity-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                    <span class="activity-chevron">
-                        <ChevronRight size={14} />
+            <div class={`wgroup ${open() ? "open" : ""}`}>
+                <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <span class="slot">
+                        <Brain size={16} />
                     </span>
-                    <span class={`activity-text ${p.live ? "shimmer" : ""}`}>{label()}</span>
+                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
+                    <span class="end">
+                        <ChevronRight size={14} class="chev" />
+                    </span>
                 </button>
                 <Show when={open()} fallback={<Show when={p.live && preview()}><div class="thinking-peek">{preview()}</div></Show>}>
                     <div class="thinking-text">{p.block.text.trim()}</div>
@@ -64,7 +68,31 @@ function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     );
 }
 
-function Notice(p: { block: NoticeBlock }) {
+/** Something the model said on its way (more work followed): one quoted line. */
+export function Narration(p: { block: TextBlock }) {
+    const [open, setOpen] = createSignal(false);
+    const line = () => p.block.text.replace(/```[\s\S]*?```/g, " ").replace(/[*_`>#]/g, "").replace(/\s+/g, " ").trim();
+    return (
+        <div class={`wgroup ${open() ? "open" : ""}`}>
+            <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                <span class="slot">
+                    <MessageSquareText size={16} />
+                </span>
+                <span class="wtext truncate">“{line()}”</span>
+                <span class="end">
+                    <ChevronRight size={14} class="chev" />
+                </span>
+            </button>
+            <Show when={open()}>
+                <div class="wkids narration">
+                    <Markdown text={p.block.text} />
+                </div>
+            </Show>
+        </div>
+    );
+}
+
+export function Notice(p: { block: NoticeBlock }) {
     return (
         <div class={`notice ${p.block.level}`}>
             <Switch fallback={<Info size={14} />}>
@@ -117,21 +145,40 @@ function Shell(p: { block: ShellBlock }) {
     );
 }
 
-export function LiveStatus(p: { state: SessionState; since?: number }) {
-    const label = () => p.state.activity?.label ?? "Working";
-    const elapsed = () => duration(Math.max(0, now() - (p.since ?? p.state.activity?.since ?? now())));
+/** Labels that say more than "Working": the turn is in a special state. */
+const SPECIAL = /^(Retrying|Compacting|Interrupting|Connecting)/;
+
+/** At the top of the turn while it runs: "Working for 48s", Esc to interrupt. */
+export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean }) {
+    const elapsed = () => duration(Math.max(0, now() - (p.since ?? p.state.activity?.since ?? now()))).replace(/^(\d+)ms$/, "0s");
+    const special = () => (p.state.activity && SPECIAL.test(p.state.activity.label) ? p.state.activity : undefined);
     return (
-        <div class="live-status">
-            <Spinner size={13} class="tone-accent" />
-            <span class="shimmer">{label()}</span>
-            <span class="live-meta">
-                {elapsed()}
-                <Show when={p.state.activity?.detail}> · {p.state.activity!.detail}</Show>
-            </span>
-            <span class="live-hint">
-                <kbd>Esc</kbd> to interrupt
-            </span>
-        </div>
+        <>
+            <div class="live-head">
+                <Show
+                    when={!p.waiting}
+                    fallback={
+                        <span class="tone-warn live-label">
+                            Waiting for you <span class="muted num">· {elapsed()}</span>
+                        </span>
+                    }
+                >
+                    <Show when={special()} fallback={<span class="shimmer num live-label">Working for {elapsed()}</span>}>
+                        {(a) => (
+                            <span class="live-label" title={a().detail}>
+                                <span class="shimmer">{a().label}</span>
+                                <span class="muted num"> · {elapsed()}</span>
+                            </span>
+                        )}
+                    </Show>
+                </Show>
+                <span class="grow" />
+                <span class="live-hint">
+                    <kbd>Esc</kbd> to interrupt
+                </span>
+            </div>
+            <div class="rule" />
+        </>
     );
 }
 
@@ -148,35 +195,57 @@ function turnChanges(t: Turn): { path: string; status: Diff["status"]; added: nu
     return [...files.values()];
 }
 
-function ChangesCard(p: { turn: Turn; project: string; branch?: string }) {
+/** The path relative to the project, split for the eye: a faint folder, a clear name. */
+export function SplitPath(p: { path: string; cwd?: string }) {
+    const rel = () => (p.cwd && p.path.startsWith(p.cwd + "/") ? p.path.slice(p.cwd.length + 1) : p.path);
+    const cut = () => rel().lastIndexOf("/");
+    return (
+        <span class="truncate split-path" title={p.path}>
+            <span class="dir">{cut() >= 0 ? rel().slice(0, cut() + 1) : ""}</span>
+            <span class="name">{cut() >= 0 ? rel().slice(cut() + 1) : rel()}</span>
+        </span>
+    );
+}
+
+const FILES_SHOWN = 6;
+
+function ChangesCard(p: { turn: Turn; cwd: string }) {
     const files = createMemo(() => turnChanges(p.turn));
     const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
+    const [all, setAll] = createSignal(false);
     return (
         <Show when={files().length}>
-            <div class="result-card">
-                <div class="rc-title">{files().length === 1 ? `Changed ${basename(files()[0]!.path)}` : `Changed ${plural(files().length, "file")}`}</div>
-                <div class="rc-sub">
-                    <FileDiff size={14} />
-                    <span class="truncate">{p.project}</span>
-                    <Show when={p.branch}>
-                        <span class="rc-dot">·</span>
-                        <span class="truncate">{p.branch}</span>
-                    </Show>
-                    <span class="rc-dot">·</span>
-                    <DiffStat added={total().added} removed={total().removed} />
-                </div>
-                <div class="rc-actions">
-                    <button class="btn primary" onClick={() => setPrefs({ panel: true, panelTab: "changes" })}>
-                        Review changes
-                    </button>
-                    <span class="rc-files truncate" title={files().map((f) => f.path).join("\n")}>
-                        {files()
-                            .slice(0, 3)
-                            .map((f) => basename(f.path))
-                            .join(", ")}
-                        {files().length > 3 ? ` and ${files().length - 3} more` : ""}
+            <div class="files-card">
+                <div class="files-head">
+                    <span class="files-title">{plural(files().length, "changed file")}</span>
+                    <span class="stat">
+                        <span class="add">+{total().added}</span>
+                        <span class="del">−{total().removed}</span>
                     </span>
+                    <span class="grow" />
+                    <button class="ghost-btn" onClick={() => openReview()}>
+                        <FileDiff size={14} /> Review changes
+                    </button>
                 </div>
+                <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
+                    {(f) => (
+                        <button class="frow" onClick={() => openReview(f.path)}>
+                            <SplitPath path={f.path} cwd={p.cwd} />
+                            <Show when={f.status === "added"}>
+                                <span class="frow-tag">new</span>
+                            </Show>
+                            <span class="stat">
+                                <span class="add">+{f.added}</span>
+                                <span class="del">−{f.removed}</span>
+                            </span>
+                        </button>
+                    )}
+                </For>
+                <Show when={files().length > FILES_SHOWN && !all()}>
+                    <button class="frow more" onClick={() => setAll(true)}>
+                        {plural(files().length - FILES_SHOWN, "more file")}
+                    </button>
+                </Show>
             </div>
         </Show>
     );
@@ -190,9 +259,33 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
     blocked: "Blocked by a hook",
 };
 
-export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; onRewind?: (index: number) => void }) {
+type Seg = { kind: "work"; items: Item[] } | { kind: "item"; item: Item };
+
+/** Work (tool runs, thinking, what was said along the way) vs what's left standing: the reply, notices. */
+function segments(items: Item[]): Seg[] {
+    let lastWork = -1;
+    items.forEach((it, i) => {
+        if (it.kind === "activity" || (it.kind === "block" && it.block.t === "thinking")) lastWork = i;
+    });
+    const isWork = (it: Item, i: number) => it.kind === "activity" || (it.kind === "block" && (it.block.t === "thinking" || (it.block.t === "text" && i < lastWork)));
+    const out: Seg[] = [];
+    items.forEach((it, i) => {
+        if (isWork(it, i)) {
+            const prev = out[out.length - 1];
+            if (prev?.kind === "work") prev.items.push(it);
+            else out.push({ kind: "work", items: [it] });
+        } else out.push({ kind: "item", item: it });
+    });
+    return out;
+}
+
+export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void }) {
     const items = createMemo(() => groupBlocks(p.turn.blocks));
+    const segs = createMemo(() => segments(items()));
     const running = () => p.turn.status === "running";
+    const hasWork = () => segs().some((s) => s.kind === "work");
+    const [unfolded, setUnfolded] = createSignal(false);
+    const showWork = () => running() || unfolded();
     const hasOutput = () => p.turn.blocks.length > 0 || running();
     const lastText = () => {
         for (let i = p.turn.blocks.length - 1; i >= 0; i--) {
@@ -202,13 +295,36 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; on
         }
         return undefined;
     };
+    const lastBlockId = () => p.turn.blocks[p.turn.blocks.length - 1]?.id;
     const reply = () =>
         p.turn.blocks
             .filter((b): b is TextBlock => b.t === "text")
             .map((b) => b.text)
             .join("\n\n");
     const waitingOnUser = () => running() && p.state.interactions.length > 0;
-    const showStatus = () => running() && p.last && !waitingOnUser();
+    const worked = () => (p.turn.endedAt && p.turn.startedAt ? duration(p.turn.endedAt - p.turn.startedAt) : undefined);
+
+    // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
+    const renderItem = (it: () => Item, inWork: boolean) => (
+        <Switch>
+            <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
+                {(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} agents={p.agents} />}
+            </Match>
+            <Match when={it().kind === "block" && (it() as { block: Block }).block}>
+                {(b) => (
+                    <Switch>
+                        <Match when={b().t === "text" && (b() as TextBlock)}>
+                            {(t) => (inWork ? <Narration block={t()} /> : <Markdown text={t().text} streaming={running() && t().id === lastText()} />)}
+                        </Match>
+                        <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === lastBlockId()} />}</Match>
+                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
+                        <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
+                        <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
+                    </Switch>
+                )}
+            </Match>
+        </Switch>
+    );
 
     return (
         <article class={`turn ${p.turn.archived ? "archived" : ""}`} data-turn={p.turn.id}>
@@ -216,54 +332,47 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; on
                 <UserPrompt turn={p.turn} onRewind={p.onRewind} />
             </Show>
             <Show when={hasOutput()}>
-                <div class="assistant">
-                    <Show when={p.turn.prompt}>
-                        <div class="assistant-head">
-                            <Logo size={28} />
-                            <span class="assistant-name">Harness</span>
-                            <Show when={p.turn.startedAt}>
-                                <span class="assistant-time">{clock(p.turn.startedAt!)}</span>
+                <div class="reply">
+                    <Show when={running() && p.last}>
+                        <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
+                    </Show>
+                    <Show when={!running() && hasWork()}>
+                        <button class="fold" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
+                            {worked() ? (
+                                <>
+                                    Worked for <span class="num">{worked()}</span>
+                                </>
+                            ) : (
+                                "Work log"
+                            )}
+                            <ChevronRight size={14} class="chev" />
+                        </button>
+                        <div class="rule" />
+                    </Show>
+                    <Index each={segs()}>
+                        {(seg) => (
+                            <Show when={seg().kind === "work"} fallback={renderItem(() => (seg() as { item: Item }).item, false)}>
+                                <Show when={showWork()}>
+                                    <div class="worklog">
+                                        <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it, true)}</Index>
+                                    </div>
+                                </Show>
+                            </Show>
+                        )}
+                    </Index>
+                    <Show when={!running() && !p.turn.archived}>
+                        <ChangesCard turn={p.turn} cwd={p.state.cwd} />
+                    </Show>
+                    <Show when={!running() && p.turn.prompt}>
+                        <div class="turn-foot">
+                            <Show when={END_TEXT[p.turn.status]}>
+                                <span class={`end-${p.turn.status}`}>{END_TEXT[p.turn.status]}</span>
+                            </Show>
+                            <Show when={reply().trim()}>
+                                <CopyButton text={reply} label="Copy response" class="foot-btn" />
                             </Show>
                         </div>
                     </Show>
-                    <div class="assistant-body">
-                        <Index each={items()}>
-                            {(item) => (
-                                <Switch>
-                                    <Match when={item().kind === "activity" && (item() as Extract<ReturnType<typeof items>[number], { kind: "activity" }>)}>
-                                        {(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} />}
-                                    </Match>
-                                    <Match when={item().kind === "block" && (item() as { block: Block }).block}>
-                                        {(b) => (
-                                            <Switch>
-                                                <Match when={b().t === "text" && (b() as TextBlock)}>{(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} />}</Match>
-                                                <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === p.turn.blocks[p.turn.blocks.length - 1]?.id} />}</Match>
-                                                <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
-                                                <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
-                                                <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
-                                            </Switch>
-                                        )}
-                                    </Match>
-                                </Switch>
-                            )}
-                        </Index>
-                        <Show when={showStatus()}>
-                            <LiveStatus state={p.state} />
-                        </Show>
-                        <Show when={!running() && !p.turn.archived}>
-                            <ChangesCard turn={p.turn} project={p.state.projectName} branch={p.state.branch} />
-                        </Show>
-                        <Show when={!running() && p.turn.prompt}>
-                            <div class="turn-foot">
-                                <Show when={END_TEXT[p.turn.status]} fallback={<Show when={p.turn.endedAt && p.turn.startedAt}><span>Worked for {duration(p.turn.endedAt! - p.turn.startedAt!)}</span></Show>}>
-                                    <span class={`end-${p.turn.status}`}>{END_TEXT[p.turn.status]}</span>
-                                </Show>
-                                <Show when={reply().trim()}>
-                                    <CopyButton text={reply} label="Copy response" class="foot-btn" />
-                                </Show>
-                            </div>
-                        </Show>
-                    </div>
                 </div>
             </Show>
         </article>
