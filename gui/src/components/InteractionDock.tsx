@@ -1,11 +1,11 @@
-// What the agent is waiting on you for: a permission, a question, a plan.
+// What the agent is waiting on you for: a permission, a question, a plan, a secret.
 // A tab on the composer's top edge, the box it blocks. Its buttons never take
 // focus by themselves, so an Enter meant for the input can't approve
 // anything; the number keys and Esc work when you're not typing.
 
 import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Bot, ClipboardList, FilePen, Globe, MessageCircleQuestion, Plug, ShieldAlert, SquareTerminal } from "lucide-solid";
-import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction } from "@shared/protocol";
+import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, Globe, KeyRound, MessageCircleQuestion, Plug, ShieldAlert, SquareTerminal } from "lucide-solid";
+import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
@@ -53,6 +53,9 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
                         </Match>
                         <Match when={it.kind === "plan"}>
                             <PlanCard sessionId={p.sessionId} it={it as PlanInteraction} />
+                        </Match>
+                        <Match when={it.kind === "secret"}>
+                            <SecretCard sessionId={p.sessionId} it={it as SecretInteraction} />
                         </Match>
                     </Switch>
                 </div>
@@ -164,6 +167,11 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     </Show>
                     <Show when={p.it.hosts?.length}>
                         <div class="itab-desc">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
+                    </Show>
+                    <Show when={p.it.secrets?.length}>
+                        <div class="itab-desc secret-names">
+                            <KeyRound size={13} /> It gets <span class="mono">{p.it.secrets!.map((n) => `$${n}`).join(", ")}</span> in its environment.
+                        </div>
                     </Show>
                 </Show>
                 <Show when={p.it.diff}>
@@ -297,6 +305,96 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                         Answer
                     </button>
                 </Show>
+            </div>
+        </>
+    );
+}
+
+/** Same minimum as the server's: anything shorter couldn't be kept out of the output. */
+const MIN_SECRET = 8;
+/** Masks a text field without making it a password field, which browsers offer to save. */
+const MASKS = typeof CSS !== "undefined" && CSS.supports("-webkit-text-security", "disc");
+
+/**
+ * The value stays in the input element alone (no signal, no draft, no
+ * storage) and is cleared once it's sent or the card goes away.
+ */
+function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
+    let input!: HTMLInputElement;
+    const [shown, setShown] = createSignal(false);
+    const [ready, setReady] = createSignal(false);
+    const [busy, setBusy] = createSignal(false);
+    // Exactly as typed: spaces can be part of a password.
+    const value = () => input.value;
+    const check = () => setReady(value().length >= MIN_SECRET);
+    const provide = async () => {
+        if (busy() || !ready()) return;
+        setBusy(true);
+        const ok = await respond(p.sessionId, p.it.id, { kind: "secret", value: value() });
+        if (ok) input.value = "";
+        setBusy(false);
+        check();
+    };
+    const decline = () => {
+        input.value = "";
+        void respond(p.sessionId, p.it.id, { kind: "secret" });
+    };
+    useKeys((k) => {
+        if (k !== "Escape") return false;
+        decline();
+        return true;
+    });
+    // Not while typing elsewhere: what was meant for the message box would land in here.
+    onMount(() => typing() || input.focus());
+    onCleanup(() => {
+        if (input) input.value = "";
+    });
+    return (
+        <>
+            <Head icon={<KeyRound size={14} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
+            <div class="itab-body">
+                <p class="secret-purpose">{p.it.purpose}</p>
+                <div class="secret-field">
+                    <input
+                        ref={input}
+                        class={`itab-input mono ${!shown() && MASKS ? "masked" : ""}`}
+                        type={shown() || MASKS ? "text" : "password"}
+                        name={`secret-${p.it.id}`}
+                        autocomplete={shown() || MASKS ? "off" : "new-password"}
+                        autocapitalize="off"
+                        autocorrect="off"
+                        spellcheck={false}
+                        data-1p-ignore=""
+                        data-lpignore="true"
+                        data-bwignore=""
+                        data-form-type="other"
+                        placeholder={`Value for ${p.it.name}`}
+                        aria-label={`Value for ${p.it.name}`}
+                        onInput={check}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                                e.preventDefault();
+                                void provide();
+                            } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                decline();
+                            }
+                        }}
+                    />
+                    <button class="act hb sm" title={shown() ? "Hide" : "Show"} aria-label={shown() ? "Hide the value" : "Show the value"} aria-pressed={shown()} onClick={() => setShown((s) => !s)}>
+                        {shown() ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                </div>
+            </div>
+            <div class="itab-actions">
+                <button class="pbtn quiet" onClick={decline}>
+                    Decline <kbd>Esc</kbd>
+                </button>
+                <span class="spacer" />
+                <button class="pbtn primary" disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
+                    Provide
+                </button>
             </div>
         </>
     );

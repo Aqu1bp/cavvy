@@ -28,6 +28,8 @@ function shellComplained(output: string, shell = pickShell()): boolean {
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
+/** A line still being written is held back up to this long (see BashOutput), like lineRedactor's. */
+const MAX_PARTIAL_LINE = 64 * 1024;
 
 /**
  * A sandboxed command's environment: package caches it can write and, with
@@ -213,7 +215,8 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         return undefined;
     },
     async run(input, ctx) {
-        let env = childEnv(ctx.settings.env);
+        // childEnv leaves out every registered secret; this session's own go back in, for its shell alone.
+        let env = { ...childEnv(ctx.settings.env), ...ctx.state.secrets?.env() };
         let proxy: CommandProxy | undefined;
         if (ctx.sandbox) ({ env, proxy } = await sandboxedEnv(env, ctx.sandbox, input.allowedHosts));
         if (input.run_in_background) return startBackground(input.command, ctx, env, proxy);
@@ -346,7 +349,10 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
     const onChunk = (b: Buffer) => {
         shell.output += b.toString("utf-8");
         if (shell.output.length > BG_BUFFER) {
-            const drop = shell.output.length - BG_BUFFER;
+            let drop = shell.output.length - BG_BUFFER;
+            // From a line's start: the tail of a secret cut off here wouldn't be redacted.
+            const nl = shell.output.indexOf("\n", drop);
+            if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
             shell.output = shell.output.slice(drop);
             shell.readOffset = Math.max(0, shell.readOffset - drop);
         }
@@ -387,8 +393,15 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
     async run(input, ctx) {
         const sh = ctx.state.shells.get(input.bash_id);
         if (!sh) return { content: `No background shell with id ${input.bash_id}. Active: ${[...ctx.state.shells.keys()].join(", ") || "none"}`, isError: true };
-        let fresh = cleanOutput(sh.output.slice(sh.readOffset));
-        sh.readOffset = sh.output.length;
+        // While it runs, a line still being written waits: half a secret now and half next time would each get past redaction.
+        let end = sh.output.length;
+        if (sh.exitCode === null) {
+            const nl = sh.output.lastIndexOf("\n", end - 1);
+            const lineStart = Math.max(nl + 1, sh.readOffset);
+            if (end - lineStart <= MAX_PARTIAL_LINE) end = lineStart;
+        }
+        let fresh = cleanOutput(sh.output.slice(sh.readOffset, end));
+        sh.readOffset = end;
         if (input.filter) {
             try {
                 const re = new RegExp(input.filter);

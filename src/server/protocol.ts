@@ -274,6 +274,8 @@ export interface PermissionInteraction {
     agentLabel?: string;
     /** The sub-agent asking (an AgentRun id), when one is. */
     agentId?: string;
+    /** The secrets a command gets in its environment (run_with_secrets), by name. */
+    secrets?: string[];
     options: PermissionOption[];
 }
 
@@ -293,12 +295,24 @@ export interface PlanInteraction {
     plan: string;
 }
 
-export type Interaction = PermissionInteraction | QuestionInteraction | PlanInteraction;
+/** The agent asks the user to type in a secret (RequestSecret). `name` and `purpose` are the model's words. */
+export interface SecretInteraction {
+    kind: "secret";
+    id: string;
+    toolId?: string;
+    /** The environment variable it becomes. */
+    name: string;
+    purpose: string;
+}
+
+export type Interaction = PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction;
 
 export type InteractionResponse =
     | { kind: "permission"; choice: PermissionOption["id"]; feedback?: string }
     | { kind: "question"; answers?: string[] }
-    | { kind: "plan"; approved: boolean; mode?: PermissionModeId; feedback?: string };
+    | { kind: "plan"; approved: boolean; mode?: PermissionModeId; feedback?: string }
+    /** No value: declined. The value goes to the session's memory and nowhere else. */
+    | { kind: "secret"; value?: string };
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -374,6 +388,8 @@ export interface SessionState {
     filesChanged: number;
     /** Background shells started by the agent. */
     shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number }[];
+    /** The names of the secrets the user gave this session (never their values). */
+    secrets: string[];
 }
 
 export interface SessionSnapshot {
@@ -735,6 +751,8 @@ export interface Methods {
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
+    /** New shells no longer get this secret. */
+    "session.forgetSecret": { params: { id: string; name: string }; result: null };
     /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };
     "session.export": { params: { id: string }; result: { markdown: string } };

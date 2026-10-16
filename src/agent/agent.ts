@@ -49,7 +49,9 @@ import { isAgentBackend, type AgentBackendClient, type BackendHost, type Backend
 import { getProvider } from "../providers/registry";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
-import { registerTools, type Registration } from "../mcp/server";
+import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
+import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
+import { BashTool } from "../tools/bash";
 import {
     DELEGATE_TOOL,
     DELEGATION_LIMITS,
@@ -108,6 +110,8 @@ export interface PermissionRequest {
     classifierReason?: string;
     /** Ends when the request no longer matters (its sub-agent was stopped): the prompt is withdrawn. */
     signal?: AbortSignal;
+    /** run_with_secrets: the secrets the command gets in its environment, by name. Prompts show them. */
+    secrets?: string[];
 }
 
 export interface PermissionResponse {
@@ -318,6 +322,9 @@ export class Agent {
     /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
     private delegations?: Delegations;
     private registration?: Registration;
+    /** What the harness MCP server offers this turn, and its instructions (read by the server on each request). */
+    private serverTools: ServerTool[] = [];
+    private serverInstructions = "";
     /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
     private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
     private disposed = false;
@@ -848,28 +855,49 @@ export class Agent {
     // Delegation (src/agent/delegation.ts): a backend main agent hands tasks
     // to other providers' models through the harness's MCP tools.
 
-    /** The MCP server for this turn; none for sub-agents, when turned off, or with no other provider to delegate to. */
+    /**
+     * The MCP server for this turn; none for sub-agents. Delegation tools when it's on and there's another provider to
+     * delegate to; secret tools when there's someone to ask.
+     */
     private orchestrator(): OrchestratorServer | undefined {
-        if (this.o.isSubagent || this.disposed || this.o.settings().delegation === false) return undefined;
+        if (this.o.isSubagent || this.disposed) return undefined;
         const caller = this.model.provider;
-        if (!delegationAvailable(caller, this.listings())) return undefined;
-        const tasks = this.tasks();
-        const tools = orchestratorTools({
-            caller: () => this.model.provider,
-            listings: () => this.listings(),
-            projectRoot: () => this.state.projectRoot,
-            checkModel: (ref) => this.checkModel(ref),
-            claimCall: (args, meta) => this.claimDelegateCall(args, meta),
-            tasks,
-        });
+        const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
+        const store = this.state.secrets;
+        const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
+        if (!delegating && !(store && ask)) return undefined;
+        const tools: ServerTool[] = [];
+        const instructions: string[] = [];
+        if (delegating) {
+            tools.push(
+                ...orchestratorTools({
+                    caller: () => this.model.provider,
+                    listings: () => this.listings(),
+                    projectRoot: () => this.state.projectRoot,
+                    checkModel: (ref) => this.checkModel(ref),
+                    claimCall: (args, meta) => this.claimDelegateCall(args, meta),
+                    tasks: this.tasks(),
+                }),
+            );
+            instructions.push(orchestrationInstructions(caller, this.oneShot));
+        }
+        if (store && ask) {
+            tools.push(...secretTools({ store, ask, run: (o, signal) => this.runWithSecrets(o, signal) }));
+            instructions.push(SECRET_INSTRUCTIONS);
+        }
+        this.serverTools = tools;
+        this.serverInstructions = instructions.join("\n\n");
         // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
-        this.registration ??= registerTools(tools, () => (this.model.provider === "codex" ? undefined : orchestrationInstructions(this.model.provider, this.oneShot)));
+        this.registration ??= registerTools(
+            () => this.serverTools,
+            () => (this.model.provider === "codex" ? undefined : this.serverInstructions),
+        );
         return {
             name: MCP_SERVER_NAME,
             url: this.registration.url,
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
-            instructions: orchestrationInstructions(caller, this.oneShot),
+            instructions: this.serverInstructions,
             // Above the longest wait, so the harness's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
         };
@@ -1166,7 +1194,7 @@ export class Agent {
             if (call.name === DELEGATE_TOOL && e.type === "tool_start") this.delegateCalls.push({ id: call.id, input: (call.input ?? {}) as Record<string, unknown>, claimed: false });
             else if (call.name === DELEGATE_TOOL) this.delegateCalls = this.delegateCalls.filter((c) => c.id !== call.id);
         }
-        const own = e.type === "tool_start" ? orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) : undefined;
+        const own = e.type === "tool_start" ? (orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? secretToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>)) : undefined;
         if (own && e.type === "tool_start") e = { ...e, title: own };
         else if (e.type === "tool_end" && e.title) {
             // Retitled at its end (its input only known then): titled as at its start.
@@ -1217,6 +1245,55 @@ export class Agent {
      * or a read-only agent asking because of the harness's own rule. There a
      * read-only command the harness would run for its own models runs.
      */
+    /**
+     * run_with_secrets (Claude Code, Codex): one command with Harness's Bash and those secrets. The CLI approves
+     * Harness's tools without asking, so the check is here, at least as strict as backendPermission's for a
+     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule runs it without asking
+     * (no mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
+     */
+    private async runWithSecrets(o: { command: string; names: string[]; description?: string; timeoutMs?: number }, signal: AbortSignal): Promise<ServerToolResult> {
+        const refuse = (text: string): ServerToolResult => ({ text, isError: true });
+        const store = this.state.secrets;
+        if (!store) return refuse("This session holds no secrets.");
+        const input = { command: o.command, description: o.description, timeout: o.timeoutMs };
+        const mode = this.o.mode.get();
+        if (this.o.readOnly) return refuse(readOnlyRefusal("run_with_secrets"));
+        if (mode === "plan") return refuse("Plan mode is active: run_with_secrets runs nothing until the user approves a plan.");
+        const cwd = this.state.cwd;
+        // As in the default mode: it runs outside any sandbox (so auto mode's sandbox rules don't fit it), and modes don't approve it.
+        const decision = this.o.checker.check(BashTool, input, "default", cwd);
+        if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
+        const names = o.names.join(", ");
+        if (!(decision.behavior === "allow" && decision.rule)) {
+            if (!this.o.host.askPermission) return refuse("Permission to run a command with secrets was not granted (non-interactive session).");
+            const ask = {
+                ...decision,
+                behavior: "ask" as const,
+                reason: `Runs with ${o.names.length === 1 ? "the secret" : "the secrets"} ${names} in its environment.${decision.behavior === "ask" && decision.reason ? ` ${decision.reason}` : ""}`,
+                // Once at a time: an "always" here would also let the agent's own shell run such commands unasked.
+                suggestions: [],
+                sandbox: undefined,
+                needsClassifier: undefined,
+            };
+            // The signal withdraws the prompt if the CLI cancels the call.
+            const answer = await this.o.host.askPermission({ tool: BashTool, input, title: `RunWithSecrets(${names})`, decision: ask, secrets: o.names, signal });
+            if (signal.aborted) return refuse("Interrupted by user");
+            if (!answer.allow) {
+                const fb = answer.feedback?.trim();
+                return refuse(fb ? `The user declined this command and said:\n${redact(fb)}` : "The user declined this command. Don't retry it; wait for the user to say how to proceed.");
+            }
+        }
+        // Its own copy of the state: these secrets only, and a cd in it doesn't move the session.
+        const state: ToolState = { ...this.state, secrets: store.only(o.names) };
+        let r: ToolResult;
+        try {
+            r = await BashTool.run(input, { ...this.toolContext("", signal), state, onProgress: undefined });
+        } catch (e) {
+            r = { content: signal.aborted ? "Interrupted by user" : `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
+        }
+        return { text: redact(r.content), isError: r.isError };
+    }
+
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
@@ -1517,6 +1594,8 @@ export class Agent {
         } catch (e) {
             result = signal.aborted ? { content: "Interrupted by user", isError: true } : { content: `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }
+        // Tools redact their own output; this catches any that print a secret (RequestSecret's) without doing so, before hooks, windows or the model.
+        result = redactResult(result);
         const settings = this.o.settings();
         if (settings.hooks?.PostToolUse?.length && !signal.aborted) {
             const h = await runHooks(settings, "PostToolUse", { tool_name: tool.name, tool_input: input, tool_response: { content: result.content.slice(0, 20_000), is_error: Boolean(result.isError) }, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -1615,7 +1694,7 @@ export class Agent {
         const backend = isAgentBackend(client);
         const other = modelRef(model) !== modelRef(this.model);
 
-        const exclude = new Set(["Task", "ListModels", "TodoWrite", "AskUserQuestion", "ExitPlanMode"]);
+        const exclude = new Set(["Task", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode"]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         if (def.readOnly) tools = tools.filter((t) => EXPLORE_TOOLS.has(t.name) || (t.category === "mcp" && t.readOnly === true));
         if (def.tools?.length) {
@@ -1667,6 +1746,8 @@ export class Agent {
                 todos: [],
                 shells: trackShells(this.state.shells, shellsStarted),
                 fileHistory: this.state.fileHistory,
+                // Its Bash sees the secrets the user gave this session (only the main agent can ask for one).
+                secrets: this.state.secrets,
             },
             host: {
                 emit: (e) => {
@@ -1763,13 +1844,16 @@ function backendTool(name: string, title?: string): Tool<any> {
  * redact theirs (keys in a file the backend read, say): its sub-agents'
  * tool output and what they say too.
  */
+/** A tool's result with every known secret taken out, as the model, hooks and windows see it. */
+function redactResult(r: ToolResult): ToolResult {
+    const d = r.display;
+    const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
+    return { ...r, content: redact(r.content), display };
+}
+
 function redactBackendEvent(e: AgentEvent): AgentEvent {
     if (e.type === "tool_progress") return { ...e, text: redact(e.text) };
-    if (e.type === "tool_end") {
-        const d = e.result.display;
-        const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
-        return { ...e, result: { ...e.result, content: redact(e.result.content), display } };
-    }
+    if (e.type === "tool_end") return { ...e, result: redactResult(e.result) };
     if (e.type === "subagent") return { ...e, event: e.event.type === "text" ? { ...e.event, text: redact(e.event.text) } : redactBackendEvent(e.event) };
     return e;
 }
