@@ -45,6 +45,7 @@ import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompac
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
+import { TurnSnapshots } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
@@ -73,6 +74,7 @@ import { suggestBashRules } from "../permissions/bash-safety";
 import { trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { expandPath } from "../util/files";
+import type { PlanLimits } from "../server/protocol";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -95,6 +97,10 @@ export type AgentEvent =
     | { type: "compact_start"; auto: boolean }
     | { type: "compact_end"; summary: string }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
+    /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
+    | { type: "limits"; limits: PlanLimits; partial: boolean }
+    /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
+    | { type: "cli_commands"; provider: string; names: string[] }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
@@ -165,6 +171,8 @@ export interface AgentOptions {
     host: AgentHost;
     helpers?: Helpers;
     isSubagent?: boolean;
+    /** Current folder trust; private working-tree snapshots require it. */
+    trusted?: () => boolean;
     /** A sub-agent's type and task, for its SubagentStop hooks. */
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
@@ -314,12 +322,15 @@ export class Agent {
     model: ModelInfo;
     client: ProviderClient;
     readonly state: ToolState;
+    readonly turnSnapshots?: TurnSnapshots;
     private pendingReminders: PendingNote[] = [];
     /** Why the model call is being retried right now (shown if the user stops it meanwhile). */
     private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
     private running = false;
+    /** The session is being let go; awaited checkpoints must not append another prompt or tool result. */
+    private cutOff = false;
     /** This turn's prompt is in the session. */
     private prompted = false;
     /** Prompt tokens of the most recent request (context usage). */
@@ -345,7 +356,10 @@ export class Agent {
         this.client = o.client;
         this.state = o.toolState;
         // Edits are saved into this session's file history; sub-agents get their parent's.
-        if (!o.isSubagent) this.state.fileHistory = FileHistory.for(o.session);
+        if (!o.isSubagent) {
+            this.state.fileHistory = FileHistory.for(o.session);
+            this.turnSnapshots = TurnSnapshots.for(o.session, this.state.cwd);
+        }
     }
 
     get tools(): Tool<any>[] {
@@ -457,6 +471,7 @@ export class Agent {
         try {
             return await this.runInner(content, opts);
         } finally {
+            await this.turnSnapshots?.end();
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
             this.prompted = false;
@@ -467,6 +482,8 @@ export class Agent {
         const { signal } = opts;
         const settings = this.o.settings();
         const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
+        const checkpoint = await this.checkpoint(opts.display ?? promptText);
+        if (this.cutOff) return "aborted";
 
         if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -483,7 +500,7 @@ export class Agent {
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
         for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
-        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
+        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
@@ -585,7 +602,10 @@ export class Agent {
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
-                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
+                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                        this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    });
+                    if (this.cutOff) return "aborted";
                     continue;
                 }
 
@@ -608,12 +628,23 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
-            if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
-            else {
+            let recorded = false;
+            const record = (checkpoint?: number) => {
+                this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(checkpoint !== undefined ? { checkpoint } : {}) } });
+                recorded = true;
+            };
+            if (!signal.aborted) {
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                if (queued.length) {
+                    extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                    await this.checkpoint(queued.join("\n"), true, record);
+                }
             }
-            this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results" } });
+            if (this.cutOff) return "aborted";
+            // Steering saved the completed results before its capture: an interrupt is a new message.
+            if (signal.aborted && recorded) return this.interrupted(false);
+            if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
+            if (!recorded) record();
             if (signal.aborted) {
                 this.emit({ type: "turn_end", reason: "aborted" });
                 return "aborted";
@@ -626,8 +657,14 @@ export class Agent {
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
-    private checkpoint(): number | undefined {
-        return this.o.isSubagent ? undefined : this.state.fileHistory?.begin();
+    private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
+        // Steering inside tool results isn't a /rewind target: keep its edit copies with the original prompt.
+        const history = this.o.isSubagent ? undefined : this.state.fileHistory;
+        const cp = snapshotOnly ? history?.nextId() : history?.begin();
+        // Once drained, queued text must be on disk before a capture can yield to session shutdown.
+        record?.(cp);
+        if (cp !== undefined && this.o.trusted?.()) await this.turnSnapshots?.begin(cp, redact(prompt));
+        return cp;
     }
 
     /**
@@ -675,13 +712,18 @@ export class Agent {
      * the file go right after, so what the turn still writes is dropped, not
      * recorded after this.
      */
-    noteStopped(): void {
+    noteStopped(): Promise<void> {
+        this.cutOff = true;
+        const stopping = this.turnSnapshots?.stop() ?? Promise.resolve();
         // Not running, or its prompt isn't in yet (then nothing of the turn is).
-        if (!this.running || !this.prompted) return;
+        if (!this.running || !this.prompted) return stopping;
         const last = this.session.messages.at(-1);
-        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return;
+        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return stopping;
         const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
-        if (!calls.length) return void this.interrupted(false);
+        if (!calls.length) {
+            this.interrupted(false);
+            return stopping;
+        }
         // Tools still running: their calls get results, or the next request is refused.
         this.session.push({
             role: "user",
@@ -689,6 +731,7 @@ export class Agent {
             meta: { kind: "tool_results" },
         });
         this.emit({ type: "turn_end", reason: "aborted" });
+        return stopping;
     }
 
     /**
@@ -1090,11 +1133,17 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
-            drainQueued: () => {
+            drainQueued: async () => {
+                if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (!queued.length) return [];
-                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
-                return [textOf(m)];
+                let text = "";
+                await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                    const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    text = textOf(m);
+                });
+                if (this.cutOff) return [];
+                return [text];
             },
         };
         const base = this.backendTurn(signal, host);
@@ -1197,7 +1246,7 @@ export class Agent {
         this.emit({ type: "compact_start", auto: opts.auto });
         const host: BackendHost = {
             emit: (e) => {
-                if (e.type === "notice" || e.type === "retry") this.emit(e);
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
             },
             mode: () => this.o.mode.get(),
             permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),
@@ -1829,8 +1878,8 @@ export class Agent {
         // Fold the child's spend into the parent session's totals.
         let tokens = 0;
         let cost = 0;
-        for (const [m, u] of session.usageByModel) {
-            this.session.recordUsage(m, u.usage, u.cost, u.unknown);
+        for (const u of session.usageRecords) {
+            this.session.recordUsage(u.model, u.usage, u.cost, u.unknown);
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }

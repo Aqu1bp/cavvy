@@ -11,7 +11,7 @@ import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
-import { expandCommand } from "../commands/custom";
+import { expandCommand, slashCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
@@ -38,6 +38,7 @@ import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { TurnSnapshots } from "../agent/turn-snapshots";
 import type {
     AgentRun,
     Block,
@@ -80,7 +81,12 @@ interface Queued {
     id: number;
     text: string;
     attachments?: AttachedPart[];
+    /** Sent as a message even though it starts with a /word. */
+    literal?: boolean;
 }
+
+/** The slash commands the server runs itself (the GUI runs the others). */
+const SERVER_COMMANDS = new Set(["compact", "init", "review"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -528,7 +534,7 @@ export class Runtime {
 
     private filesChanged(): number {
         try {
-            return FileHistory.for(this.session)?.originals().length ?? 0;
+            return new Set([...(FileHistory.for(this.session)?.originals().map((f) => f.path) ?? []), ...(TurnSnapshots.for(this.session, this.ws.cwd)?.changedPaths() ?? [])]).size;
         } catch {
             return 0;
         }
@@ -770,6 +776,7 @@ export class Runtime {
         void this.agent?.dispose();
         this.agent = new Agent({
             session: this.session,
+            trusted: () => this.ws.trusted,
             model: this.model,
             client: this.client,
             settings: () => this.settings(),
@@ -1047,7 +1054,15 @@ export class Runtime {
                 this.compacted(e.summary);
                 break;
             case "subagent":
-                this.subagentEvent(e.parentId, e.label, e.event);
+                // A sub-agent on an agent CLI reports the same account's limits.
+                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial);
+                else this.subagentEvent(e.parentId, e.label, e.event);
+                break;
+            case "limits":
+                this.engine.limitsReported(e.limits, e.partial);
+                break;
+            case "cli_commands":
+                this.engine.cliCommandsReported(e.provider, this.ws.cwd, e.names);
                 break;
             case "turn_end":
                 this.closeOpen();
@@ -1121,7 +1136,9 @@ export class Runtime {
         }
         if (current) this.addBlock({ t: "compact", id: this.newId(), summary: redact(summary), auto: true });
         else {
-            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false }], status: "done", startedAt: Date.now() };
+            // A backend-only marker has no place in the unchanged transcript;
+            // giving it this segment's position would intercept earlier search hits.
+            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false }], status: "done", startedAt: Date.now(), ...(!this.backendModel() ? { pos: { seg: this.segment, index: -1 } } : {}) };
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });
@@ -1293,6 +1310,21 @@ export class Runtime {
         return this.agent.stopDelegated(a.taskId);
     }
 
+    private turnSnapshotFloor?: number;
+
+    private latestCheckpoint(): number | undefined {
+        for (let i = this.session.messages.length - 1; i >= 0; i--) {
+            const m = this.session.messages[i]!;
+            if (m.role === "user" && m.meta?.checkpoint !== undefined) return m.meta.checkpoint;
+        }
+        return undefined;
+    }
+
+    private snapshotId(): number | undefined {
+        const id = this.latestCheckpoint();
+        return id !== this.turnSnapshotFloor ? id : undefined;
+    }
+
     private endTurn(reason: TurnEndReason) {
         const turnId = this.turnId;
         if (!turnId) return;
@@ -1305,7 +1337,7 @@ export class Runtime {
         }
         const status: TurnStatus = reason;
         const end = Date.now();
-        this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end } });
+        this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end, snapshotId: this.snapshotId() } });
         // What it did, then that it ended.
         this.syncTurnAll(turnId);
         this.stepsLogged.delete(turnId);
@@ -1520,12 +1552,13 @@ export class Runtime {
         const prev = this.turnId;
         if (prev) {
             const end = Date.now();
-            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: end } });
+            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: end, snapshotId: this.snapshotId() } });
             if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status: "done" });
             this.syncTurnAll(prev);
             this.stepsLogged.delete(prev);
         }
-        const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now() };
+        this.turnSnapshotFloor = this.latestCheckpoint();
+        const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now(), pos: { seg: this.segment, index: this.session.messages.length } };
         this.op({ op: "turn", turn });
         if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
         this.turnId = turn.id;
@@ -1536,7 +1569,7 @@ export class Runtime {
     }
 
     /** A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy. */
-    async send(text: string, attachments?: AttachedPart[]): Promise<{ queued: boolean }> {
+    async send(text: string, attachments?: AttachedPart[], literal = false): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
         this.checkCommitting();
@@ -1546,17 +1579,33 @@ export class Runtime {
         if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
-        if (attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
+        if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
+        // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
+        const unknown = literal ? undefined : this.unknownCommand(text);
+        if (unknown) throw new RpcError(`Unknown command /${unknown}`, "unknown_command");
         if (this.busy) {
-            this.queued.push({ id: ++this.queueSeq, text, attachments });
+            this.queued.push({ id: ++this.queueSeq, text, attachments, literal: literal || undefined });
             this.setState(this.queueState());
             return { queued: true };
         }
-        void this.dispatch(text, attachments).catch((e) => this.notice(redact((e as Error).message), "error"));
+        void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
     }
 
-    private async dispatch(text: string, attachments?: AttachedPart[]) {
+    /** The /name a message starts with when it names no command this server or the project has. */
+    unknownCommand(text: string): string | undefined {
+        const c = slashCommand(text);
+        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name)) return undefined;
+        // One the session's agent CLI runs itself (Claude Code's /code-review, a skill).
+        const provider = this.agent?.model.provider;
+        const commands = this.engine.cliCommands(provider, this.ws.cwd);
+        // Until this workspace has reported its skills, let Claude Code resolve them.
+        if ((provider === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
+        return c.name;
+    }
+
+    private async dispatch(text: string, attachments?: AttachedPart[], literal = false) {
+        if (literal) return this.startTurn(text, { attachments });
         const trimmed = text.trim();
         if (trimmed.startsWith("!") && !attachments?.length) return this.runUserShell(trimmed.slice(1).trim());
         if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
@@ -1589,12 +1638,14 @@ export class Runtime {
         this.turnStartedAt = Date.now();
         const display = opts.display ?? text;
         const index = this.session.messages.length;
+        this.turnSnapshotFloor = this.latestCheckpoint();
         const turn: Turn = {
             id: this.newId(),
             prompt: { text: display, ...attachedPrompt(opts.attachments), ...(opts.kind === "command" ? { command: true } : {}), index },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
+            pos: { seg: this.segment, index },
         };
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
@@ -1641,7 +1692,7 @@ export class Runtime {
             this.cancelInteractions({ keepDelegated: true });
             this.closeOpen();
             this.turnId = undefined;
-            this.setState({ busy: false, activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
+            this.setState({ busy: false, filesChanged: this.filesChanged(), activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
             this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             this.flush();
             this.engine.sessionChanged(this);
@@ -1661,7 +1712,7 @@ export class Runtime {
         const next = this.queued.shift();
         if (!next) return;
         this.setState(this.queueState());
-        await this.dispatch(next.text, next.attachments).catch((e) => this.notice(redact((e as Error).message), "error"));
+        await this.dispatch(next.text, next.attachments, next.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
     /** After an interrupt, unsent messages go back to the input box instead of running. */
@@ -1931,8 +1982,8 @@ export class Runtime {
     }
 
     /** What git says changed in the session's folder, whoever changed it. */
-    gitChanges(req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
-        return gitChanges(this.ws.cwd, req);
+    gitChanges(req: { scope: GitScope; base?: string; path?: string; turnId?: number }): Promise<GitChangesInfo> {
+        return gitChanges(this.ws.cwd, req, TurnSnapshots.for(this.session, this.ws.cwd));
     }
 
     private checkCommitting() {
@@ -2110,13 +2161,14 @@ export class Runtime {
             if (turn && !(await Promise.race([turn.then(() => true), Bun.sleep(closeTiming.turnMs).then(() => false)]))) {
                 // Still stopping (the server's own exit doesn't wait long enough for a CLI backend's): noted for it,
                 // and the file let go now, so what it writes when it does stop isn't recorded after that.
-                this.agent?.noteStopped();
+                await this.agent?.noteStopped();
                 // Its log too (noting the stop ended the turn there): another process may have the session next.
                 this.ui.close();
                 this.session.release();
             }
             await ending;
         } finally {
+            await this.agent?.turnSnapshots?.stop();
             await commit;
             this.ui.close();
             this.session.release();

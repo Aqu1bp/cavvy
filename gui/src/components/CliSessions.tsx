@@ -5,7 +5,7 @@
 import { createResource, createSignal, For, Show } from "solid-js";
 import { AlertTriangle, ChevronRight, SquareTerminal } from "lucide-solid";
 import type { CliSessionInfo } from "@shared/protocol";
-import { rpc } from "../state/app";
+import { app, rpc } from "../state/app";
 import { continueCliSession } from "../state/actions";
 import { setSettingsTab } from "../state/ui";
 import { ago } from "../lib/format";
@@ -16,7 +16,7 @@ export function CliSessions(p: { cwd: string }) {
     const [showHeld, setShowHeld] = createSignal(false);
     const [busy, setBusy] = createSignal<string>();
     const [list, { refetch }] = createResource(
-        () => p.cwd,
+        () => app.conn === "open" && p.cwd,
         (cwd) => rpc.call("cliSessions.list", { cwd }).catch(() => undefined),
     );
     const sessions = () => list()?.sessions ?? [];

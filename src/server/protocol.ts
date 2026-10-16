@@ -237,6 +237,8 @@ export interface TurnPrompt {
 
 export interface Turn {
     id: string;
+    /** Stable file-history checkpoint whose raw snapshots describe this turn. */
+    snapshotId?: number;
     prompt?: TurnPrompt;
     blocks: Block[];
     status: TurnStatus;
@@ -246,6 +248,12 @@ export interface Turn {
     archived?: boolean;
     /** From a Claude Code or Codex session started elsewhere: shown, can't be rewound to. */
     imported?: boolean;
+    /**
+     * Where the message that started it sits in the session file: its segment
+     * (compactions before it) and position there. Kept after a compaction, unlike
+     * prompt.index; a search hit finds its turn by it.
+     */
+    pos?: { seg: number; index: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +493,52 @@ export interface CliSessionsList {
     sessions: CliSessionInfo[];
 }
 
+/** A message that matched a search of every session's text. */
+export interface SessionSearchHit {
+    id: string;
+    title: string;
+    cwd: string;
+    projectName: string;
+    archived: boolean;
+    /** The segment (compactions before it) and position of the matched message, as Turn.pos has them. */
+    seg: number;
+    index: number;
+    role: "user" | "assistant";
+    /** A short stretch of the message around the match, redacted. */
+    snippet: string;
+    /** Where the match is in the snippet (absent when redaction swallowed it). */
+    match?: [number, number];
+    /** When the matched message's turn started, or the session's last change when that isn't known. */
+    at: number;
+}
+
+/**
+ * Lower case that keeps every position where it was ("İ" stays as it is
+ * rather than turning into two characters) and doesn't depend on the letters
+ * around it, so where a match is found in the folded text is where it is in
+ * the original. Server search and the GUI's find bar both match with it.
+ */
+export function foldCase(s: string): string {
+    let l = s.toLowerCase();
+    if (l.length !== s.length) {
+        l = "";
+        for (const ch of s) {
+            const x = ch.toLowerCase();
+            l += x.length === ch.length ? x : ch;
+        }
+    }
+    // Σ lowers to ς at the end of a word and σ elsewhere: "ΟΣ" in "ΟΣΑ" must still match.
+    return l.includes("ς") ? l.replace(/ς/g, "σ") : l;
+}
+
+export interface SessionSearchResult {
+    hits: SessionSearchHit[];
+    /** The time or size budget ran out before every session was read. */
+    partial: boolean;
+    /** A newer search from the same window replaced this one; its hits are dropped. */
+    stale?: boolean;
+}
+
 export interface ProjectInfo {
     path: string;
     name: string;
@@ -568,6 +622,73 @@ export interface CommandInfo {
     custom?: boolean;
 }
 
+/** One window of a plan's usage limits (five hours, a week), as an agent CLI reported it. */
+export interface LimitWindow {
+    /** Stable key: Claude Code's window name (five_hour), Codex's limit and slot (codex:primary). */
+    id: string;
+    /** "5-hour", "Weekly". */
+    label: string;
+    /** 0-100; absent when the CLI didn't say. */
+    usedPercent?: number;
+    /** When it resets (ms since the epoch), when known. */
+    resetsAt?: number;
+    reached?: boolean;
+}
+
+/** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
+export interface PlanLimits {
+    provider: string;
+    windows: LimitWindow[];
+    /** The CLI said a limit is reached (true) or that it isn't (false); absent when it didn't say. */
+    reached?: boolean;
+    /** When the reached limit resets (ms), when known. */
+    resetsAt?: number;
+    /** When it was reported (ms). */
+    at: number;
+}
+
+/** The ranges the Usage view offers, in days. */
+export const USAGE_DAYS = [1, 7, 30] as const;
+export type UsageDays = (typeof USAGE_DAYS)[number];
+
+/** Tokens and cost of one provider's model over the range. */
+export interface UsageRow {
+    provider: string;
+    providerName: string;
+    /** The model id within the provider. */
+    model: string;
+    /** On a subscription (an agent CLI on its plan): the cost is what the API would have charged. */
+    plan: boolean;
+    sessions: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    /** USD, estimated from list prices (or as the provider reported it); the known part only. */
+    cost: number;
+    /** API-equivalent USD for usage covered by a plan (included in cost). */
+    planEquivalent: number;
+    /** Some of it had no known price: cost leaves that out (it isn't free). */
+    unknown: boolean;
+}
+
+export interface UsageSummary {
+    days: UsageDays;
+    /** Start of the range (ms). */
+    since: number;
+    rows: UsageRow[];
+    /** The rows added up (sessions apart: one can use several models). */
+    totals: Pick<UsageRow, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cost" | "planEquivalent" | "unknown">;
+    /** Sessions with any usage in the range. */
+    sessions: number;
+    /** Records from before usage was dated, placed at their session's last activity. */
+    approxDated: number;
+    /** Alias-only records priced using today's model listing rather than a recorded concrete model. */
+    approxPriced?: number;
+    /** Why not everything was read (too many sessions, too much to read in time). */
+    truncated?: string;
+}
+
 export interface RewindTargetInfo {
     index: number;
     text: string;
@@ -597,7 +718,7 @@ export interface ChangesInfo {
 }
 
 /** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. */
-export type GitScope = "uncommitted" | "branch";
+export type GitScope = "uncommitted" | "branch" | "last-turn" | "turn";
 
 export interface GitFileDiff extends FileDiff {
     /** What git would call it. Renames are exact ones (the same content under a new name). */
@@ -619,6 +740,12 @@ export interface GitChangesInfo extends ChangesInfo {
     repo: boolean;
     reason?: string;
     scope: GitScope;
+    turns?: { id: number; prompt: string; startedAt: number; endedAt?: number }[];
+    turnId?: number;
+    /** Both snapshot trees were available for comparison; an empty diff is authoritative. */
+    snapshotAvailable?: boolean;
+    incomplete?: boolean;
+    notes?: string[];
     head?: { branch?: string; sha?: string };
     /** Branch scope: the base branch and the commit this branch left it at. */
     base?: { ref: string; sha: string };
@@ -717,7 +844,9 @@ export type ServerEvent =
     | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
     | { type: "models.changed" }
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
-    | { type: "scripts.changed"; project: string };
+    | { type: "scripts.changed"; project: string }
+    /** An agent CLI reported where the user's plan stands. */
+    | { type: "limits"; limits: PlanLimits };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -754,10 +883,13 @@ export interface Methods {
     /** Opens terminal `id` in `cwd`; the stored script's command is typed into it once the window arms it (terminal.arm) and the shell is reading. */
     "scripts.run": { params: { id: string; cwd: string; script: string; cols: number; rows: number }; result: { id: string; cwd: string; script: ProjectScript } };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
+    /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
+    "sessions.search": { params: { query: string; limit?: number; archived?: boolean }; result: SessionSearchResult };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
-    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }; result: { queued: boolean } };
+    /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
+    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean }; result: { queued: boolean } };
     "session.interrupt": { params: { id: string }; result: null };
     "session.respond": { params: { id: string; interactionId: string; response: InteractionResponse }; result: null };
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
@@ -771,7 +903,7 @@ export interface Methods {
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "session.changes": { params: { id: string }; result: ChangesInfo };
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string }; result: GitChangesInfo };
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number }; result: GitChangesInfo };
     "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
     "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
@@ -824,9 +956,14 @@ export interface Methods {
     "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
-    "commands.list": { params: { cwd: string }; result: CommandInfo[] };
+    /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
+    "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
+    /** The agent CLIs' plan limits known so far (since the server started). */
+    "limits.get": { params: Record<string, never>; result: PlanLimits[] };
+    /** Tokens and cost per provider and model, from the session transcripts. */
+    "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
     /**
      * The session's folder's MCP servers, read again from settings and
      * .mcp.json (so what the terminal's /mcp did shows), each with what it

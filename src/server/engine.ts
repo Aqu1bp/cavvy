@@ -19,7 +19,7 @@ import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
-import { cachedListings, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
+import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentCli, vendorOf } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
@@ -37,6 +37,9 @@ import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validC
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
+import { searchSessions } from "./search";
+import { usageDays, usageSummary } from "./usage";
+import { mergeLimits } from "../backends/limits";
 import type {
     CliSessionInfo,
     CliSessionsList,
@@ -47,6 +50,7 @@ import type {
     HelloResult,
     McpListInfo,
     McpStatus,
+    PlanLimits,
     Method,
     Methods,
     PermissionModeId,
@@ -57,6 +61,7 @@ import type {
     ServerEvent,
     SessionOp,
     SessionSnapshot,
+    SessionSearchResult,
     SessionSummary,
 } from "./protocol";
 import { PROTOCOL_VERSION } from "./protocol";
@@ -241,6 +246,8 @@ export class Engine {
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
+    /** Each window's latest search: an older one still reading stops. */
+    private searches = new WeakMap<EngineClient, number>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
     private refreshing?: Promise<ProviderListing[]>;
@@ -256,6 +263,10 @@ export class Engine {
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     private purgeTimer?: ReturnType<typeof setInterval>;
+    /** The agent CLIs' plan limits as last reported, by provider: the account's, so every session shares them. */
+    private limits = new Map<string, PlanLimits>();
+    /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
+    private cliCommandNames = new Map<string, Set<string>>();
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -287,6 +298,23 @@ export class Engine {
 
     broadcast(ev: ServerEvent) {
         for (const c of this.clients) c.send(ev);
+    }
+
+    /** An agent CLI reported where the plan stands (an older report doesn't replace a newer one). */
+    limitsReported(l: PlanLimits, partial: boolean) {
+        const prev = this.limits.get(l.provider);
+        if (prev && prev.at > l.at) return;
+        const merged = mergeLimits(prev, l, partial);
+        this.limits.set(l.provider, merged);
+        this.broadcast({ type: "limits", limits: merged });
+    }
+
+    cliCommandsReported(provider: string, cwd: string, names: string[]) {
+        this.cliCommandNames.set(`${provider}:${resolve(cwd)}`, new Set(names));
+    }
+
+    cliCommands(provider: string | undefined, cwd: string): ReadonlySet<string> | undefined {
+        return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -519,6 +547,37 @@ export class Engine {
             out.set(rt.id, { ...live, updatedAt: Math.max(live.updatedAt, disk?.updatedAt ?? 0) });
         }
         return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+    }
+
+    /** What was said in every session (archived ones marked), read from their files; see search.ts. */
+    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
+        if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
+        const seq = (this.searches.get(client) ?? 0) + 1;
+        this.searches.set(client, seq);
+        if (query.trim().length < 2) return { hits: [], partial: false };
+        const arch = new Set(readStore().archived ?? []);
+        const r = await searchSessions(query, {
+            limit: Math.max(1, Math.min(Math.floor(limit), 200)),
+            include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
+            stale: () => this.searches.get(client) !== seq || this.stopping,
+        });
+        if (r.stale) return { hits: [], partial: true, stale: true };
+        return {
+            partial: r.partial,
+            hits: r.hits.map((h) => ({
+                id: h.id,
+                title: redact(this.runtimes.get(h.id)?.title ?? h.title),
+                cwd: h.cwd,
+                projectName: basename(h.cwd) || h.cwd,
+                archived: arch.has(h.id),
+                seg: h.seg,
+                index: h.index,
+                role: h.role,
+                snippet: h.snippet,
+                ...(h.match ? { match: h.match } : {}),
+                at: h.at,
+            })),
+        };
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
@@ -1017,7 +1076,27 @@ export class Engine {
         });
     }
 
-    private commandsFor(cwd: string): CommandInfo[] {
+    private async commandProvider(cwd: string): Promise<string | undefined> {
+        const usable = async (ref: string | undefined) => {
+            const model = ref && resolveModelInfo(ref);
+            if (!model) return undefined;
+            try {
+                await clientFor(model.provider);
+                return model.provider;
+            } catch {
+                return undefined;
+            }
+        };
+        // A new session falls back when its configured model is unavailable; Home must check that provider's commands.
+        const settings = this.workspaces.get(cwd)?.settings ?? loadSettings(cwd, { trusted: isTrusted(cwd) });
+        const provider = await usable(settings.model ?? this.fallbackModel);
+        if (provider) return provider;
+        const model = defaultModelFrom(this.listings) ?? defaultModelFrom(await this.refreshListings());
+        return usable(model && modelRef(model));
+    }
+
+    /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
+    private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
             { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
@@ -1031,10 +1110,16 @@ export class Engine {
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
+            { name: "context", description: "How full the context window is, and your plan's limits" },
         ];
         const ws = this.workspaces.get(resolve(cwd));
-        const custom = (ws?.commands ?? []).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
-        return [...builtin, ...custom];
+        // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
+        const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
+        const own = new Set([...builtin, ...custom].map((c) => c.name));
+        const name = provider ? (getProvider(provider)?.name ?? provider) : "";
+        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
+        return [...builtin, ...custom, ...cli];
     }
 
     // -----------------------------------------------------------------------
@@ -1107,6 +1192,9 @@ export class Engine {
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
+            case "sessions.search":
+                // Awaited: it can reject before its first await (see providers.setKey below).
+                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
                 this.watch(client, rt.id);
@@ -1154,7 +1242,7 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined);
+                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();
@@ -1212,11 +1300,13 @@ export class Engine {
             case "session.changes":
                 return this.runtime(p.id).changes();
             case "session.gitChanges": {
-                if (p.scope !== "uncommitted" && p.scope !== "branch") throw new RpcError("scope must be uncommitted or branch", "invalid");
+                if (!["uncommitted", "branch", "last-turn", "turn"].includes(p.scope)) throw new RpcError("Unknown changes scope", "invalid");
+                if (p.turnId !== undefined && (!Number.isSafeInteger(p.turnId) || p.turnId < 0)) throw new RpcError("turnId must be a checkpoint id", "invalid");
+                if (p.scope === "turn" && p.turnId === undefined) throw new RpcError("turnId is required for a turn scope", "invalid");
                 // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
-                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path });
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId });
             }
             case "session.gitCommit":
             case "session.gitCommitMessage": {
@@ -1363,8 +1453,17 @@ export class Engine {
                 return this.openInEditor(p);
             case "fs.exists":
                 return this.pathsExist(p);
-            case "commands.list":
-                return this.commandsFor(str(p.cwd, "cwd"));
+            case "commands.list": {
+                const cwd = resolve(expandHome(str(p.cwd, "cwd")));
+                const provider = optStr(p.provider) ?? await this.commandProvider(cwd);
+                const commands = this.commandsFor(cwd, provider);
+                const command = optStr(p.command);
+                // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
+                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined)) {
+                    throw new RpcError(`Unknown command /${command}`, "unknown_command");
+                }
+                return commands;
+            }
             case "session.mcp": {
                 const rt = this.runtime(p.id);
                 await rt.ws.mcp.sync();
@@ -1411,6 +1510,10 @@ export class Engine {
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+            case "limits.get":
+                return [...this.limits.values()];
+            case "usage.summary":
+                return usageSummary(usageDays(p.days));
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }

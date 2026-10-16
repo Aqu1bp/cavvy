@@ -1,11 +1,13 @@
-import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { formatSize } from "../lib/attachments";
 import { prefs } from "../state/prefs";
+import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
+import { findReveal } from "../state/ui";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -15,6 +17,7 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
     const text = () => p.turn.prompt?.text ?? "";
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
+    createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
     return (
         <div class="user-row">
             <div class="user-actions">
@@ -25,14 +28,14 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
                     </button>
                 </Show>
             </div>
-            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""}`}>
+            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""}`} data-find="prompt">
                 <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
                     <span class="user-text mono">
                         <SquareTerminal size={13} /> {text().slice(1)}
                     </span>
                 </Show>
                 <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
-                    <span class="prompt-attachments">
+                    <span class="prompt-attachments" data-find-skip>
                         <Show when={p.turn.prompt?.images}>
                             <span class="chip tiny">{p.turn.prompt!.images} image{p.turn.prompt!.images === 1 ? "" : "s"}</span>
                         </Show>
@@ -84,13 +87,16 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
 export function Narration(p: { block: TextBlock }) {
     const [open, setOpen] = createSignal(false);
     const line = () => p.block.text.replace(/```[\s\S]*?```/g, " ").replace(/[*_`>#]/g, "").replace(/\s+/g, " ").trim();
+    createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
-        <div class={`wgroup ${open() ? "open" : ""}`}>
+        <div class={`wgroup ${open() ? "open" : ""}`} data-find={p.block.id}>
             <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
                 <span class="slot">
                     <MessageSquareText size={16} />
                 </span>
-                <span class="wtext truncate">“{line()}”</span>
+                <span class="wtext truncate" data-find-skip>
+                    “{line()}”
+                </span>
                 <span class="end">
                     <ChevronRight size={14} class="chev" />
                 </span>
@@ -106,7 +112,7 @@ export function Narration(p: { block: TextBlock }) {
 
 export function Notice(p: { block: NoticeBlock }) {
     return (
-        <div class={`notice ${p.block.level}`}>
+        <div class={`notice ${p.block.level}`} data-find={p.block.id}>
             <Switch fallback={<Info size={14} />}>
                 <Match when={p.block.level === "error"}>
                     <AlertCircle size={14} />
@@ -140,9 +146,10 @@ function Imported(p: { block: ImportedBlock }) {
 
 function Compacted(p: { block: CompactBlock }) {
     const [open, setOpen] = createSignal(false);
+    createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
-        <div class="compacted">
-            <div class="compacted-rule">
+        <div class="compacted" data-find={p.block.id}>
+            <div class="compacted-rule" data-find-skip>
                 <span />
                 <button class="link-btn" onClick={() => setOpen(!open())}>
                     Conversation compacted · {open() ? "hide summary" : "view summary"}
@@ -160,11 +167,11 @@ function Compacted(p: { block: CompactBlock }) {
 
 function Shell(p: { block: ShellBlock }) {
     return (
-        <div class="shell-block">
+        <div class={`shell-block ${findReveal()?.part === p.block.id ? "found" : ""}`} data-find={p.block.id}>
             <div class="shell-head">
                 <SquareTerminal size={13} />
                 <code class="truncate">{p.block.command}</code>
-                <Show when={p.block.running} fallback={<span class={`chip tiny ${p.block.exitCode ? "err" : "ok"}`}>exit {p.block.exitCode ?? "?"}</span>}>
+                <Show when={p.block.running} fallback={<span class={`chip tiny ${p.block.exitCode ? "err" : "ok"}`} data-find-skip>exit {p.block.exitCode ?? "?"}</span>}>
                     <Spinner size={12} />
                 </Show>
             </div>
@@ -241,29 +248,47 @@ export function SplitPath(p: { path: string; cwd?: string }) {
 
 const FILES_SHOWN = 6;
 
-function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string }) {
-    const files = createMemo(() => turnChanges(p.turn));
+function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: boolean }) {
+    // Load after the closing snapshot is saved. Once ready, a completed turn's
+    // key stays stable while later turns run, so its immutable diff is not fetched again.
+    const snapshotKey = createMemo<string | undefined>((previous) => {
+        if (p.turn.snapshotId === undefined) return undefined;
+        const key = JSON.stringify([p.sessionId, p.turn.snapshotId]);
+        return !p.busy || previous === key ? key : undefined;
+    });
+    const [snapshot] = createResource(snapshotKey, async (key) => {
+        const [id, turnId] = JSON.parse(key) as [string, number];
+        return { id, turnId, view: await fetchGitChanges(id, "turn", undefined, undefined, turnId) };
+    });
+    const recorded = () => snapshot()?.id === p.sessionId && snapshot()?.turnId === p.turn.snapshotId ? snapshot()?.view : undefined;
+    const captured = () => recorded()?.repo && recorded()?.turnId === p.turn.snapshotId && !recorded()?.error;
+    const snapshotDiff = () => captured() && recorded()?.snapshotAvailable;
+    const files = createMemo<Changed[]>(() => snapshotDiff() ? recorded()!.files.map((f) => ({ ...f, line: firstChangedLine(f) })) : turnChanges(p.turn));
+    const reviewChanges = (path?: string) => openReview(path, snapshotDiff() ? "turn" : "uncommitted", snapshotDiff() ? p.turn.snapshotId : undefined);
     const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
     const [all, setAll] = createSignal(false);
     return (
-        <Show when={files().length}>
-            <div class="files-card">
+        <Show when={files().length || (captured() && recorded()?.incomplete)}>
+            <div class="files-card" data-find-skip>
                 <div class="files-head">
-                    <span class="files-title">{plural(files().length, "changed file")}</span>
-                    <span class="stat">
-                        <span class="add">+{total().added}</span>
-                        <span class="del">−{total().removed}</span>
-                    </span>
+                    <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), "changed file")}</span>
+                    <Show when={files().length}>
+                        <span class="stat">
+                            <span class="add">+{total().added}</span>
+                            <span class="del">−{total().removed}</span>
+                        </span>
+                    </Show>
                     <span class="grow" />
-                    {/* Git's uncommitted view lists these too, whoever made them. */}
-                    <button class="ghost-btn" onClick={() => openReview(files()[0]?.path, "uncommitted")}>
+                    {/* Keep recorded changes tied to this turn, even after later edits. */}
+                    <button class="ghost-btn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path)}>
                         <FileDiff size={14} /> Review changes
                     </button>
                 </div>
+                <Show when={captured() && recorded()?.incomplete}><div class="review-note">{"This turn’s snapshot is incomplete. " + (recorded()?.notes?.join(" ") ?? "")}</div></Show>
                 <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                     {(f) => (
                         <div class="frow-line">
-                            <button class="frow" onClick={() => openReview(f.path, "uncommitted")}>
+                            <button class="frow" onClick={() => reviewChanges(f.path)}>
                                 <SplitPath path={f.path} cwd={p.cwd} />
                                 <Show when={f.status === "added"}>
                                     <span class="frow-tag">new</span>
@@ -327,6 +352,14 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
     const hasWork = () => segs().some((s) => s.kind === "work");
     const [unfolded, setUnfolded] = createSignal(false);
     const showWork = () => running() || unfolded();
+    // A match in the work log (or in what was said on the way) opens it.
+    createEffect(
+        on(findReveal, (r) => {
+            if (r?.turnId !== p.turn.id || r.part === "prompt") return;
+            const has = (it: Item) => (it.kind === "block" ? it.block.id === r.part : it.steps.some((b) => b.id === r.part));
+            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) setUnfolded(true);
+        }),
+    );
     const hasOutput = () => p.turn.blocks.length > 0 || running();
     const lastText = () => {
         for (let i = p.turn.blocks.length - 1; i >= 0; i--) {
@@ -355,7 +388,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} sessionId={p.state.id} />}
+                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} sessionId={p.state.id} find={t().id} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === lastBlockId()} />}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
@@ -410,7 +443,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                         )}
                     </Index>
                     <Show when={!running() && !p.turn.archived && !p.turn.imported}>
-                        <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} />
+                        <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} />
                     </Show>
                     <Show when={!running() && p.turn.prompt}>
                         <div class="turn-foot">
