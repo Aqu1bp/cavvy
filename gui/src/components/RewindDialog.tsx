@@ -85,7 +85,7 @@ export function RewindDialog() {
             if (conversation && !r.failed.length) handleFor(sid)?.setDraft({ text: r.text });
             for (const f of r.failed) toast(`Couldn't restore ${f.path}: ${f.error}`, "error");
             const did = code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation ? " and the conversation" : ""}` : "Rewound the conversation; the prompt is back in the input box";
-            toast(p.backends?.length ? `${did}. What ${names(p.backends)} changed in files was left as it is.` : did, "success");
+            toast(p.backends?.length ? `${did}. What ${names(p.backends)} changed in ${code && r.restored.length ? "other files" : "files"} was left as it is.` : did, "success");
             close();
         } catch (e) {
             reportError(e);
@@ -116,7 +116,8 @@ export function RewindDialog() {
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
                                         <span class="small">
-                                            {names(plan()!.backends!)} answered since then. Harness doesn't track what {plan()!.backends!.length === 1 ? "it changes" : "they change"} in files with {plan()!.backends!.length === 1 ? "its" : "their"} own tools, so rewinding leaves any such changes as they are. Use git to review or undo them (git status, git diff).
+                                            {names(plan()!.backends!)} answered since then. Harness doesn't track what {plan()!.backends!.length === 1 ? "it changes" : "they change"} in files with {plan()!.backends!.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it
+                                            {plan()!.restore.length ? ", except in the files listed below, which go back to how they were then" : ""}. Use git to review or undo the rest (git status, git diff).
                                         </span>
                                     </div>
                                 </Show>

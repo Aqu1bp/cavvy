@@ -9,14 +9,14 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
-const { agentsFromTurns, keptAgent, replay, runsAgent, shownBlocks, UiLog, withoutActionsNote } = await import("../src/server/history");
+const { agentsFromTurns, keptAgent, promptKey, replay, runsAgent, shownBlocks, UiLog, withoutActionsNote } = await import("../src/server/history");
 const { DELEGATE_TOOL } = await import("../src/agent/delegation");
 const { mergePath } = await import("../src/server/login-env");
 const { Session, listAllSessions, findSessionAnywhere } = await import("../src/agent/session");
 const { Engine } = await import("../src/server/engine");
 const { getProvider } = await import("../src/providers/registry");
 import type { AgentRun, Block, SessionState, SessionSummary, ToolBlock, Turn } from "../src/server/protocol";
-import type { Message } from "../src/providers/types";
+import type { Message, UserMessage } from "../src/providers/types";
 
 afterAll(() => iso.cleanup());
 
@@ -333,12 +333,29 @@ describe("replay", () => {
         expect(turns.map((x) => [x.startedAt, x.endedAt, x.blocks.map((b) => (b.t === "text" ? b.text : b.t))])).toEqual([[9, undefined, ["The new reply."]]]);
     });
 
-    test("the log keeps the session's last mode and context", () => {
+    test("steps recorded for another prompt at that place (one sent where the log wasn't kept) aren't shown for this one", () => {
+        const file = join(tempDir(), "p.jsonl");
+        const log = new UiLog(file, "p", false);
+        const asked = user("the first question") as UserMessage;
+        log.write({ t: "blocks", seg: 0, index: 0, blocks: [{ t: "text", id: "b1", text: "The first answer." }], prompt: promptKey(asked) });
+        const reply = { role: "assistant", provider: "claude-code", model: "opus", content: [{ type: "text", text: "The second answer." }] } as Message;
+        let n = 0;
+        const run = (prompt: Message) => replay({ segments: [{ messages: [prompt, reply] }], current: [prompt, reply], ui: new UiLog(file, "p"), meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+        expect(run(user("another question"))[0]!.blocks.map((b) => b.t === "text" && b.text)).toEqual(["The second answer."]);
+        // The same words sent again are another prompt.
+        expect(run({ ...asked, meta: { kind: "prompt", checkpoint: 7 } })[0]!.blocks.map((b) => b.t === "text" && b.text)).toEqual(["The second answer."]);
+        expect(run(asked)[0]!.blocks.map((b) => b.t === "text" && b.text)).toEqual(["The first answer."]);
+    });
+
+    test("the log keeps the session's last mode and context; nothing is written once it's closed", () => {
         const file = join(tempDir(), "m.jsonl");
         const log = new UiLog(file, "m", false);
         log.write({ t: "state", mode: "auto" });
         log.write({ t: "state", contextTokens: 1234, messages: 2 });
         log.write({ t: "state", mode: "plan" });
+        // Its session let go of (another process may have it now).
+        log.close();
+        log.write({ t: "state", mode: "acceptEdits" });
         expect(new UiLog(file, "m").state).toEqual({ mode: "plan", contextTokens: 1234, messages: 2 });
     });
 

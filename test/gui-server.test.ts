@@ -1458,6 +1458,62 @@ describe("reopening a Claude Code session", () => {
         }
     }, 60_000);
 
+    test("a delegated sub-agent that outlives its turn comes back as it ended, and so does its row in that turn", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "mcp";
+        // In the background: its Write asks (Manual mode) after Claude Code's turn is over.
+        process.env.FAKE_MCP_CALLS = JSON.stringify([{ tool: "delegate", args: { task: "Subtask: write a note in NOTES.md.", description: "Write a note", model: "mock:mock-haiku", wait: false } }]);
+        const run = (a: AgentRun) => [a.id, a.description, a.status, a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t))];
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "get a note written" });
+            await c.until(id, (v) => done(v) && v.agents[0]?.status === "waiting", 20_000);
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, (v) => v.agents[0]?.status === "done", 20_000);
+            await Bun.sleep(200);
+            const live = structuredClone(c.view(id));
+            expect(live.agents.map(run)).toEqual([[live.agents[0]!.id, "Write a note", "done", ["text", "Write:ok", "text"]]]);
+            const snap = await reopened(id);
+            expect(snap.agents.map(run)).toEqual(live.agents.map(run));
+            // The call's row as it was last shown, not as it was when the turn ended.
+            const call = (v: { turns: Turn[] }) => tools(v.turns[0]!).map((b) => [b.name, b.status, b.sub?.toolCount, b.sub?.tools.map((x) => `${x.name}:${x.status}`)]);
+            expect(call(snap)).toEqual(call(live));
+            c.close();
+        } finally {
+            delete process.env.FAKE_MCP_CALLS;
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("one still working when the server stops comes back stopped, with what it had done", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_MCP_CALLS = JSON.stringify([{ tool: "delegate", args: { task: "Subtask: write a note in NOTES.md.", description: "Write a note", model: "mock:mock-haiku", wait: false } }]);
+        const own = await startServer({ token: TOKEN });
+        try {
+            const c = new Client(TOKEN, {}, own.port);
+            await c.opened();
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "get a note written" });
+            await c.until(id, (v) => done(v) && v.agents[0]?.status === "waiting", 20_000);
+            const was = structuredClone(c.view(id).agents[0]!);
+            c.close();
+            await own.stop();
+            const [now] = (await reopened(id)).agents;
+            expect([now?.description, now?.status, now?.blocks.map((b) => (b.t === "tool" ? b.name : b.t))]).toEqual(["Write a note", "stopped", was.blocks.map((b) => (b.t === "tool" ? b.name : b.t))]);
+            expect(was.blocks.some((b) => b.t === "tool" && b.name === "Write")).toBe(true);
+        } finally {
+            delete process.env.FAKE_MCP_CALLS;
+            await own.stop().catch(() => undefined);
+            await cleanup();
+        }
+    }, 60_000);
+
     test("the mode it was left in, changed after its turns too; but bypass isn't taken up again without being chosen", async () => {
         try {
             const { c, id } = await claudeCodeSession("write", "acceptEdits");
@@ -1472,6 +1528,48 @@ describe("reopening a Claude Code session", () => {
             // Not even where it's allowed.
             expect((await reopened(id, { allowBypass: true })).state.mode).toBe("default");
         } finally {
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("rewinding past turns of another model and Claude Code: files Harness restores go back whole, and the model is told which", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        const log = join(tempDir("harness-gui-log-"), "claude.log");
+        try {
+            const dir = project();
+            const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
+            const c = await client();
+            const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+            await c.call("session.send", { id, text: "demo" });
+            await c.answer(id, { kind: "permission", choice: "yes" }); // the shell command
+            await c.until(id, done, 15_000);
+            saveAgentConfig("claude-code", { path: fakeClaude() });
+            process.env.FAKE_SCENARIO = "write";
+            await c.call("models.list", { refresh: true });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "write the notes" });
+            await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
+            // Claude Code changing a file Harness changed before (the fake only writes out.txt itself).
+            writeFileSync(join(dir, "src/auth/index.ts"), readFileSync(join(dir, "src/auth/index.ts"), "utf-8") + "// from Claude Code\n");
+            const targets = await c.call<any[]>("session.rewindTargets", { id });
+            expect(targets.map((t) => [t.text, t.backends])).toEqual([
+                ["write the notes", ["Claude Code"]],
+                ["demo", undefined],
+            ]);
+            const plan = await c.call("session.rewindPlan", { id, index: targets[1].index });
+            expect([plan.restore.map((r: { path: string; outside: boolean }) => `${r.path}:${r.outside}`).sort(), plan.backends]).toEqual([["src/auth/index.ts:true", "src/auth/sso.ts:false"], ["Claude Code"]]);
+            await c.call("session.rewind", { id, index: targets[1].index, planId: plan.planId, code: true, conversation: true });
+            // The whole file went back, Claude Code's change in it too; what it wrote elsewhere stays.
+            expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
+            expect(existsSync(join(dir, "out.txt"))).toBe(true);
+            process.env.FAKE_LOG = log;
+            await c.call("session.send", { id, text: "and now?" });
+            await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 1, 30_000);
+            const sent = readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
+            expect(sent.at(-1)).toContain("weren't undone (rewind can't restore them), except in these files, which were restored to how they were then:\\n- src/auth/index.ts\\n- src/auth/sso.ts");
+            c.close();
+        } finally {
+            delete process.env.FAKE_LOG;
             await cleanup();
         }
     }, 60_000);

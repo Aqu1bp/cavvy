@@ -88,7 +88,10 @@ export async function rewindCommand(app: App) {
         lines.push(theme.warning(`Can't be restored:`));
         lines.push(...listed(skipped.map((it) => theme.warning(`  ${rel(it.path)} (${it.reason})`))));
     }
-    if (backends.length) lines.push(theme.warning(`${backends.join(" and ")} answered since then. ${APP_TITLE} doesn't track what ${backends.length === 1 ? "it changes" : "they change"} in files with ${backends.length === 1 ? "its" : "their"} own tools, so rewinding leaves any such changes as they are; use git to review or undo them.`));
+    if (backends.length) {
+        const except = restore.length ? ", except in the files listed above, which go back to how they were then" : "";
+        lines.push(theme.warning(`${backends.join(" and ")} answered since then. ${APP_TITLE} doesn't track what ${backends.length === 1 ? "it changes" : "they change"} in files with ${backends.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it${except}. Use git to review or undo the rest.`));
+    }
     lines.push(theme.subtle("Changes made by shell commands aren't tracked and won't be undone."));
 
     type Choice = "both" | "conversation" | "code" | "cancel";
@@ -135,8 +138,10 @@ export async function rewindCommand(app: App) {
     }
 
     let rewindConversation = conversation;
+    let restoredPaths: string[] = [];
     if (code) {
         const { done, failed } = history!.restore(restore);
+        restoredPaths = done.map(rel);
         // Their content changed under the model: it must read them again.
         const restored = new Set(done);
         for (const p of [...app.toolState.fileState.keys()]) if (restored.has(canonical(p))) app.toolState.fileState.delete(p);
@@ -165,6 +170,6 @@ export async function rewindCommand(app: App) {
         if (kept.length) {
             app.agent?.addReminder(`The user rewound the conversation to an earlier point (/rewind), but these files weren't restored and still have changes made after that point:\n${kept.map((it) => `- ${rel(it.path)}`).join("\n")}`);
         }
-        if (backends.length) app.agent?.addReminder(untrackedChangesNote(backends));
+        if (backends.length) app.agent?.addReminder(untrackedChangesNote(backends, restoredPaths));
     }
 }

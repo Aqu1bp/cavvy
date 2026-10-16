@@ -4,6 +4,7 @@
 // keep (diffs, summaries, timings, and the steps of turns Claude Code or Codex
 // answered, which the transcript keeps as text), in ui/<session>.jsonl next to it.
 
+import { createHash } from "crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
@@ -22,6 +23,11 @@ export const INLINE_OUTPUT = 4000;
 export const STEERING = "The user sent this message while you were working:\n";
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
+/** Tells one prompt from another, the same words sent again too (each has its own checkpoint), without keeping its text again. */
+export function promptKey(m: UserMessage): string {
+    return createHash("sha256").update(JSON.stringify([m.content, m.meta?.checkpoint ?? null])).digest("hex").slice(0, 16);
+}
 
 export function promptText(m: UserMessage): string {
     const first = m.content.find((p) => p.type === "text" && !/^<system-reminder>/.test(p.text));
@@ -93,7 +99,7 @@ export type UiRecord =
      * transcript keeps only its text and a note of what was done, which is
      * what other models are given; this is what the GUI shows again.
      */
-    | { t: "blocks"; seg: number; index: number; blocks: Block[] }
+    | { t: "blocks"; seg: number; index: number; blocks: Block[]; /** promptKey of the prompt it answered. */ prompt?: string }
     /** A sub-agent of such a turn, the last time it changed (keptAgent). */
     | { t: "agent"; agent: AgentRun }
     | ({ t: "state" } & UiState);
@@ -101,11 +107,13 @@ export type UiRecord =
 export class UiLog {
     tools = new Map<string, Extract<UiRecord, { t: "tool" }>>();
     turns = new Map<string, Extract<UiRecord, { t: "turn" }>>();
-    blocks = new Map<string, Block[]>();
+    blocks = new Map<string, { blocks: Block[]; prompt?: string }>();
     agents = new Map<string, AgentRun>();
     state: UiState = {};
     private file: string;
     private created = false;
+    /** Its session was let go of: another process may be keeping this log now. */
+    private closed = false;
 
     constructor(sessionFile: string, id: string, readExisting = true) {
         this.file = join(dirname(sessionFile), "ui", `${id}.jsonl`);
@@ -138,7 +146,7 @@ export class UiLog {
             const start = r.end === undefined && r.status === undefined;
             if (start) this.blocks.delete(k);
             this.turns.set(k, start ? r : { ...this.turns.get(k), ...r });
-        } else if (r.t === "blocks" && Array.isArray(r.blocks)) this.blocks.set(`${r.seg}:${r.index}`, r.blocks);
+        } else if (r.t === "blocks" && Array.isArray(r.blocks)) this.blocks.set(`${r.seg}:${r.index}`, { blocks: r.blocks, prompt: r.prompt });
         else if (r.t === "agent" && typeof r.agent?.id === "string") this.agents.set(r.agent.id, r.agent);
         else if (r.t === "state") {
             const { t: _, ...state } = r;
@@ -150,13 +158,24 @@ export class UiLog {
         return this.turns.get(`${seg}:${index}`);
     }
 
-    /** The steps of the turn at that prompt, when a backend answered it. */
-    shown(seg: number, index: number): Block[] | undefined {
-        return this.blocks.get(`${seg}:${index}`);
+    /**
+     * The steps of the turn at that prompt, when a backend answered it. Not
+     * if the prompt there is another one (put there where this log wasn't
+     * kept: in a terminal, after a rewind).
+     */
+    shown(seg: number, index: number, prompt: UserMessage): Block[] | undefined {
+        const r = this.blocks.get(`${seg}:${index}`);
+        return r && (r.prompt === undefined || r.prompt === promptKey(prompt)) ? r.blocks : undefined;
+    }
+
+    /** Nothing more is written (the session is being let go of, like Session.release). */
+    close() {
+        this.closed = true;
     }
 
     /** Best effort, like the transcript itself; redacted like everything written to disk. */
     write(r: UiRecord) {
+        if (this.closed) return;
         this.apply(r);
         try {
             if (!this.created) {
@@ -399,7 +418,7 @@ export function replay(o: ReplayInput): Turn[] {
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;
-                const steps = o.ui.shown(si, index);
+                const steps = o.ui.shown(si, index, m);
                 if (steps) {
                     t.blocks.push(...steps.map((b) => restoredBlock(b, o)));
                     shown.add(t);

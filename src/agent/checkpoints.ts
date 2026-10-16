@@ -411,9 +411,14 @@ export function rewindTargets(messages: Message[]): RewindTarget[] {
     return out;
 }
 
-/** For the model, once the conversation was rewound past turns these backends answered: what they changed is still there. */
-export function untrackedChangesNote(backends: string[]): string {
-    return `The user rewound the conversation to an earlier point (/rewind), but any changes ${backends.join(" and ")} made to files after that point weren't undone (rewind can't restore them), so files may not be as the conversation now suggests. Check them (git status, git diff) before relying on them.`;
+/**
+ * For the model, once the conversation was rewound past turns these
+ * backends answered: what they changed is still there, except in the files
+ * that were `restored` (to how they were then, their changes included).
+ */
+export function untrackedChangesNote(backends: string[], restored: string[] = []): string {
+    const except = restored.length ? `, except in these files, which were restored to how they were then:\n${restored.map((p) => `- ${p}`).join("\n")}\n` : " ";
+    return `The user rewound the conversation to an earlier point (/rewind), but any changes ${backends.join(" and ")} made to files after that point weren't undone (rewind can't restore them)${except}So files may not be as the conversation now suggests. Check them (git status, git diff) before relying on them.`;
 }
 
 /**
