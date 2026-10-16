@@ -284,7 +284,11 @@ let watchingEditor = false;
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
-    if (!watchingEditor) (watchingEditor = true), createRoot(() => createEffect(() => paths.editorIs(app.settings.editor)));
+    if (!watchingEditor) {
+        watchingEditor = true;
+        // Editor changes here or seen from another window on refresh need fresh answers about which paths are links.
+        createRoot(() => createEffect(() => paths.editorIs(app.settings.editor)));
+    }
 }
 
 function upsertSession(s: SessionSummary) {
