@@ -959,7 +959,7 @@ class ClaudeTurn {
             const fb = r.feedback?.trim();
             return fb ? { behavior: "deny", message: `The user wants changes to the plan:\n${fb}` } : { behavior: "deny", message: "The user rejected the plan. Wait for them to say how to proceed.", interrupt: true };
         }
-        // The harness's own tools (delegating to other models): what a delegated agent does is checked when it does it.
+        // The harness's own tools: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
         const own = this.t.orchestrator;
         if (own && String(req.tool_name ?? "").startsWith(`mcp__${own.name}__`)) return { behavior: "allow", updatedInput: raw };
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);

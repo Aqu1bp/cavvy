@@ -1,6 +1,7 @@
 // File diffs in the GUI's shape (hunks with line numbers), kept small enough
 // to send over the socket.
 
+import { redact } from "../util/redact";
 import { diffLines, hunks } from "../util/diff";
 import type { DiffHunk, FileDiff } from "./protocol";
 
@@ -54,11 +55,19 @@ export function textOf(buf: Uint8Array | undefined | null): string | undefined {
     return Buffer.from(buf).toString("utf-8");
 }
 
+/** Redact full values before any display cut: partial values can't be matched later when history is saved. */
+function redactInput(value: unknown): unknown {
+    if (typeof value === "string") return redact(value);
+    if (Array.isArray(value)) return value.map(redactInput);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, v]) => [redact(key), redactInput(v)]));
+    return value;
+}
+
 /** Long string values cut, so a Write of a 5 MB file doesn't travel to the GUI with every update. */
 export function trimInput(input: unknown, max = 4000): Record<string, unknown> | undefined {
     if (!input || typeof input !== "object") return undefined;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(redactInput(input) as Record<string, unknown>)) {
         if (typeof v === "string") out[k] = v.length > max ? `${v.slice(0, max)}\n… (${v.length - max} more characters)` : v;
         else if (Array.isArray(v) || (v && typeof v === "object")) {
             const s = JSON.stringify(v);

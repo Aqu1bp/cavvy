@@ -1234,7 +1234,7 @@ interface Origin {
 /**
  * The harness's MCP server as Codex config for the thread (sent over the
  * app-server's stdin, never in arguments). Its tools run without Codex's
- * approval prompt: what a delegated agent does is checked when it does it.
+ * approval prompt: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
  */
 export function orchestratorConfig(o: OrchestratorServer): Record<string, unknown> {
     return {

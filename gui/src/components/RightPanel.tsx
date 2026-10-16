@@ -1,9 +1,9 @@
 // The session's side card: where it works (folder, branch, changes), and
-// only what's live besides: the plan, running shells, MCP servers that
-// failed, and its sub-agents. Sections with nothing to say aren't drawn.
+// only what's live besides: the plan, running shells, secrets it holds, MCP
+// servers that failed, and its sub-agents. Sections with nothing to say aren't drawn.
 
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, Plug, SquarePen, Terminal, X } from "lucide-solid";
+import { Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
 import type { AgentRun } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
@@ -127,6 +127,29 @@ function Shells(p: { handle: SessionHandle }) {
     );
 }
 
+/** The secrets the user gave this session, by name: its shell commands see them until forgotten or the session closes. */
+function Secrets(p: { handle: SessionHandle }) {
+    const names = () => p.handle.view.state.secrets ?? [];
+    return (
+        <Show when={names().length}>
+            <div class="sec">
+                <div class="sh">Secrets</div>
+                <For each={names()}>
+                    {(name) => (
+                        <div class="prow swap" title={`New shell commands in this session see $${name}`}>
+                            <KeyRound size={16} />
+                            <span class="mono truncate grow">{name}</span>
+                            <button class="act hb sm" title="Forget" aria-label={`Forget ${name}`} onClick={() => void rpc.call("session.forgetSecret", { id: p.handle.id, name }).catch(reportError)}>
+                                <X size={14} />
+                            </button>
+                        </div>
+                    )}
+                </For>
+            </div>
+        </Show>
+    );
+}
+
 /** Healthy servers stay out of the way; one that failed shows with why. */
 function Mcp(p: { handle: SessionHandle }) {
     const broken = () => p.handle.view.state.mcp.filter((m) => m.status === "failed" || m.status === "needs-approval");
@@ -219,6 +242,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
                 <Workspace handle={p.handle} />
                 <Plan handle={p.handle} />
                 <Shells handle={p.handle} />
+                <Secrets handle={p.handle} />
                 <Mcp handle={p.handle} />
                 <Lineage handle={p.handle} />
             </div>

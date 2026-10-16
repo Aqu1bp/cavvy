@@ -21,13 +21,56 @@ const MAX_KEPT = MAX_OUTPUT * 20;
  * missing command), anywhere: after output with no newline it starts mid-line
  * (`Checking... zsh:1: no matches found`). Then status 1 may be the shell's.
  */
-function shellComplained(output: string, shell = pickShell()): boolean {
+function shellComplaintPattern(shell = pickShell()): RegExp {
     const name = (shell.split("/").pop() ?? "").replace(/[^\w.-]/g, "");
-    return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `).test(output);
+    return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `);
 }
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
+/** Background lines beyond this bound are omitted, never released in raw pieces. */
+const MAX_PARTIAL_LINE = 64 * 1024;
+
+/** Each pipe owns its decoder and pending line: stderr mustn't split a stdout secret (or vice versa). */
+function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void) {
+    let pending = "";
+    let skipping = false;
+    let order = 0;
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk: string) => {
+        // Cache both delimiters: searching for an absent CR again at every LF is quadratic.
+        let lf = chunk.indexOf("\n");
+        let cr = chunk.indexOf("\r");
+        for (let start = 0; start < chunk.length; ) {
+            const nl = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
+            const end = nl < 0 ? chunk.length : nl + 1;
+            if (!skipping) {
+                if (!pending) order = nextOrder();
+                pending += chunk.slice(start, end);
+                if (pending.length > maxLine) {
+                    emit(overflow(pending), order);
+                    pending = "";
+                    skipping = true;
+                } else if (nl >= 0) {
+                    inspect?.(pending);
+                    emit(redact(pending), order);
+                    pending = "";
+                }
+            }
+            if (nl >= 0) skipping = false;
+            start = end;
+            if (lf >= 0 && lf < start) lf = chunk.indexOf("\n", start);
+            if (cr >= 0 && cr < start) cr = chunk.indexOf("\r", start);
+        }
+    });
+    stream.on("end", () => {
+        if (pending) {
+            inspect?.(pending);
+            emit(redact(pending), order);
+        }
+        pending = "";
+    });
+}
 
 /**
  * A sandboxed command's environment: package caches it can write and, with
@@ -72,6 +115,9 @@ interface RunOpts {
 
 interface RunResult {
     output: string;
+    /** Capture facts before redaction can shrink output or hide a shell diagnostic. */
+    outputTruncated: boolean;
+    shellError: boolean;
     exitCode: number | null;
     signal: string | null;
     timedOut: boolean;
@@ -90,7 +136,21 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             detached: true,
             stdio: ["ignore", "pipe", "pipe"],
         });
-        let output = "";
+        const parts: { order: number; text: string }[] = [];
+        let retained = 0;
+        let rawLength = 0;
+        let outputTruncated = false;
+        let shellError = false;
+        const complaint = shellComplaintPattern();
+        const inspect = (text: string) => {
+            rawLength = Math.min(MAX_KEPT, rawLength + text.length);
+            if (rawLength >= MAX_KEPT) outputTruncated = true;
+            if (!shellError) shellError = complaint.test(stripAnsi(text));
+        };
+        let sequence = 0;
+        const nextOrder = () => sequence++;
+        // Pending lines can finish out of order (notably stdout without a final newline).
+        const output = () => parts.sort((a, b) => a.order - b.order).map((p) => p.text).join("");
         let timedOut = false;
         let aborted = false;
         const killTree = () => {
@@ -108,13 +168,26 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
                 }
             }, 2000).unref?.();
         };
-        const onChunk = (b: Buffer) => {
-            const s = b.toString("utf-8");
-            if (output.length < MAX_KEPT) output += s;
+        let capped = false;
+        const onChunk = (s: string, order: number) => {
+            if (!capped) {
+                // The stream has redacted complete lines before this display-only cut.
+                const text = s.slice(0, MAX_KEPT - retained);
+                parts.push({ order, text });
+                retained += text.length;
+                capped = retained >= MAX_KEPT;
+                if (capped) outputTruncated = true;
+            }
             opts.onData?.(s);
         };
-        child.stdout?.on("data", onChunk);
-        child.stderr?.on("data", onChunk);
+        // An unfinished outer secret may contain a shorter match whose marker expands.
+        // Dropping the whole oversized line avoids mixing raw and redacted cut positions.
+        const overflow = () => {
+            outputTruncated = true;
+            return `[Output line omitted: exceeds ${MAX_KEPT} characters]\n`;
+        };
+        if (child.stdout) readShellStream(child.stdout, onChunk, MAX_KEPT, overflow, nextOrder, inspect);
+        if (child.stderr) readShellStream(child.stderr, onChunk, MAX_KEPT, overflow, nextOrder, inspect);
         const timer = setTimeout(() => {
             timedOut = true;
             killTree();
@@ -136,18 +209,18 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             } catch {
                 // ignore
             }
-            resolvePromise({ output, exitCode: code, signal: sig, timedOut, aborted, newCwd });
+            resolvePromise({ output: output(), outputTruncated, shellError, exitCode: code, signal: sig, timedOut, aborted, newCwd });
         });
         child.on("error", (err) => {
             clearTimeout(timer);
-            resolvePromise({ output: output + `\n${err.message}`, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
+            resolvePromise({ output: output() + `\n${err.message}`, outputTruncated, shellError, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
         });
     });
 }
 
 function cleanOutput(s: string): string {
     // Collapse carriage-return progress bars to their final state, strip ANSI.
-    const lines = stripAnsi(s)
+    const lines = stripAnsi(redact(s))
         .split("\n")
         .map((l) => {
             const parts = l.split("\r");
@@ -213,7 +286,8 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         return undefined;
     },
     async run(input, ctx) {
-        let env = childEnv(ctx.settings.env);
+        // childEnv leaves out every registered secret; this session's own go back in, for its shell alone.
+        let env = { ...childEnv(ctx.settings.env), ...ctx.state.secrets?.env() };
         let proxy: CommandProxy | undefined;
         if (ctx.sandbox) ({ env, proxy } = await sandboxedEnv(env, ctx.sandbox, input.allowedHosts));
         if (input.run_in_background) return startBackground(input.command, ctx, env, proxy);
@@ -256,7 +330,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have,
         // or the shell stopped before the end of the script (errexit, a failed special builtin): then it's not
         // the last command's 1. The line after the command records the cwd, so a cwd means it got there.
-        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command, env) : undefined;
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && !res.outputTruncated && !res.shellError ? finalSearch(input.command, env) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
         else if (search) {
@@ -343,16 +417,20 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
             return how;
         },
     };
-    const onChunk = (b: Buffer) => {
-        shell.output += b.toString("utf-8");
+    const onChunk = (text: string) => {
+        shell.output += text;
         if (shell.output.length > BG_BUFFER) {
-            const drop = shell.output.length - BG_BUFFER;
+            let drop = shell.output.length - BG_BUFFER;
+            // Only redacted, complete lines enter the ring; evict whole lines for readability.
+            const nl = shell.output.indexOf("\n", drop);
+            if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
             shell.output = shell.output.slice(drop);
             shell.readOffset = Math.max(0, shell.readOffset - drop);
         }
     };
-    child.stdout?.on("data", onChunk);
-    child.stderr?.on("data", onChunk);
+    const overflow = () => "[Output line omitted: exceeds 64 KiB]\n";
+    if (child.stdout) readShellStream(child.stdout, onChunk, MAX_PARTIAL_LINE, overflow);
+    if (child.stderr) readShellStream(child.stderr, onChunk, MAX_PARTIAL_LINE, overflow);
     // The network goes with the shell: whatever it left running loses it.
     child.on("close", (code) => {
         shell.exitCode = code ?? -1;
@@ -387,8 +465,10 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
     async run(input, ctx) {
         const sh = ctx.state.shells.get(input.bash_id);
         if (!sh) return { content: `No background shell with id ${input.bash_id}. Active: ${[...ctx.state.shells.keys()].join(", ") || "none"}`, isError: true };
-        let fresh = cleanOutput(sh.output.slice(sh.readOffset));
-        sh.readOffset = sh.output.length;
+        // The stream only publishes redacted complete lines (or its final line at EOF).
+        const end = sh.output.length;
+        let fresh = cleanOutput(sh.output.slice(sh.readOffset, end));
+        sh.readOffset = end;
         if (input.filter) {
             try {
                 const re = new RegExp(input.filter);

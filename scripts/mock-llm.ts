@@ -156,6 +156,17 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    // Asks for a secret, then uses it without ever seeing it. "checksum N M" (from `printf %s VALUE | cksum`) checks the value it got.
+    if (/\bsecret\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I need a token for this.", calls: [{ name: "RequestSecret", args: { name: "DEMO_TOKEN", purpose: "To call the demo API with curl." } }] };
+        if (toolRounds === 1) {
+            if (!lastResult.startsWith("The user provided")) return { text: "Understood, I'll carry on without it." };
+            const sum = /checksum (\d+ \d+)/.exec(p)?.[1];
+            const check = sum ? `; [ "$(printf %s "$DEMO_TOKEN" | cksum | awk '{print $1, $2}')" = "${sum}" ] && echo MATCH || echo NO-MATCH` : "";
+            return { text: "Using it now.", calls: [{ name: "Bash", args: { command: `echo "echo: $DEMO_TOKEN"; printenv | grep '^DEMO_TOKEN='; [ -n "$DEMO_TOKEN" ] && echo SET || echo UNSET${check}`, description: "Use the demo token" } }] };
+        }
+        return { text: `Done. The command printed:\n${lastResult}` };
+    }
     if (/\bquestion\b/.test(p)) {
         if (toolRounds === 0) return { text: "Before I start, one decision:", calls: [{ name: "AskUserQuestion", args: { question: "Which identity protocol should we support first?", options: [{ label: "SAML 2.0", description: "Most enterprise IdPs (Okta, Azure AD)" }, { label: "OpenID Connect", description: "Simpler, modern, JSON-based" }, { label: "Both", description: "More work up front" }] } }] };
         return { text: `Great, going with that. (${lastResult.replace(/^The user answered: /, "")})` };
@@ -184,6 +195,7 @@ function titleFor(prompt: string): string {
     if (/\bsso\b|\bdemo\b/.test(p)) return "Add enterprise SSO";
     if (/\bplan\b/.test(p)) return "Plan the SSO rollout";
     if (/\bquestion\b/.test(p)) return "Choose an identity protocol";
+    if (/\bsecret\b/.test(p)) return "Use a demo token";
     if (/\btodo\b/.test(p)) return "Track SSO tasks";
     if (/\bagents?\b/.test(p)) return "Review auth with agents";
     if (/\bnote\b/.test(p)) return "Write a release note";
@@ -198,8 +210,8 @@ function chunks(text: string): string[] {
 export function startMockLlm(o: MockOptions = {}) {
     const delay = o.delayMs ?? 12;
     let calls = 0;
-    /** Each completion asked for: the model, and what it was for. */
-    const requests: { model: string; kind: "title" | "summary" | "turn" }[] = [];
+    /** Each completion asked for: the model, what it was for, and the request body as sent. */
+    const requests: { model: string; kind: "title" | "summary" | "turn"; body: string }[] = [];
     /** The latest requests' bodies as they arrived, for tests that check what the model was sent. */
     const bodies: Json[] = [];
     const server = Bun.serve({
@@ -210,7 +222,8 @@ export function startMockLlm(o: MockOptions = {}) {
             const url = new URL(req.url);
             if (url.pathname.endsWith("/models")) return Response.json({ data: MODELS });
             if (!url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 });
-            const body = (await req.json()) as Json;
+            const raw = await req.text();
+            const body = JSON.parse(raw) as Json;
             bodies.push(body);
             if (bodies.length > 50) bodies.shift();
             const messages: Json[] = body.messages ?? [];
@@ -260,7 +273,7 @@ export function startMockLlm(o: MockOptions = {}) {
             const enc = new TextEncoder();
             const id = `chatcmpl-${calls}`;
             const model = body.model ?? "mock-opus";
-            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary" });
+            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary", body: raw });
             const stream = new ReadableStream({
                 async start(ctrl) {
                     const send = (obj: Json) => ctrl.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));

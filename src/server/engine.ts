@@ -1217,6 +1217,9 @@ export class Engine {
             case "session.killShell":
                 await this.runtime(p.id).killShell(str(p.shellId, "shellId"));
                 return null;
+            case "session.forgetSecret":
+                this.runtime(p.id).forgetSecret(str(p.name, "name"));
+                return null;
             case "session.stopAgent":
                 try {
                     return { stopped: this.runtime(p.id).stopAgent(optStr(p.agentId)) };

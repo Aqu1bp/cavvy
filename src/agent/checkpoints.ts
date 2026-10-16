@@ -7,7 +7,9 @@
 //   index.jsonl   append-only records (below), read back on resume
 //   blobs/<sha256> file contents, stored once per hash
 // Copies are exact and not redacted: restoring must be byte for byte, and they
-// hold the same data as the user's own files. Folders are 0700, files 0600.
+// hold the same data as the user's own files. A file holding a secret the user
+// gave the agent (RequestSecret) isn't copied: it can't be put back.
+// Folders are 0700, files 0600.
 // Files go by their real path, so one reached through a link is still one file.
 // Shell commands aren't tracked.
 
@@ -20,6 +22,7 @@ import { getProvider } from "../providers/registry";
 import type { Message, TextPart, UserMessage } from "../providers/types";
 import type { TodoItem, ToolState } from "../tools/types";
 import type { Session } from "./session";
+import { holdsGivenSecret } from "./secrets";
 
 /** Bigger files aren't saved, so they can't be restored. */
 export const MAX_SNAPSHOT_BYTES = 10 * 1024 * 1024;
@@ -224,6 +227,8 @@ export class FileHistory {
             if (!st.isFile()) return;
             if (st.size > MAX_SNAPSHOT_BYTES) return this.append({ t: "skip", cp, path, reason: `over ${MAX_SNAPSHOT_BYTES / 1024 / 1024} MB` });
             const buf = await readFile(path);
+            // The copy would be written to disk under ~/.harness, where nothing redacts it and closing the session doesn't remove it.
+            if (holdsGivenSecret(buf)) return this.append({ t: "skip", cp, path, reason: "holds a secret you gave the agent" });
             const hash = sha256(buf);
             this.store(hash, buf);
             this.append({ t: "snap", cp, path, hash, mode: st.mode & 0o777 });

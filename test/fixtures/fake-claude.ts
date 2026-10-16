@@ -34,6 +34,7 @@
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
+// FAKE_LOG_ENV=1     logs its whole environment at start
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -45,6 +46,7 @@ const log = (o: unknown) => {
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
 log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY) });
+if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
 
 if (argv[0] === "auth" && argv[1] === "status") {
     const on = process.env.FAKE_LOGGED_IN !== "0";

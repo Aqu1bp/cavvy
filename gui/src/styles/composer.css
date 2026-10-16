@@ -484,6 +484,29 @@
     resize: none;
 }
 
+.secret-purpose {
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.secret-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.secret-names {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--warning);
+}
+
+.itab-input.masked {
+    -webkit-text-security: disc;
+}
+
 .itab-feedback:focus,
 .itab-input:focus {
     outline: none;

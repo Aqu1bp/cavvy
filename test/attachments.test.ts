@@ -14,7 +14,7 @@ const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { RpcError } = await import("../src/server/rpc-error");
 const { checkFiles, checkMedia, sanitizeName } = await import("../src/server/attachments");
-const { framedText, readsPdf, attachmentsNote, fitMedia, fitRequest, REQUEST_LIMIT } = await import("../src/providers/files");
+const { framedText, readsPdf, forBackend, attachmentsNote, fitMedia, fitRequest, REQUEST_LIMIT } = await import("../src/providers/files");
 const { MEDIA_BUDGET, base64Size } = await import("../src/util/media");
 const { OpenAICompatProvider } = await import("../src/providers/openai-compat");
 const { Agent } = await import("../src/agent/agent");
@@ -903,3 +903,44 @@ describe("conversation-wide limits, and the user's own words", () => {
         expect(checkFiles([{ name: "plain.txt", data: b64("z".repeat(84_000)) }, pdfA, pdfB])).toHaveLength(3);
     });
 });
+
+
+for (const pasted of [false, true]) {
+    test(`session secrets are redacted before ${pasted ? "pasted" : "attached"} text reaches history or a model`, async () => {
+        const value = "kR9vM3qW7xL2nT8p ";
+        const { engine, c, id, rt, events } = await engineWithSession();
+        try {
+            rt.toolState.secrets!.set("ATTACH_TEST_TOKEN", value);
+            // Without admission redaction, the compaction head cut would split this value.
+            const text = "a".repeat(1594) + value + "b".repeat(9000);
+            const files = pasted ? gui.toWire([gui.pastedText(text, [])]).files! : [{ name: "notes.txt", data: b64(text) }];
+            const before = mock.requests.length;
+            await engine.handle(c, "session.send", { id, text: "review this text", files });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 1);
+            const messages = rt.session.messages;
+            const prompt = userPrompts(messages)[0]!;
+            const outputs = [
+                JSON.stringify(events),
+                JSON.stringify(rt.snapshot()),
+                readFileSync(rt.session.path, "utf8"),
+                ...mock.requests.slice(before).map((r) => r.body ?? ""),
+                JSON.stringify(toAnthropicMessages(messages)),
+                JSON.stringify(toResponsesInput(messages)),
+                JSON.stringify(toOpenAIMessages("", messages, getProvider("openai")!)),
+                forBackend(prompt.content, false).text,
+                transcriptText(messages, 60_000),
+            ];
+            for (const output of outputs) {
+                for (let i = 0; i <= value.length - 6; i++) expect(output).not.toContain(value.slice(i, i + 6));
+            }
+            expect(lastPromptSent()).toContain("[REDACTED ATTACH_TEST_TOKEN]");
+            expect(prompt.content.find((p) => p.type === "file" && p.kind === "text")).toMatchObject({ text: text.replace(value, "[REDACTED ATTACH_TEST_TOKEN]") });
+            // Size limits refuse the whole file, without keeping a raw prefix at the cap.
+            const oversized = [{ name: "large.txt", data: b64("a".repeat(512 * 1024 - 6) + value), ...(pasted ? { pasted: true } : {}) }];
+            await expect(engine.handle(c, "session.send", { id, text: "too large", files: oversized })).rejects.toThrow(/at most/);
+            expect(userPrompts(rt.session.messages)).toHaveLength(1);
+        } finally {
+            await engine.stop();
+        }
+    });
+}
