@@ -787,6 +787,7 @@ export class Engine {
                 return { ...opened, script };
             }
             case "scripts.setupInfo": {
+                if (typeof p.cwd !== "string") throw new RpcError("cwd must be a string", "invalid");
                 const cwd = resolve(expandHome(text(p.cwd, "cwd", 4096)));
                 const main = mainCheckoutOf(cwd);
                 const { script } = await findSetupScript(cwd);

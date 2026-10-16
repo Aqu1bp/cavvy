@@ -1314,3 +1314,283 @@ describe("project scripts", () => {
         }
     }, 20_000);
 });
+
+describe("the setup script, run in a worktree created from the GUI", () => {
+    // Run in a plain shell with an empty home, as above.
+    const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
+    beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("setup-home-"); });
+    afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+    /** Past the Typist's latest typing time (TYPE_BY_MS, 3 s), so a command that was going to be typed has been. */
+    const PAST_TYPING_MS = 3400;
+    const MARKER = "setup-ran";
+    type Made = { path: string; branch: string; setup?: { ticket: string; script: ProjectScript }; setupError?: string };
+    const waitFor = async (check: () => boolean, what = "setup script") => {
+        const deadline = Date.now() + 8000;
+        while (!check()) { if (Date.now() > deadline) throw new Error(`${what} timed out`); await Bun.sleep(20); }
+    };
+    const terminalEvents = (c: Client) => c.events.filter((e) => e.type.startsWith("terminal."));
+    let n = 0;
+
+    /** A repository with one commit and nothing for trust to protect, by its real path. */
+    async function repo() {
+        const { gitArgv, gitEnv } = await import("../src/util/git");
+        const main = join(realpathSync(tempDir("harness-gui-setup-")), "repo");
+        mkdirSync(main);
+        for (const args of [["init", "-b", "main"], ["commit", "--allow-empty", "-m", "Initial commit"]]) {
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd: main, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+            if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+        }
+        return main;
+    }
+    /** A trusted repository with a script marked to run in new worktrees. */
+    async function marked(c: Client, command = `touch ${MARKER}`) {
+        const main = await repo();
+        await c.call("projects.trust", { path: main, trust: true });
+        const script = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "install", command, runOnWorktreeCreate: true });
+        return { main, script };
+    }
+    const create = (c: Client, main: string, extra: Record<string, unknown> = {}) => c.call<Made>("projects.createWorktree", { path: main, branch: `setup-${++n}`, ...extra });
+    const start = async (c: Client, made: Made, ticket = made.setup!.ticket, script = made.setup!.script.id) => {
+        const id = `setup-terminal-${++n}`;
+        const opened = await c.call("scripts.run", { id, cwd: made.path, script, cols: 80, rows: 24, setup: ticket });
+        await c.call("terminal.arm", { id });
+        return { id, opened };
+    };
+    const ran = (dir: string) => existsSync(join(dir, MARKER));
+
+    test("runs: a trusted repository, a marked script, setup asked for; typed once, in the new worktree", async () => {
+        const c = await client();
+        try {
+            const { main, script } = await marked(c);
+            expect(await c.call("scripts.setupInfo", { cwd: main })).toEqual({ main, script, trusted: true });
+            const made = await create(c, main, { setup: true });
+            expect(made.path).toBe(join(main, ".claude", "worktrees", made.branch));
+            expect(made.setup?.script).toEqual(script);
+            expect(made.setup?.ticket).toMatch(/^[0-9a-f]{32}$/);
+            expect(made.setupError).toBeUndefined();
+            // Creating it started nothing: the window starts it, in a tab it shows.
+            expect(terminalEvents(c)).toHaveLength(0);
+            const { id, opened } = await start(c, made);
+            expect(opened).toMatchObject({ id, cwd: made.path, script });
+            await waitFor(() => ran(made.path));
+            expect(ran(main)).toBe(false);
+            // Typed visibly, into a shell that stays open.
+            const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+            await waitFor(() => output().includes(`touch ${MARKER}`));
+            expect(c.events.some((e) => e.type === "terminal.exit" && e.id === id)).toBe(false);
+            // A setup run isn't a click: the header button keeps what it had.
+            expect((await c.call("scripts.list", { cwd: main })).lastUsed).toBeUndefined();
+            // Once.
+            await expect(start(c, made)).rejects.toMatchObject({ code: "setup_refused" });
+            await c.call("terminal.close", { id });
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("never when opted out: no script marked, \"don't run it this time\", or a client that doesn't ask", async () => {
+        const c = await client();
+        try {
+            const main = await repo();
+            await c.call("projects.trust", { path: main, trust: true });
+            const unmarked = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "install", command: `touch ${MARKER}` });
+            expect(await c.call("scripts.setupInfo", { cwd: main })).toEqual({ main, trusted: true });
+            const none = await create(c, main, { setup: true });
+            expect(none.setup).toBeUndefined();
+            expect(none.setupError).toMatch(/no script is marked/);
+            await c.call("scripts.save", { cwd: main, id: unmarked.id, name: "install", command: `touch ${MARKER}`, runOnWorktreeCreate: true });
+            const skipped = await create(c, main, { setup: false });
+            const older = await create(c, main);
+            const nulled = await create(c, main, { setup: null });
+            for (const made of [skipped, older, nulled]) expect(made).toEqual({ path: made.path, branch: made.branch });
+            expect(srv.engine.setups.size).toBe(0);
+            await Bun.sleep(PAST_TYPING_MS);
+            for (const made of [none, skipped, older, nulled]) expect(ran(made.path)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("never when the repository is trusted only for having nothing to protect", async () => {
+        const c = await client();
+        try {
+            const main = await repo();
+            // A session there trusts the folder for this run, without the user's say-so.
+            await c.open("session.create", { cwd: main });
+            expect((await c.call("projects.inspect", { path: main })).trusted).toBe(true);
+            await c.call("scripts.save", { cwd: main, name: "install", command: `touch ${MARKER}`, runOnWorktreeCreate: true });
+            expect((await c.call("scripts.setupInfo", { cwd: main })).trusted).toBe(false);
+            const made = await create(c, main, { setup: true });
+            expect(made.setup).toBeUndefined();
+            expect(made.setupError).toMatch(/haven't trusted/);
+            expect(existsSync(made.path)).toBe(true);
+            // There's no ticket to start it with, and a made-up one is refused.
+            const script = (await c.call("scripts.list", { cwd: main })).scripts[0].id;
+            await expect(start(c, made, "0123456789abcdef0123456789abcdef", script)).rejects.toMatchObject({ code: "setup_refused" });
+            await Bun.sleep(PAST_TYPING_MS);
+            expect(ran(made.path)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("trust is checked again when it starts", async () => {
+        const c = await client();
+        const trusted = join(iso.home, "trusted.json");
+        try {
+            const { main } = await marked(c);
+            const made = await create(c, main, { setup: true });
+            const before = readFileSync(trusted, "utf-8");
+            writeFileSync(trusted, JSON.stringify({ dirs: (JSON.parse(before).dirs as string[]).filter((d) => d !== main) }));
+            await expect(start(c, made)).rejects.toThrow(/isn't trusted/);
+            expect(ran(made.path)).toBe(false);
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("never from another window, after a reconnect, or late", async () => {
+        const a = await client();
+        const b = await client();
+        const { SETUP_TTL_MS } = await import("../src/server/setup");
+        try {
+            const { main } = await marked(a);
+            const other = await create(a, main, { setup: true });
+            await expect(start(b, other)).rejects.toThrow(/another window/);
+            // Tried by another window, it's gone for this one too.
+            await expect(start(a, other)).rejects.toMatchObject({ code: "setup_refused" });
+
+            const late = await create(a, main, { setup: true });
+            srv.engine.setups.now = () => Date.now() + SETUP_TTL_MS + 1;
+            try {
+                await expect(start(a, late)).rejects.toThrow(/in time/);
+            } finally {
+                srv.engine.setups.now = Date.now;
+            }
+
+            const reloaded = await create(a, main, { setup: true });
+            expect(srv.engine.setups.size).toBe(1);
+            a.close();
+            await waitFor(() => srv.engine.setups.size === 0, "dropping the window's tickets");
+            const again = await client();
+            try {
+                await expect(start(again, reloaded)).rejects.toMatchObject({ code: "setup_refused" });
+            } finally {
+                again.close();
+            }
+            await Bun.sleep(PAST_TYPING_MS);
+            for (const made of [other, late, reloaded]) expect(ran(made.path)).toBe(false);
+            expect(terminalEvents(b)).toHaveLength(0);
+        } finally {
+            a.close();
+            b.close();
+        }
+    }, 25_000);
+
+    test("never on opening, inspecting or listing a worktree, whether made here or with git worktree add", async () => {
+        const c = await client();
+        try {
+            const { main } = await marked(c);
+            const made = await create(c, main);
+            const { gitArgv, gitEnv } = await import("../src/util/git");
+            const elsewhere = join(main, ".claude", "worktrees", "by-hand");
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "worktree", "add", "-b", "by-hand", elsewhere]), { cwd: main, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+            expect(r.exitCode).toBe(0);
+            for (const dir of [made.path, elsewhere]) {
+                await c.call("projects.inspect", { path: dir });
+                await c.call("projects.worktrees", { path: dir });
+                const id = await c.open("session.create", { cwd: dir });
+                await c.call("session.send", { id, text: "first prompt" });
+                await c.until(id, done);
+                await c.call("session.close", { id });
+                await Bun.sleep(400);
+                await c.call("session.open", { id });
+            }
+            expect(srv.engine.setups.size).toBe(0);
+            await Bun.sleep(PAST_TYPING_MS);
+            expect(ran(made.path)).toBe(false);
+            expect(ran(elsewhere)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 30_000);
+
+    test("unmarking or editing the script, or removing the folder, between create and start makes the start refuse", async () => {
+        const c = await client();
+        try {
+            const { main, script } = await marked(c);
+            const edited = await create(c, main, { setup: true });
+            await c.call("scripts.save", { cwd: main, id: script.id, name: "install", command: `touch ${MARKER}-edited` });
+            await expect(start(c, edited)).rejects.toThrow(/command changed/);
+            const unmarked = await create(c, main, { setup: true });
+            await c.call("scripts.save", { cwd: main, id: script.id, name: "install", command: `touch ${MARKER}-edited`, runOnWorktreeCreate: false });
+            await expect(start(c, unmarked)).rejects.toThrow(/no longer marked/);
+            // Another script can't use the ticket either.
+            await c.call("scripts.save", { cwd: main, id: script.id, name: "install", command: `touch ${MARKER}`, runOnWorktreeCreate: true });
+            const other = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "other", command: `touch ${MARKER}` });
+            const swapped = await create(c, main, { setup: true });
+            await expect(start(c, swapped, swapped.setup!.ticket, other.id)).rejects.toThrow(/isn't the project's setup script/);
+            // Nor another folder.
+            const moved = await create(c, main, { setup: true });
+            await expect(c.call("scripts.run", { id: `setup-terminal-${++n}`, cwd: main, script: script.id, cols: 80, rows: 24, setup: moved.setup!.ticket })).rejects.toThrow(/only in the worktree/);
+            const gone = await create(c, main, { setup: true });
+            rmSync(gone.path, { recursive: true, force: true });
+            await expect(start(c, gone)).rejects.toMatchObject({ code: expect.stringMatching(/setup_refused|not_found/) });
+            await Bun.sleep(PAST_TYPING_MS);
+            for (const made of [edited, unmarked, swapped, moved]) {
+                expect(ran(made.path)).toBe(false);
+                expect(existsSync(join(made.path, `${MARKER}-edited`))).toBe(false);
+            }
+            expect(ran(main)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 25_000);
+
+    test("a failing setup command, or one that can't open, leaves the worktree as it is", async () => {
+        const c = await client();
+        try {
+            const { main } = await marked(c, `touch ${MARKER} && (exit 7)`);
+            const made = await create(c, main, { setup: true });
+            const { id } = await start(c, made);
+            await waitFor(() => ran(made.path));
+            await Bun.sleep(300);
+            expect(c.events.some((e) => e.type === "terminal.exit" && e.id === id)).toBe(false);
+            const listed = await c.call<{ path: string }[]>("projects.worktrees", { path: main });
+            expect(listed.some((w) => w.path === made.path)).toBe(true);
+            await c.call("terminal.close", { id });
+
+            // The window's 12 terminals are open: the setup can't start, and the worktree stays.
+            const full = await create(c, main, { setup: true });
+            const ids = Array.from({ length: 12 }, (_, i) => `setup-full-${i}`);
+            for (const tid of ids) await c.call("terminal.open", { id: tid, cwd: main, cols: 80, rows: 24 });
+            await expect(start(c, full)).rejects.toThrow(/Close a terminal before opening another/);
+            for (const tid of ids) await c.call("terminal.close", { id: tid });
+            expect((await c.call<{ path: string }[]>("projects.worktrees", { path: main })).some((w) => w.path === full.path)).toBe(true);
+            expect(existsSync(full.path)).toBe(true);
+        } finally {
+            c.close();
+        }
+    }, 25_000);
+
+    test("bad parameters are invalid", async () => {
+        const c = await client();
+        try {
+            const { main, script } = await marked(c);
+            for (const setup of ["yes", 1, {}]) await expect(create(c, main, { setup })).rejects.toMatchObject({ code: "invalid" });
+            for (const setup of [7, "short", "g".repeat(32), "0".repeat(33), null]) {
+                await expect(c.call("scripts.run", { id: `setup-terminal-${++n}`, cwd: main, script: script.id, cols: 80, rows: 24, setup })).rejects.toMatchObject({ code: "invalid" });
+            }
+            await expect(c.call("scripts.save", { cwd: main, name: "x", command: "x", runOnWorktreeCreate: "true" })).rejects.toMatchObject({ code: "invalid" });
+            await expect(c.call("scripts.setupInfo", { cwd: 7 })).rejects.toMatchObject({ code: "invalid" });
+            await expect(c.call("scripts.setupInfo", { cwd: "x".repeat(5000) })).rejects.toMatchObject({ code: "invalid" });
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    });
+});
