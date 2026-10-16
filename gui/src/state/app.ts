@@ -208,6 +208,15 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
+/** Fork a session at the end of the turn of its prompt `index` (shown as `text`), and show the fork. */
+export async function forkSession(id: string, index: number, text: string): Promise<SessionHandle> {
+    const snap = await rpc.call("session.fork", { id, index, text });
+    const h = adopt(snap);
+    setApp("activeId", h.id);
+    markSeen(h.id);
+    return h;
+}
+
 /** Show a session in the main view. */
 export async function activate(id: string | undefined) {
     if (!id) {

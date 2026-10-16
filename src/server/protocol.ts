@@ -316,6 +316,8 @@ export interface SessionState {
     filesChanged: number;
     /** Background shells started by the agent. */
     shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number }[];
+    /** Forked from this session (its title then). */
+    forkOf?: { id: string; title: string };
 }
 
 export interface SessionSnapshot {
@@ -453,6 +455,8 @@ export interface RewindTargetInfo {
     text: string;
     files: number;
     tracked: boolean;
+    /** From before this session was forked: files changed then are restored from the original session, not here. */
+    forked?: boolean;
 }
 
 export interface RewindPlanInfo {
@@ -462,6 +466,8 @@ export interface RewindPlanInfo {
     restore: { path: string; action: "write" | "delete"; outside: boolean }[];
     skipped: { path: string; reason: string }[];
     tracked: boolean;
+    /** From before the fork: `restore` has only what this session changed since. */
+    forked?: boolean;
 }
 
 export interface ChangesInfo {
@@ -578,6 +584,8 @@ export interface Methods {
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string } };
+    /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index), whose text the window showed as `text`. */
+    "session.fork": { params: { id: string; index: number; text: string }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };

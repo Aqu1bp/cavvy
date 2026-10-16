@@ -92,15 +92,24 @@ export function RewindDialog() {
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} onClick={() => setChosen(t.index)}>
                                         <History size={14} />
                                         <span class="truncate">{t.text || "(empty prompt)"}</span>
-                                        <span class="muted small">{t.tracked ? (t.files ? `${plural(t.files, "file")} changed` : "no file changes") : "files not tracked"}</span>
+                                        <span class="muted small">{t.forked ? "from before the fork" : t.tracked ? (t.files ? `${plural(t.files, "file")} changed` : "no file changes") : "files not tracked"}</span>
                                     </button>
                                 )}
                             </For>
                         </div>
                         <Show when={plan()}>
                             <div class="rw-plan">
-                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.tracked ? "No file changes to undo since then." : "File changes from then weren't tracked; only the conversation can be restored."}</div>}>
-                                    <div class="small">Harness changed {plural(plan()!.restore.length, "file")} since then:</div>
+                                <Show when={plan()!.forked}>
+                                    <div class="rw-file warn">
+                                        <AlertTriangle size={13} />
+                                        <span class="small">This prompt is from before the fork. Files changed before the fork can only be restored from the original session.</span>
+                                    </div>
+                                </Show>
+                                <Show
+                                    when={plan()!.restore.length}
+                                    fallback={<div class="muted small">{plan()!.forked ? "No file changes in this session since the fork; only the conversation can be restored." : plan()!.tracked ? "No file changes to undo since then." : "File changes from then weren't tracked; only the conversation can be restored."}</div>}
+                                >
+                                    <div class="small">Harness changed {plural(plan()!.restore.length, "file")} {plan()!.forked ? "in this session since the fork" : "since then"}:</div>
                                     <For each={plan()!.restore}>
                                         {(r) => (
                                             <div class="rw-file">

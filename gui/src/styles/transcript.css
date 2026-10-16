@@ -53,6 +53,23 @@
     background: var(--bg-hover);
 }
 
+/* A fork's origin, above its first turn: opens the original. */
+.forked-from {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    margin: 0 0 16px;
+    padding: 3px 0;
+    font-size: 0.857rem;
+    color: var(--fg-subtle);
+}
+
+.forked-from:hover {
+    color: var(--fg);
+}
+
 .jump {
     position: absolute;
     left: 50%;

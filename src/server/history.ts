@@ -3,7 +3,7 @@
 // before a compaction) plus the GUI's own log of what the transcript doesn't
 // keep (diffs, summaries, timings), in ui/<session>.jsonl next to it.
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
 import { textOf } from "../providers/types";
@@ -124,6 +124,52 @@ export class UiLog {
             appendFileSync(this.file, redactedJson(r) + "\n");
         } catch {
             // the session keeps working without it
+        }
+    }
+}
+
+/**
+ * A fork's log, from the original's: what its copied turns need (tool rows'
+ * summaries and diffs, turn times). The fork's segments are the original's up
+ * to the cut, so records keep their keys. Written in one go, before the fork
+ * is opened.
+ */
+export function forkUiLog(from: { file: string; id: string }, to: { file: string; id: string }) {
+    let text: string;
+    try {
+        text = readFileSync(join(dirname(from.file), "ui", `${from.id}.jsonl`), "utf-8");
+    } catch {
+        return;
+    }
+    const segments = readSegments(to.file);
+    const calls = new Set<string>();
+    for (const seg of segments) for (const m of seg.messages) if (m.role === "assistant") for (const p of m.content) if (p.type === "tool_call") calls.add(p.id);
+    const out: string[] = [];
+    for (const raw of text.split("\n")) {
+        if (!raw) continue;
+        let r: UiRecord;
+        try {
+            r = JSON.parse(raw) as UiRecord;
+        } catch {
+            continue;
+        }
+        const keep = r.t === "tool" ? calls.has(r.id) : r.t === "turn" ? r.index < (segments[r.seg]?.messages.length ?? 0) : false;
+        if (keep) out.push(redactedJson(r));
+    }
+    if (!out.length) return;
+    const file = join(dirname(to.file), "ui", `${to.id}.jsonl`);
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+        writeFileSync(tmp, out.join("\n") + "\n", { mode: 0o600 });
+        chmodSync(tmp, 0o600);
+        renameSync(tmp, file);
+    } catch {
+        // The timeline is rebuilt without it (derived summaries, no timings).
+        try {
+            unlinkSync(tmp);
+        } catch {
+            // never made
         }
     }
 }

@@ -1,9 +1,9 @@
 // What the user does, as calls to the server.
 
-import type { EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import type { EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo, Turn } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { copyText, pickFolder } from "../lib/platform";
-import { activate, app, createSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, forkSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import { prefs, setPrefs } from "./prefs";
 import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
@@ -64,6 +64,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
         case "rewind":
             if (id) setRewindOpen(true);
             return true;
+        case "fork":
+            if (id) void fork(id);
+            return true;
         case "settings":
         case "config":
             setSettingsTab("general");
@@ -88,6 +91,35 @@ function clientCommand(id: string | undefined, text: string): boolean {
         }
         default:
             return false;
+    }
+}
+
+/**
+ * The prompt a fork from turn `i` goes from: its own, or for a message sent
+ * while the model worked, the prompt that started that work (the fork has
+ * everything up to the next prompt either way).
+ */
+export function forkAnchor(turns: Turn[], i: number): { index: number; text: string } | undefined {
+    for (let k = i; k >= 0; k--) {
+        const t = turns[k]!;
+        if (t.archived) return undefined;
+        if (t.prompt?.index !== undefined) return { index: t.prompt.index, text: t.prompt.text };
+    }
+    return undefined;
+}
+
+/** A new session with the conversation up to a turn (by default the latest finished one); the original stays as it is. */
+export async function fork(id: string, at?: { index: number; text: string }) {
+    const turns = handleFor(id)?.view.turns ?? [];
+    if (!at) {
+        for (let i = turns.length - 1; i >= 0 && !at; i--) if (turns[i]!.status !== "running" && turns[i]!.prompt) at = forkAnchor(turns, i);
+    }
+    if (!at) return toast("Nothing to fork yet: send a prompt first.", "warn");
+    try {
+        const h = await forkSession(id, at.index, at.text);
+        toast(`Forked into “${h.view.state.title ?? "a new session"}”`, "success");
+    } catch (e) {
+        reportError(e);
     }
 }
 

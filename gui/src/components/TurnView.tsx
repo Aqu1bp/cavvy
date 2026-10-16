@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, Info, MessageSquareText, RotateCcw, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, GitFork, Info, MessageSquareText, RotateCcw, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
@@ -280,7 +280,7 @@ function segments(items: Item[]): Seg[] {
     return out;
 }
 
-export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void }) {
+export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void; onFork?: () => void }) {
     const items = createMemo(() => groupBlocks(p.turn.blocks));
     const segs = createMemo(() => segments(items()));
     const running = () => p.turn.status === "running";
@@ -378,6 +378,11 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                             </Show>
                             <Show when={reply().trim()}>
                                 <CopyButton text={reply} label="Copy response" class="foot-btn" />
+                            </Show>
+                            <Show when={p.onFork && !p.turn.archived}>
+                                <button class="icon-btn foot-btn" title="Fork from here" aria-label="Fork from here" onClick={() => p.onFork?.()}>
+                                    <GitFork size={14} />
+                                </button>
                             </Show>
                         </div>
                     </Show>

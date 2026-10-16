@@ -111,6 +111,8 @@ export class FileHistory {
         if (!h) open.set(dir, (h = new FileHistory(dir)));
         // Checkpoints without file changes are only on the messages; keep ids increasing past them.
         for (const m of session.messages) if (m.role === "user" && m.meta?.checkpoint) h.last = Math.max(h.last, m.meta.checkpoint);
+        // A fork's own checkpoints come after the ones it was forked with (src/agent/fork.ts beforeFork).
+        if (session.meta.forkOf) h.last = Math.max(h.last, session.meta.forkOf.at - 1);
         return h;
     }
 

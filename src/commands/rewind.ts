@@ -6,6 +6,7 @@ import type { App } from "../ui/app";
 import { SelectDialog } from "../ui/dialogs";
 import { theme, truncate } from "../ui/ansi";
 import { canonical, FileHistory, resetToolState, rewindTargets, type RestoreItem, type RewindTarget } from "../agent/checkpoints";
+import { beforeFork } from "../agent/fork";
 import { APP_TITLE } from "../config/paths";
 import { textOf, type Message } from "../providers/types";
 import { displayPath } from "../util/files";
@@ -20,7 +21,11 @@ function plural(n: number, word: string): string {
     return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function changedLabel(history: FileHistory | undefined, t: RewindTarget): string {
+/** Said of a prompt from before this session was forked. */
+export const FORKED_NOTE = "Files changed before the fork can only be restored from the original session.";
+
+function changedLabel(history: FileHistory | undefined, t: RewindTarget, forked: boolean): string {
+    if (forked) return "from before the fork";
     if (!history || t.checkpoint === undefined) return "file changes not tracked";
     const n = history.filesIn(t.checkpoint).length;
     return n ? `${plural(n, "file")} changed` : "no file changes";
@@ -59,7 +64,7 @@ export async function rewindCommand(app: App) {
         new SelectDialog<number>({
             title: "Rewind",
             header,
-            items: targets.map((t, i) => ({ label: preview(t.text, 70), value: i, description: changedLabel(history, t) })),
+            items: targets.map((t, i) => ({ label: preview(t.text, 70), value: i, description: changedLabel(history, t, beforeFork(app.session.meta, messages[t.index], t.index)) })),
             numbers: true,
             maxRows: 12,
         }),
@@ -75,11 +80,13 @@ export async function rewindCommand(app: App) {
     const root = canonical(app.cwd);
     const rel = (p: string) => displayPath(p, root);
     const lines = [theme.muted("> ") + preview(target.text, 200), ""];
+    const forked = beforeFork(app.session.meta, chosen, target.index);
+    if (forked) lines.push(theme.warning(FORKED_NOTE));
     if (!plan) lines.push(theme.muted("File changes from then weren't tracked, so only the conversation can be restored."));
     else if (restore.length) {
         lines.push(`${APP_TITLE} changed ${plural(restore.length, "file")} since then:`);
         lines.push(...listed(restore.map((it) => fileLine(rel, it))));
-    } else lines.push(theme.muted(skipped.length ? "No other file changes to undo." : `${APP_TITLE} hasn't changed any files since then.`));
+    } else lines.push(theme.muted(skipped.length ? "No other file changes to undo." : forked ? `${APP_TITLE} hasn't changed any files in this session since the fork.` : `${APP_TITLE} hasn't changed any files since then.`));
     if (skipped.length) {
         lines.push(theme.warning(`Can't be restored:`));
         lines.push(...listed(skipped.map((it) => theme.warning(`  ${rel(it.path)} (${it.reason})`))));

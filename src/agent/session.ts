@@ -20,6 +20,18 @@ export interface SessionMeta {
     version: string;
     /** Frozen system prompt; reused on resume so the prompt prefix stays identical. */
     system?: string;
+    /** Made by forking another session (src/agent/fork.ts). */
+    forkOf?: ForkOrigin;
+}
+
+export interface ForkOrigin {
+    id: string;
+    /** The original's title when it was forked. */
+    title: string;
+    /** Messages copied from it. */
+    messages: number;
+    /** When it was forked: prompts checkpointed before this are the original's (their file history is there). */
+    at: number;
 }
 
 
@@ -55,7 +67,7 @@ export function redactMessage(m: Message): Message {
     return changed ? { ...m, content } : m;
 }
 
-type Line =
+export type Line =
     | ({ t: "meta" } & SessionMeta)
     | { t: "msg"; m: Message }
     | { t: "model"; model: string }
@@ -65,7 +77,7 @@ type Line =
     | { t: "rewind"; count: number }
     | { t: "usage"; usage: Usage; cost: number; model: string }
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number };
+    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean };
 
 /**
  * An agent backend's session behind this one, and how much of this session's
@@ -75,6 +87,8 @@ type Line =
 export interface BackendSession {
     id: string;
     synced: number;
+    /** Shared with a fork: never continued in place, only forked (the next turn gets a new id). */
+    fork?: boolean;
 }
 
 export interface SessionSummary {
@@ -86,6 +100,11 @@ export interface SessionSummary {
     title: string;
     messages: number;
     model?: string;
+}
+
+/** A new session's id: when it was made, and a random suffix. */
+export function newSessionId(): string {
+    return `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${randomBytes(3).toString("hex")}`;
 }
 
 export class Session {
@@ -111,8 +130,7 @@ export class Session {
     }
 
     static create(cwd: string, opts: { persist?: boolean; system?: string } = {}): Session {
-        const id = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${randomBytes(3).toString("hex")}`;
-        const s = new Session({ id, cwd, createdAt: Date.now(), version: APP_VERSION, system: opts.system }, opts);
+        const s = new Session({ id: newSessionId(), cwd, createdAt: Date.now(), version: APP_VERSION, system: opts.system }, opts);
         return s;
     }
 
@@ -149,11 +167,12 @@ export class Session {
     /** Lines held back until the first message, so idle launches leave no file. */
     private pending: Line[] = [];
 
-    private write(line: Line) {
-        if (!this.persist || this.released) return;
+    /** Whether it's on disk now. */
+    private write(line: Line): boolean {
+        if (!this.persist || this.released) return false;
         if (!this.started && line.t !== "msg" && !existsSync(this.file)) {
             this.pending.push(line);
-            return;
+            return false;
         }
         try {
             if (!this.started) {
@@ -167,8 +186,10 @@ export class Session {
             }
             const lines = [...this.pending.splice(0), line];
             appendFileSync(this.file, lines.map((l) => redactedJson(l) + "\n").join(""));
+            return true;
         } catch {
             // Persistence is best effort; the session keeps working in memory.
+            return false;
         }
     }
 
@@ -218,8 +239,18 @@ export class Session {
     setBackendSession(provider: string, id: string, synced: number) {
         const cur = this.backends.get(provider);
         if (cur?.id === id && cur.synced === synced) return;
-        this.backends.set(provider, { id, synced });
-        this.write({ t: "backend", provider, id, synced });
+        // Still the shared one (the backend never answered with its fork): it stays shared.
+        const fork = cur?.id === id && cur.fork ? { fork: true } : {};
+        this.backends.set(provider, { id, synced, ...fork });
+        this.write({ t: "backend", provider, id, synced, ...fork });
+    }
+
+    /** A fork is to share this backend session: from now on it's only forked, never continued in place. False if that couldn't be saved. */
+    markBackendForked(provider: string): boolean {
+        const cur = this.backends.get(provider);
+        if (!cur) return false;
+        this.backends.set(provider, { ...cur, fork: true });
+        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true });
     }
 
     forgetBackendSession(provider: string) {
@@ -276,7 +307,7 @@ export class Session {
             if (!raw.trim()) continue;
             try {
                 const l = JSON.parse(raw) as Line;
-                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system };
+                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}) };
                 else lines.push(l);
             } catch {
                 // a torn final line from a crash; ignore it
@@ -307,7 +338,7 @@ export class Session {
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
-                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length });
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}) });
                 else s.backends.delete(l.provider);
             }
             else if (l.t === "model") s.model = l.model;
@@ -405,7 +436,7 @@ function holderIn(lock: string, body: string): number | undefined {
 }
 
 /** Claim the session for this process, or throw SessionInUseError. Without a lock (a read-only folder) it carries on, as persistence does. */
-function hold(file: string) {
+export function hold(file: string) {
     const n = held.get(file);
     if (n) {
         held.set(file, n + 1);
@@ -522,7 +553,7 @@ export function takeOver(lock: string): boolean {
     }
 }
 
-function letGo(file: string) {
+export function letGo(file: string) {
     const n = held.get(file);
     if (!n) return;
     if (n > 1) {

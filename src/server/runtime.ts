@@ -6,14 +6,15 @@
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { canonical, FileHistory, resetToolState, rewindTargets, type RestoreItem } from "../agent/checkpoints";
+import { canonical, FileHistory, promptNotes, resetToolState, rewindTargets, type RestoreItem } from "../agent/checkpoints";
+import { beforeFork, forkCut } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, type Effort, type Settings } from "../config/settings";
-import type { PermissionMode } from "../permissions/modes";
+import { MODE_INFO, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -53,6 +54,7 @@ import type {
     TurnStatus,
 } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
+import { RpcError } from "./rpc-error";
 import type { Engine, Workspace } from "./engine";
 
 /** How often streamed output goes out to the GUI. */
@@ -133,6 +135,8 @@ export class Runtime {
 
     // What the current turn is building
     private turnId?: string;
+    /** Where the running turn's messages start (its prompt, and what was sent meanwhile, from here on). */
+    private runStart?: number;
     private turnStartedAt = 0;
     private openText?: string;
     private openThinking?: string;
@@ -232,6 +236,7 @@ export class Runtime {
             mcp: this.ws.mcpStatus(),
             filesChanged: this.filesChanged(),
             shells: [],
+            ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
         };
     }
 
@@ -792,6 +797,8 @@ export class Runtime {
     private compacted(summary: string) {
         this.segment++;
         const current = this.turnId;
+        // What's left of the history is all the running turn's now (there's nothing earlier to fork from).
+        if (this.runStart !== undefined) this.runStart = 0;
         // Everything before is out of the model's context now (and out of /rewind's reach).
         for (const t of this.view.turns) {
             if (t.id === current) {
@@ -1205,6 +1212,7 @@ export class Runtime {
         };
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
+        this.runStart = index;
         this.responseBlocks = [];
         this.ui.write({ t: "turn", seg: this.segment, index, at: this.turnStartedAt });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
@@ -1235,6 +1243,7 @@ export class Runtime {
         } finally {
             this.busy = false;
             this.abort = undefined;
+            this.runStart = undefined;
             this.cancelInteractions({ keepDelegated: true });
             this.closeOpen();
             this.turnId = undefined;
@@ -1402,7 +1411,42 @@ export class Runtime {
         const history = FileHistory.for(this.session);
         return rewindTargets(this.session.messages)
             .reverse()
-            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0 }));
+            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0, ...(this.beforeFork(t.index) ? { forked: true } : {}) }));
+    }
+
+    /** A prompt this session was forked with: the files changed before the fork are in the original's history, not here. */
+    private beforeFork(index: number): boolean {
+        return beforeFork(this.session.meta, this.session.messages[index], index);
+    }
+
+    // -----------------------------------------------------------------------
+    // Forking
+
+    /**
+     * Where a fork from the turn of the prompt at `index` ends (session.fork),
+     * checked against what the window showed: the prompt's text there.
+     */
+    forkPoint(index: unknown, text: string): number {
+        if (typeof index !== "number" || !Number.isInteger(index)) throw new RpcError("index must be an integer");
+        if (!rewindTargets(this.session.messages).some((t) => t.index === index)) throw new RpcError("That isn't one of this conversation's prompts (one from before a compaction can't be forked from).");
+        if (this.runStart !== undefined && index >= this.runStart) throw new RpcError("That turn is still running. Fork from it once it's done, or interrupt it first.", "busy");
+        const shown = this.view.turns.find((t) => !t.archived && t.prompt?.index === index);
+        if (shown?.prompt?.text !== text) throw new RpcError("The conversation changed since this was shown; nothing was forked.", "stale");
+        return Math.min(forkCut(this.session.messages, index), this.runStart ?? Infinity);
+    }
+
+    /** Notes that were pending at a fork's cut: they went out with the prompt there (as a rewind to it would queue them again). */
+    notesAt(cut: number): string[] {
+        const next = this.session.messages[cut];
+        return next?.role === "user" ? promptNotes(next) : [];
+    }
+
+    /** Just forked: the notes pending at the cut go with the first prompt here, and so does the mode it has now. */
+    forkedFrom(notes: string[]) {
+        if (!this.agent) return;
+        for (const n of notes) this.agent.addReminder(n);
+        if (this.mode === "plan") this.agent.noteModeChange("default", "plan");
+        else this.agent.addReminder(`The permission mode is "${MODE_INFO[this.mode].label}": ${MODE_INFO[this.mode].description}`);
     }
 
     private target(index: number) {
@@ -1422,6 +1466,7 @@ export class Runtime {
         return {
             index,
             planId,
+            ...(this.beforeFork(index) ? { forked: true } : {}),
             tracked: Boolean(plan),
             restore: (plan ?? []).filter((i) => i.action !== "skip").map((i) => ({ path: rel(i.path), action: i.action as "write" | "delete", outside: Boolean(i.outside) })),
             skipped: (plan ?? []).filter((i) => i.action === "skip").map((i) => ({ path: rel(i.path), reason: i.reason ?? "" })),

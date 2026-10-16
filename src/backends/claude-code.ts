@@ -300,7 +300,7 @@ class ClaudeTurn {
         const a = [...extraArgs(this.def.id), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
         if (t.model.id !== "default") a.push("--model", t.model.id);
         if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
-        if (t.resumeId) a.push("--resume", t.resumeId);
+        if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
         if (t.appendSystemPrompt) a.push("--append-system-prompt", t.appendSystemPrompt);
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
