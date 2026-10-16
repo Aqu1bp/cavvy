@@ -704,7 +704,7 @@ export class Runtime {
                 this.patchBlock(e.id, { approval: e.reason, sandboxed: e.sandboxed });
                 break;
             case "tool_end":
-                this.toolEnded(e.call, e.result, e.durationMs);
+                this.toolEnded(e.call, e.result, e.durationMs, e.title);
                 break;
             case "notice":
                 this.notice(e.message, e.level);
@@ -758,7 +758,7 @@ export class Runtime {
         this.responseBlocks = [];
     }
 
-    private toolEnded(call: ToolCallPart, result: ToolResult, durationMs: number) {
+    private toolEnded(call: ToolCallPart, result: ToolResult, durationMs: number, title?: string) {
         const turnId = this.toolTurn.get(call.id);
         if (!turnId || !this.blockIn(turnId, call.id)) {
             const b = toolBlockFromCall(call, this.toolMeta(call));
@@ -767,6 +767,8 @@ export class Runtime {
         const d = result.display;
         const shown = d?.body !== undefined ? d.body : result.content;
         const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (result.isError ? result.content : "")), result.isError), durationMs, progress: undefined };
+        // What it did was only known at its end (a backend's web search): its title and input say so now.
+        if (title) Object.assign(patch, { title, input: trimInput(call.input) });
         if (/^The user declined/.test(result.content)) patch.status = "denied";
         if (d?.summary) patch.summary = d.summary;
         if (result.images?.length) patch.images = result.images.length;
@@ -818,6 +820,7 @@ export class Runtime {
         } else if (e.type === "tool_end") {
             const t = sub.tools.find((x) => x.id === e.call.id);
             if (t) {
+                if (e.title) t.title = e.title;
                 t.status = /^The user declined/.test(e.result.content) ? "denied" : e.result.isError ? "error" : "ok";
                 t.summary = e.result.display?.summary;
                 t.durationMs = e.durationMs;
@@ -888,6 +891,7 @@ export class Runtime {
                 const d = e.result.display;
                 const shown = d?.body !== undefined ? d.body : e.result.content;
                 const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (e.result.isError ? e.result.content : "")), e.result.isError), durationMs: e.durationMs, progress: undefined };
+                if (e.title) Object.assign(patch, { title: e.title, input: trimInput(e.call.input) });
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });

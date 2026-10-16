@@ -783,10 +783,14 @@ export class App {
                 }
                 break;
             }
-            case "tool_end":
+            case "tool_end": {
+                const a = this.active.get(e.call.id);
+                // Retitled at its end (a backend's web search, whose query comes then).
+                if (a && e.title) a.title = e.title;
                 this.printToolResult(e.call, e.result, e.durationMs);
                 this.active.delete(e.call.id);
                 break;
+            }
             case "notice":
                 this.flushStream();
                 this.notice(e.message, e.level);

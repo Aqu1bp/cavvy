@@ -38,6 +38,8 @@ export interface BackendPermission {
      * from the harness's own rule).
      */
     asksAlways?: boolean;
+    /** One of the backend's own sub-agents asks (Codex's): the prompt says which, and a no stops only it. */
+    agentLabel?: string;
 }
 
 export type PermissionAnswer =
@@ -130,6 +132,8 @@ export interface BackendResult {
     reason: TurnEndReason;
     /** The assistant's text over the whole turn. */
     text: string;
+    /** Its answer: what it said last, without the narration on the way (what a sub-agent reports). Text when not given. */
+    answer?: string;
     /** What the backend did, e.g. Bash(npm test). */
     actions: string[];
     error?: string;

@@ -141,6 +141,15 @@ function fakeClaude(): string {
     return join(bin, "claude");
 }
 
+/** A fake `codex` (test/fixtures) in a folder of its own, with none of other test files' FAKE_* settings. */
+function fakeCodex(): string {
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+    const bin = tempDir("harness-gui-cli-");
+    writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-codex.ts")}" "$@"\n`);
+    chmodSync(join(bin, "codex"), 0o755);
+    return join(bin, "codex");
+}
+
 async function client(): Promise<Client> {
     const c = new Client();
     await c.opened();
@@ -958,6 +967,39 @@ describe("sub-agents", () => {
     test("Claude Code saying again how its sub-agent ended replaces what it said: failed after all", async () => {
         const v = await claudeCodeTurn("agent-fails-later");
         expect(v.agents.map((a) => [a.status, a.report])).toEqual([["failed", undefined]]);
+    }, 45_000);
+
+    test("Codex's own sub-agent: a chip with its tools and its answer as the report, asking as itself; the reply and context are the main thread's", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("codex", { path: fakeCodex() });
+        process.env.FAKE_SCENARIO = "subagent";
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.send", { id, text: "count the files with a sub-agent" });
+            // Its command asks (Manual mode), naming it.
+            const ask = await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(["Bash", "Count the files", v.agents[0]?.id]);
+            expect(v.agents).toHaveLength(1);
+            const a = v.agents[0]!;
+            expect([a.description, a.status, a.report]).toEqual(["Count the files", "done", "CHILD_REPORT: 2 files."]);
+            // Its warning and error show on its chip, not as the session's.
+            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            const turn = lastTurn(v);
+            expect(turn.blocks.filter((b) => b.t === "notice")).toEqual([]);
+            expect(tools(turn).map((b) => [b.name, b.agent ?? false])).toEqual([["Task", true], ["wait", false]]);
+            const said = turn.blocks.flatMap((b) => (b.t === "text" ? [b.text] : [])).join("\n");
+            expect(said).toContain("Finished.");
+            for (const not of ["Looking around.", "CHILD_REPORT"]) expect(said).not.toContain(not);
+            expect(v.state.contextTokens).toBe(150);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("codex");
+        }
     }, 45_000);
 
     test("a delegated agent working past the turn keeps asking; stopping it withdraws the request", async () => {

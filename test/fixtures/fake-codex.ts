@@ -21,7 +21,14 @@
 // FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
 //                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
 //                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
-// FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp
+// FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web
+//                     subagent: Codex's own sub-agent (spawnAgent, then wait): its thread runs a command (which
+//                     asks from its thread under untrusted), says something, answers and has usage of its own;
+//                     FAKE_CHILD_EARLY=1 sends its first events before the spawn says which thread is whose
+//                     elicit: an MCP tool call Codex asks about (an elicitation of its own, FAKE_ELICIT=approval,
+//                     the default), or an MCP server's form (FAKE_ELICIT=form) or link (FAKE_ELICIT=url)
+//                     web: a web search whose query comes only when it completes
+// FAKE_PHASES=1       agent messages say their phase (commentary, final_answer), as current models' do
 // FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
 // FAKE_REJECT_CONFIG=1  thread/start and thread/resume fail when given config, like a Codex that can't parse it
 // FAKE_HANG_INIT=1    never answers initialize, and ignores SIGTERM
@@ -31,6 +38,10 @@
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
+//
+// Token usage is each thread's running total, kept beside the log as Codex keeps it with the thread. Like
+// Codex 0.163 (checked against it with a stand-in model server), it reports the last usage again on
+// thread/resume (with the earlier turn's id) and when a compaction starts.
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -72,6 +83,25 @@ const setTier = (id: string, tier: unknown) => {
     if (tierFile) writeFileSync(tierFile, JSON.stringify(Object.fromEntries(tiers)));
 };
 let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void } | undefined;
+type Tokens = { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
+/** Each thread's token usage: its running total, its last response's, and the turn that was in. */
+const usageFile = process.env.FAKE_LOG ? process.env.FAKE_LOG + ".usage.json" : undefined;
+const usageOf = new Map<string, { total: Tokens; last: Tokens; turnId: string }>(usageFile && existsSync(usageFile) ? Object.entries(JSON.parse(readFileSync(usageFile, "utf8"))) : []);
+const tokens = (input: number, cached: number, output: number, reasoning = 0): Tokens => ({ totalTokens: input + output, inputTokens: input, cachedInputTokens: cached, cacheWriteInputTokens: 0, outputTokens: output, reasoningOutputTokens: reasoning });
+/** A response's usage: added to the thread's total, and reported. */
+function spend(threadId: string, turnId: string, last: Tokens) {
+    const was = usageOf.get(threadId)?.total;
+    const total = was ? (Object.fromEntries(Object.entries(was).map(([k, v]) => [k, v + last[k as keyof Tokens]])) as Tokens) : last;
+    usageOf.set(threadId, { total, last, turnId });
+    if (usageFile) writeFileSync(usageFile, JSON.stringify(Object.fromEntries(usageOf)));
+    notify("thread/tokenUsage/updated", { threadId, turnId, tokenUsage: { total, last, modelContextWindow: 400000 } });
+}
+/** The thread's usage as it last was, reported again (no new spend). */
+function repeatUsage(threadId: string, turnId?: string) {
+    const u = usageOf.get(threadId);
+    if (u) notify("thread/tokenUsage/updated", { threadId, turnId: turnId ?? u.turnId, tokenUsage: { total: u.total, last: u.last, modelContextWindow: 400000 } });
+}
+const phase = (p: string) => (process.env.FAKE_PHASES === "1" ? { phase: p } : {});
 /** MCP servers from the thread's config, connected at thread start. */
 const mcpServers = new Map<string, McpServerRef>();
 
@@ -102,9 +132,9 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     current = t;
     const finish = (status: string) => notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
-    notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "" } });
+    notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "", ...phase("commentary") } });
     notify("item/agentMessage/delta", { threadId, turnId, itemId: `msg-${turnId}`, delta: "Running it." });
-    notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "Running it." } });
+    notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "Running it.", ...phase("commentary") } });
     if (scenario === "slow" && turnSeq === 1) {
         // The first turn works until interrupted (or a while).
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(5000)]);
@@ -134,7 +164,57 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: results.join("\n---\n") } });
         return finish("completed");
     }
-    if (scenario === "rename") {
+    if (scenario === "subagent") {
+        const child = "thr-child";
+        const childTurn = `turn-c${turnSeq}`;
+        const spawn = { type: "collabAgentToolCall", id: `spawn-${turnId}`, tool: "spawnAgent", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [] as string[], prompt: "Count the files\nin src, then report.", model: "", reasoningEffort: "medium", agentsStates: {} };
+        notify("item/started", { threadId, turnId, item: spawn });
+        const childStarts = () => {
+            notify("turn/started", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "inProgress" } });
+            notify("item/agentMessage/delta", { threadId: child, turnId: childTurn, itemId: "c-msg1", delta: "Looking around." });
+            notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg1", text: "Looking around.", phase: "commentary" } });
+        };
+        if (process.env.FAKE_CHILD_EARLY === "1") childStarts();
+        notify("item/completed", { threadId, turnId, item: { ...spawn, status: "completed", receiverThreadIds: [child], model: "gpt-test", agentsStates: { [child]: { status: "pendingInit", message: null } } } });
+        const wait = { type: "collabAgentToolCall", id: `wait-${turnId}`, tool: "wait", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [child], prompt: null, model: null, reasoningEffort: null, agentsStates: {} };
+        notify("item/started", { threadId, turnId, item: wait });
+        if (process.env.FAKE_CHILD_EARLY !== "1") childStarts();
+        // What only concerns the sub-agent's thread: a warning, an error it recovers from, a compaction.
+        notify("warning", { threadId: child, message: "Model metadata for `gpt-test` not found." });
+        notify("error", { threadId: child, turnId: childTurn, willRetry: false, error: { message: "child stream hiccup" } });
+        notify("thread/compacted", { threadId: child, turnId: childTurn });
+        const cmd = { type: "commandExecution", id: `c-cmd-${turnId}`, command: "/bin/zsh -lc 'touch y'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch y" }], aggregatedOutput: null, exitCode: null };
+        notify("item/started", { threadId: child, turnId: childTurn, item: cmd });
+        notify("item/commandExecution/outputDelta", { threadId: child, turnId: childTurn, itemId: cmd.id, delta: "working\n" });
+        const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
+        const childDecision = runsItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+        log({ childRan: childDecision === "accept" });
+        notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
+        spend(child, childTurn, tokens(5000, 1000, 50));
+        notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg2", text: "CHILD_REPORT: 2 files.", phase: "final_answer" } });
+        notify("turn/completed", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "completed", error: null } });
+        notify("item/completed", { threadId, turnId, item: { ...wait, status: "completed", agentsStates: { [child]: { status: "completed", message: "CHILD_REPORT: 2 files." } } } });
+    } else if (scenario === "elicit") {
+        const kind = process.env.FAKE_ELICIT ?? "approval";
+        const item = { type: "mcpToolCall", id: `mcp-${turnId}`, server: "probe", tool: "write_thing", arguments: { what: "x" }, status: "inProgress", result: null, error: null };
+        notify("item/started", { threadId, turnId, item });
+        // As Codex 0.163 sends them: its own question before an MCP tool call, or a server's form or link passed on.
+        const params =
+            kind === "approval"
+                ? { threadId, turnId, serverName: "probe", mode: "form", _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_description: "Writes a thing", tool_params: { what: "x" } }, message: 'Allow the probe MCP server to run tool "write_thing"?', requestedSchema: { type: "object", properties: {} } }
+                : kind === "url"
+                  ? { threadId, turnId, serverName: "probe", mode: "url", _meta: null, message: "Sign in to Probe.", url: "https://probe.example/login", elicitationId: "el-1" }
+                  : { threadId, turnId, serverName: "probe", mode: "form", _meta: null, message: "Which color?", requestedSchema: { type: "object", properties: JSON.parse(process.env.FAKE_ELICIT_FIELDS ?? '{"color":{"type":"string","enum":["red","blue"],"enumNames":["Red","Blue"]},"count":{"type":"integer","title":"How many"},"ok":{"type":"boolean","title":"Sure?"},"tags":{"type":"array","items":{"anyOf":[{"const":"a","title":"Tag A"},{"const":"b","title":"Tag B"}]}},"note":{"type":"string","title":"Note"}}'), required: ["color"] } };
+        const r = await serverRequest("mcpServer/elicitation/request", params);
+        log({ elicitation: r });
+        const ok = r?.action === "accept";
+        const error = r?.action === "decline" ? { message: "user rejected MCP tool call" } : r?.action === "cancel" ? { message: "user cancelled MCP tool call" } : null;
+        notify("item/completed", { threadId, turnId, item: { ...item, status: ok ? "completed" : "failed", error: ok ? null : error, result: ok ? { content: [{ type: "text", text: `wrote ${JSON.stringify(r?.content)}` }] } : null } });
+    } else if (scenario === "web") {
+        const ws = { type: "webSearch", id: `ws-${turnId}`, query: "", action: { type: "other" }, results: null };
+        notify("item/started", { threadId, turnId, item: ws });
+        notify("item/completed", { threadId, turnId, item: { ...ws, query: "bun test runner", action: { type: "search", query: "bun test runner", queries: ["bun test runner"] } } });
+    } else if (scenario === "rename") {
         const change = { type: "fileChange", id: `fc-${turnId}`, changes: [{ path: join(cwd, "a.txt"), kind: { type: "update", move_path: join(cwd, "secrets", "a.txt") }, diff: "" }], status: "inProgress" };
         notify("item/started", { threadId, turnId, item: change });
         decision = (await serverRequest("item/fileChange/requestApproval", { threadId, turnId, itemId: change.id, reason: null, grantRoot: null }))?.decision;
@@ -186,9 +266,9 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         if (decision === "accept") notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
         else notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
     }
-    notify("thread/tokenUsage/updated", { threadId, turnId, tokenUsage: { total: {}, last: { totalTokens: 150, inputTokens: 120, cachedInputTokens: 20, cacheWriteInputTokens: 0, outputTokens: 30, reasoningOutputTokens: 5 }, modelContextWindow: 400000 } });
+    spend(threadId, turnId, tokens(120, 20, 30, 5));
     if (decision === "cancel" || t.interrupted) return finish("interrupted");
-    notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Finished." } });
+    notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Finished.", ...phase("final_answer") } });
     finish("completed");
 }
 
@@ -230,6 +310,8 @@ async function handle(m: any) {
         case "thread/start":
             await startMcp(p.config);
             setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
+            // A new thread starts with no usage.
+            usageOf.delete("thr-new");
             return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? "default" });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
@@ -237,7 +319,10 @@ async function handle(m: any) {
             await startMcp(p.config);
             if (!tiers.has(p.threadId)) setTier(p.threadId, process.env.FAKE_THREAD_TIER ?? null);
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
-            return reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(p.threadId) ?? "default" });
+            reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(p.threadId) ?? "default" });
+            // The thread's last usage again, with that earlier turn's id.
+            repeatUsage(p.threadId);
+            return;
         case "turn/start": {
             // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
@@ -257,10 +342,18 @@ async function handle(m: any) {
             // FAKE_STEER_FAIL: the turn has already ended.
             if (process.env.FAKE_STEER_FAIL) return fail("no active turn to steer");
             return reply({ turnId: p.expectedTurnId });
-        case "thread/compact/start":
+        case "thread/compact/start": {
             reply({});
-            notify("thread/compacted", { threadId: p.threadId });
+            // As 0.163 runs it: a turn, which first reports the usage as it was, then the compaction's.
+            const turnId = `turn-${++turnSeq}`;
+            notify("turn/started", { threadId: p.threadId, turn: { id: turnId, status: "inProgress" } });
+            notify("item/started", { threadId: p.threadId, turnId, item: { type: "contextCompaction", id: `cc-${turnId}` } });
+            repeatUsage(p.threadId, turnId);
+            spend(p.threadId, turnId, tokens(400, 0, 40));
+            notify("item/completed", { threadId: p.threadId, turnId, item: { type: "contextCompaction", id: `cc-${turnId}` } });
+            notify("turn/completed", { threadId: p.threadId, turn: { id: turnId, status: "completed", error: null } });
             return;
+        }
         default:
             return fail(`unknown method ${m.method}`);
     }

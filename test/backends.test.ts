@@ -22,6 +22,8 @@ const { claudeRule, claudePermissions } = await import("../src/backends/claude-c
 const { untrustedArgs, requestedPaths } = await import("../src/backends/codex");
 const { deniedWithin } = await import("../src/permissions/rules");
 const { stopTiming } = await import("../src/backends/cli");
+const { backendActionsNote } = await import("../src/agent/agent");
+const { withoutActionsNote } = await import("../src/server/history");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -56,8 +58,9 @@ beforeEach(() => {
     symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
     rmSync(LOG + ".tiers.json", { force: true });
+    rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -605,6 +608,196 @@ describe("Codex backend", () => {
         // Codex asked (headless: refused), rather than running it itself.
         expect(toolEnds(events)[0]!.result.content).toMatch(/not granted/);
         expect(logLines().find((l) => "ran" in l)?.ran).toBe(false);
+    });
+});
+
+describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (transcript findings)", () => {
+    const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
+    const said = (session: InstanceType<typeof Session>) => session.messages.at(-1)!.content.map((x) => (x as any).text).join("\n");
+    const streamed = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "text" ? [e.text] : [])).join("");
+    const subEvents = (events: AgentEvent[], parentId: string) => events.flatMap((e) => (e.type === "subagent" && e.parentId === parentId ? [e] : []));
+    const elicitations = () => logLines().flatMap((l) => (l.elicitation !== undefined ? [l.elicitation] : []));
+    const usageOf = (session: InstanceType<typeof Session>) => session.usageByModel.get("codex:default")!.usage;
+
+    test("a sub-agent Codex starts: its words aren't the reply, its tokens aren't the context, and its work shows under the spawn", async () => {
+        process.env.FAKE_SCENARIO = "subagent";
+        const { run, events, session, agent, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        expect(await run("go")).toBe("done");
+        // The reply, streamed and in the history, is the main thread's.
+        expect(said(session)).toContain("Running it.");
+        expect(said(session)).toContain("Finished.");
+        for (const child of ["Looking around.", "CHILD_REPORT"]) {
+            expect(said(session)).not.toContain(child);
+            expect(streamed(events)).not.toContain(child);
+        }
+        expect(events.flatMap((e) => (e.type === "assistant" ? [(e.message.content[0] as any).text] : []))).toEqual(["Running it.", "Finished."]);
+        // Its warning and error are its own: not the main agent's notices, and they don't fail the turn.
+        expect(notices(events).join("\n")).not.toMatch(/hiccup|Model metadata/);
+        expect(events.filter((e) => e.type === "request_start")).toHaveLength(2); // the harness's and the main turn's
+        // The spawn is a sub-agent (Task) with its activity under it, and its answer is its report.
+        const spawn = events.find((e) => e.type === "tool_start" && e.call.name === "Task") as Extract<AgentEvent, { type: "tool_start" }>;
+        expect(spawn.call.input).toEqual({ description: "Count the files", prompt: "Count the files\nin src, then report." });
+        expect(spawn.title).toBe("Task(Count the files)");
+        const sub = subEvents(events, spawn.call.id);
+        expect(sub.every((e) => e.label === "Count the files")).toBe(true);
+        expect(sub.find((e) => e.event.type === "tool_start")?.event).toMatchObject({ call: { name: "Bash", input: { command: "touch y" } } });
+        expect(sub.find((e) => e.event.type === "tool_end")?.event).toMatchObject({ result: { content: "ok\n", isError: false } });
+        expect(sub.flatMap((e) => (e.event.type === "text" ? [e.event.text] : []))).toEqual(["CHILD_REPORT: 2 files."]);
+        expect(sub.at(-1)?.event).toEqual({ type: "turn_end", reason: "done" });
+        // Its command was asked about as the sub-agent's.
+        expect(asked.map((a) => [a.input.command, a.agentLabel])).toEqual([["touch y", "Count the files"]]);
+        // The wait shows what it reported; the history says what the main agent did.
+        expect(toolEnds(events).find((e) => e.call.id.startsWith("wait-"))?.result.content).toContain("CHILD_REPORT: 2 files.");
+        expect(said(session)).toMatch(/\[Codex used: Task\(Count the files\), Wait for sub-agents\]/);
+        // Its tokens count toward the spend, not toward the main thread's context.
+        const u = usageOf(session);
+        expect(u.inputTokens + (u.cacheReadTokens ?? 0)).toBe(120 + 5000);
+        expect(u.outputTokens).toBe(30 + 50);
+        expect(agent.contextTokens).toBe(150);
+    });
+
+    test("a sub-agent's events from before the spawn said whose they are still go under it", async () => {
+        process.env.FAKE_SCENARIO = "subagent";
+        process.env.FAKE_CHILD_EARLY = "1";
+        const { run, events, session } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        expect(await run("go")).toBe("done");
+        expect(streamed(events)).not.toContain("Looking around.");
+        expect(said(session)).not.toContain("Looking around.");
+        const spawn = events.find((e) => e.type === "tool_start" && e.call.name === "Task") as Extract<AgentEvent, { type: "tool_start" }>;
+        const sub = subEvents(events, spawn.call.id);
+        expect(sub[0]?.event.type).toBe("request_start");
+        expect(sub.at(-1)?.event).toEqual({ type: "turn_end", reason: "done" });
+    });
+
+    test("declining a sub-agent's command: what the user said goes into its turn, and the main turn isn't ended for it", async () => {
+        process.env.FAKE_SCENARIO = "subagent";
+        const feedback = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "use z instead" }) });
+        expect(await feedback.run("go")).toBe("done");
+        expect(received().find((m) => m.method === "turn/steer")?.params).toMatchObject({ threadId: "thr-child", expectedTurnId: "turn-c1", input: [{ text: "The user declined this tool call and said:\nuse z instead" }] });
+        expect(turnStarts()).toHaveLength(1);
+        rmSync(LOG, { force: true });
+        const stop = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+        expect(await stop.run("go")).toBe("done");
+        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("cancel");
+        expect(logLines().find((l) => "childRan" in l)).toEqual({ childRan: false });
+    });
+
+    test("usage counts each response once: not again when the thread is resumed, or when a compaction starts", async () => {
+        const { run, session, agent } = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
+        await run("one");
+        await run("two");
+        // Codex says the last turn's usage again on resuming the thread: two turns, two responses.
+        expect(usageOf(session).outputTokens).toBe(60);
+        expect(usageOf(session).inputTokens).toBe(200);
+        expect(agent.contextTokens).toBe(150);
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        // The compaction's own request counts; the usage it repeats as it starts doesn't.
+        expect(usageOf(session).outputTokens).toBe(60 + 40);
+        expect(usageOf(session).inputTokens).toBe(200 + 400);
+    });
+
+    test("an MCP tool call Codex asks about goes to the harness's rules and the user, not declined unasked", async () => {
+        process.env.FAKE_SCENARIO = "elicit";
+        const yes = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        expect(await yes.run("go")).toBe("done");
+        expect(yes.asked.map((a) => [a.tool.name, a.input])).toEqual([["mcp__probe__write_thing", { what: "x" }]]);
+        expect(elicitations()).toEqual([{ action: "accept", content: {}, _meta: null }]);
+        expect(toolEnds(yes.events)[0]!.result).toMatchObject({ isError: false, content: "wrote {}" });
+
+        for (const [settings, reason] of [
+            [{ permissions: { allow: ["mcp__probe__write_thing"] } }, undefined],
+            [{ permissions: { deny: ["mcp__probe"] } }, /permission rule/],
+        ] as const) {
+            rmSync(LOG, { force: true });
+            const ruled = await makeAgent({ provider: "codex", settings, ask: () => ({ allow: true }) });
+            expect(await ruled.run("go")).toBe("done");
+            expect(ruled.asked).toEqual([]);
+            expect(elicitations()[0].action).toBe(reason ? "decline" : "accept");
+            if (reason) expect(toolEnds(ruled.events)[0]!.result).toMatchObject({ isError: true, content: expect.stringMatching(reason) });
+        }
+
+        // Nobody to ask: declined, saying why.
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex" });
+        expect(await headless.run("go")).toBe("done");
+        expect(elicitations()).toEqual([{ action: "decline", content: null, _meta: null }]);
+        expect(toolEnds(headless.events)[0]!.result.content).toMatch(/not granted \(non-interactive session\)/);
+
+        // Declined with nothing to add: Codex goes on after a no to an MCP call, so the turn is stopped here.
+        rmSync(LOG, { force: true });
+        const no = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+        expect(await no.run("go")).toBe("denied");
+        expect(elicitations()[0].action).toBe("decline");
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+    });
+
+    test("an MCP server's form goes to the question dialog, its answers typed as the form asks; with nobody to ask it's declined", async () => {
+        process.env.FAKE_SCENARIO = "elicit";
+        process.env.FAKE_ELICIT = "form";
+        const asked: { question: string; options: string[]; multi: boolean }[] = [];
+        const answers: Record<string, string[]> = { color: ["Blue"], "How many": ["3"], "Sure?": ["Yes"], tags: ["Tag A", "Tag B"], Note: ["Leave empty"] };
+        const askQuestion = async (question: string, options: { label: string }[], multi: boolean) => {
+            asked.push({ question, options: options.map((o) => o.label), multi });
+            const field = question.split("\n").at(-1)!;
+            return Object.entries(answers).find(([k]) => field.startsWith(k))?.[1];
+        };
+        const a = await makeAgent({ provider: "codex", ui: { askQuestion } });
+        expect(await a.run("go")).toBe("done");
+        expect(asked[0]!.question).toContain("probe");
+        expect(asked[0]!.question).toContain("Which color?");
+        expect(asked.map((q) => [q.options, q.multi])).toEqual([
+            [["Red", "Blue"], false],
+            [["Leave empty"], false],
+            [["Yes", "No", "Leave empty"], false],
+            [["Tag A", "Tag B", "Leave empty"], true],
+            [["Leave empty"], false],
+        ]);
+        expect(elicitations()).toEqual([{ action: "accept", content: { color: "blue", count: 3, ok: true, tags: ["a", "b"] }, _meta: null }]);
+
+        // A required field left unanswered (dismissed), or nobody to ask: declined.
+        for (const ui of [{ askQuestion: async () => undefined }, {}]) {
+            rmSync(LOG, { force: true });
+            const b = await makeAgent({ provider: "codex", ui });
+            expect(await b.run("go")).toBe("done");
+            expect(elicitations()).toEqual([{ action: "decline", content: null, _meta: null }]);
+        }
+    });
+
+    test("an MCP server's link: the question shows it; done accepts", async () => {
+        process.env.FAKE_SCENARIO = "elicit";
+        process.env.FAKE_ELICIT = "url";
+        const asked: string[] = [];
+        const a = await makeAgent({ provider: "codex", ui: { askQuestion: async (q: string) => (asked.push(q), ["Done"]) } });
+        expect(await a.run("go")).toBe("done");
+        expect(asked[0]).toContain("https://probe.example/login");
+        expect(asked[0]).toContain("Sign in to Probe.");
+        expect(elicitations()).toEqual([{ action: "accept", content: null, _meta: null }]);
+    });
+
+    test("a web search is saved with its query, which Codex sends only when it's done", async () => {
+        process.env.FAKE_SCENARIO = "web";
+        const { run, events, session } = await makeAgent({ provider: "codex" });
+        expect(await run("search")).toBe("done");
+        const end = toolEnds(events)[0]!;
+        expect(end.call.input).toEqual({ query: "bun test runner" });
+        expect(end.title).toBe("WebSearch(bun test runner)");
+        expect(said(session)).toContain("[Codex used: WebSearch(bun test runner)]");
+    });
+
+    test("the note of what a turn did keeps every action, up to a length, each on one line", () => {
+        const many = Array.from({ length: 165 }, (_, i) => `Bash(step ${i})`);
+        const note = backendActionsNote("Codex", many);
+        expect(note).toStartWith("[Codex used: Bash(step 0), ");
+        expect(note).toEndWith("Bash(step 164)]");
+        expect(note).not.toContain("more]");
+        const long = backendActionsNote("Codex", ["Bash(" + "x".repeat(500) + ")", "Edit(a\nb)"]);
+        expect(long).toContain("…");
+        expect(long).toContain("Edit(a b)");
+        expect(long.length).toBeLessThan(300);
+        const capped = backendActionsNote("Codex", Array.from({ length: 5000 }, (_, i) => `Read(file-${i}.ts)`));
+        expect(capped.length).toBeLessThanOrEqual(16_100);
+        expect(capped).toMatch(/, and \d+ more\]$/);
+        expect(withoutActionsNote(`Done.\n\n${capped}`)).toBe("Done.");
     });
 });
 

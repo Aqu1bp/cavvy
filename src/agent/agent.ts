@@ -83,7 +83,7 @@ export type AgentEvent =
     | { type: "tool_start"; call: ToolCallPart; title: string; tool?: Tool<any>; autoApproved?: string }
     | { type: "tool_progress"; id: string; text: string }
     | { type: "tool_approved"; id: string; reason: string; sandboxed?: boolean }
-    | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number }
+    | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number; /** Its title now, when what it did was only known at its end (a backend's web search). */ title?: string }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number }
@@ -879,7 +879,8 @@ export class Agent {
             fastMode: () => this.fastMode(),
             permission: async (req) => {
                 const a = await this.backendPermission(req, signal);
-                if (!a.allow && a.stop) declined = true;
+                // A no to one of the backend's own sub-agents stops that one (the backend says so to it), not this turn.
+                if (!a.allow && a.stop && !req.agentLabel) declined = true;
                 return a;
             },
             askQuestions: async (qs) => {
@@ -970,12 +971,16 @@ export class Agent {
     private recordBackendTurn(provider: string, name: string, r: BackendResult) {
         const content: AssistantMessage["content"] = [];
         if (r.text.trim()) content.push({ type: "text", text: r.text });
-        if (r.actions.length) {
-            const shown = r.actions.slice(0, 50);
-            content.push({ type: "text", text: `[${name} used: ${shown.join(", ")}${r.actions.length > shown.length ? `, and ${r.actions.length - shown.length} more` : ""}]` });
-        }
-        if (content.length) this.session.push({ role: "assistant", content, provider, model: this.model.id, stopReason: r.reason === "done" ? "end_turn" : "other" });
+        if (r.actions.length) content.push({ type: "text", text: backendActionsNote(name, r.actions) });
+        if (!content.length) return;
+        this.session.push({ role: "assistant", content, provider, model: this.model.id, stopReason: r.reason === "done" ? "end_turn" : "other" });
+        // As a sub-agent it reports its answer (not what it said on the way), then, shorter, what it did.
+        const answer = (r.answer ?? r.text).trim();
+        this.backendReport = [answer, r.actions.length ? backendActionsNote(name, r.actions, REPORT_ACTIONS_CHARS) : ""].filter(Boolean).join("\n\n");
     }
+
+    /** The last backend turn as its report, when this agent is a sub-agent on a backend. */
+    private backendReport?: string;
 
     /** The backend session has now seen everything up to here (minus `pending` messages it hasn't been sent yet). */
     private syncBackend(provider: string, pending = 0) {
@@ -1036,7 +1041,15 @@ export class Agent {
         }
         const own = e.type === "tool_start" ? orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) : undefined;
         if (own && e.type === "tool_start") e = { ...e, title: own };
-        else if (e.type === "tool_start" && !e.tool) {
+        else if (e.type === "tool_end" && e.title) {
+            // Retitled at its end (its input only known then): titled as at its start.
+            const tool = this.findTool(e.call.name);
+            try {
+                if (tool) e = { ...e, title: tool.title(e.call.input as any) || e.title };
+            } catch {
+                // keep the backend's title
+            }
+        } else if (e.type === "tool_start" && !e.tool) {
             const tool = this.findTool(e.call.name);
             if (tool) {
                 let title = e.title;
@@ -1138,7 +1151,7 @@ export class Agent {
             sandbox: undefined,
             needsClassifier: undefined,
         };
-        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
         if (answer.setMode) this.o.mode.set(answer.setMode);
         if (answer.rules?.length) {
@@ -1549,8 +1562,8 @@ export class Agent {
             cost += u.cost;
         }
         const last = [...session.messages].reverse().find((m) => m.role === "assistant");
-        // A backend's turn is its text, then what it did ("[Codex used: …]"), as separate parts.
-        const report = !last ? "" : backend ? last.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n").trim() : textOf(last).trim();
+        // A backend's: its answer, then what it did ("[Codex used: …]").
+        const report = backend ? (child.backendReport ?? "") : !last ? "" : textOf(last).trim();
         const result = (status: ChildResult["status"], text: string): ChildResult => ({ status, report: text, model: modelRef(model), tokens, cost: cost || undefined, durationMs: Date.now() - started });
         switch (reason) {
             case "aborted":
@@ -1566,6 +1579,29 @@ export class Agent {
                 return result("done", report);
         }
     }
+}
+
+/** How much of what a backend did its turn's note keeps in the history, and in a sub-agent's report. */
+const ACTIONS_CHARS = 16_000;
+const REPORT_ACTIONS_CHARS = 2_000;
+
+/**
+ * The note after a backend's turn in the history, "[Codex used: Bash(…),
+ * Edit(…)]": every action, each on one line and clipped, up to a length.
+ * It's how other models, /export and a reopened session know what it did.
+ */
+export function backendActionsNote(name: string, actions: string[], maxChars = ACTIONS_CHARS): string {
+    const shown: string[] = [];
+    let used = 0;
+    for (const a of actions) {
+        const one = a.replace(/\s+/g, " ").trim();
+        const t = one.length > 200 ? `${one.slice(0, 199)}…` : one;
+        if (shown.length && used + t.length + 2 > maxChars) break;
+        shown.push(t);
+        used += t.length + 2;
+    }
+    const more = actions.length - shown.length;
+    return `[${name} used: ${shown.join(", ")}${more ? `, and ${more} more` : ""}]`;
 }
 
 const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: another agent gave you one self-contained task. Complete it, then reply with a final report. The other agent sees only your last message, so make it complete: findings, file paths with line numbers, what you changed (if anything), and anything left unresolved. Don't commit, push or make changes outside the task's scope.`;

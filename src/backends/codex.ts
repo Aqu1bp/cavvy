@@ -23,7 +23,8 @@ import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
 import { canonical } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
+import type { AgentEvent, TurnEndReason } from "../agent/agent";
 
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 class Rpc {
@@ -300,6 +301,8 @@ interface OpenItem {
     title: string;
     started: number;
     changes?: FileChange[];
+    /** The sub-agent of Codex's whose item it is (none: the main thread's). */
+    sub?: SubAgent;
 }
 
 interface FileChange {
@@ -310,6 +313,43 @@ interface FileChange {
     movePath?: string;
 }
 
+/**
+ * What a thread said last: the answer of its latest turn that said anything
+ * (the messages Codex marks as the answer), or, when its model doesn't mark
+ * them, that turn's last message. The working narration around it isn't part of it.
+ */
+interface Answer {
+    turn?: string;
+    parts: string[];
+    last: string;
+}
+
+function noteMessage(a: Answer, turn: string | undefined, phase: unknown, text: string) {
+    if (a.turn !== turn) {
+        a.turn = turn;
+        a.parts = [];
+    }
+    a.last = text;
+    if (phase === "final_answer" || phase === "partial_answer") a.parts.push(text);
+}
+
+const answerOf = (a: Answer): string => (a.parts.length ? a.parts.join("\n\n") : a.last);
+
+/** A sub-agent Codex started itself (spawn_agent): its thread's events show under the call that started it. */
+interface SubAgent {
+    /** The spawn call it shows under. */
+    call: string;
+    label: string;
+    /** A sub-agent's own sub-agent: its tool calls show under the same call, but it isn't the one that reports. */
+    nested: boolean;
+    /** Its turn now. */
+    turnId?: string;
+    answer: Answer;
+}
+
+/** Notifications from a thread not known yet to be a sub-agent's: what it would show. */
+const SHOWN_FROM_SUBAGENTS = new Set(["turn/started", "turn/completed", "item/started", "item/completed", "item/commandExecution/outputDelta", "error", "warning", "configWarning"]);
+
 class CodexTurn {
     private rpc!: Rpc;
     private threadId?: string;
@@ -317,7 +357,17 @@ class CodexTurn {
     private items = new Map<string, OpenItem>();
     private streamed = new Set<string>();
     private texts: string[] = [];
+    /** The main thread's answer: what a sub-agent on Codex reports. */
+    private answer: Answer = { parts: [], last: "" };
     private actions: string[] = [];
+    /** Codex's own sub-agents, by thread. */
+    private subs = new Map<string, SubAgent>();
+    /** Events of threads not (yet) known as sub-agents (one just spawned, or Codex's reviewer's): kept in case a spawn names them. */
+    private unclaimed = new Map<string, [string, any][]>();
+    /** Turns (of any thread) that started while connected: their usage is new spend. */
+    private turnsSeen = new Set<string>();
+    /** Each thread's token totals as Codex last reported them. */
+    private totals = new Map<string, Tokens>();
     private aborted = false;
     private failure?: string;
     private status?: string;
@@ -328,8 +378,8 @@ class CodexTurn {
     /** What the user said when declining something, when it can't go into the running turn: it starts the next one. */
     private followUp?: string;
     private followUps = 0;
-    /** Why the last approval was refused, for the item's result. */
-    private refusal?: string;
+    /** Why an approval was refused, by item, for the item's result. */
+    private refusals = new Map<string, string>();
     private turnDone?: () => void;
     /** The mode the running turn's policy came from. */
     private turnMode?: PermissionMode;
@@ -444,6 +494,7 @@ class CodexTurn {
                     await this.waitFor(async () => {
                         const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
+                        if (this.turnId) this.turnsSeen.add(this.turnId);
                     });
                     if (serviceTier !== undefined) tierNow = serviceTier ?? "default";
                     this.turnId = undefined;
@@ -469,11 +520,14 @@ class CodexTurn {
             if (abortTimer) clearTimeout(abortTimer);
             await this.rpc.proc.stop(1000);
         }
-        for (const [id, it] of this.items) this.endItem(id, it, this.aborted ? "Interrupted by user" : "Codex stopped before this finished.", true);
+        for (const [id, it] of this.items) this.endItem(id, it, this.aborted ? "Interrupted by user" : it.sub ? "Stopped with the sub-agent." : "Codex stopped before this finished.", true);
+        // Sub-agents still working stopped with Codex.
+        for (const sub of new Set(this.subs.values())) if (sub.turnId) this.endSubTurn(sub, "aborted");
         const text = this.texts.join("\n\n");
-        if (this.aborted) return { reason: "aborted", text, actions: this.actions };
-        if (this.failure) return { reason: "error", text, actions: this.actions, error: this.failure };
-        return { reason: "done", text, actions: this.actions };
+        const answer = answerOf(this.answer) || undefined;
+        if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.failure };
+        return { reason: "done", text, answer, actions: this.actions };
     }
 
     private input(text: string, images: BackendTurn["images"]): unknown[] {
@@ -483,8 +537,10 @@ class CodexTurn {
         return out;
     }
 
-    private interrupt() {
-        void this.rpc.request("turn/interrupt", { threadId: this.threadId, turnId: this.turnId }).catch(() => {});
+    /** Stop the running turn: the main thread's, or one sub-agent's. */
+    private interrupt(sub?: { thread: string; turnId?: string }) {
+        const [threadId, turnId] = sub ? [sub.thread, sub.turnId] : [this.threadId, this.turnId];
+        if (threadId && turnId) void this.rpc.request("turn/interrupt", { threadId, turnId }).catch(() => {});
     }
 
     /** Start something that ends with turn/completed (or thread/compacted), and wait for that. */
@@ -502,6 +558,12 @@ class CodexTurn {
     }
 
     private onNotification(method: string, p: any) {
+        const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
+        if (method === "turn/started" && typeof p.turn?.id === "string") this.turnsSeen.add(p.turn.id);
+        if (method === "thread/tokenUsage/updated") return this.onUsage(p, thread);
+        // Codex streams its sub-agents' threads (and its reviewer's) on the same connection. Its
+        // reviewer's verdicts are about any thread's action; everything else is that thread's own.
+        if (thread && this.threadId && thread !== this.threadId && !ANY_THREAD.has(method)) return this.onSubThread(method, p, thread);
         switch (method) {
             case "turn/started":
                 this.host.emit({ type: "request_start" });
@@ -526,10 +588,7 @@ class CodexTurn {
                 this.onItemStarted(p.item ?? {});
                 break;
             case "item/completed":
-                this.onItemCompleted(p.item ?? {});
-                break;
-            case "thread/tokenUsage/updated":
-                this.onUsage(p.tokenUsage ?? {});
+                this.onItemCompleted(p.item ?? {}, p.turnId);
                 break;
             case "turn/completed":
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
@@ -598,22 +657,121 @@ class CodexTurn {
         }
     }
 
-    private onUsage(u: any) {
-        const last = u.last ?? {};
-        const cached = Number(last.cachedInputTokens ?? 0);
+    /**
+     * A thread's token usage. Codex reports a thread's running total and
+     * its last response's, and reports them again without new spend (on
+     * thread/resume, with the earlier turn's id; when a compaction starts;
+     * seen with 0.163): a report counts only when the total moved, or, the
+     * thread's first here, when it's for a turn that started on this
+     * connection. A sub-agent's spend counts too, but not toward the main
+     * thread's context.
+     */
+    private onUsage(p: any, thread: string | undefined) {
+        const u = p.tokenUsage ?? {};
+        const key = thread ?? this.threadId ?? "";
+        const total = tokens(u.total);
+        const last = tokens(u.last);
+        const before = this.totals.get(key);
+        if (total) this.totals.set(key, total);
+        let spent: Tokens | undefined;
+        if (before && total) {
+            if (TOKEN_FIELDS.every((k) => total[k] === before[k])) return;
+            spent = minus(total, before) ?? last;
+        } else {
+            if (typeof p.turnId === "string" && !this.turnsSeen.has(p.turnId)) return;
+            spent = last;
+        }
+        if (!spent) return;
         const usage: Usage = {
-            inputTokens: Math.max(0, Number(last.inputTokens ?? 0) - cached),
-            outputTokens: Number(last.outputTokens ?? 0),
-            cacheReadTokens: cached,
-            cacheWriteTokens: Number(last.cacheWriteInputTokens ?? 0),
-            reasoningTokens: Number(last.reasoningOutputTokens ?? 0),
+            inputTokens: Math.max(0, spent.inputTokens - spent.cachedInputTokens),
+            outputTokens: spent.outputTokens,
+            cacheReadTokens: spent.cachedInputTokens,
+            cacheWriteTokens: spent.cacheWriteInputTokens,
+            reasoningTokens: spent.reasoningOutputTokens,
             // A ChatGPT plan isn't billed per token; with an API key the price isn't known here.
             cost: this.billedToPlan ? 0 : undefined,
         };
-        this.host.usage(usage, { contextTokens: Number(last.inputTokens ?? 0) + Number(last.outputTokens ?? 0), contextWindow: typeof u.modelContextWindow === "number" ? u.modelContextWindow : undefined });
+        const main = !thread || !this.threadId || thread === this.threadId;
+        if (main) {
+            const context = last ? last.inputTokens + last.outputTokens : undefined;
+            this.host.usage(usage, { contextTokens: context, contextWindow: typeof u.modelContextWindow === "number" ? u.modelContextWindow : undefined });
+            return;
+        }
+        this.host.usage(usage, {});
+        const sub = this.subs.get(thread!);
+        if (sub) this.subEmit(sub, { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0 });
     }
 
-    private onItemStarted(item: any) {
+    /** What one of Codex's sub-agents' threads (or a thread not known yet) says. */
+    private onSubThread(method: string, p: any, thread: string) {
+        const sub = this.subs.get(thread);
+        if (!sub) {
+            // Not known as a sub-agent (yet): kept a while, in case a spawn names it; a reviewer's never shows.
+            if (!SHOWN_FROM_SUBAGENTS.has(method)) return;
+            const q = this.unclaimed.get(thread) ?? [];
+            if (!this.unclaimed.has(thread) && this.unclaimed.size >= 50) return;
+            if (q.length < 500) q.push([method, p]);
+            this.unclaimed.set(thread, q);
+            return;
+        }
+        switch (method) {
+            case "turn/started":
+                sub.turnId = typeof p.turn?.id === "string" ? p.turn.id : sub.turnId;
+                if (!sub.nested) this.subEmit(sub, { type: "request_start" });
+                break;
+            case "item/started":
+                this.onItemStarted(p.item ?? {}, sub);
+                break;
+            case "item/completed":
+                this.onItemCompleted(p.item ?? {}, p.turnId, sub);
+                break;
+            case "item/commandExecution/outputDelta":
+                if (p.delta) this.subEmit(sub, { type: "tool_progress", id: String(p.itemId ?? ""), text: p.delta });
+                break;
+            case "turn/completed": {
+                if (p.turn?.id && sub.turnId && p.turn.id !== sub.turnId) break;
+                const status = p.turn?.status;
+                this.endSubTurn(sub, status === "completed" ? "done" : status === "interrupted" ? "aborted" : "error", typeof p.turn?.id === "string" ? p.turn.id : undefined);
+                break;
+            }
+            case "error":
+                if (!p.willRetry) this.subEmit(sub, { type: "notice", level: "error", message: redact(String(p.error?.message ?? "Codex reported an error")) });
+                break;
+            case "warning":
+            case "configWarning": {
+                const msg = String(p.message ?? p.summary ?? "").trim();
+                if (msg) this.subEmit(sub, { type: "notice", level: "info", message: `Codex: ${msg}` });
+                break;
+            }
+        }
+    }
+
+    private subEmit(sub: SubAgent, e: AgentEvent) {
+        this.host.emit({ type: "subagent", parentId: sub.call, label: sub.label, event: e });
+    }
+
+    /** A sub-agent's turn is over: what it answered is its report, and its chip says how it ended. */
+    private endSubTurn(sub: SubAgent, reason: TurnEndReason, turnId = sub.turnId) {
+        for (const [id, it] of this.items) if (it.sub === sub) this.endItem(id, it, reason === "done" ? "Codex didn't say how this ended." : "Stopped with the sub-agent.", true);
+        const said = turnId !== undefined && sub.answer.turn === turnId ? answerOf(sub.answer) : "";
+        sub.turnId = undefined;
+        if (sub.nested) return;
+        if (said.trim()) this.subEmit(sub, { type: "text", text: said });
+        this.subEmit(sub, { type: "turn_end", reason });
+    }
+
+    /** The threads a spawn started are sub-agents, shown under the call (a sub-agent's own, under its): what they did so far shows now. */
+    private claimThreads(threads: unknown, call: string, label: string, from?: SubAgent) {
+        for (const thread of Array.isArray(threads) ? threads : []) {
+            if (typeof thread !== "string" || thread === this.threadId || this.subs.has(thread)) continue;
+            this.subs.set(thread, from ? { call: from.call, label: from.label, nested: true, answer: { parts: [], last: "" } } : { call, label, nested: false, answer: { parts: [], last: "" } });
+            const early = this.unclaimed.get(thread) ?? [];
+            this.unclaimed.delete(thread);
+            for (const [method, p] of early) this.onSubThread(method, p, thread);
+        }
+    }
+
+    private onItemStarted(item: any, sub?: SubAgent) {
         const id = String(item.id ?? "");
         let open: OpenItem | undefined;
         switch (item.type) {
@@ -637,12 +795,21 @@ class CodexTurn {
                 break;
             }
             case "webSearch": {
-                const query = String(item.query ?? item.action?.query ?? item.action?.url ?? "");
+                // Its query usually comes only when it's done (item/completed).
+                const query = webQuery(item);
                 open = { name: "WebSearch", input: { query }, title: `WebSearch(${query})`, started: Date.now() };
                 break;
             }
+            case "collabAgentToolCall": {
+                if (item.tool === "spawnAgent") {
+                    // A sub-agent of Codex's own: shown as one, with its thread's work under it.
+                    const prompt = typeof item.prompt === "string" ? item.prompt : "";
+                    const label = subAgentLabel(prompt);
+                    open = { name: "Task", input: { description: label, prompt }, title: `Task(${label})`, started: Date.now() };
+                } else open = { name: String(item.tool ?? item.type), input: {}, title: COLLAB_TITLES[String(item.tool)] ?? String(item.tool ?? item.type), started: Date.now() };
+                break;
+            }
             case "dynamicToolCall":
-            case "collabAgentToolCall":
             case "imageView":
             case "imageGeneration": {
                 const name = String(item.tool ?? item.type);
@@ -651,22 +818,28 @@ class CodexTurn {
             }
         }
         if (!open || !id) return;
+        open.sub = sub;
         this.items.set(id, open);
-        this.host.emit({ type: "tool_start", call: { type: "tool_call", id, name: open.name, input: open.input }, title: open.title });
+        const e: AgentEvent = { type: "tool_start", call: { type: "tool_call", id, name: open.name, input: open.input }, title: open.title };
+        if (sub) this.subEmit(sub, e);
+        else this.host.emit(e);
     }
 
-    private onItemCompleted(item: any) {
+    private onItemCompleted(item: any, turn: string | undefined, sub?: SubAgent) {
         const id = String(item.id ?? "");
         if (item.type === "agentMessage") {
             const text = String(item.text ?? "");
             if (!text.trim()) return;
+            // A sub-agent's answer is its report, when its turn ends; what it says on the way isn't the main agent's.
+            noteMessage(sub ? sub.answer : this.answer, turn, item.phase, text);
+            if (sub) return;
             if (!this.streamed.has(id)) this.host.emit({ type: "text", text });
             this.texts.push(text);
             this.host.emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }], provider: this.def.id, model: this.t.model.id } });
             return;
         }
         if (item.type === "contextCompaction") {
-            this.host.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
+            if (!sub) this.host.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
             return;
         }
         const open = this.items.get(id);
@@ -676,20 +849,42 @@ class CodexTurn {
             case "commandExecution": {
                 const out = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "";
                 const code = typeof item.exitCode === "number" ? item.exitCode : undefined;
-                const content = item.status === "declined" ? this.takeRefusal("The command was declined.") : `${out}${code !== undefined && code !== 0 ? `${out ? "\n" : ""}Exit code ${code}` : ""}` || "(no output)";
+                const content = item.status === "declined" ? this.takeRefusal(id, "The command was declined.") : `${out}${code !== undefined && code !== 0 ? `${out ? "\n" : ""}Exit code ${code}` : ""}` || "(no output)";
                 this.endItem(id, open, content, failed || (code !== undefined && code !== 0));
                 break;
             }
             case "fileChange": {
                 const changes = open.changes ?? fileChanges(item);
-                const content = item.status === "declined" ? this.takeRefusal("The change was declined.") : failed ? "The change was not applied." : `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}: ${changes.map((c) => c.path).join(", ")}`;
+                const content = item.status === "declined" ? this.takeRefusal(id, "The change was declined.") : failed ? "The change was not applied." : `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}: ${changes.map((c) => c.path).join(", ")}`;
                 const body = changes.map((c) => `${c.kind} ${c.path}\n${c.diff}`).join("\n").slice(0, 20_000);
                 this.endItem(id, open, content, failed, failed ? undefined : { summary: `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}`, body });
                 break;
             }
             case "mcpToolCall": {
-                const content = item.error?.message ? String(item.error.message) : mcpText(item.result);
+                const refused = this.refusals.has(id) && (failed || Boolean(item.error));
+                const content = refused ? this.takeRefusal(id, "") : item.error?.message ? String(item.error.message) : mcpText(item.result);
+                this.refusals.delete(id);
                 this.endItem(id, open, content, Boolean(item.error) || failed);
+                break;
+            }
+            case "webSearch": {
+                const query = webQuery(item) || String(open.input.query ?? "");
+                const retitled = query !== open.input.query;
+                if (retitled) Object.assign(open, { input: { query }, title: `WebSearch(${query})` });
+                this.endItem(id, open, failed ? "Failed" : "Done", failed, undefined, retitled);
+                break;
+            }
+            case "collabAgentToolCall": {
+                const threads = item.receiverThreadIds;
+                if (item.tool === "spawnAgent") {
+                    if (!failed) this.claimThreads(threads, id, String(open.input.description ?? "sub-agent"), sub);
+                    this.endItem(id, open, failed ? "Codex couldn't start the sub-agent." : "The sub-agent started; what it does shows under it.", failed);
+                    break;
+                }
+                // What the sub-agents it waited on (or messaged) last said.
+                const states = item.agentsStates && typeof item.agentsStates === "object" ? Object.entries<any>(item.agentsStates) : [];
+                const said = states.map(([thread, st]) => `${this.subs.get(thread)?.label ?? "Sub-agent"}: ${String(st?.status ?? "unknown")}${typeof st?.message === "string" && st.message.trim() ? `\n${st.message}` : ""}`).join("\n\n");
+                this.endItem(id, open, said || (failed ? "Failed" : "Done"), failed);
                 break;
             }
             default:
@@ -697,16 +892,19 @@ class CodexTurn {
         }
     }
 
-    private takeRefusal(fallback: string): string {
-        const r = this.refusal ?? fallback;
-        this.refusal = undefined;
+    private takeRefusal(id: string, fallback: string): string {
+        const r = this.refusals.get(id) ?? fallback;
+        this.refusals.delete(id);
         return r;
     }
 
-    private endItem(id: string, open: OpenItem, content: string, isError: boolean, display?: { summary?: string; body?: string }) {
+    /** An item is over. One whose input was only known at its end (a web search's query) says its title again. */
+    private endItem(id: string, open: OpenItem, content: string, isError: boolean, display?: { summary?: string; body?: string }, retitled = false) {
         this.items.delete(id);
+        const e: AgentEvent = { type: "tool_end", call: { type: "tool_call", id, name: open.name, input: open.input }, result: { content, isError, display }, durationMs: Date.now() - open.started, ...(retitled ? { title: open.title } : {}) };
+        if (open.sub) return this.subEmit(open.sub, e);
         this.actions.push(open.title);
-        this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: open.name, input: open.input }, result: { content, isError, display }, durationMs: Date.now() - open.started });
+        this.host.emit(e);
     }
 
     /**
@@ -728,7 +926,17 @@ class CodexTurn {
         return names.length ? { mcp_servers: Object.fromEntries(names.map((n) => [n, { enabled: false }])) } : undefined;
     }
 
+    /** Where a request comes from, when it isn't the main thread: one of Codex's sub-agents (or a thread not known as one). */
+    private origin(p: any): Origin | undefined {
+        const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
+        if (!thread || !this.threadId || thread === this.threadId) return undefined;
+        return { thread, turnId: typeof p.turnId === "string" ? p.turnId : this.subs.get(thread)?.turnId, sub: this.subs.get(thread) };
+    }
+
     private async onRequest(method: string, p: any): Promise<unknown> {
+        const from = this.origin(p);
+        // The prompt says when it's one of Codex's sub-agents asking.
+        const agentLabel = from ? (from.sub?.label ?? "Codex sub-agent") : undefined;
         switch (method) {
             case "item/commandExecution/requestApproval": {
                 const { command, elsewhere } = shownCommand(p, this.t.cwd);
@@ -736,15 +944,15 @@ class CodexTurn {
                 // Codex 0.162 asks about every command in untrusted mode, `cat` included. One that wants
                 // the network says something, and one in another folder isn't checked where it runs.
                 const asksAlways = !net && !elsewhere && codexPolicy(this.turnMode ?? this.host.mode(), []).approvalPolicy === "untrusted";
-                const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways });
-                return { decision: this.decision(a) };
+                const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel });
+                return { decision: this.decision(a, p.itemId, from) };
             }
             case "item/fileChange/requestApproval": {
                 const open = this.items.get(String(p.itemId ?? ""));
                 const changes = open?.changes ?? [];
                 if (!changes.length && typeof p.grantRoot === "string") {
-                    const a = await this.host.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined });
-                    return { decision: this.decision(a) };
+                    const a = await this.host.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel });
+                    return { decision: this.decision(a, p.itemId, from) };
                 }
                 const first = changes[0];
                 const name = changes.length && changes.every((c) => c.kind === "add") ? "Write" : "Edit";
@@ -757,8 +965,9 @@ class CodexTurn {
                     reason: [typeof p.reason === "string" ? p.reason : "", others.length ? `This change also writes ${others.join(", ")}.` : ""].filter(Boolean).join(" ") || undefined,
                     preview: first ? changePreview(first, this.t.cwd) : undefined,
                     otherPaths: others,
+                    agentLabel,
                 });
-                return { decision: this.decision(a) };
+                return { decision: this.decision(a, p.itemId, from) };
             }
             case "item/permissions/requestApproval": {
                 const want = requestedPaths(p.permissions, [this.t.cwd, ...this.t.additionalDirectories]);
@@ -774,10 +983,11 @@ class CodexTurn {
                     title: "Codex asks for more permissions",
                     reason: [typeof p.reason === "string" ? p.reason : "", `It wants: ${asks.join(", ")}.`].filter(Boolean).join(" "),
                     widens: { read: want.read, write: want.write },
+                    agentLabel,
                 });
                 // Granting nothing lets the turn go on without them; what the user said goes in with it.
-                if (!a.allow && a.fromUser) this.steer(a.message);
-                if (!a.allow && a.stop) this.interrupt();
+                if (!a.allow && a.fromUser) this.steer(a.message, true, from);
+                if (!a.allow && a.stop) this.interrupt(from);
                 return a.allow ? { permissions: p.permissions ?? {}, scope: "turn" } : { permissions: {}, scope: "turn" };
             }
             case "item/tool/requestUserInput": {
@@ -788,10 +998,75 @@ class CodexTurn {
                 return { answers: Object.fromEntries(qs.map((q, i) => [String(q?.id ?? i), { answers: answers?.[i] ?? [] }])) };
             }
             case "mcpServer/elicitation/request":
-                return { action: "decline", content: null, _meta: null };
+                return this.elicitation(p, from, agentLabel);
             default:
                 throw new Error(`${method} isn't supported by this host`);
         }
+    }
+
+    /**
+     * An MCP elicitation Codex passes on. Codex asks this way itself before
+     * an MCP tool call that needs approval (_meta.codex_approval_kind
+     * "mcp_tool_call", seen with 0.163): the harness's rules for that tool,
+     * then the user, answer it, as with a command. An MCP server's own form
+     * or link goes to the question dialog. With nobody to ask (a
+     * non-interactive run), or a form the dialog can't show, it's declined.
+     */
+    private async elicitation(p: any, from: Origin | undefined, agentLabel: string | undefined): Promise<unknown> {
+        const reply = (action: "accept" | "decline", content: unknown = null) => ({ action, content, _meta: null });
+        const server = typeof p.serverName === "string" ? p.serverName : "";
+        const message = typeof p.message === "string" ? p.message.trim() : "";
+        const meta = p._meta && typeof p._meta === "object" && !Array.isArray(p._meta) ? p._meta : {};
+        if (typeof meta.codex_approval_kind === "string") {
+            const call = meta.codex_approval_kind === "mcp_tool_call" ? this.mcpCall(server, meta.tool_params, message, from) : undefined;
+            const a = await this.host.permission(
+                call
+                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel }
+                    : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel },
+            );
+            const d = this.decision(a, call?.id, from);
+            if (d === "accept") return reply("accept", {});
+            // Codex goes on after a no to an MCP call (even "cancel"): the turn is stopped here, as the user asked.
+            if (d === "cancel") this.interrupt(from);
+            return reply("decline");
+        }
+        const intro = `${server ? `The ${server} MCP server` : "An MCP server"} asks${message ? `: ${message}` : "."}`;
+        if (p.mode === "url") {
+            const url = typeof p.url === "string" ? p.url : "";
+            const answers = await this.host.askQuestions([{ question: `${intro}\n\nOpen this link to continue: ${url}`, options: [{ label: "Done", description: "I opened the link and finished there" }, { label: "Decline" }] }]);
+            return answers?.[0]?.[0] === "Done" ? reply("accept") : reply("decline");
+        }
+        const form = elicitationForm(p.requestedSchema);
+        if (!form) {
+            this.host.emit({ type: "notice", level: "warn", message: `Declined a request from ${server || "an MCP server"} for input: ${APP_TITLE} can't show its form.` });
+            return reply("decline");
+        }
+        const questions = form.length ? form.map((f) => ({ question: `${intro}\n\n${f.question}`, options: f.options, multiSelect: f.multi })) : [{ question: intro, options: [{ label: "Accept" }, { label: "Decline" }] }];
+        const answers = await this.host.askQuestions(questions);
+        if (!answers) return reply("decline");
+        if (!form.length) return answers[0]?.[0] === "Accept" ? reply("accept", {}) : reply("decline");
+        const content: Record<string, unknown> = {};
+        for (const [i, f] of form.entries()) {
+            const picked = (answers[i] ?? []).filter((x) => x !== LEAVE_EMPTY);
+            const value = picked.length ? f.parse(picked) : undefined;
+            if (value === undefined) {
+                if (f.required) return reply("decline");
+                continue;
+            }
+            content[f.key] = value;
+        }
+        return reply("accept", content);
+    }
+
+    /** The MCP tool call Codex asks about: the open one it names, or one made up from what it says. */
+    private mcpCall(server: string, params: unknown, message: string, from: Origin | undefined): { id?: string; name: string; input: Record<string, unknown>; title?: string } {
+        const prefix = `mcp__${server}__`;
+        const open = [...this.items].filter(([, it]) => it.name.startsWith(prefix) && it.sub === from?.sub && !(from && !from.sub)).reverse();
+        const same = open.find(([, it]) => JSON.stringify(it.input) === JSON.stringify(params ?? {})) ?? (open.length === 1 ? open[0] : undefined);
+        if (same) return { id: same[0], name: same[1].name, input: same[1].input, title: same[1].title };
+        const tool = message.match(/run tool "([^"]+)"/)?.[1];
+        const input = params && typeof params === "object" && !Array.isArray(params) ? (params as Record<string, unknown>) : {};
+        return { name: tool ? `${prefix}${tool}` : `mcp__${server}`, input, title: tool ? `${server} - ${tool} (MCP)` : undefined };
     }
 
     /**
@@ -804,21 +1079,28 @@ class CodexTurn {
      * UI, and it doesn't check the answer against it. Codex tells the model
      * only "rejected by user", so the harness's reason goes into the turn too:
      * without it the model gives up, or tries the next way of doing the same.
+     * A sub-agent's turn gets what's said about its own requests.
      */
-    private decision(a: PermissionAnswer): string {
+    private decision(a: PermissionAnswer, itemId: unknown, from: Origin | undefined): string {
         if (a.allow) return "accept";
-        this.refusal = a.message;
+        if (typeof itemId === "string" && itemId) this.refusals.set(itemId, a.message);
         if (a.stop) return "cancel";
-        if (a.fromUser) this.steer(a.message);
-        else this.steer(`<system-reminder>\n${APP_TITLE} refused that: ${a.message}\n</system-reminder>`, false);
+        if (a.fromUser) this.steer(a.message, true, from);
+        else this.steer(`<system-reminder>\n${APP_TITLE} refused that: ${a.message}\n</system-reminder>`, false, from);
         return "decline";
     }
 
     /**
      * Add text to the running turn (turn/steer). The user's words start the
      * next turn if that fails; the harness's own notes (followUp false) don't.
+     * A sub-agent's turn is steered the same way (checked with 0.163), but
+     * nothing starts another of its turns.
      */
-    private steer(text: string, followUp = true) {
+    private steer(text: string, followUp = true, from?: Origin) {
+        if (from) {
+            if (from.turnId) void this.rpc.request("turn/steer", { threadId: from.thread, expectedTurnId: from.turnId, input: this.input(text, []) }).catch(() => {});
+            return;
+        }
         if (!this.threadId || !this.turnId) {
             if (followUp) this.followUp = text;
             return;
@@ -827,6 +1109,13 @@ class CodexTurn {
             if (followUp) this.followUp = text;
         });
     }
+}
+
+/** A request from a thread other than the main one. */
+interface Origin {
+    thread: string;
+    turnId?: string;
+    sub?: SubAgent;
 }
 
 /**
@@ -890,6 +1179,116 @@ function fileChanges(item: any): FileChange[] {
 /** Every path a change writes: sources, and renames' destinations. */
 function writtenPaths(changes: FileChange[]): string[] {
     return [...new Set(changes.flatMap((c) => (c.movePath ? [c.path, c.movePath] : [c.path])))];
+}
+
+/** Notifications about any thread's actions (its reviewer's verdicts): shown whichever thread they're for. */
+const ANY_THREAD = new Set(["guardianWarning", "item/autoApprovalReview/started", "item/autoApprovalReview/completed"]);
+
+const TOKEN_FIELDS = ["totalTokens", "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens"] as const;
+type Tokens = Record<(typeof TOKEN_FIELDS)[number], number>;
+
+/** Codex's token breakdown (TokenUsageBreakdown), or undefined when it isn't one. */
+function tokens(x: any): Tokens | undefined {
+    if (!x || typeof x !== "object" || typeof x.inputTokens !== "number") return undefined;
+    return Object.fromEntries(TOKEN_FIELDS.map((k) => [k, Number.isFinite(x[k]) ? Number(x[k]) : 0])) as Tokens;
+}
+
+/** What was spent between two totals; undefined if any went down (they aren't a thread's totals then). */
+function minus(a: Tokens, b: Tokens): Tokens | undefined {
+    const d = Object.fromEntries(TOKEN_FIELDS.map((k) => [k, a[k] - b[k]])) as Tokens;
+    return TOKEN_FIELDS.every((k) => d[k] >= 0) ? d : undefined;
+}
+
+/** Codex's sub-agent tools other than spawning one, in a few words. */
+const COLLAB_TITLES: Record<string, string> = {
+    wait: "Wait for sub-agents",
+    sendInput: "Message a sub-agent",
+    sendMessage: "Message a sub-agent",
+    followupTask: "Message a sub-agent",
+    resumeAgent: "Resume a sub-agent",
+    interruptAgent: "Interrupt a sub-agent",
+    closeAgent: "Close a sub-agent",
+    listAgents: "List sub-agents",
+};
+
+/** A sub-agent's label: the first line of what it was asked, short. */
+function subAgentLabel(prompt: string): string {
+    const first = prompt.trim().split("\n")[0]!.trim();
+    if (!first) return "Codex sub-agent";
+    return first.length > 60 ? `${first.slice(0, 59)}…` : first;
+}
+
+/** What a web search looked for (or the page it opened), as far as the item says yet. */
+function webQuery(item: any): string {
+    const a = item?.action ?? {};
+    const queries = Array.isArray(a.queries) ? a.queries.filter((q: unknown) => typeof q === "string" && q) : [];
+    const str = (x: unknown) => (typeof x === "string" ? x : "");
+    return str(item?.query) || str(a.query) || queries.join(", ") || (str(a.pattern) && str(a.url) ? `${a.pattern} in ${a.url}` : str(a.url));
+}
+
+/** The option that leaves an optional field of an MCP server's form empty. */
+const LEAVE_EMPTY = "Leave empty";
+
+interface FormField {
+    key: string;
+    question: string;
+    options: BackendQuestion["options"];
+    multi: boolean;
+    required: boolean;
+    /** The value for what was picked or typed; undefined when it isn't one. */
+    parse(answer: string[]): unknown;
+}
+
+/**
+ * An MCP elicitation's form (a flat object of strings, numbers, booleans and
+ * enums, as MCP has them) as one question per field. Undefined for a schema
+ * that isn't one.
+ */
+export function elicitationForm(schema: any): FormField[] | undefined {
+    const props = schema?.properties;
+    if (!schema || typeof schema !== "object" || (schema.type !== undefined && schema.type !== "object") || (props !== undefined && (typeof props !== "object" || Array.isArray(props)))) return undefined;
+    const required = new Set<string>(Array.isArray(schema.required) ? schema.required.filter((k: unknown) => typeof k === "string") : []);
+    const out: FormField[] = [];
+    for (const [key, s] of Object.entries<any>(props ?? {})) {
+        if (!s || typeof s !== "object") return undefined;
+        const req = required.has(key);
+        const label = typeof s.title === "string" && s.title.trim() ? s.title.trim() : key;
+        const question = `${label}${typeof s.description === "string" && s.description.trim() ? ` (${s.description.trim()})` : ""}${req ? "" : " (optional)"}`;
+        const skip = req ? [] : [{ label: LEAVE_EMPTY }];
+        // Choices: labels shown, values sent.
+        const choices = (list: { value: string; label: string }[]) => (picked: string) => list.find((c) => c.label === picked)?.value ?? list.find((c) => c.value === picked)?.value ?? picked;
+        const enumOf = (x: any): { value: string; label: string }[] | undefined => {
+            if (Array.isArray(x?.oneOf)) return x.oneOf.filter((o: any) => typeof o?.const === "string").map((o: any) => ({ value: o.const, label: typeof o.title === "string" ? o.title : o.const }));
+            if (Array.isArray(x?.anyOf)) return x.anyOf.filter((o: any) => typeof o?.const === "string").map((o: any) => ({ value: o.const, label: typeof o.title === "string" ? o.title : o.const }));
+            if (Array.isArray(x?.enum)) return x.enum.filter((v: unknown) => typeof v === "string").map((v: string, i: number) => ({ value: v, label: typeof x.enumNames?.[i] === "string" ? x.enumNames[i] : v }));
+            return undefined;
+        };
+        const field = (options: BackendQuestion["options"], multi: boolean, parse: (a: string[]) => unknown): FormField => ({ key, question, options: [...options, ...skip], multi, required: req, parse });
+        const defaults = s.default !== undefined && typeof s.default !== "object" ? [{ label: String(s.default), description: "the default" }] : [];
+        if (s.type === "array") {
+            const list = enumOf(s.items);
+            if (!list) return undefined;
+            const value = choices(list);
+            out.push(field(list.map((c) => ({ label: c.label })), true, (a) => a.map(value)));
+        } else if (s.type === "string" && enumOf(s)) {
+            const list = enumOf(s)!;
+            const value = choices(list);
+            out.push(field(list.map((c) => ({ label: c.label })), false, (a) => value(a[0]!)));
+        } else if (s.type === "boolean") {
+            out.push(field([{ label: "Yes" }, { label: "No" }], false, (a) => (/^(yes|y|true)$/i.test(a[0]!.trim()) ? true : /^(no|n|false)$/i.test(a[0]!.trim()) ? false : undefined)));
+        } else if (s.type === "number" || s.type === "integer") {
+            const integer = s.type === "integer";
+            out.push(
+                field(defaults, false, (a) => {
+                    const n = Number(a[0]!.trim());
+                    return a[0]!.trim() && Number.isFinite(n) && (!integer || Number.isInteger(n)) ? n : undefined;
+                }),
+            );
+        } else if (s.type === "string") {
+            out.push(field(defaults, false, (a) => a[0]));
+        } else return undefined;
+    }
+    return out;
 }
 
 /** The guardianWarning Codex sends with each of its reviewer's verdicts (the reason last), and with a yes. */
