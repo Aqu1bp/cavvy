@@ -3,7 +3,7 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -1257,6 +1257,45 @@ describe("project scripts", () => {
             await expect(c.call("terminal.write", { id: "no-folder", data: "x" })).rejects.toThrow("not open");
         } finally { c.close(); }
     });
+
+    test("a Ctrl+C the window held while the script was starting, sent as soon as it opens, stops it being typed", async () => {
+        const c = await client();
+        try {
+            const dir = project();
+            const s = await c.call<ProjectScript>("scripts.save", { cwd: dir, name: "never", command: "printf '__%s__\\n' typed" });
+            const id = "held-ctrl-c";
+            const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+            await c.call("scripts.run", { id, cwd: dir, script: s.id, cols: 80, rows: 24 });
+            await c.call("terminal.write", { id, data: "\x03" });
+            await Bun.sleep(3400);
+            await c.call("terminal.write", { id, data: "printf '__%s__\\n' mine\n" });
+            await waitFor(() => output().includes("__mine__\r\n"));
+            expect(output()).not.toContain("__typed__");
+            await c.call("terminal.close", { id });
+        } finally { c.close(); }
+    }, 20_000);
+
+    test("running a script in a project with entries this Harness can't use leaves the file as it was", async () => {
+        const c = await client();
+        const file = join(iso.home, "scripts.json");
+        const saved = existsSync(file) ? readFileSync(file, "utf-8") : undefined;
+        try {
+            const dir = realpathSync(project());
+            const text = JSON.stringify({ version: 1, projects: { [dir]: { scripts: [{ id: "good", name: "good", command: "printf '__%s__\\n' good" }, { id: "odd", name: "odd", command: "echo", icon: "rocket", future: true }] } } }, null, 2);
+            writeFileSync(file, text);
+            expect((await c.call("scripts.list", { cwd: dir })).scripts.map((x: ProjectScript) => x.id)).toEqual(["good"]);
+            const id = "kept-run";
+            await c.call("scripts.run", { id, cwd: dir, script: "good", cols: 80, rows: 24 });
+            await waitFor(() => c.events.some((e) => e.type === "terminal.data" && e.id === id && e.data.includes("__good__")));
+            // Remembering it as the last one run is skipped rather than rewriting what it didn't understand.
+            await Bun.sleep(200);
+            expect(readFileSync(file, "utf-8")).toBe(text);
+            await c.call("terminal.close", { id });
+        } finally {
+            if (saved === undefined) rmSync(file, { force: true }); else writeFileSync(file, saved);
+            c.close();
+        }
+    }, 20_000);
 
     test("respects the terminal limit with a clear message", async () => {
         const c = await client();

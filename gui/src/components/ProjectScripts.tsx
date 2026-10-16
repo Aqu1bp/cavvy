@@ -54,6 +54,8 @@ export function ProjectScripts(p: { cwd: string }) {
     const scripts = () => list()?.scripts ?? [];
     const main = () => scripts().find((s) => s.id === list()?.lastUsed) ?? scripts()[0];
     const close = () => (setOpen(false), setConfirming(undefined));
+    // Fresh each time: another Harness server's windows don't hear of changes here, and a focus refetch can race a save.
+    const openMenu = () => (setOpen(true), void load());
     const run = (script: ProjectScript) => {
         close();
         if (!terminalActions.runScript) return reportError(new Error("The terminal isn't available here."));
@@ -88,7 +90,7 @@ export function ProjectScripts(p: { cwd: string }) {
                 <Show
                     when={main()}
                     fallback={
-                        <button class="hb" title="Project scripts: commands you run with one click" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : setOpen(true))}>
+                        <button class="hb" title="Project scripts: commands you run with one click" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
                             <Play size={15} />
                         </button>
                     }
@@ -99,7 +101,7 @@ export function ProjectScripts(p: { cwd: string }) {
                                 <ScriptGlyph icon={s().icon} size={14} />
                                 <span class="split-label truncate">{s().name}</span>
                             </button>
-                            <button class="hb split-more" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : setOpen(true))}>
+                            <button class="hb split-more" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
                                 <ChevronDown size={13} />
                             </button>
                         </>

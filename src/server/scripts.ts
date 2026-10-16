@@ -3,10 +3,17 @@
 // user, not the repository: they're kept in the Harness home (scripts.json),
 // never in the project's .harness/, and nothing runs one but a click in the GUI.
 // A repository's main checkout and its worktrees share one list.
+//
+// The file may be shared with another Harness (the desktop app and a
+// `harness gui` of another version) or edited by hand, so a write never drops
+// what this one doesn't understand: a file of another format or shape isn't
+// written at all, other projects' entries are written back as they were read,
+// and in the project being changed, entries that can't be used are kept as
+// they are (neither shown nor run), as are fields this Harness doesn't know.
 
 import { randomUUID } from "crypto";
-import { closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
-import { realpath, stat } from "fs/promises";
+import { closeSync, fstatSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { readFile, realpath, stat } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { ensureDir, harnessHome } from "../config/paths";
 import { gitArgv, gitEnv } from "../util/git";
@@ -14,17 +21,6 @@ import { RpcError } from "./rpc-error";
 import { SCRIPT_ICONS, SCRIPT_LIMITS, type ProjectScript, type ProjectScripts, type ScriptIcon } from "./protocol";
 
 export const scriptsFile = () => join(harnessHome(), "scripts.json");
-
-interface ProjectEntry {
-    scripts: ProjectScript[];
-    lastUsed?: string;
-}
-
-interface Store {
-    version: 1;
-    /** By project key (see projectKey). */
-    projects: Record<string, ProjectEntry>;
-}
 
 // Nothing here holds up the server's one thread while it waits: git and the
 // folder checks run asynchronously, and a save waits its turn for the lock
@@ -83,15 +79,37 @@ export async function projectFolder(cwd: unknown): Promise<string> {
 // ---------------------------------------------------------------------------
 // Project keys
 
-async function git(cwd: string, args: string[]): Promise<string | undefined> {
+const GIT_TIMEOUT_MS = 3000;
+
+const keyError = (dir: string, why: string) => new RpcError(`Couldn't tell which repository ${dir} belongs to, so its scripts can't be found: ${why}`, "git");
+
+/**
+ * git's answer; undefined when there's no repository to ask (not one, or no
+ * git installed). Any other failure (a timeout, a signal, a repository git
+ * refuses to read) throws: guessing would file scripts under the wrong project.
+ */
+async function git(dir: string, args: string[]): Promise<string | undefined> {
+    let proc: ReturnType<typeof Bun.spawn>;
     try {
-        const proc = Bun.spawn(gitArgv(args), { cwd, env: gitEnv(), stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3000 });
-        const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-        // Only git's line terminator: a path can itself end in a newline.
-        return code === 0 ? out.replace(/\n$/, "") : undefined;
-    } catch {
-        return undefined;
+        // In English, so "not a git repository" can be told from other failures.
+        proc = Bun.spawn(gitArgv(args), { cwd: dir, env: { ...gitEnv(), LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw keyError(dir, (e as Error).message);
     }
+    // Timed here, not with spawn's own timeout: a timeout and another signal are told apart.
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill();
+    }, GIT_TIMEOUT_MS);
+    const [out, err] = await Promise.all([new Response(proc.stdout as ReadableStream).text(), new Response(proc.stderr as ReadableStream).text(), proc.exited]).finally(() => clearTimeout(timer));
+    if (timedOut) throw keyError(dir, `git didn't answer within ${GIT_TIMEOUT_MS / 1000} s`);
+    if (proc.signalCode) throw keyError(dir, `git was stopped (${proc.signalCode})`);
+    // Only git's line terminator: a path can itself end in a newline.
+    if (proc.exitCode === 0) return out.replace(/\n$/, "");
+    if (/not a git repository|must be run in a work tree/i.test(err)) return undefined;
+    throw keyError(dir, err.trim().split("\n")[0] || `git exited with ${proc.exitCode}`);
 }
 
 async function canonical(path: string): Promise<string> {
@@ -105,7 +123,7 @@ async function canonical(path: string): Promise<string> {
 /**
  * A folder's key, for a little while: the GUI asks on every window focus, and
  * a folder rarely becomes (or stops being) part of a repository. Lookups
- * already under way are shared.
+ * already under way are shared; one that fails isn't kept.
  */
 const KEY_TTL_MS = 10_000;
 const keys = new Map<string, { key: Promise<string>; at: number }>();
@@ -115,12 +133,11 @@ export function forgetProjectKeys() {
 }
 
 /**
- * What a folder's scripts are filed under. In a git work tree it's the main
- * checkout (from the shared git dir), so a repository and all its worktrees
- * share one list; a subfolder keeps its place below it (packages/web in a
- * worktree shares with packages/web in the main checkout, not with the root).
- * Anywhere else, the folder itself. Read-only git plumbing, safe in an
- * untrusted folder.
+ * What a folder's scripts are filed under. In a repository's main checkout or
+ * one of its worktrees, the main checkout, so they all share one list; a
+ * subfolder keeps its place below it (packages/web in a worktree shares with
+ * packages/web in the main checkout, not with the root). Anywhere else, the
+ * folder itself. Read-only git plumbing, safe in an untrusted folder.
  */
 export function projectKey(folder: string): Promise<string> {
     const now = Date.now();
@@ -129,21 +146,42 @@ export function projectKey(folder: string): Promise<string> {
     if (known) return known.key;
     const key = lookUpKey(folder);
     keys.set(folder, { key, at: now });
-    // A failed lookup isn't kept.
     key.catch(() => keys.delete(folder));
     return key;
 }
 
 async function lookUpKey(folder: string): Promise<string> {
     const dir = await canonical(folder);
-    const [top, common] = await Promise.all([git(dir, ["rev-parse", "--show-toplevel"]), git(dir, ["rev-parse", "--git-common-dir"])]);
-    if (!top || !common) return dir;
-    const [commonDir, topDir] = await Promise.all([canonical(resolve(dir, common)), canonical(top)]);
-    // A bare repository's worktrees have no main checkout: the git dir names the project.
-    const main = basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
+    const [top, common, own] = await Promise.all(["--show-toplevel", "--git-common-dir", "--git-dir"].map((what) => git(dir, ["rev-parse", what])));
+    if (top === undefined || common === undefined || own === undefined) return dir;
+    const [topDir, commonDir, ownDir] = await Promise.all([canonical(top), canonical(resolve(dir, common)), canonical(resolve(dir, own))]);
+    const main = await mainCheckout(topDir, commonDir, ownDir);
+    if (!main) return dir;
     const below = relative(topDir, dir);
     const outside = below === ".." || below.startsWith(`..${sep}`) || isAbsolute(below);
     return below && !outside ? join(main, below) : main;
+}
+
+/**
+ * The checkout a work tree shares scripts with, when git's pointers hold both
+ * ways: it's the repository's main checkout (its own git dir is the shared
+ * one, `<top>/.git`), or a worktree the repository lists (its git dir is
+ * `<common>/worktrees/<name>`, whose gitdir file points back at `<top>/.git`).
+ * A `.git` that's a symlink to another repository's, or a `.git` file naming
+ * another repository's worktree, doesn't make a folder part of it.
+ */
+async function mainCheckout(top: string, common: string, own: string): Promise<string | undefined> {
+    // A bare repository (worktrees only) has no main checkout: its git dir names it.
+    const main = basename(common) === ".git" ? dirname(common) : common;
+    if (own === common) return basename(common) === ".git" && dirname(common) === top ? main : undefined;
+    if (dirname(own) !== join(common, "worktrees")) return undefined;
+    try {
+        const back = (await readFile(join(own, "gitdir"), "utf-8")).replace(/\r?\n$/, "");
+        const [from, to] = await Promise.all([canonical(resolve(own, back)), canonical(join(top, ".git"))]);
+        return from === to ? main : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 const keyOf = async (cwd: unknown) => projectKey(await projectFolder(cwd));
@@ -151,26 +189,28 @@ const keyOf = async (cwd: unknown) => projectKey(await projectFolder(cwd));
 // ---------------------------------------------------------------------------
 // Storage
 
-const empty = (): Store => ({ version: 1, projects: {} });
+type Json = Record<string, unknown>;
+const isObject = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** Entries that don't hold up (a hand edit, an older format) are left out rather than run. */
-function sanitize(entry: unknown): ProjectEntry | undefined {
-    const raw = (entry as { scripts?: unknown })?.scripts;
-    if (!Array.isArray(raw)) return undefined;
-    const scripts: ProjectScript[] = [];
-    for (const s of raw) {
-        if (typeof s?.id !== "string" || !SCRIPT_ID.test(s.id) || scripts.some((x) => x.id === s.id)) continue;
-        try {
-            const v = validateScript(s);
-            if (scripts.some((x) => x.name.toLowerCase() === v.name.toLowerCase())) continue;
-            scripts.push({ id: s.id, ...v });
-        } catch {
-            // left out
-        }
-    }
-    const last = (entry as { lastUsed?: unknown }).lastUsed;
-    return { scripts: scripts.slice(0, SCRIPT_LIMITS.perProject), ...(typeof last === "string" && scripts.some((s) => s.id === last) ? { lastUsed: last } : {}) };
+/** The file as read: written back with only the changed project's entry replaced. */
+interface Store {
+    file: string;
+    raw: Json;
+    projects: Json;
 }
+
+/** A script this Harness can use, with the entry it came from (fields it doesn't know are written back); or an entry kept as it was. */
+type Item = { script: ProjectScript; raw: Json } | { kept: unknown };
+
+interface Project {
+    /** In the file's order. */
+    items: Item[];
+    lastUsed?: unknown;
+    /** The entry's other fields. */
+    raw: Json;
+}
+
+const storeError = (file: string, why: string) => new RpcError(`${why} It's left as it is: fix or move ${file}.`, "store");
 
 function readStore(): Store {
     const file = scriptsFile();
@@ -178,36 +218,68 @@ function readStore(): Store {
     try {
         text = readFileSync(file, "utf-8");
     } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "ENOENT") return empty();
-        throw new RpcError(`Couldn't read the project scripts (${file}): ${(e as Error).message}`, "store");
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new RpcError(`Couldn't read the project scripts (${file}): ${(e as Error).message}`, "store");
+        text = "";
     }
-    if (!text.trim()) return empty();
-    let data: { projects?: unknown };
+    if (!text.trim()) {
+        const projects = {};
+        return { file, raw: { version: 1, projects }, projects };
+    }
+    let raw: unknown;
     try {
-        data = JSON.parse(text);
+        raw = JSON.parse(text);
     } catch {
-        // Not overwritten: fixing it by hand keeps every script.
-        throw new RpcError(`The project scripts file isn't valid JSON, so it's left as it is. Fix or move ${file}.`, "store");
+        throw storeError(file, "The project scripts file isn't valid JSON.");
     }
-    const store = empty();
-    if (data && typeof data.projects === "object" && data.projects && !Array.isArray(data.projects)) {
-        for (const [key, entry] of Object.entries(data.projects)) {
-            const clean = sanitize(entry);
-            if (clean) store.projects[key] = clean;
+    if (isObject(raw) && typeof raw.version === "number" && raw.version > 1) throw storeError(file, `The project scripts file was written by a newer Harness (format ${raw.version}).`);
+    if (!isObject(raw) || raw.version !== 1 || (raw.projects !== undefined && !isObject(raw.projects))) throw storeError(file, "The project scripts file isn't in a form this Harness understands.");
+    const projects = (raw.projects ??= {}) as Json;
+    return { file, raw, projects };
+}
+
+function readProject(store: Store, key: string): Project {
+    const entry = store.projects[key];
+    if (entry === undefined) return { items: [], raw: {} };
+    if (!isObject(entry) || (entry.scripts !== undefined && !Array.isArray(entry.scripts))) throw storeError(store.file, "This project's entry in the project scripts file isn't in a form this Harness understands.");
+    const { scripts = [], lastUsed, ...rest } = entry as { scripts?: unknown[]; lastUsed?: unknown };
+    const ids = new Set<string>();
+    const names = new Set<string>();
+    const items = scripts.map((s): Item => {
+        if (!isObject(s) || typeof s.id !== "string" || !SCRIPT_ID.test(s.id) || ids.has(s.id)) return { kept: s };
+        let fields: ScriptInput;
+        try {
+            fields = validateScript(s);
+        } catch {
+            // A two-line command, an unknown icon: not run, but not lost either.
+            return { kept: s };
         }
-    }
-    return store;
+        if (names.has(fields.name.toLowerCase())) return { kept: s };
+        ids.add(s.id);
+        names.add(fields.name.toLowerCase());
+        return { script: { id: s.id, ...fields }, raw: s };
+    });
+    return { items, lastUsed, raw: rest };
+}
+
+const usable = (p: Project) => p.items.flatMap((i) => ("script" in i ? [i] : []));
+
+function entryOf(p: Project): Json | undefined {
+    const scripts = p.items.map((i) => {
+        if ("kept" in i) return i.kept;
+        const { icon: _icon, ...rest } = i.raw;
+        return { ...rest, id: i.script.id, name: i.script.name, command: i.script.command, ...(i.script.icon ? { icon: i.script.icon } : {}) };
+    });
+    if (!scripts.length && !Object.keys(p.raw).length) return undefined;
+    return { ...p.raw, scripts, ...(p.lastUsed !== undefined && scripts.length ? { lastUsed: p.lastUsed } : {}) };
 }
 
 /** Replaced in one rename, so a reader never sees half a file. */
 function writeStore(store: Store) {
-    const file = scriptsFile();
-    for (const [key, entry] of Object.entries(store.projects)) if (!entry.scripts.length) delete store.projects[key];
-    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    const tmp = `${store.file}.${process.pid}.${randomUUID()}.tmp`;
     try {
-        ensureDir(dirname(file));
-        writeFileSync(tmp, JSON.stringify(store, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
-        renameSync(tmp, file);
+        ensureDir(dirname(store.file));
+        writeFileSync(tmp, JSON.stringify(store.raw, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+        renameSync(tmp, store.file);
     } catch (e) {
         try {
             unlinkSync(tmp);
@@ -219,8 +291,67 @@ function writeStore(store: Store) {
 }
 
 const LOCK_WAIT_MS = 2000;
-/** A lock is held for one read and write; one this old was left by a process that died holding it. */
-const LOCK_STALE_MS = 5000;
+/** A lock whose holder is still running is taken over only when it's this old (its pid may have been reused since). */
+const LOCK_STALE_MS = 60_000;
+/** A lock with no pid in it yet: being made, or left by a process that died making it. */
+const LOCK_EMPTY_STALE_MS = 5000;
+
+/** The lock's inode when it's been left behind: its holder has gone, or it's too old to be anyone's. */
+function abandoned(lock: string): number | undefined {
+    try {
+        const st = statSync(lock);
+        const body = readFileSync(lock, "utf-8").trim();
+        const age = Date.now() - st.mtimeMs;
+        const pid = /^\d+$/.test(body) ? Number(body) : 0;
+        if (!pid) return age > LOCK_EMPTY_STALE_MS ? st.ino : undefined;
+        if (age > LOCK_STALE_MS) return st.ino;
+        try {
+            process.kill(pid, 0);
+            return undefined;
+        } catch (e) {
+            // EPERM: running, as another user.
+            return (e as NodeJS.ErrnoException).code === "ESRCH" ? st.ino : undefined;
+        }
+    } catch {
+        // released meanwhile
+        return undefined;
+    }
+}
+
+/**
+ * Remove the abandoned lock, if it's still the one found abandoned. Two
+ * processes can find it at once, and by the time the second removes it the
+ * first may have made its own: so it's removed only while holding
+ * `<lock>.takeover`. True when it's gone.
+ */
+function takeOver(lock: string, ino: number): boolean {
+    const guard = `${lock}.takeover`;
+    let fd: number;
+    try {
+        fd = openSync(guard, "wx", 0o600);
+    } catch {
+        // Another process is taking it over. One that crashed doing so left this behind.
+        try {
+            if (Date.now() - statSync(guard).mtimeMs > LOCK_EMPTY_STALE_MS) unlinkSync(guard);
+        } catch {
+            // gone meanwhile
+        }
+        return false;
+    }
+    try {
+        if (statSync(lock).ino === ino) unlinkSync(lock);
+        return true;
+    } catch {
+        return true;
+    } finally {
+        closeSync(fd);
+        try {
+            unlinkSync(guard);
+        } catch {
+            // already gone
+        }
+    }
+}
 
 /**
  * Held around a read-change-write, so another server process (the desktop app
@@ -237,11 +368,8 @@ async function withLock<T>(fn: () => T): Promise<T> {
             fd = openSync(lock, "wx", 0o600);
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw new RpcError(`Couldn't save the project scripts: ${(e as Error).message}`, "store");
-            try {
-                if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) unlinkSync(lock);
-            } catch {
-                // released meanwhile
-            }
+            const ino = abandoned(lock);
+            if (ino !== undefined && takeOver(lock, ino)) continue;
             if (Date.now() > deadline) throw new RpcError("The project scripts are being saved by another Harness window; try again", "busy");
             await Bun.sleep(10);
         }
@@ -250,32 +378,41 @@ async function withLock<T>(fn: () => T): Promise<T> {
         writeSync(fd, String(process.pid));
         return fn();
     } finally {
-        closeSync(fd);
+        // Not if it was taken over meanwhile (this process was stopped too long): the lock there now is someone else's.
         try {
-            unlinkSync(lock);
+            const mine = fstatSync(fd);
+            const there = statSync(lock);
+            if (mine.ino === there.ino && mine.dev === there.dev) unlinkSync(lock);
         } catch {
-            // taken as stale
+            // gone
         }
+        closeSync(fd);
     }
 }
 
 /**
  * Read, change, write, with nothing in between: under the lock, and with no
  * await inside, so edits from two windows or two server processes apply one
- * after the other.
+ * after the other. `fn` returns false to leave the file as it is.
  */
-function update<T>(fn: (store: Store) => T): Promise<T> {
+function update<T>(key: string, fn: (p: Project) => T): Promise<T> {
     return withLock(() => {
         const store = readStore();
-        const result = fn(store);
+        const p = readProject(store, key);
+        const result = fn(p);
+        if (result === false) return result;
+        const entry = entryOf(p);
+        if (entry) store.projects[key] = entry;
+        else delete store.projects[key];
         writeStore(store);
         return result;
     });
 }
 
-function view(project: string, entry: ProjectEntry | undefined): ProjectScripts {
-    const scripts = entry?.scripts.map((s) => ({ ...s })) ?? [];
-    return { project, scripts, ...(entry?.lastUsed ? { lastUsed: entry.lastUsed } : {}) };
+function view(project: string, p: Project): ProjectScripts {
+    const scripts = usable(p).map((i) => ({ ...i.script }));
+    const last = typeof p.lastUsed === "string" && scripts.some((s) => s.id === p.lastUsed) ? p.lastUsed : undefined;
+    return { project, scripts, ...(last ? { lastUsed: last } : {}) };
 }
 
 function scriptId(id: unknown): string {
@@ -290,7 +427,7 @@ const gone = () => new RpcError("That script no longer exists (it may have been 
 
 export async function listScripts(cwd: unknown): Promise<ProjectScripts> {
     const project = await keyOf(cwd);
-    return view(project, readStore().projects[project]);
+    return view(project, readProject(readStore(), project));
 }
 
 /** Creates a script, or, given `id`, updates that one. */
@@ -298,20 +435,20 @@ export async function saveScript(cwd: unknown, input: { id?: unknown; name?: unk
     const fields = validateScript(input);
     const id = input.id === undefined || input.id === null || input.id === "" ? undefined : scriptId(input.id);
     const project = await keyOf(cwd);
-    return update((store) => {
-        const entry = (store.projects[project] ??= { scripts: [] });
-        const clash = entry.scripts.find((s) => s.id !== id && s.name.toLowerCase() === fields.name.toLowerCase());
-        if (clash) throw new RpcError(`This project already has a script named “${clash.name}”`, "invalid");
+    return update(project, (p) => {
+        const scripts = usable(p);
+        const clash = scripts.find((i) => i.script.id !== id && i.script.name.toLowerCase() === fields.name.toLowerCase());
+        if (clash) throw new RpcError(`This project already has a script named “${clash.script.name}”`, "invalid");
+        const script = { id: id ?? randomUUID(), ...fields };
         if (id) {
-            const i = entry.scripts.findIndex((s) => s.id === id);
-            if (i < 0) throw gone();
-            const script = { id, ...fields };
-            entry.scripts[i] = script;
-            return { project, script };
+            const item = scripts.find((i) => i.script.id === id);
+            if (!item) throw gone();
+            item.script = script;
+        } else {
+            // Entries kept aside count too: the file doesn't grow without bound.
+            if (p.items.length >= SCRIPT_LIMITS.perProject) throw new RpcError(`A project can have at most ${SCRIPT_LIMITS.perProject} scripts`, "limit");
+            p.items.push({ script, raw: {} });
         }
-        if (entry.scripts.length >= SCRIPT_LIMITS.perProject) throw new RpcError(`A project can have at most ${SCRIPT_LIMITS.perProject} scripts`, "limit");
-        const script = { id: randomUUID(), ...fields };
-        entry.scripts.push(script);
         return { project, script };
     });
 }
@@ -319,25 +456,25 @@ export async function saveScript(cwd: unknown, input: { id?: unknown; name?: unk
 export async function deleteScript(cwd: unknown, id: unknown): Promise<{ project: string }> {
     const sid = scriptId(id);
     const project = await keyOf(cwd);
-    return update((store) => {
-        const entry = store.projects[project];
-        if (!entry?.scripts.some((s) => s.id === sid)) throw gone();
-        entry.scripts = entry.scripts.filter((s) => s.id !== sid);
-        if (entry.lastUsed === sid) delete entry.lastUsed;
+    return update(project, (p) => {
+        const i = p.items.findIndex((item) => "script" in item && item.script.id === sid);
+        if (i < 0) throw gone();
+        p.items.splice(i, 1);
+        if (p.lastUsed === sid) p.lastUsed = undefined;
         return { project };
     });
 }
 
-/** `ids`: every script's id, in the new order. */
+/** `ids`: every script's id, in the new order (entries kept aside stay where they are). */
 export async function reorderScripts(cwd: unknown, ids: unknown): Promise<ProjectScripts> {
     if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) throw new RpcError("ids must be a list of script ids", "invalid");
     const project = await keyOf(cwd);
-    return update((store) => {
-        const entry = store.projects[project] ?? { scripts: [] };
-        const byId = new Map(entry.scripts.map((s) => [s.id, s]));
+    return update(project, (p) => {
+        const byId = new Map(usable(p).map((i) => [i.script.id, i]));
         if (ids.length !== byId.size || new Set(ids).size !== ids.length || !ids.every((id) => byId.has(id))) throw new RpcError("The scripts changed in another window; try again", "conflict");
-        entry.scripts = ids.map((id) => byId.get(id)!);
-        return view(project, entry);
+        const order = ids.map((id) => byId.get(id)!);
+        p.items = p.items.map((i) => ("script" in i ? order.shift()! : i));
+        return view(project, p);
     });
 }
 
@@ -345,15 +482,20 @@ export async function reorderScripts(cwd: unknown, ids: unknown): Promise<Projec
 export async function findScript(cwd: unknown, id: unknown): Promise<{ project: string; script: ProjectScript }> {
     const sid = scriptId(id);
     const project = await keyOf(cwd);
-    const script = readStore().projects[project]?.scripts.find((s) => s.id === sid);
-    if (!script) throw gone();
-    return { project, script: { ...script } };
+    const item = usable(readProject(readStore(), project)).find((i) => i.script.id === sid);
+    if (!item) throw gone();
+    return { project, script: { ...item.script } };
 }
 
-/** Remembers the script the header button runs next. */
+/**
+ * Remembers the script the header button runs next. Running a script rewrites
+ * nothing it didn't fully understand: with entries kept aside in the project,
+ * it isn't remembered.
+ */
 export async function markUsed(project: string, id: string) {
-    await update((store) => {
-        const entry = store.projects[project];
-        if (entry?.scripts.some((s) => s.id === id)) entry.lastUsed = id;
+    await update(project, (p) => {
+        if (p.items.some((i) => "kept" in i) || p.lastUsed === id || !usable(p).some((i) => i.script.id === id)) return false;
+        p.lastUsed = id;
+        return true;
     });
 }

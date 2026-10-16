@@ -1,6 +1,6 @@
 // User-operated shells, isolated from agent sessions and owned by one GUI connection.
 import { statSync } from "fs";
-import { resolve, isAbsolute } from "path";
+import { basename, resolve, isAbsolute } from "path";
 import { userInfo } from "os";
 import { childEnv } from "../util/env";
 import { RpcError } from "./rpc-error";
@@ -32,12 +32,37 @@ const RESUME_BELOW = 250_000;
 const KEEP = 250_000;
 
 /**
- * Input given at open is typed once the shell has started: when its output
- * (rc files, the first prompt) has paused this long, or at the latest after
- * TYPE_BY. Typed earlier it would still run, but be echoed twice.
+ * Input given at open is typed once the shell is reading a command. Typed
+ * while its rc files still run, it's echoed twice, or read by something in
+ * them. zsh's line editor says when it starts reading: it turns bracketed
+ * paste on (READING), so for zsh nothing else counts. Other shells (bash 3.2
+ * never sends it) get it typed when either that arrives or their output has
+ * paused for TYPE_QUIET. Either way, at the latest after TYPE_BY.
  */
+const READING = "\x1b[?2004h";
+const SAYS_WHEN_READING = new Set(["zsh"]);
 const TYPE_QUIET_MS = 150;
 const TYPE_BY_MS = 3000;
+
+/**
+ * What xterm.js sends by itself, answering the shell or reporting focus:
+ * device attributes (CSI ? … c, CSI > … c), status (CSI 0 n), cursor position
+ * (CSI y;x R, CSI ? y;x R), mode reports (CSI … $ y), focus (CSI I, CSI O),
+ * window reports (CSI 4|6|8 ; … t), OSC colour replies and DCS replies. Anything
+ * else (keys, Escape, Alt+key, arrows, paste, mouse) is the user.
+ */
+const REPLY = /\x1b(?:\[[?>][\d;]*c|\[0n|\[\??\d+;\d+R|\[\??\d+;\d+\$y|\[[IO]|\[[468];\d+;\d+t|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)/y;
+
+/** All of `data` is the terminal's own replies (one or several). */
+export function isTerminalReply(data: string): boolean {
+    let at = 0;
+    while (at < data.length) {
+        REPLY.lastIndex = at;
+        if (!REPLY.test(data)) return false;
+        at = REPLY.lastIndex;
+    }
+    return data.length > 0;
+}
 
 /** The terminal the shell was started from (an outer tmux, an editor's or another app's) isn't this one. */
 const OUTER_TERMINAL = /^(TMUX|TMUX_PANE|STY|TERM_PROGRAM|TERM_PROGRAM_VERSION|TERM_SESSION_ID|COLUMNS|LINES|WINDOWID|ITERM_.*|LC_TERMINAL|LC_TERMINAL_VERSION|VSCODE_.*|KITTY_.*|WEZTERM_.*|ALACRITTY_.*|GHOSTTY_.*|WT_SESSION|WT_PROFILE_ID|KONSOLE_.*|INSIDE_EMACS|ZED_TERM)$/;
@@ -65,7 +90,7 @@ export function terminalEnv(): Record<string, string> {
 export class Terminals {
     private shells = new Map<string, Shell>();
 
-    /** `input` is typed into the new shell, as if by hand, once it's ready (see TYPE_QUIET_MS). */
+    /** `input` is typed into the new shell, as if by hand, once it's reading a command (see READING). */
     open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string } = {}) {
         const size = terminalSize(cols, rows);
         if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.shells.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
@@ -81,6 +106,9 @@ export class Terminals {
         let pending = "";
         let entry: Shell | undefined;
         let input = opts.input;
+        const waitsForReading = SAYS_WHEN_READING.has(basename(shell));
+        // The end of the output so far: READING can arrive split across two reads.
+        let tail = "";
         let quiet: ReturnType<typeof setTimeout> | undefined;
         let by: ReturnType<typeof setTimeout> | undefined;
         const type = () => {
@@ -103,10 +131,14 @@ export class Terminals {
             pending = "";
         };
         const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
-            pending += decoder.decode(bytes, { stream: true });
+            const text = decoder.decode(bytes, { stream: true });
+            pending += text;
             if (input !== undefined) {
+                const seen = tail + text;
+                tail = seen.slice(-(READING.length - 1));
                 clearTimeout(quiet);
-                quiet = setTimeout(type, TYPE_QUIET_MS);
+                if (seen.includes(READING)) quiet = setTimeout(type, 0);
+                else if (!waitsForReading) quiet = setTimeout(type, TYPE_QUIET_MS);
             }
             if (pending.length >= 32_768) flush();
             else if (entry && !entry.timer) entry.timer = setTimeout(flush, 16);
@@ -175,9 +207,9 @@ export class Terminals {
     write(owner: Owner, id: string, data: string) {
         const s = this.owned(owner, id);
         if (typeof data !== "string" || data.length > 65_536) throw new RpcError("Terminal input is too large", "invalid");
-        // Ctrl+C, or typing of their own, before the shell is ready: the user has taken over, so the command isn't typed.
-        // (Not on the terminal's replies to the shell's queries, which start with ESC.)
-        if (s.cancelInput && !data.startsWith("\x1b")) {
+        // Ctrl+C, a key, a paste, before the shell is ready: the user has taken over, so the command isn't typed.
+        // (Not on the terminal's own replies to the shell's queries.)
+        if (s.cancelInput && !isTerminalReply(data)) {
             s.cancelInput();
             s.cancelInput = undefined;
         }

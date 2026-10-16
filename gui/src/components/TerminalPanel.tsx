@@ -9,7 +9,7 @@ import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
 import { terminalActions, terminalOpen, setTerminalOpen } from "../state/ui";
 import { basename, tildify } from "../lib/format";
-import { terminalInputChunks } from "../lib/terminal";
+import { EarlyInput, terminalInputChunks } from "../lib/terminal";
 import { copyText, isMod, isTerminalToggle, terminalShortcut } from "../lib/platform";
 
 /** `script`: the project script the tab was opened to run (once: restarting it gives a plain shell). */
@@ -97,6 +97,12 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
     let id = p.tab.id;
     // Typed by the first shell only: a restart, or a reconnect, never runs it again by itself.
     let script = p.tab.script;
+    const early = new EarlyInput();
+    const send = (data: string) => {
+        // A pasted command may exceed one RPC's input limit. Preserve order.
+        // Typed as the shell exits: it's gone, which the exit message says.
+        for (const chunk of terminalInputChunks(data)) void rpc.call("terminal.write", { id, data: chunk }).catch((e) => { if (!(e instanceof RpcError && e.code === "terminal_not_open")) reportError(e); });
+    };
     let fitting = 0;
     // Flow control: the server holds output back until what it sent has been drawn.
     let drawn = 0;
@@ -139,15 +145,21 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         }
         setEnded(undefined);
         fitNow();
+        early.begin();
         try {
             const shell = { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) };
             if (run) await rpc.call("scripts.run", { ...shell, script: run.id });
             else await rpc.call("terminal.open", shell);
             opened = true;
+            const typed = early.take();
             if (disposed) { if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {}); return; }
+            if (typed && app.conn === "open") send(typed);
             fitNow();
             if (p.visible) term.focus();
-        } catch (e) { if (!disposed) setEnded(run ? `Couldn't run “${run.name}”: ${(e as Error).message}` : (e as Error).message); }
+        } catch (e) {
+            early.take();
+            if (!disposed) setEnded(run ? `Couldn't run “${run.name}”: ${(e as Error).message}` : (e as Error).message);
+        }
     };
     onMount(() => {
         term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: 12, cursorBlink: true, scrollback: 5000, allowProposedApi: false });
@@ -171,10 +183,9 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
             return true;
         });
         const input = term.onData((data) => {
+            if (early.hold(data)) return;
             if (!opened || ended() || app.conn !== "open") return;
-            // A pasted command may exceed one RPC's input limit. Preserve order.
-            // Typed as the shell exits: it's gone, which the exit message says.
-            for (const chunk of terminalInputChunks(data)) void rpc.call("terminal.write", { id, data: chunk }).catch((e) => { if (!(e instanceof RpcError && e.code === "terminal_not_open")) reportError(e); });
+            send(data);
         });
         const off = rpc.onEvent((e) => {
             if (e.type === "terminal.data" && e.id === id) {
