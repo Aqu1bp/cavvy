@@ -3,6 +3,7 @@
 // sent to every GUI window that has the session open. The terminal app does
 // the same work in ui/app.ts; this is its counterpart without a terminal.
 
+import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
@@ -1813,7 +1814,7 @@ export class Runtime {
         }
         const elapsed = Date.now() - this.turnStartedAt;
         if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
-            this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${Math.round(elapsed / 1000)}s`);
+            this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${turnDuration(elapsed)}`);
         }
         await this.runQueued(ac.signal.aborted);
     }
