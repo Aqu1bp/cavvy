@@ -170,7 +170,7 @@ interface Entry {
     norm?: string;
     /** CRLFs exist even when the file is too large for a normalized id. */
     crlf?: boolean;
-    /** With `norm`: git's auto conversion sees this content as binary, so leaves it alone. */
+    /** Git's auto conversion sees this content as binary, so leaves it alone. */
     autoBinary?: boolean;
 }
 
@@ -258,8 +258,7 @@ async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<Co
         h.update(`blob ${st.size}\0`);
         const chunk = Buffer.alloc(1024 * 1024);
         let total = 0;
-        let crlf = false;
-        let last = -1;
+        const stats = new GitTextStats();
         for (;;) {
             inTime();
             const { bytesRead } = await fh.read(chunk, 0, chunk.length, null);
@@ -267,11 +266,10 @@ async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<Co
             total += bytesRead;
             if (total > st.size) return { oid: "changing" };
             const bytes = chunk.subarray(0, bytesRead);
-            crlf ||= (last === 13 && bytes[0] === 10) || bytes.includes("\r\n");
-            last = bytes[bytesRead - 1]!;
+            stats.add(bytes);
             h.update(bytes);
         }
-        return total === st.size ? { oid: h.digest("hex"), crlf } : { oid: "changing" };
+        return total === st.size ? { oid: h.digest("hex"), crlf: stats.crlf, autoBinary: stats.binary } : { oid: "changing" };
     } catch (e) {
         if (e instanceof RpcError) throw e;
         return undefined;
@@ -286,24 +284,40 @@ async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<Co
  * per 128 printable ones. BS, HT, ESC and FF count as printable, as do bytes
  * from 128 up; CR and LF count as neither; a final \032 isn't counted.
  */
-export function gitSeesBinary(buf: Uint8Array): boolean {
-    let printable = 0;
-    let nonprintable = 0;
-    for (let i = 0; i < buf.length; i++) {
-        const c = buf[i]!;
-        if (c === 13) {
-            if (buf[i + 1] !== 10) return true;
-            i++;
-        } else if (c === 10) continue;
-        else if (c === 0) return true;
-        else if (c === 127) nonprintable++;
-        else if (c < 32) {
-            if (c === 8 || c === 9 || c === 27 || c === 12) printable++;
-            else nonprintable++;
-        } else printable++;
+export class GitTextStats {
+    crlf = false;
+    private printable = 0;
+    private nonprintable = 0;
+    private nul = false;
+    private loneCr = false;
+    private last = -1;
+
+    add(buf: Uint8Array): void {
+        for (const c of buf) {
+            // A CR at the end of a chunk is decided by the next byte, or EOF.
+            if (this.last === 13) {
+                if (c === 10) this.crlf = true;
+                else this.loneCr = true;
+            }
+            this.last = c;
+            if (c === 13 || c === 10) continue;
+            if (c === 0) this.nul = true;
+            if (c === 127 || (c < 32 && c !== 8 && c !== 9 && c !== 27 && c !== 12)) this.nonprintable++;
+            else this.printable++;
+        }
     }
-    if (buf.length && buf[buf.length - 1] === 26) nonprintable--;
-    return printable >> 7 < nonprintable;
+
+    get binary(): boolean {
+        // Only the file's final byte gets the DOS EOF exemption, not each chunk's.
+        const nonprintable = this.nonprintable - (this.last === 26 ? 1 : 0);
+        return this.nul || this.loneCr || this.last === 13 || Math.floor(this.printable / 128) < nonprintable;
+    }
+}
+
+export function gitSeesBinary(buf: Uint8Array): boolean {
+    const stats = new GitTextStats();
+    stats.add(buf);
+    return stats.binary;
 }
 
 /**
@@ -738,13 +752,13 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
             const ix = staged.get(c.path);
             const indexBlob = !ix ? null : ix.oid === c.old!.oid ? undefined : ixBlobs.get(ix.oid);
             if (convertsEol(eolOf(c.path), { binary: c.now!.autoBinary !== false }, indexBlob)) {
-                c.note ??= "Line endings would be normalized on commit.";
+                c.note ??= eolOf(c.path) === "auto" && (c.now!.size ?? 0) > MAX_DIFF_INPUT ? "Too large to show" : "Line endings would be normalized on commit.";
                 changes.push(c);
                 normalize.add(c);
                 if (tracked(c)) candidates.push(c);
-            } else if (eolOf(c.path) === "auto" && c.now!.autoBinary === undefined && ix && ix.oid !== c.old!.oid) {
-                // Streaming hashes don't classify auto-text. A different index may hold
-                // normalized content, so keep the change and let stat settling use it.
+            } else if (eolOf(c.path) === "auto" && c.now!.autoBinary === false && ix && ix.oid !== c.old!.oid && indexBlob === undefined) {
+                // Known text may normalize against a different index blob that is missing
+                // or beyond the read budget. Keep it; known binary bytes never enter here.
                 changes.push(c);
                 if (tracked(c)) candidates.push(c);
             } else if (c.note) changes.push(c);

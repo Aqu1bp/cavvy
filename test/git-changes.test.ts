@@ -4,7 +4,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { convertsEol, findRenames, gitChanges, gitSeesBinary, removeWhere, render } = await import("../src/server/git-changes");
+const { convertsEol, findRenames, gitChanges, gitSeesBinary, GitTextStats, removeWhere, render } = await import("../src/server/git-changes");
 const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
@@ -419,6 +419,32 @@ describe("git changes", () => {
         git(dir, "config", "core.autocrlf", "false");
         expect(git(dir, "diff", "--name-only", "main")).toBe("");
         expect((await gitChanges(dir, { scope: "branch", base: "main" })).files).toEqual([]);
+
+        // An unavailable index blob (also possible at the read budget) cannot hide known text.
+        git(dir, "config", "core.autocrlf", "true");
+        const oid = git(dir, "rev-parse", "HEAD:large.txt").trim();
+        rmSync(join(dir, ".git/objects", oid.slice(0, 2), oid.slice(2)));
+        const before = indexState(dir, false);
+        const unavailable = await gitChanges(dir, { scope: "branch", base: "main" });
+        expect(unavailable.files.map((f) => [f.path, f.note])).toEqual([["large.txt", "Too large to show"]]);
+        expect(indexState(dir, false)).toEqual(before);
+    });
+
+    test("branch scope drops large binary files whose working bytes match the base", async () => {
+        const body = "x\0\r\n".repeat(600_000);
+        const dir = repo({ "big.bin": body });
+        git(dir, "switch", "-q", "-c", "feat");
+        write(dir, "big.bin", "y\0\r\n".repeat(600_000));
+        git(dir, "commit", "-q", "-am", "Change binary content");
+        git(dir, "config", "core.autocrlf", "true");
+        write(dir, "big.bin", body);
+        const future = new Date("2099-01-01T00:00:00Z");
+        utimesSync(join(dir, "big.bin"), future, future);
+        expect(statSync(join(dir, "big.bin")).mtimeMs).toBe(future.getTime());
+        expect(git(dir, "diff", "--name-only", "main")).toBe("");
+        const before = indexState(dir);
+        expect((await gitChanges(dir, { scope: "branch", base: "main" })).files).toEqual([]);
+        expect(indexState(dir)).toEqual(before);
     });
 
     test("auto conversion leaves content git sees as binary alone", async () => {
@@ -436,19 +462,32 @@ describe("git changes", () => {
         const samples = [
             "plain\r\ntext\r\n",
             "lone\rcr\r\n",
+            "final\r\ncr\r",
             "nul\0\r\n",
             "tab\tbs\bff\fesc\x1b\r\n",
             "a".repeat(128) + "\x01\r\n", // 1 non-printable per 128: text
             "a".repeat(128) + "\x01\x01\r\n", // 2: binary
             "a".repeat(127) + "\x7f\r\n", // 127 printable >> 7 is 0 < 1: binary
             "dos\r\nend\x1a", // a final \032 isn't counted
+            "a".repeat(127) + "\r\n\x1a", // exemption decides the threshold
+            "a".repeat(127) + "\x1a\r\n", // an internal \032 still counts
             "\u00e9t\u00e9\r\n", // UTF-8 bytes from 128 up are printable
         ].map((t) => Buffer.from(t, "utf-8"));
         for (const buf of samples) {
             const r = Bun.spawnSync(gitArgv(["hash-object", "--path=x.txt", "--stdin"]), { cwd: dir, env: gitEnv(), stdin: buf, stdout: "pipe" });
             const raw = Bun.spawnSync(gitArgv(["hash-object", "--no-filters", "--stdin"]), { cwd: dir, env: gitEnv(), stdin: buf, stdout: "pipe" });
+            expect(r.exitCode).toBe(0);
+            expect(raw.exitCode).toBe(0);
             const gitConverted = r.stdout.toString() !== raw.stdout.toString();
             expect([JSON.stringify(buf.toString("latin1")), convertsEol("auto", { binary: gitSeesBinary(buf) }, null)]).toEqual([JSON.stringify(buf.toString("latin1")), gitConverted]);
+            // Every possible split includes CR at a chunk's end and \032 before EOF.
+            for (let split = 0; split <= buf.length; split++) {
+                const stats = new GitTextStats();
+                stats.add(buf.subarray(0, split));
+                stats.add(new Uint8Array());
+                stats.add(buf.subarray(split));
+                expect([split, stats.crlf, convertsEol("auto", { binary: stats.binary }, null)]).toEqual([split, true, gitConverted]);
+            }
         }
         // The index's copy: text with CRLFs keeps auto from converting; binary with CRLFs doesn't.
         const text = Buffer.from("a\r\n");
