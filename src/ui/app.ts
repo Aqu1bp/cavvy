@@ -37,7 +37,7 @@ import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tool
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
-import { formatTokens, formatUsd } from "../providers/pricing";
+import { formatCost, formatTokens } from "../providers/pricing";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, runCommand } from "../commands/index";
@@ -239,7 +239,7 @@ export class App {
         this.stopTicker();
         this.screen.setLive([]);
         const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
-        if (this.session?.cost) this.screen.print(theme.muted(`Total cost: ${formatUsd(this.session.cost)}`));
+        if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
@@ -472,7 +472,8 @@ export class App {
         );
         if (res.usage) {
             const { costOf } = await import("../providers/pricing");
-            this.session.recordUsage(modelRef(model), res.usage, costOf(res.usage, model).usd);
+            const c = costOf(res.usage, model);
+            this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
         }
         return opts?.review ? reviewText(res) : textOf(res);
     }
@@ -1640,7 +1641,7 @@ export class App {
                 parts.push(pct >= 70 ? theme.warning(`${pct}% context`) : `${pct}% context`);
             }
         }
-        if (this.session?.cost) parts.push(formatUsd(this.session.cost));
+        if (this.session?.cost) parts.push(formatCost(this.session.cost, this.session.costUnknown));
         const mcpFailed = [...this.mcp.servers.values()].filter((s) => s.status === "failed").length;
         if (mcpFailed) parts.push(theme.error(`${mcpFailed} MCP failed · /mcp`));
         const custom = this.statusLineText();

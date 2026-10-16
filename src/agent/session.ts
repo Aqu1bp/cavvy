@@ -76,7 +76,8 @@ type Line =
     | { t: "title"; title: string }
     | { t: "compact"; summary: string }
     | { t: "rewind"; count: number }
-    | { t: "usage"; usage: Usage; cost: number; model: string }
+    /** unknown: no price was known for this usage, so cost (0) leaves it out. */
+    | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
     | { t: "backend"; provider: string; id: string | null; synced?: number };
@@ -112,7 +113,9 @@ export class Session {
     summary?: string;
     /** USD spent in this session (estimates included). */
     cost = 0;
-    usageByModel = new Map<string, { usage: Usage; cost: number }>();
+    /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
+    costUnknown = false;
+    usageByModel = new Map<string, { usage: Usage; cost: number; unknown?: boolean }>();
     /** Agent backends' own sessions, by provider. */
     backends = new Map<string, BackendSession>();
     /** How turns of the current history ended, where the messages don't say (see TurnNotice). */
@@ -222,14 +225,17 @@ export class Session {
         this.write({ t: "notice", ...n });
     }
 
-    recordUsage(model: string, usage: Usage, cost: number) {
-        this.accumulate(model, usage, cost);
-        this.write({ t: "usage", usage, cost, model });
+    /** `unknown`: no price is known for it (`cost` is then 0, which doesn't mean free). */
+    recordUsage(model: string, usage: Usage, cost: number, unknown = false) {
+        this.accumulate(model, usage, cost, unknown);
+        this.write({ t: "usage", usage, cost, model, ...(unknown ? { unknown: true as const } : {}) });
     }
 
-    private accumulate(model: string, usage: Usage, cost: number) {
+    private accumulate(model: string, usage: Usage, cost: number, unknown: boolean) {
         this.cost += cost;
-        const cur = this.usageByModel.get(model) ?? { usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, cost: 0 };
+        if (unknown) this.costUnknown = true;
+        const cur: { usage: Usage; cost: number; unknown?: boolean } = this.usageByModel.get(model) ?? { usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, cost: 0 };
+        if (unknown) cur.unknown = true;
         cur.usage.inputTokens += usage.inputTokens;
         cur.usage.outputTokens += usage.outputTokens;
         cur.usage.cacheReadTokens = (cur.usage.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0);
@@ -344,7 +350,7 @@ export class Session {
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
-            else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost);
+            else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
         }
         repairTail(s);
         return s;

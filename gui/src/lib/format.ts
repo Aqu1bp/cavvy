@@ -35,6 +35,12 @@ export function usd(n: number): string {
     return `$${n.toFixed(1)}`;
 }
 
+/** Spend where some usage may have had no known price: "—" for none priced, "$X+" for part. Never "$0" for unknown. */
+export function cost(n: number, unknown?: boolean): string {
+    if (!unknown) return usd(n);
+    return n > 0 ? `${usd(n)}+` : "—";
+}
+
 export function price(p?: { input: number; output: number }): string {
     if (!p) return "";
     const f = (x: number) => (x >= 10 ? x.toFixed(0) : x >= 1 ? x.toFixed(2).replace(/\.?0+$/, "") : x.toFixed(2));

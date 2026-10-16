@@ -40,7 +40,7 @@ import { GcloudError } from "../providers/vertex";
 import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
 import { modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
-import { formatPrice, formatTokens, formatUsd } from "../providers/pricing";
+import { formatCost, formatPrice, formatTokens, formatUsd } from "../providers/pricing";
 import { getKey, removeKey, setKey, storageDescription } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { maskKey, redact } from "../util/redact";
@@ -941,15 +941,16 @@ function costCommand(app: App) {
     const s = app.session;
     const lines = ["", heading("Session cost")];
     if (!s.usageByModel.size) lines.push(theme.muted("  No API usage yet."));
-    for (const [model, { usage, cost }] of s.usageByModel) {
+    for (const [model, { usage, cost, unknown }] of s.usageByModel) {
         lines.push(`  ${bold(model)}`);
         lines.push(
             theme.muted(
-                `    input ${formatTokens(usage.inputTokens)} · cache read ${formatTokens(usage.cacheReadTokens ?? 0)} · cache write ${formatTokens(usage.cacheWriteTokens ?? 0)} · output ${formatTokens(usage.outputTokens)}  →  ${formatUsd(cost)}`,
+                `    input ${formatTokens(usage.inputTokens)} · cache read ${formatTokens(usage.cacheReadTokens ?? 0)} · cache write ${formatTokens(usage.cacheWriteTokens ?? 0)} · output ${formatTokens(usage.outputTokens)}  →  ${unknown && !cost ? "price unknown" : formatCost(cost, unknown)}`,
             ),
         );
     }
-    lines.push(kv("Total", bold(formatUsd(s.cost)), 10), kv("Wall time", formatDuration(Date.now() - s.meta.createdAt), 10));
+    lines.push(kv("Total", bold(formatCost(s.cost, s.costUnknown)), 10), kv("Wall time", formatDuration(Date.now() - s.meta.createdAt), 10));
+    if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
     app.print(lines);
 }
@@ -1004,7 +1005,7 @@ async function statusCommand(app: App) {
         kv("MCP servers", servers.length ? servers.map((s) => `${s.name} ${s.status === "connected" ? theme.success("✔") : s.status === "failed" ? theme.error("✘") : theme.muted(s.status)}`).join(", ") : theme.muted("none")),
         kv("Memory files", memory.length ? memory.map((f) => displayPath(f.path, app.cwd)).join(", ") : theme.muted("none (/init creates HARNESS.md)")),
         kv("Settings", (["user", "project", "local"] as SettingsScope[]).filter((s) => existsSync(settingsPath(s, app.cwd))).map((s) => displayPath(settingsPath(s, app.cwd), app.cwd)).join(", ") || theme.muted("defaults")),
-        kv("Cost so far", formatUsd(app.session.cost)),
+        kv("Cost so far", formatCost(app.session.cost, app.session.costUnknown)),
     ];
     app.print(lines);
 }

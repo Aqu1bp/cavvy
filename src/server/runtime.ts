@@ -226,6 +226,7 @@ export class Runtime {
             busy: false,
             contextTokens: 0,
             cost: this.session.cost,
+            costUnknown: this.session.costUnknown,
             ...this.tokenTotals(),
             todos: this.toolState.todos.map((t) => ({ ...t })),
             queued: [],
@@ -441,8 +442,9 @@ export class Runtime {
             () => {},
         );
         if (res.usage) {
-            this.session.recordUsage(modelRef(model), res.usage, costOf(res.usage, model).usd);
-            this.setState({ cost: this.session.cost, ...this.tokenTotals() });
+            const c = costOf(res.usage, model);
+            this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
+            this.setState({ cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals() });
         }
         return opts?.review ? reviewText(res) : textOf(res);
     }
@@ -723,7 +725,7 @@ export class Runtime {
             case "usage": {
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
-                this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, ...this.tokenTotals(), ...window });
+                this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });
                 break;
             }
             case "compact_start":

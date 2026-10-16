@@ -657,7 +657,7 @@ export class Agent {
 
     private recordUsage(usage: Usage) {
         const cost = costOf(usage, this.model);
-        this.session.recordUsage(modelRef(this.model), usage, cost.usd);
+        this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         this.contextTokens = promptTokens(usage) + usage.outputTokens;
         this.lastUsageTotal = this.session.messages.length;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
@@ -752,7 +752,7 @@ export class Agent {
             summary = textOf(res);
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
-                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd);
+                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
             }
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
@@ -1163,7 +1163,7 @@ export class Agent {
 
     private recordBackendUsage(usage: Usage, o: { contextTokens?: number; contextWindow?: number }) {
         const cost = costOf(usage, this.model);
-        this.session.recordUsage(modelRef(this.model), usage, cost.usd);
+        this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;
         if (o.contextTokens) this.contextTokens = o.contextTokens;
         this.lastUsageTotal = this.session.messages.length;
@@ -1655,7 +1655,7 @@ export class Agent {
         let tokens = 0;
         let cost = 0;
         for (const [m, u] of session.usageByModel) {
-            this.session.recordUsage(m, u.usage, u.cost);
+            this.session.recordUsage(m, u.usage, u.cost, u.unknown);
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }

@@ -14,6 +14,7 @@ const { ProviderError } = await import("../src/providers/types");
 const { stallError } = await import("../src/providers/sse");
 const { httpError } = await import("../src/providers/openai-compat");
 const { readSegments, replay, UiLog } = await import("../src/server/history");
+const { formatCost } = await import("../src/providers/pricing");
 import type { ChatRequest } from "../src/providers/types";
 
 afterAll(cleanup);
@@ -259,5 +260,39 @@ describe("mode and model notes say where things are now, once", () => {
         expect(prompts[0]).toContain("The user switched the model to Claude Opus (claude-code:opus)");
         expect(prompts[0]).not.toContain("GPT-6-Astra");
         session.release();
+    });
+});
+
+describe("usage with no known price isn't saved as free", () => {
+    const usage = { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0 };
+
+    test("the agent marks it, the file keeps it, and a reopened session still knows", async () => {
+        const a = scripted(() => ({ ...text("ok"), usage }), { model: { provider: "vertex", id: "google/gemini-3.5-flash", name: "Gemini 3.5 Flash" } });
+        await a.run("hi");
+        expect(a.session.cost).toBe(0);
+        expect(a.session.costUnknown).toBe(true);
+        expect(fileLines(a.session.path).find((l) => l.t === "usage")).toMatchObject({ cost: 0, unknown: true, model: "vertex:google/gemini-3.5-flash" });
+        a.session.release();
+        const s = Session.load(a.session.path);
+        expect(s.costUnknown).toBe(true);
+        expect(s.usageByModel.get("vertex:google/gemini-3.5-flash")?.unknown).toBe(true);
+        s.release();
+    });
+
+    test("priced usage, and files from before, are as they were", async () => {
+        const a = scripted(() => ({ ...text("ok"), usage }), { model: { provider: "test", id: "priced", pricing: { input: 1, output: 2 } } });
+        await a.run("hi");
+        expect(a.session.cost).toBeCloseTo(0.0014);
+        expect(a.session.costUnknown).toBe(false);
+        expect(fileLines(a.session.path).find((l) => l.t === "usage").unknown).toBeUndefined();
+        a.session.release();
+        expect(Session.load(a.session.path).costUnknown).toBe(false);
+    });
+
+    test("shown as unknown, not $0", () => {
+        expect(formatCost(0, true)).toBe("—");
+        expect(formatCost(0.42, true)).toBe("$0.420+");
+        expect(formatCost(0, false)).toBe("$0.00");
+        expect(formatCost(1.5, undefined)).toBe("$1.50");
     });
 });

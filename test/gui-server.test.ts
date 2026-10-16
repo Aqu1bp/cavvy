@@ -305,6 +305,21 @@ describe("connecting", () => {
         }
     });
 
+    test("spend on a model with no known price shows as unknown, then and after reopening", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "first prompt" });
+            await whenIdle(rt);
+            // The mock's models have no prices.
+            expect(rt.snapshot().state).toMatchObject({ cost: 0, costUnknown: true });
+            await engine.handle(c, "session.close", { id });
+            const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
+            expect(snap.state).toMatchObject({ cost: 0, costUnknown: true });
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id } = await engineWithSession();
