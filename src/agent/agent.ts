@@ -584,9 +584,10 @@ export class Agent {
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
-                    const checkpoint = await this.checkpoint(queued.join("\n"));
+                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                        this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    });
                     if (this.cutOff) return "aborted";
-                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
                     continue;
                 }
 
@@ -609,17 +610,23 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
-            let steeringCheckpoint: number | undefined;
+            let recorded = false;
+            const record = (checkpoint?: number) => {
+                this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(checkpoint !== undefined ? { checkpoint } : {}) } });
+                recorded = true;
+            };
             if (!signal.aborted) {
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
-                    steeringCheckpoint = await this.checkpoint(queued.join("\n"), true);
                     extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                    await this.checkpoint(queued.join("\n"), true, record);
                 }
             }
             if (this.cutOff) return "aborted";
+            // Steering saved the completed results before its capture: an interrupt is a new message.
+            if (signal.aborted && recorded) return this.interrupted(false);
             if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
-            this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(steeringCheckpoint !== undefined ? { checkpoint: steeringCheckpoint } : {}) } });
+            if (!recorded) record();
             if (signal.aborted) {
                 this.emit({ type: "turn_end", reason: "aborted" });
                 return "aborted";
@@ -632,10 +639,12 @@ export class Agent {
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
-    private async checkpoint(prompt: string, snapshotOnly = false): Promise<number | undefined> {
-        if (this.o.isSubagent) return undefined;
+    private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
         // Steering inside tool results isn't a /rewind target: keep its edit copies with the original prompt.
-        const cp = snapshotOnly ? this.state.fileHistory?.nextId() : this.state.fileHistory?.begin();
+        const history = this.o.isSubagent ? undefined : this.state.fileHistory;
+        const cp = snapshotOnly ? history?.nextId() : history?.begin();
+        // Once drained, queued text must be on disk before a capture can yield to session shutdown.
+        record?.(cp);
         if (cp !== undefined && this.o.trusted?.()) await this.turnSnapshots?.begin(cp, redact(prompt));
         return cp;
     }
@@ -1089,10 +1098,13 @@ export class Agent {
                 if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (!queued.length) return [];
-                const checkpoint = await this.checkpoint(queued.join("\n"));
+                let text = "";
+                await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                    const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    text = textOf(m);
+                });
                 if (this.cutOff) return [];
-                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
-                return [textOf(m)];
+                return [text];
             },
         };
         const base = this.backendTurn(signal, host);

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { realpathSync, rmSync, writeFileSync } from "fs";
+import { readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AssistantMessage, ProviderClient } from "../src/providers/types";
@@ -140,6 +140,8 @@ for (const cutoff of [false, true]) test(`${cutoff ? "cutoff" : "Esc"} during a 
         await waiting;
         ac.abort();
         if (cutoff) await agent.noteStopped();
+        const stored = readFileSync(session.path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        expect(stored.some((line) => line.t === "msg" && line.m.content.some((p: { type: string; text?: string }) => p.type === "text" && p.text === "The user sent this message while you were working:\nduring tools"))).toBe(true);
         // Deliberately keep the Session writable: correctness cannot depend on release/microtask order.
         release();
         expect(await done).toBe("aborted");
@@ -147,8 +149,60 @@ for (const cutoff of [false, true]) test(`${cutoff ? "cutoff" : "Esc"} during a 
         const results = session.messages.filter((m) => m.role === "user" && m.meta?.kind === "tool_results");
         expect(results).toHaveLength(1);
         expect(results[0]!.content.filter((p) => p.type === "tool_result")).toHaveLength(1);
-        expect(results[0]!.content).toContainEqual({ type: "text", text: "[Request interrupted by user for tool use]" });
-        if (!cutoff) expect(results[0]!.content).toContainEqual({ type: "text", text: "The user sent this message while you were working:\nduring tools" });
+        expect(results[0]!.content).toContainEqual({ type: "text", text: "The user sent this message while you were working:\nduring tools" });
+        expect(session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "interrupt" } });
+        session.release();
+        const reopened = Session.load(session.path);
+        try {
+            const saved = reopened.messages.filter((m) => m.role === "user" && m.meta?.kind === "tool_results");
+            expect(saved).toHaveLength(1);
+            expect(saved[0]!.content).toContainEqual({ type: "text", text: "The user sent this message while you were working:\nduring tools" });
+            expect(saved[0]!.role === "user" && saved[0]!.meta?.checkpoint).toBeDefined();
+            expect(reopened.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "interrupt" } });
+        } finally { reopened.release(); }
+    } finally { release(); await done; session.release(); }
+});
+
+for (const backend of [false, true]) test(`cutoff during ${backend ? "backend" : "API"} queued-prompt capture saves the drained text before the session closes`, async () => {
+    let requests = 0, entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const capture = new Promise<void>((resolve) => { release = resolve; });
+    const client = {
+        stream: async () => { requests++; return answer(); },
+        listModels: async () => [],
+        ...(backend ? {
+            agentBackend: true as const,
+            setMode() {},
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (turn: BackendTurn) => {
+                requests++;
+                expect(await turn.host.drainQueued()).toEqual([]);
+                return { reason: "aborted" as const, text: "", actions: [] };
+            },
+        } : {}),
+    };
+    const { agent, session } = setup(client, { queue: [["steered before stop"]] });
+    agent.turnSnapshots!.begin = async (_id, prompt) => {
+        if (prompt === "steered before stop") { entered(); await capture; }
+    };
+    const ac = new AbortController();
+    const done = agent.run([{ type: "text", text: "first" }], { signal: ac.signal });
+    try {
+        await waiting;
+        ac.abort();
+        await agent.noteStopped();
+        session.release();
+        // Read the journal while the capture is still waiting: no late append can rescue the text.
+        const reopened = Session.load(session.path);
+        try {
+            const prompt = reopened.messages.find((m) => m.role === "user" && m.meta?.display === "steered before stop");
+            expect(prompt?.content).toEqual([{ type: "text", text: "steered before stop" }]);
+            expect(prompt?.role === "user" && prompt.meta?.checkpoint).toBeDefined();
+            expect(reopened.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "interrupt" } });
+        } finally { reopened.release(); }
+        release();
+        expect(await done).toBe("aborted");
+        expect(requests).toBe(1);
     } finally { release(); await done; session.release(); }
 });
 
