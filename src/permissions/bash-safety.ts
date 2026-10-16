@@ -1391,14 +1391,15 @@ const GREP_VALUE_LONG = [
  */
 export function messageWords(a: CommandAnalysis): number[][] {
     if (a.unparsable || a.hasSubstitution || a.commands.some((c) => c.after === "|")) return a.commands.map(() => []);
-    // `git() { cat "$3"; }` (any function sets unsafeExpansion), an alias, or a sourced file: then it may not be git.
-    if (a.unsafeExpansion || a.commands.some((c) => [".", "source", "eval", "alias", "function"].includes(c.argv[0]!))) return a.commands.map(() => []);
+    // `git() { cat "$3"; }` (any function sets unsafeExpansion), an alias, a sourced file or an eval, behind any wrapper: then it may not be git.
+    if (a.unsafeExpansion || a.commands.some((c) => runLevels(c.argv).some((l) => runs(l.argv[0], ".", "source", "eval", "alias", "function")))) return a.commands.map(() => []);
     return a.commands.map((c) => {
         // git itself, found on PATH or in a system bin, with nothing set for it; and no
         // redirect, whose target would look like the message (`-m >~/.zshrc`).
         const argv = c.argv;
         const dir = argv[0]!.slice(0, Math.max(0, argv[0]!.lastIndexOf("/")));
-        if (c.redirectMayFail || !(argv[0] === "git" || (dir && SYSTEM_BIN.has(dir) && argv[0]!.endsWith("/git")))) return [];
+        // Words by position, so not when one can turn into more or fewer (`$X -m .env` with X=-F).
+        if (c.redirectMayFail || c.expands?.length || c.globStart?.length || !(argv[0] === "git" || (dir && SYSTEM_BIN.has(dir) && argv[0]!.endsWith("/git")))) return [];
         const { index } = gitSubcommand(argv);
         if (!["commit", "tag", "notes", "merge", "revert", "stash"].includes(argv[index] ?? "")) return [];
         const out: number[] = [];

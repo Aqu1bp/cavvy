@@ -501,7 +501,7 @@ describe("review round 2", () => {
     });
 
     test("round 4: exclusions after an assignment, option values before a message, overrides however spelled", () => {
-        for (const cmd of ["LANG=C rg PAT .env --glob=!foo", "command rg PAT .env -g!foo", "git commit -F --message=/../.env", "git commit -F -m/../.env", "git commit --fil --message=/../.env", `g''it() { cat "$3"; }; git commit -m .env`, "function git { cat $3; }; git commit -m .env", ". ./defs.sh; git commit -m .env"]) {
+        for (const cmd of ["LANG=C rg PAT .env --glob=!foo", "command rg PAT .env -g!foo", "git commit -F --message=/../.env", "git commit -F -m/../.env", "git commit --fil --message=/../.env", `g''it() { cat "$3"; }; git commit -m .env`, "function git { cat $3; }; git commit -m .env", ". ./defs.sh; git commit -m .env", `builtin eval 'git() { cat "$3"; }'; git commit -m .env`, `command eval 'git() { cat "$3"; }'; git commit -m .env`, "git commit $X -m .env"]) {
             expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, "a .env file"]);
         }
         for (const cmd of ["git commit -m 'Fix alias for sudo'", "git commit -m 'Fix alias configuration in .claude'", "git commit --amend --no-edit -qam 'Use .env.local'"]) {
