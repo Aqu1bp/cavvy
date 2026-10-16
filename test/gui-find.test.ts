@@ -7,6 +7,80 @@ import { join, resolve } from "node:path";
 
 const chrome = [process.env.HARNESS_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((p) => p && existsSync(p));
 
+const sandboxArgs = (uid: number | undefined) => uid === 0 ? ["--no-sandbox"] : [];
+type Browser = Pick<ReturnType<typeof Bun.spawn>, "exitCode" | "exited" | "kill">;
+
+async function waitForExit(browser: Browser, ms: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            browser.exited.then(() => true),
+            new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), ms); }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function cleanup(browser: Browser | undefined, server: { stop(force: boolean): unknown } | undefined, scratch: string, graceMs = 1000) {
+    try {
+        if (browser && browser.exitCode === null) {
+            browser.kill();
+            if (!await waitForExit(browser, graceMs)) {
+                browser.kill("SIGKILL");
+                if (!await waitForExit(browser, graceMs)) throw new Error("Chrome did not exit after SIGKILL");
+            }
+        }
+    } finally {
+        try {
+            await server?.stop(true);
+        } finally {
+            rmSync(scratch, { recursive: true, force: true });
+        }
+    }
+}
+
+test("Chrome disables its sandbox only when running as root", () => {
+    expect(sandboxArgs(0)).toEqual(["--no-sandbox"]);
+    expect(sandboxArgs(1000)).toEqual([]);
+    expect(sandboxArgs(undefined)).toEqual([]);
+});
+
+test("Chrome cleanup escalates through its child handle and releases the fixture", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-cleanup-"));
+    const signals: unknown[] = [];
+    let exit!: (code: number) => void;
+    const browser: Browser = {
+        exitCode: null,
+        exited: new Promise<number>((resolve) => { exit = resolve; }),
+        kill(signal) {
+            signals.push(signal);
+            if (signal === "SIGKILL") exit(137);
+        },
+    };
+    let stopped = false;
+    await cleanup(browser, { stop(force) { stopped = force; } }, scratch, 10);
+    expect(signals).toEqual([undefined, "SIGKILL"]);
+    expect(stopped).toBe(true);
+    expect(existsSync(scratch)).toBe(false);
+});
+
+test("Chrome cleanup releases resources even when termination or server stop fails", async () => {
+    for (const failure of ["kill", "exit", "server"]) {
+        const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-cleanup-"));
+        let stopped = false;
+        const browser: Browser = {
+            exitCode: null,
+            exited: failure === "exit" ? new Promise<number>(() => {}) : Promise.resolve(0),
+            kill() { if (failure === "kill") throw new Error("kill failed"); },
+        };
+        const done = cleanup(browser, { stop() { stopped = true; if (failure === "server") throw new Error("stop failed"); } }, scratch, 10);
+        await expect(done).rejects.toThrow();
+        expect(stopped).toBe(true);
+        expect(existsSync(scratch)).toBe(false);
+    }
+});
+
 test.skipIf(!chrome)("find reveals long live arguments and highlights concurrent calls' arguments", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-"));
     const profile = join(scratch, "chrome");
@@ -32,6 +106,7 @@ test.skipIf(!chrome)("find reveals long live arguments and highlights concurrent
         });
         browser = Bun.spawn([
             chrome!, "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+            ...sandboxArgs(process.getuid?.()),
             "--disable-background-networking", `--user-data-dir=${profile}`, "--dump-dom", "--virtual-time-budget=5000",
             `http://127.0.0.1:${server.port}/test/live-find.html`,
         ], { stdout: "pipe", stderr: "pipe" });
@@ -43,14 +118,6 @@ test.skipIf(!chrome)("find reveals long live arguments and highlights concurrent
         expect(html).toContain('data-status="passed"');
     } finally {
         clearTimeout(deadline);
-        if (browser && browser.exitCode === null) {
-            const command = Bun.spawnSync(["ps", "-p", String(browser.pid), "-o", "command="]).stdout.toString();
-            if (command.includes(`--user-data-dir=${profile}`)) {
-                browser.kill();
-                await browser.exited;
-            }
-        }
-        server?.stop(true);
-        rmSync(scratch, { recursive: true, force: true });
+        await cleanup(browser, server, scratch);
     }
 }, 60_000);
