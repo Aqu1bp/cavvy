@@ -140,7 +140,8 @@ export class Rpc {
 
     /** Retry the connection, never a request: a lost reply may still have taken effect. */
     reconnectNow() {
-        if (this.closed || this.state === "open") return;
+        // A browser login code is single-use; let its credential exchange finish.
+        if (this.closed || this.connecting || this.state === "open") return;
         clearTimeout(this.retryTimer);
         this.generation++;
         this.connecting = false;

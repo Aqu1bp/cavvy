@@ -1,6 +1,6 @@
 import { createEffect, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
-import { app, attentionCount, dismissToast, handleFor, pauseToast, rpc, toast, toasts, type Toast, type SessionHandle } from "./state/app";
+import { app, attentionCount, dismissToast, handleFor, pauseToast, rpc, runToastAction, toast, toasts, type Toast, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
@@ -26,6 +26,11 @@ import { Logo, Spinner } from "./components/ui/bits";
 
 function ToastItem(p: { toast: Toast }) {
     const t = () => p.toast;
+    onCleanup(() => {
+        // Failed actions move to the alert region, replacing their old DOM node.
+        pauseToast(t().id, "hover", false);
+        pauseToast(t().id, "focus", false);
+    });
     return (
         <div
             class={`toast ${t().level}`}
@@ -53,10 +58,8 @@ function ToastItem(p: { toast: Toast }) {
             <Show when={t().action}>
                 <button
                     class="link-btn"
-                    onClick={() => {
-                        t().action!.run();
-                        dismissToast(t().id);
-                    }}
+                    disabled={t().running}
+                    onClick={() => void runToastAction(t().id)}
                 >
                     {t().action!.label}
                 </button>

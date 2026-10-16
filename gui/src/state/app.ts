@@ -27,7 +27,7 @@ rpc.retriesCredentials = isTauri;
 const MAX_TOASTS = 2;
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
-const toastTimers = new Map<number, { life: ToastLifetime; timer?: ReturnType<typeof setTimeout> }>();
+const toastTimers = new Map<number, { life: ToastLifetime; duration: number; message: string; timer?: ReturnType<typeof setTimeout> }>();
 
 function scheduleToast(id: number) {
     const entry = toastTimers.get(id);
@@ -54,11 +54,19 @@ export function toast(message: string, level: Toast["level"] = "info", action?: 
         return;
     }
     const id = ++toastId;
-    for (const old of toasts.slice(0, Math.max(0, toasts.length - MAX_TOASTS + 1))) dismissToast(old.id);
+    while (toasts.length >= MAX_TOASTS) {
+        // Don't remove the toast being used when another can go; preserve Undo next.
+        const available = toasts.filter((t) => !t.running);
+        if (!available.length) return;
+        const idle = available.filter((t) => !toastTimers.get(t.id)?.life.interacting);
+        const candidates = idle.length ? idle : available;
+        dismissToast((candidates.find((t) => !t.action) ?? candidates[0]!).id);
+    }
     setToasts((t) => [...t, { id, level, message, count: 1, action }]);
-    const life = new ToastLifetime(toastMs(level, ms), performance.now());
+    const duration = toastMs(level, ms);
+    const life = new ToastLifetime(duration, performance.now());
     if (document.hidden) life.pause("hidden", performance.now());
-    toastTimers.set(id, { life });
+    toastTimers.set(id, { life, duration, message });
     scheduleToast(id);
 }
 
@@ -66,6 +74,32 @@ export function dismissToast(id: number) {
     clearTimeout(toastTimers.get(id)?.timer);
     toastTimers.delete(id);
     setToasts((t) => t.filter((x) => x.id !== id));
+}
+
+export async function runToastAction(id: number) {
+    const item = toasts.find((t) => t.id === id);
+    const entry = toastTimers.get(id);
+    if (!item?.action || item.running || !entry) return;
+    setToasts((t) => t.id === id, "running", true);
+    entry.life.pause("action", performance.now());
+    scheduleToast(id);
+    try {
+        if ((await item.action.run()) !== false) {
+            dismissToast(id);
+            return;
+        }
+        throw new RpcError("Action failed. Try again.");
+    } catch (e) {
+        // A separate error toast could evict another failed Undo under the two-row cap.
+        const message = e instanceof Error ? e.message : String(e);
+        setToasts((t) => t.id === id, { level: "error", message: `${entry.message}: ${message}` });
+    } finally {
+        // A failed action gets its full visible lifetime again, never an automatic retry.
+        entry.life.restart(entry.duration, performance.now());
+        entry.life.resume("action", performance.now());
+        setToasts((t) => t.id === id, "running", false);
+        scheduleToast(id);
+    }
 }
 
 export function reportError(e: unknown) {

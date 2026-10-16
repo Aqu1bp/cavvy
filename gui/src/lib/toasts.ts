@@ -9,7 +9,8 @@ export function toastMs(level: "info" | "warn" | "error" | "success", ms?: numbe
 
 export interface ToastAction {
     label: string;
-    run: () => void;
+    /** False or a rejection keeps the action available for an explicit retry. */
+    run: () => void | boolean | Promise<void | boolean>;
 }
 
 export interface Toast {
@@ -18,6 +19,7 @@ export interface Toast {
     message: string;
     count: number;
     action?: ToastAction;
+    running?: boolean;
 }
 
 export function repeatedToast(toasts: readonly Toast[], message: string, level: Toast["level"], action?: ToastAction): Toast | undefined {
@@ -44,6 +46,10 @@ export class ToastLifetime {
 
     get paused(): boolean {
         return this.reasons.size > 0;
+    }
+
+    get interacting(): boolean {
+        return this.reasons.has("hover") || this.reasons.has("focus") || this.reasons.has("action");
     }
 
     pause(reason: string, now: number) {

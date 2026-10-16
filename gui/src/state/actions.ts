@@ -276,13 +276,40 @@ export async function deleteSession(id: string) {
     } catch (e) {
         return reportError(e);
     }
-    toast("Session deleted", "info", { label: "Undo", run: () => void rpc.call("session.restore", { id }).catch(reportError) }, UNDO_DELETE_MS);
+    toast(
+        "Session deleted",
+        "info",
+        {
+            label: "Undo",
+            run: async () => {
+                await rpc.call("session.restore", { id });
+            },
+        },
+        UNDO_DELETE_MS,
+    );
 }
 
 export async function archive(id: string, archived: boolean) {
-    await rpc.call("session.archive", { id, archived }).catch(reportError);
+    try {
+        await rpc.call("session.archive", { id, archived });
+    } catch (e) {
+        reportError(e);
+        return false;
+    }
     if (archived && app.activeId === id) newSession(app.homeCwd);
-    toast(archived ? "Session archived" : "Session restored", "info", archived ? { label: "Undo", run: () => void archive(id, false) } : undefined);
+    toast(
+        archived ? "Session archived" : "Session restored",
+        "info",
+        archived
+            ? {
+                  label: "Undo",
+                  run: async () => {
+                      await rpc.call("session.archive", { id, archived: false });
+                  },
+              }
+            : undefined,
+    );
+    return true;
 }
 
 export function togglePanel() {
@@ -361,7 +388,9 @@ export async function openInEditor(path: string, line?: number, o: { col?: numbe
         if (code === "no_editor" || code === "not_installed")
             return toast(code === "no_editor" ? "No editor chosen yet. Pick one under Settings → General → Open files with." : (e as Error).message, "warn", {
                 label: "Settings",
-                run: () => setSettingsTab("general"),
+                run: () => {
+                    setSettingsTab("general");
+                },
             });
         reportError(e);
     }

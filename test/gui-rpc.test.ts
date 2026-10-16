@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { Socket } from "./helpers/gui-socket";
 import { Rpc } from "../gui/src/lib/rpc";
 import { RequestAges, requestNoticeMs } from "../gui/src/lib/request-age";
 
@@ -23,37 +24,6 @@ test("request notices use 15s / 60s thresholds and clear only when the last slow
     expect(ages.slow(100_000)).toBe(false);
     expect(ages.nextDelay(100_000)).toBeUndefined();
 });
-
-class Socket {
-    static OPEN = 1;
-    static instances: Socket[] = [];
-    readyState = 0;
-    sent: { id: number; method: string }[] = [];
-    onopen?: () => void;
-    onmessage?: (event: { data: string }) => void;
-    onclose?: (event: { code: number }) => void;
-    constructor() {
-        Socket.instances.push(this);
-    }
-
-    open() {
-        this.readyState = 1;
-        this.onopen?.();
-    }
-
-    send(raw: string) {
-        this.sent.push(JSON.parse(raw));
-    }
-
-    message(msg: unknown) {
-        this.onmessage?.({ data: JSON.stringify(msg) });
-    }
-
-    close() {
-        this.readyState = 3;
-        this.onclose?.({ code: 1006 });
-    }
-}
 
 const originalSocket = globalThis.WebSocket;
 const originalTimeout = globalThis.setTimeout;
@@ -211,4 +181,29 @@ test("closing during credential lookup never opens a socket", async () => {
     resolve({ url: "ws://test", token: "test" });
     await connecting;
     expect(Socket.instances).toEqual([]);
+});
+
+test("reconnect during a one-time credential exchange keeps the successful result", async () => {
+    setup();
+    let resolve!: (value: { url: string; token: string }) => void;
+    let lookups = 0;
+    rpc = new Rpc(() => {
+        lookups++;
+        if (lookups > 1) return Promise.resolve(undefined);
+        return new Promise((r) => {
+            resolve = r;
+        });
+    });
+    const states: string[] = [];
+    rpc.onState((state) => states.push(state));
+    const connecting = rpc.connect();
+    rpc.reconnectNow();
+    rpc.reconnectNow();
+    expect(lookups).toBe(1);
+    resolve({ url: "ws://test", token: "exchanged-once" });
+    await connecting;
+    expect(Socket.instances).toHaveLength(1);
+    Socket.instances[0]!.open();
+    expect(rpc.state).toBe("open");
+    expect(states).not.toContain("unauthorized");
 });
