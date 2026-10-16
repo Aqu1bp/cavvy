@@ -1,6 +1,7 @@
 // What the user does, as calls to the server.
 
-import type { EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import { createSignal } from "solid-js";
+import type { EditorInfo, EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { copyText, pickFolder } from "../lib/platform";
 import { activate, app, createSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
@@ -288,6 +289,50 @@ export async function connectCli(pr: ProviderInfo): Promise<boolean> {
     } catch (e) {
         reportError(e);
         return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Open in editor (on the server's machine)
+
+const [editors, setEditors] = createSignal<EditorInfo[]>([]);
+export { editors };
+
+/** The editors Harness knows, and which of them this machine has; also brings the chosen one up to date. */
+export async function refreshEditors() {
+    try {
+        const r = await rpc.call("editors.list", {});
+        setEditors(r.editors);
+        setApp("settings", "editor", r.selected);
+    } catch (e) {
+        reportError(e);
+    }
+}
+
+/** The chosen editor's name, when there is one. */
+export function editorName(): string | undefined {
+    const id = app.settings.editor;
+    return id ? (editors().find((e) => e.id === id)?.name ?? undefined) : undefined;
+}
+
+/**
+ * Open a file at a line (or, with `folder`, a project) in the editor chosen in
+ * Settings. The server resolves `path` against the session's folder and opens
+ * only what's inside its folders.
+ */
+export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string } = {}) {
+    const sessionId = o.sessionId ?? app.activeId;
+    if (!sessionId) return;
+    try {
+        await rpc.call("fs.open", { sessionId, path, line, col: o.col, folder: o.folder });
+    } catch (e) {
+        const code = e instanceof RpcError ? e.code : undefined;
+        if (code === "no_editor" || code === "not_installed")
+            return toast(code === "no_editor" ? "No editor chosen yet. Pick one under Settings → General → Open files with." : (e as Error).message, "warn", {
+                label: "Settings",
+                run: () => setSettingsTab("general"),
+            });
+        reportError(e);
     }
 }
 

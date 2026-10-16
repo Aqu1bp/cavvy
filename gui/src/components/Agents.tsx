@@ -167,7 +167,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     <div class="agent-dropped">What it did along the way isn't kept after the session is reopened; its result is below.</div>
                                 </Show>
                                 <Show when={result()}>
-                                    <Markdown text={result()!} />
+                                    <Markdown text={result()!} sessionId={p.handle.id} />
                                     <button class="agent-returned" onClick={back}>
                                         <CornerDownLeft size={13} /> Report returned to <span class="link">{sessionTitle(p.handle)}</span>
                                     </button>

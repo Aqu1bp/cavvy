@@ -20,6 +20,7 @@ import {
     Plug,
     Search,
     ShieldCheck,
+    SquareArrowOutUpRight,
     SquareTerminal,
     Wrench,
     X,
@@ -29,7 +30,7 @@ import { duration, plural, splitTitle, stripAnsi, tokens } from "../../lib/forma
 import { now } from "../../lib/clock";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
-import { openAgents } from "../../state/actions";
+import { openAgents, openInEditor } from "../../state/actions";
 import { Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
 import { DiffView } from "./DiffView";
@@ -496,6 +497,35 @@ function StatusIcon(p: { tool: ToolBlock }) {
     );
 }
 
+const FILE_TOOLS = new Set(["Read", "Edit", "MultiEdit", "Write", "NotebookEdit"]);
+
+/** The file a call read or changed, and the line to open it at, while there's a file to open. */
+export function toolFile(t: ToolBlock): { path: string; line?: number } | undefined {
+    if (!FILE_TOOLS.has(t.name) || t.agent || t.status === "error" || t.status === "denied") return undefined;
+    const i = t.input ?? {};
+    const path = i.file_path ?? i.notebook_path;
+    if (typeof path !== "string" || !path) return undefined;
+    const offset = t.name === "Read" && typeof i.offset === "number" && i.offset >= 1 ? Math.floor(i.offset) : undefined;
+    return { path, line: offset ?? (t.diff?.hunks?.[0]?.newStart || undefined) };
+}
+
+/** A small "Open in editor" button for a row. */
+export function OpenFileButton(p: { path: string; line?: number }) {
+    return (
+        <button
+            class="icon-btn row-open"
+            title="Open in editor"
+            aria-label={`Open ${p.path} in editor`}
+            onClick={(e) => {
+                e.stopPropagation();
+                void openInEditor(p.path, p.line);
+            }}
+        >
+            <SquareArrowOutUpRight size={13} />
+        </button>
+    );
+}
+
 /** One call, as a plain line; opens into its details. */
 export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
     const [open, setOpen] = createSignal(false);
@@ -508,35 +538,38 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
     };
     return (
         <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${p.nested ? "nested" : ""}`}>
-            <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                <span class="tool-icon">
-                    <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
-                </span>
-                <span class="tool-verb">{label().verb}</span>
-                <Show when={label().arg}>
-                    <span class="tool-arg truncate">{label().arg}</span>
-                </Show>
-                <span class="tool-meta">
-                    <Show when={p.tool.sandboxed}>
-                        <span class="tool-tag" title="Ran in the sandbox">
-                            <ShieldCheck size={11} /> sandbox
-                        </span>
+            <div class="tool-head">
+                <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <span class="tool-icon">
+                        <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
+                    </span>
+                    <span class="tool-verb">{label().verb}</span>
+                    <Show when={label().arg}>
+                        <span class="tool-arg truncate">{label().arg}</span>
                     </Show>
-                    <Show when={meta()}>
-                        <span class="truncate">{meta()}</span>
-                    </Show>
-                    <Show when={p.tool.diff && p.tool.status === "ok"}>
-                        <span class="stat">
-                            <span class="add">+{p.tool.diff!.added}</span>
-                            <span class="del">−{p.tool.diff!.removed}</span>
-                        </span>
-                    </Show>
-                    <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
-                        <span class="tool-dur num">{duration(p.tool.durationMs!)}</span>
-                    </Show>
-                    <StatusIcon tool={p.tool} />
-                </span>
-            </button>
+                    <span class="tool-meta">
+                        <Show when={p.tool.sandboxed}>
+                            <span class="tool-tag" title="Ran in the sandbox">
+                                <ShieldCheck size={11} /> sandbox
+                            </span>
+                        </Show>
+                        <Show when={meta()}>
+                            <span class="truncate">{meta()}</span>
+                        </Show>
+                        <Show when={p.tool.diff && p.tool.status === "ok"}>
+                            <span class="stat">
+                                <span class="add">+{p.tool.diff!.added}</span>
+                                <span class="del">−{p.tool.diff!.removed}</span>
+                            </span>
+                        </Show>
+                        <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
+                            <span class="tool-dur num">{duration(p.tool.durationMs!)}</span>
+                        </Show>
+                        <StatusIcon tool={p.tool} />
+                    </span>
+                </button>
+                <Show when={toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
+            </div>
             <Show when={!open() && p.tool.status === "running" && p.tool.progress}>
                 <pre class="activity-tail nested">{stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(-6).join("\n")}</pre>
             </Show>
@@ -622,6 +655,13 @@ function ToolDetails(p: { tool: ToolBlock }) {
                     <ShieldCheck size={13} /> Approved by the auto-mode reviewer: {t().approval}
                 </div>
             </Show>
+            <Show when={!t().diff && toolFile(t())}>
+                {(f) => (
+                    <button class="link-btn tool-open" onClick={() => void openInEditor(f().path, f().line)}>
+                        <SquareArrowOutUpRight size={13} /> Open in editor
+                    </button>
+                )}
+            </Show>
             <Switch
                 fallback={
                     <>
@@ -635,7 +675,7 @@ function ToolDetails(p: { tool: ToolBlock }) {
                 }
             >
                 <Match when={t().diff}>
-                    <DiffView diff={t().diff!} maxLines={80} header />
+                    <DiffView diff={t().diff!} maxLines={80} header headerAction={<Show when={toolFile(t())}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>} />
                     <Show when={t().status === "error"}>
                         <Output tool={t()} />
                     </Show>

@@ -86,6 +86,8 @@ export interface Settings {
     notifyAfterSeconds?: number;
     /** Claude Code and Codex get tools to hand tasks to other providers' models (default true). */
     delegation?: boolean;
+    /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
+    editor?: string;
 }
 
 export type SettingsScope = "user" | "project" | "local";

@@ -450,9 +450,44 @@ button.wrow:hover {
 }
 
 .tool-line:hover,
-.tool.open > .tool-line {
+.tool.open > .tool-head > .tool-line {
     color: var(--fg);
     background: var(--bg-subtle);
+}
+
+.tool-head {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+/* "Open in editor" beside a tool row, a changed file or a diff header: shown on hover or focus. */
+.icon-btn.row-open {
+    width: 24px;
+    height: 24px;
+    opacity: 0;
+}
+
+.tool-head:hover > .row-open,
+.frow-line:hover > .row-open,
+.diff-head:hover > .row-open,
+.row-open:focus-visible {
+    opacity: 1;
+}
+
+.link-btn.tool-open {
+    margin-bottom: 6px;
+}
+
+.frow-line {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+.frow-line > .frow {
+    flex: 1;
 }
 
 .tool-icon {
