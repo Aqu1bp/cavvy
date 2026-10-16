@@ -47,7 +47,7 @@ mock.module("../../gui/src/state/app", () => ({
             composer = mount(value ?? "home");
         }
     },
-    activate: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
+    activate: noop, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
     refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop,
 }));
 mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
@@ -55,7 +55,7 @@ mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: noop }));
 mock.module("../../gui/src/state/ui", () => ({
     setMcpOpen: (value: { focus?: string }) => mcpOpenings.push(value),
     ...Object.fromEntries([
-        "requestComposerFocus", "setAgentFocus", "setContextCardOpen", "setFolderPickerOpen", "setModePickerOpen",
+        "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setModePickerOpen",
         "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab",
     ].map((name) => [name, noop])),
 }));

@@ -701,6 +701,62 @@
     gap: 4px;
 }
 
+/* ---- Plans: read, save, or implement in a worktree (PlanDialogs, ArchiveDialog) ---- */
+.plan-dialog-body {
+    max-height: min(60vh, 520px);
+}
+
+.plan-note {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.plan-note-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-subtle);
+    color: var(--fg-muted);
+    font-size: 0.857rem;
+    overflow-wrap: anywhere;
+}
+
+.plan-note-box svg {
+    flex: none;
+    margin-top: 2px;
+}
+
+.plan-modes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.plan-mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 0.857rem;
+    cursor: pointer;
+}
+
+.plan-mode.on {
+    border-color: var(--accent);
+    color: var(--fg);
+}
+
+.plan-mode input {
+    margin: 0;
+    accent-color: var(--accent);
+}
+
 /* ---- The sheet after sending one prompt to several models ----------------- */
 
 .run-sheet {
