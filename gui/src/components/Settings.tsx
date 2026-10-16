@@ -119,6 +119,19 @@ function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: 
 
 const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
+// Confirmation can be dismissed and Settings remounted while the request runs.
+const [enablingBypass, setEnablingBypass] = createSignal(false);
+
+async function enableBypass() {
+    if (enablingBypass()) return;
+    setEnablingBypass(true);
+    try {
+        await update({ allowBypass: true });
+    } finally {
+        setEnablingBypass(false);
+    }
+}
+
 function General() {
     const [confirmBypass, setConfirmBypass] = createSignal(false);
     const s = () => app.settings;
@@ -208,7 +221,8 @@ function General() {
                 onClose={() => setConfirmBypass(false)}
                 title="Allow bypass mode?"
                 confirmLabel="Allow bypass mode"
-                onConfirm={() => update({ allowBypass: true })}
+                busy={enablingBypass()}
+                onConfirm={enableBypass}
             >
                 Lets sessions run tools without asking for permission. Enable only in a sandbox or container.
             </ConfirmDialog>
@@ -370,6 +384,8 @@ function Appearance() {
     );
 }
 
+const [removingProviders, setRemovingProviders] = createSignal<ReadonlySet<string>>(new Set());
+
 function ProviderRow(p: { pr: ProviderInfo }) {
     const [confirmRemove, setConfirmRemove] = createSignal(false);
     const [adding, setAdding] = createSignal(false);
@@ -392,12 +408,20 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     };
     const remove = async () => {
         const { id, name, agentCli } = p.pr;
+        if (removingProviders().has(id)) return;
+        setRemovingProviders((ids) => new Set(ids).add(id));
         try {
             await rpc.call("providers.removeKey", { provider: id });
             await Promise.all([refreshProviders(), refreshModels()]);
             toast(agentCli ? `Turned off ${name}; it stays signed in` : `Removed the ${name} key`);
         } catch (e) {
             reportError(e);
+        } finally {
+            setRemovingProviders((ids) => {
+                const remaining = new Set(ids);
+                remaining.delete(id);
+                return remaining;
+            });
         }
     };
     const connect = async () => {
@@ -412,6 +436,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                 onClose={() => setConfirmRemove(false)}
                 title={p.pr.agentCli ? `Turn off ${p.pr.name}?` : `Remove the ${p.pr.name} key?`}
                 confirmLabel={p.pr.agentCli ? "Turn off" : "Remove key"}
+                busy={removingProviders().has(p.pr.id)}
                 onConfirm={remove}
             >
                 {p.pr.agentCli ? `Stops using ${p.pr.name} in Harness. It stays signed in.` : `Removes the stored ${p.pr.name} key from Harness. You'll need to add it again to use this provider.`}

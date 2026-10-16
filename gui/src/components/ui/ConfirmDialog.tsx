@@ -7,10 +7,12 @@ export function ConfirmDialog(p: {
     title: string;
     children: JSX.Element;
     confirmLabel: string;
+    busy?: boolean;
     onClose: () => void;
     onConfirm: () => void | Promise<void>;
 }) {
     const [busy, setBusy] = createSignal(false);
+    const isBusy = () => busy() || !!p.busy;
     let dismissed = false;
     onCleanup(() => (dismissed = true));
     const close = () => {
@@ -18,7 +20,7 @@ export function ConfirmDialog(p: {
         p.onClose();
     };
     const confirm = async () => {
-        if (busy()) return;
+        if (isBusy()) return;
         dismissed = false;
         setBusy(true);
         try {
@@ -35,9 +37,9 @@ export function ConfirmDialog(p: {
                 <span class="grow" />
                 <button class="btn ghost" autofocus onClick={close}>
                     {/* Once confirmed it can't be undone from here: closing leaves it running, and its result still shows. */}
-                    {busy() ? "Close" : "Cancel"}
+                    {isBusy() ? "Close" : "Cancel"}
                 </button>
-                <button class="btn danger" disabled={busy()} onClick={() => void confirm()}>
+                <button class="btn danger" disabled={isBusy()} aria-busy={isBusy()} onClick={() => void confirm()}>
                     {p.confirmLabel}
                 </button>
             </div>
