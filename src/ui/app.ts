@@ -164,7 +164,7 @@ export class App {
         this.allowBypass = init.allowBypass;
         this.checker = new PermissionChecker(() => this.settings, init.cwd);
         this.classifier = new AutoClassifier(undefined);
-        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted);
+        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings());
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
         this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };

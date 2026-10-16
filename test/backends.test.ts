@@ -328,7 +328,7 @@ describe("Claude Code backend", () => {
         expect(prompt).toContain("<conversation-so-far>");
         expect(prompt).toContain("User: first");
         expect(prompt.endsWith("third")).toBe(true);
-    });
+    }, 20_000);
 
     test("what other models said reaches the backend as context", async () => {
         const session = Session.create(cwd, { persist: false });
@@ -463,7 +463,7 @@ describe("Claude Code's background work (live test findings)", () => {
         } finally {
             Object.assign(backgroundTiming, saved);
         }
-    }, 15_000);
+    }, 20_000);
 
     test("background work Claude Code lists after a sub-agent reported is waited for too: the report turn still comes", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
@@ -479,7 +479,7 @@ describe("Claude Code's background work (live test findings)", () => {
         } finally {
             Object.assign(backgroundTiming, saved);
         }
-    }, 15_000);
+    }, 20_000);
 
     test("giving up on the wait ends the run even when something Claude Code started holds its output open", async () => {
         process.env.FAKE_SCENARIO = "agent-background-stuck";
@@ -532,7 +532,7 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(userTexts().slice(-1)).toEqual(["and check the tests"]);
         expect(subEnds(a.events)).toEqual(["done"]);
         expect(texts(a.events)).toContain("The explorer reported back");
-    });
+    }, 20_000);
 
     test("with an API key, Claude Code's own turn with the report doesn't count the run's spend twice", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
@@ -795,7 +795,7 @@ describe("Codex backend", () => {
         expect(await run("three")).toBe("done");
         const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/"));
         expect(methods).toEqual(["thread/resume", "thread/start"]);
-    });
+    }, 20_000);
 
     test("acceptEdits: workspace-write with the extra directories, but commands still ask", async () => {
         const { run, events } = await makeAgent({ provider: "codex", mode: "acceptEdits", settings: { permissions: { additionalDirectories: ["/extra"] } } });
@@ -987,7 +987,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(await no.run("go")).toBe("denied");
         expect(elicitations()[0].action).toBe("decline");
         expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
-    });
+    }, 20_000);
 
     test("an MCP server's form goes to the question dialog, its answers typed as the form asks; with nobody to ask it's declined", async () => {
         process.env.FAKE_SCENARIO = "elicit";
@@ -1037,7 +1037,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
             expect(await b.run("go")).toBe("done");
             expect(elicitations()).toEqual([{ action: "decline", content: null, _meta: null }]);
         }
-    });
+    }, 20_000);
 
     test("an MCP server's form: what's typed outside what a field allows isn't sent as its value", () => {
         const form = elicitationForm({

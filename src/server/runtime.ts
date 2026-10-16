@@ -36,12 +36,16 @@ import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
+import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import type {
     AgentRun,
     Block,
     ChangesInfo,
     GitChangesInfo,
+    GitCommitHead,
+    GitCommitInfo,
+    GitCommitMessageInfo,
     GitScope,
     EffortLevel,
     Interaction,
@@ -53,7 +57,6 @@ import type {
     SessionOp,
     SessionSnapshot,
     SessionState,
-    SubagentInfo,
     ToolBlock,
     ToolCategoryId,
     Turn,
@@ -177,6 +180,10 @@ export class Runtime {
     private titleFrom?: string;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
+    /** Reserve this session while its reviewed files are being committed. */
+    private committing = false;
+    private commitDone?: Promise<GitCommitInfo>;
+    private commitAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
@@ -193,7 +200,6 @@ export class Runtime {
     private responseBlocks: string[] = [];
     /** Tool call id -> the turn its block is in. */
     private toolTurn = new Map<string, string>();
-    private subs = new Map<string, SubagentInfo>();
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
     private agentLabels = new Map<string, string>();
     private agentText = new Map<string, string>();
@@ -279,6 +285,11 @@ export class Runtime {
 
     bypassAllowed(): boolean {
         return this.engine.bypassAllowed(this.ws.cwd);
+    }
+
+    /** The model has heard from this session: a switch now is news to it. Before, it's where the session starts. */
+    private get conversationStarted(): boolean {
+        return this.session.messages.length > 0 || Boolean(this.agent?.busy) || (this.agent?.delegatedTasks ?? []).some((t) => t.status === "running");
     }
 
     private initialState(): SessionState {
@@ -628,7 +639,8 @@ export class Runtime {
         let info = this.engine.listings.find((l) => l.provider.id === parsed.provider)?.models.find((m) => m.id === parsed.id) ?? resolveModelInfo(ref);
         if (!info) return false;
         if (!info.contextWindow && def.kind !== "anthropic") info = (await lookupModel(ref).catch(() => undefined)) ?? info;
-        const prev = this.model;
+        // The model it was on, if the conversation has begun (none to tell of before the first prompt).
+        const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
         this.client = client;
         this.classifier.setComplete((system, prompt, signal, o) => this.complete(system, prompt, signal, o));
@@ -637,6 +649,8 @@ export class Runtime {
             this.agent.setModel(info, client);
             this.agent.options.nativeWebSearch = this.nativeSearch();
             if (prev) this.agent.noteModelChange(modelRef(prev), info);
+            // Before it, a note still queued (one a rewind to the start kept) would be about another model.
+            else this.agent.dropStateNote("model");
         }
         if (opts.persist) {
             try {
@@ -688,10 +702,11 @@ export class Runtime {
     }
 
     /** One-shot completion on a cheap model (reviewer, titles, page summaries), or the session's own with `main`. */
-    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage; target?: { model: ModelInfo; client: ProviderClient } }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
-        if (opts?.review) {
+        if (opts?.target) ({ model, client } = opts.target);
+        else if (opts?.review) {
             // The reviewer, or with none the session's own model.
             const r = await reviewTarget(this.settings().reviewModel);
             if (r) ({ model, client } = r);
@@ -821,7 +836,12 @@ export class Runtime {
         }
         const from = this.mode;
         this.mode = m;
-        if (!opts.fromAgent && this.agent) this.agent.noteModeChange(from, m);
+        if (!opts.fromAgent && this.agent && from !== m) {
+            // Before the first prompt only plan mode is news: the model has to know it may only plan. Any other
+            // mode is where the session starts, so a note still queued (of plan mode, or one a rewind to the start kept) goes.
+            if (!this.conversationStarted) this.agent.dropStateNote("mode");
+            if (this.conversationStarted || m === "plan") this.agent.noteModeChange(from, m);
+        }
         this.setState({ mode: m, bypassAllowed: this.bypassAllowed() });
         this.recordState();
         return true;
@@ -1109,32 +1129,21 @@ export class Runtime {
         this.recordState();
     }
 
+    // What it does shows on its own (an AgentRun): the call's row opens it, so the row carries none of it.
     private subagentEvent(parentId: string, label: string, e: AgentEvent) {
+        if (e.type === "subagent") return this.nestedAgentEvent(parentId, e);
         this.trackAgent(parentId, label, e);
-        const turnId = this.toolTurn.get(parentId);
-        if (!turnId) return;
-        let sub = this.subs.get(parentId);
-        if (!sub) this.subs.set(parentId, (sub = { label, tools: [], toolCount: 0, tokens: 0, startedAt: Date.now() }));
-        let changed = false;
-        if (e.type === "tool_start") {
-            sub.toolCount++;
-            sub.tools.push({ t: "tool", id: e.call.id, name: e.call.name, title: e.title, category: e.tool?.category as ToolCategoryId | undefined, status: "running", startedAt: Date.now() });
-            if (sub.tools.length > 6) sub.tools.shift();
-            changed = true;
-        } else if (e.type === "tool_end") {
-            const t = sub.tools.find((x) => x.id === e.call.id);
-            if (t) {
-                if (e.title) t.title = e.title;
-                t.status = /^The user declined/.test(e.result.content) ? "denied" : e.result.isError ? "error" : "ok";
-                t.summary = e.result.display?.summary;
-                t.durationMs = e.durationMs;
-                changed = true;
-            }
-        } else if (e.type === "usage") {
-            sub.tokens += e.usage.inputTokens + e.usage.outputTokens + (e.usage.cacheReadTokens ?? 0);
-            changed = true;
-        }
-        if (changed) this.patchBlock(parentId, { sub: structuredClone(sub) }, turnId);
+    }
+
+    /**
+     * What a sub-agent's own sub-agent does (a delegated Codex task's spawn,
+     * say): an agent of its own, under its parent, from the call in the
+     * parent's activity that started it. Its label (the parent's, then its
+     * own) is the one its permission prompts come with.
+     */
+    private nestedAgentEvent(parentId: string, e: Extract<AgentEvent, { type: "subagent" }>): void {
+        if (e.event.type === "subagent") return this.nestedAgentEvent(e.parentId, e.event);
+        this.trackAgent(e.parentId, e.label, e.event, parentId);
     }
 
     // -----------------------------------------------------------------------
@@ -1144,19 +1153,34 @@ export class Runtime {
         this.op({ op: "agent.patch", id, patch });
     }
 
-    private trackAgent(id: string, label: string, e: AgentEvent) {
-        let a = this.view.agents.find((x) => x.id === id);
-        if (!a || a.replayed) {
+    /** A sub-agent's run, from its call: in a turn, or (a sub-agent's own) in its parent's activity, on its parent's model unless the call names one. */
+    private startAgent(id: string, parent?: string): AgentRun | undefined {
+        const own = this.model && modelRef(this.model);
+        if (parent === undefined) {
             const turnId = this.toolTurn.get(id);
             const call = turnId ? this.blockIn(turnId, id) : undefined;
-            if (!turnId || call?.t !== "tool") return;
-            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, this.model && modelRef(this.model)), startedAt: Date.now() } });
-            a = this.view.agents.find((x) => x.id === id)!;
+            if (!turnId || call?.t !== "tool") return undefined;
+            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, own), startedAt: Date.now() } });
+        } else {
+            const p = this.view.agents.find((x) => x.id === parent);
+            const call = p?.blocks.find((b) => b.id === id);
+            if (!p || call?.t !== "tool") return undefined;
+            const run = agentFromCall(call, p.turnId, own);
+            this.op({ op: "agent", agent: { ...run, parentId: p.id, model: run.model ?? p.model, startedAt: Date.now() } });
+        }
+        return this.view.agents.find((x) => x.id === id);
+    }
+
+    private trackAgent(id: string, label: string, e: AgentEvent, parent?: string) {
+        let a = this.view.agents.find((x) => x.id === id);
+        if (!a || a.replayed) {
+            a = this.startAgent(id, parent);
+            if (!a) return;
         }
         this.agentLabels.set(id, label);
         if (!a.taskId) {
             const task = this.agent?.delegatedTasks.find((t) => t.callId === id);
-            if (task) this.agentPatch(id, { taskId: task.id, ...(a.model || !this.model || task.model === modelRef(this.model) ? {} : { model: task.model }) });
+            if (task) this.agentPatch(id, { taskId: task.id, effort: task.effort, ...(a.model || !this.model || task.model === modelRef(this.model) ? {} : { model: task.model }) });
         }
         // A new turn of one that had ended (Codex's, messaged after it answered): it's running again, and its next answer is its report.
         if (e.type === "request_start" && a.endedAt !== undefined && a.status !== "running" && a.status !== "waiting") {
@@ -1204,6 +1228,9 @@ export class Runtime {
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
+                // Its own sub-agent's call: the result is that one's report, as a Task's in a turn is (one still working only says it started).
+                const sub = e.call.name === "Task" ? this.view.agents.find((x) => x.id === e.call.id && x.parentId === id) : undefined;
+                if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(sub.id, { report: redact(withoutActionsNote(e.result.content)) });
                 break;
             }
             case "notice":
@@ -1298,7 +1325,9 @@ export class Runtime {
             this.setStatus("waiting");
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
             const kind = interaction.kind;
-            this.engine.notify(this, kind, kind === "permission" ? `Wants to ${interaction.heading.toLowerCase()}` : kind === "question" ? interaction.question : "Plan ready for your review");
+            // A sub-agent's request says whose it is: the session's own agent didn't ask.
+            const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
+            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${interaction.heading.toLowerCase()}` : kind === "question" ? interaction.question : "Plan ready for your review");
         });
     }
 
@@ -1331,11 +1360,19 @@ export class Runtime {
         p.resolve(r);
     }
 
+    /** The sub-agent itself, or for a sub-agent's own, the one at the top it runs under (a delegated task, say). */
+    private outermost(agentId: string): AgentRun | undefined {
+        let a = this.view.agents.find((x) => x.id === agentId);
+        for (let depth = 0; a?.parentId && depth < 8; depth++) a = this.view.agents.find((x) => x.id === a!.parentId);
+        return a;
+    }
+
     /** Answer what's pending with nothing. At a turn's end, a delegated task still running keeps asking: it outlives the turn. */
     private cancelInteractions(opts: { keepDelegated?: boolean } = {}) {
         for (const [id, p] of [...this.pending]) {
             const agentId = p.interaction.kind === "permission" ? p.interaction.agentId : undefined;
-            const agent = agentId ? this.view.agents.find((a) => a.id === agentId) : undefined;
+            // A delegated task's own sub-agent asks for the task.
+            const agent = agentId ? this.outermost(agentId) : undefined;
             if (opts.keepDelegated && agent?.taskId && (agent.status === "running" || agent.status === "waiting")) continue;
             this.settle(id, undefined);
         }
@@ -1503,6 +1540,7 @@ export class Runtime {
     async send(text: string, attachments?: AttachedPart[]): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
+        this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
         // No await between this check and queueing/dispatch: a switch must not change the model we checked.
         const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
@@ -1543,6 +1581,7 @@ export class Runtime {
                 return;
             }
         }
+        this.checkCommitting();
         const agent = this.agent;
         this.busy = true;
         let settled!: () => void;
@@ -1761,6 +1800,7 @@ export class Runtime {
     async compact(instructions?: string) {
         // On the model being switched to, as a prompt would be.
         while (this.switching) await this.switching.catch(() => undefined);
+        this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         if (!this.agent) throw new Error("No model is selected.");
@@ -1823,6 +1863,7 @@ export class Runtime {
      * nothing happens if the conversation moved on.
      */
     rewind(index: number, planId: string, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } {
+        this.checkCommitting();
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         const t = this.target(index);
         const shown = this.rewindShown;
@@ -1883,12 +1924,53 @@ export class Runtime {
             if (live && this.backendTurns.has(live.turnId)) this.backendTurns.set(r.turnId, this.segment);
             return live ? { ...live, turnId: r.turnId } : r;
         });
+        // And the ones each kept one started of its own (its call is in that one's activity), in its turn.
+        for (const a of this.view.agents) {
+            const up = a.parentId ? agents.find((x) => x.id === a.parentId && !x.replayed) : undefined;
+            if (up && !agents.some((x) => x.id === a.id)) agents.push({ ...a, turnId: up.turnId });
+        }
         this.op({ op: "reset", turns, agents });
     }
 
     /** What git says changed in the session's folder, whoever changed it. */
     gitChanges(req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
         return gitChanges(this.ws.cwd, req);
+    }
+
+    private checkCommitting() {
+        if (this.committing) throw new RpcError("Wait for the commit to finish before starting more work.", "busy");
+    }
+
+    private checkGitCommit() {
+        if (!this.ws.trusted) throw new RpcError("Trust this folder before committing: Git commits run the repository's hooks.", "needs_trust", this.ws.cwd);
+        if (this.closed) throw new RpcError("This session was closed.", "busy");
+        if (!this.idle) throw new RpcError("This session is still working. Wait for its responses, questions, shells, and tasks to finish before committing.", "busy");
+    }
+
+    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
+        this.checkGitCommit();
+        this.committing = true;
+        this.commitAbort = new AbortController();
+        this.commitDone = gitCommit(this.ws.cwd, paths, message, { expectedHead, signal: this.commitAbort.signal });
+        try {
+            return await this.commitDone;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            this.commitAbort = undefined;
+        }
+    }
+
+    async gitCommitMessage(paths: string[]): Promise<GitCommitMessageInfo> {
+        await this.ready;
+        this.checkGitCommit();
+        if (!this.model || !this.client) throw new RpcError("Set a small model in Settings to generate messages.", "no_model");
+        const target = await this.smallTarget();
+        if (isAgentBackend(target.client)) throw new RpcError("Set a small model from another provider in Settings to generate messages.", "no_model");
+        const prompt = await gitCommitPrompt(this.ws.cwd, paths);
+        const message = await this.complete(COMMIT_MESSAGE_SYSTEM, prompt, AbortSignal.timeout(30_000), { target });
+        if (!message.trim()) throw new RpcError("The model returned an empty commit message. Try again or write your own.");
+        return { message, model: modelRef(target.model) };
     }
 
     changes(): ChangesInfo {
@@ -1997,7 +2079,7 @@ export class Runtime {
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
-        if (this.busy || this.queued.length || this.pending.size || this.switching) return false;
+        if (this.busy || this.committing || this.queued.length || this.pending.size || this.switching) return false;
         if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }
@@ -2005,6 +2087,7 @@ export class Runtime {
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
         this.abort?.abort();
+        this.commitAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
         if (this.shellTimer) clearInterval(this.shellTimer);
@@ -2014,7 +2097,15 @@ export class Runtime {
         this.syncSteps(true);
         this.closed = true;
         // Delegated tasks still running stop with the session.
-        const ending = Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
+        // Commit cancellation kills its process group and removes the index lock.
+        // Wait for that bounded cleanup, including reconciliation if HEAD advanced.
+        const commit = this.commitDone?.catch(() => undefined);
+        const ending = Promise.all([
+            this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)),
+            this.agent?.dispose(),
+            killAllShells({ state: this.toolState }),
+            commit,
+        ]);
         try {
             // A turn still running notes how it stopped (the interrupt, what it was retrying) before the file is let go.
             const turn = this.turnDone;
@@ -2028,6 +2119,7 @@ export class Runtime {
             }
             await ending;
         } finally {
+            await commit;
             this.ui.close();
             this.session.release();
         }

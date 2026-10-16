@@ -10,8 +10,8 @@ import type { FileDiff, GitFileDiff, GitScope } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
-import { review, setReview } from "../state/ui";
-import { changedOutside, fetchGitChanges, lastView, useGitChanges, type ReviewScope } from "../state/changes";
+import { review, setReview, setCommitRequest } from "../state/ui";
+import { changedOutside, commitUnavailable, fetchGitChanges, lastView, useGitChanges, type ReviewScope } from "../state/changes";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural } from "../lib/format";
 import { DiffView } from "./blocks/DiffView";
@@ -44,26 +44,33 @@ const SCOPE_NOTE: Record<ReviewScope, string> = {
 };
 
 /** One file in the list. Kept on its own so rows can grow actions. */
-function FileRow(p: { file: Row; on: boolean; onSelect: () => void }) {
+function FileRow(p: { file: Row; on: boolean; onSelect: () => void; commit?: boolean; checked?: boolean; onCheck?: (checked: boolean) => void }) {
     const c = () => CHANGE[changeOf(p.file)];
     return (
-        <button class={`rf ${p.on ? "on" : ""}`} aria-current={p.on} title={p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path} onClick={() => p.onSelect()}>
-            <span class={`rf-change ${changeOf(p.file)}`} title={c().label} aria-label={c().label}>
-                {c().letter}
-            </span>
-            <span class="rf-text">
-                <span class="rf-name mono truncate">{nameOf(p.file.path)}</span>
-                <Show when={dirOf(p.file.path)}>
-                    <span class="rf-dir mono truncate">{dirOf(p.file.path)}</span>
-                </Show>
-            </span>
-            <Show when={p.file.added || p.file.removed}>
-                <span class="stat rf-stat">
-                    <span class="add">+{p.file.added}</span>
-                    <span class="del">−{p.file.removed}</span>
+        <div class={`rf-row ${p.on ? "on" : ""}`}>
+            <Show when={p.commit}>
+                <span title={p.file.kind === "folder" ? "This folder is collapsed; select individual files instead." : p.file.kind === "repo" ? "Nested repositories cannot be committed as files." : `Include ${p.file.path} in commit`}>
+                    <input type="checkbox" aria-label={`Include ${p.file.path} in commit`} checked={p.checked} disabled={p.file.kind === "folder" || p.file.kind === "repo"} onChange={(e) => p.onCheck?.(e.currentTarget.checked)} />
                 </span>
             </Show>
-        </button>
+            <button class={`rf ${p.on ? "on" : ""}`} aria-current={p.on} title={p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path} onClick={() => p.onSelect()}>
+                <span class={`rf-change ${changeOf(p.file)}`} title={c().label} aria-label={c().label}>
+                    {c().letter}
+                </span>
+                <span class="rf-text">
+                    <span class="rf-name mono truncate">{nameOf(p.file.path)}</span>
+                    <Show when={dirOf(p.file.path)}>
+                        <span class="rf-dir mono truncate">{dirOf(p.file.path)}</span>
+                    </Show>
+                </span>
+                <Show when={p.file.added || p.file.removed}>
+                    <span class="stat rf-stat">
+                        <span class="add">+{p.file.added}</span>
+                        <span class="del">−{p.file.removed}</span>
+                    </span>
+                </Show>
+            </button>
+        </div>
     );
 }
 
@@ -101,6 +108,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const [scope, setScope] = createSignal<ReviewScope>(review()?.scope ?? saved?.scope ?? "uncommitted");
     const [base, setBase] = createSignal<string | undefined>(saved?.base);
     const [picked, setPicked] = createSignal<string>();
+    const [unchecked, setUnchecked] = createSignal(new Set<string>());
+    createEffect(on(id, () => setUnchecked(new Set<string>())));
     // Start on the file and view it was opened for; a new request moves there.
     createEffect(
         on(review, (r) => {
@@ -124,6 +133,14 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const files = (): Row[] => view()?.files ?? [];
     const more = () => (shownScope() !== "harness" && git()?.more) || 0;
     const error = () => (shownScope() !== "harness" ? git()?.error : undefined);
+    const selected = () => files().filter((f) => f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)).map((f) => f.path);
+    const commitDisabled = () => commitUnavailable(p.handle) ?? (loading() ? "Wait for changes to finish loading." : error() ? "Refresh the changes before committing." : !selected().length ? "Select files to commit." : undefined);
+    const check = (path: string, checked: boolean) => setUnchecked((old) => {
+        const next = new Set(old);
+        if (checked) next.delete(path);
+        else next.add(path);
+        return next;
+    });
 
     const absolute = (path: string) => {
         const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${p.handle.view.state.cwd}/${path}`;
@@ -242,6 +259,11 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </span>
                 </Show>
                 <span class="grow" data-tauri-drag-region />
+                <Show when={shownScope() === "uncommitted"}>
+                    <span title={commitDisabled() ?? "Commit the checked files"}>
+                        <button class="btn sm" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: selected() })}>Commit…</button>
+                    </span>
+                </Show>
                 <Segmented
                     size="sm"
                     value={split() ? "split" : "unified"}
@@ -302,7 +324,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             >
                 <div class="review-body">
                     <nav class="review-files" aria-label="Changed files">
-                        <For each={files()}>{(f) => <FileRow file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} />}</For>
+                        <For each={files()}>{(f) => <FileRow file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted"} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} />}</For>
                         <Show when={more()}>
                             <div class="rf-more">
                                 {more().toLocaleString()}
