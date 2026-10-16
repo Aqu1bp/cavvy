@@ -2199,7 +2199,7 @@ button.strip-ctl[aria-expanded="true"] {
 /* ---- Project scripts (title line) ----------------------------------- */
 
 /* Run the main script | open the menu: one control, split by a hairline. */
-.split {
+.script-split {
     display: inline-flex;
     align-items: center;
     flex: none;
@@ -2207,12 +2207,12 @@ button.strip-ctl[aria-expanded="true"] {
     transition: background var(--dur-fast);
 }
 
-.split:has(.split-main):hover,
-.split.open:has(.split-main) {
+.script-split:has(.script-split-main):hover,
+.script-split.open:has(.script-split-main) {
     background: var(--bg-hover);
 }
 
-.split .split-main {
+.script-split .script-split-main {
     width: auto;
     max-width: 160px;
     display: inline-flex;
@@ -2223,13 +2223,13 @@ button.strip-ctl[aria-expanded="true"] {
     font-weight: 500;
 }
 
-.split .split-more {
+.script-split .script-split-more {
     width: 20px;
     border-radius: 0 8px 8px 0;
     position: relative;
 }
 
-.split .split-more::before {
+.script-split .script-split-more::before {
     content: "";
     position: absolute;
     left: 0;
@@ -2239,13 +2239,13 @@ button.strip-ctl[aria-expanded="true"] {
     background: var(--hairline);
 }
 
-.split .split-main:hover:not(:disabled),
-.split .split-more:hover:not(:disabled),
-.split .split-more[aria-expanded="true"] {
+.script-split .script-split-main:hover:not(:disabled),
+.script-split .script-split-more:hover:not(:disabled),
+.script-split .script-split-more[aria-expanded="true"] {
     background: var(--bg-active);
 }
 
-.split-label {
+.script-split-label {
     min-width: 0;
 }
 
