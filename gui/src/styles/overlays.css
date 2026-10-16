@@ -458,3 +458,84 @@
     justify-content: flex-end;
     margin-top: 10px;
 }
+
+/* ---- The sheet after sending one prompt to several models ----------------- */
+
+.run-sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.run-wait {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0;
+}
+
+.run-paid,
+.run-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.run-paid li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    background: var(--bg-hover);
+}
+
+.run-paid li .num {
+    margin-left: auto;
+    flex: none;
+}
+
+.run-results li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    min-width: 0;
+}
+
+.run-icon {
+    flex: none;
+    padding-top: 1px;
+}
+
+.run-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.run-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+    min-width: 0;
+}
+
+.run-where {
+    color: var(--fg-muted);
+}
+
+.run-error {
+    color: var(--danger);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}

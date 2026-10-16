@@ -22,3 +22,6 @@ export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
 
 /** Bottom panel; hiding it keeps its shells running. */
 export const [terminalOpen, setTerminalOpen] = createSignal(false);
+
+/** The models Home's next prompt goes to, each in a worktree of its own (Compare in the model picker); undefined while that's off. */
+export const [comparePicks, setComparePicks] = createSignal<string[] | undefined>();

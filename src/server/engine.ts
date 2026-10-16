@@ -26,6 +26,7 @@ import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitSnapshot } from "../util/git";
 import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
+import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
@@ -43,6 +44,7 @@ import type {
     ProviderInfo,
     ProviderModels,
     ServerEvent,
+    RunMember,
     SessionOp,
     SessionSnapshot,
     SessionSummary,
@@ -83,6 +85,18 @@ interface GuiStore {
     pinned?: string[];
     archived?: string[];
     settled?: string[];
+    /** Sessions started together from one prompt (runs.start), newest first. */
+    runs?: RunRecord[];
+}
+
+/** Runs remembered; an older run's sessions are listed on their own. */
+const MAX_RUNS = 50;
+
+/** Each session's place in a run. */
+function runMembers(store: GuiStore): Map<string, RunMember> {
+    const out = new Map<string, RunMember>();
+    for (const r of store.runs ?? []) for (const s of r.sessions) out.set(s.id, { id: r.id, label: r.label, cwd: r.cwd, model: s.model, modelName: s.modelName });
+    return out;
 }
 
 const storeFile = () => join(harnessHome(), "gui.json");
@@ -281,7 +295,7 @@ export class Engine {
     private modelsList(): ProviderModels[] {
         return this.listings
             .filter((l) => l.status !== "offline")
-            .map((l) => ({ provider: l.provider.id, providerName: l.provider.name, status: l.status, error: l.error ? redact(l.error) : undefined, models: l.models.map(modelSummary) }));
+            .map((l) => ({ provider: l.provider.id, providerName: l.provider.name, status: l.status, error: l.error ? redact(l.error) : undefined, billing: billingOf(l.provider), models: l.models.map(modelSummary) }));
     }
 
     // -----------------------------------------------------------------------
@@ -408,6 +422,7 @@ export class Engine {
             settled: (store.settled ?? []).includes(rt.id),
             model: rt.session.model,
             live: true,
+            run: runMembers(store).get(rt.id),
         };
     }
 
@@ -416,9 +431,10 @@ export class Engine {
         const pinned = new Set(store.pinned ?? []);
         const arch = new Set(store.archived ?? []);
         const settled = new Set(store.settled ?? []);
+        const runs = runMembers(store);
         const out = new Map<string, SessionSummary>();
         for (const s of listAllSessions(limit + arch.size)) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
             if (!rt.session.messages.length && !rt.busy) continue;
@@ -448,6 +464,28 @@ export class Engine {
         await rt.ready.catch(() => undefined);
         if (opts.model) await rt.setModel(opts.model);
         return rt;
+    }
+
+    /** What a run (runs.ts) does through the engine. */
+    private runHost(): RunHost {
+        return {
+            listings: async () => {
+                if (!this.listed) await this.firstListings();
+                return this.listings;
+            },
+            declined: (path) => this.declined.has(resolve(path)),
+            decline: (path) => void this.declined.add(resolve(path)),
+            bypassAllowed: (cwd) => this.bypassAllowed(cwd),
+            stopping: () => this.stopping,
+            openSession: (cwd, mode) => this.createSession(cwd, { mode }),
+            discard: (id) => this.unloadIfUnused(id),
+            release: (id) => this.unloadLater(id),
+            record: (run) =>
+                updateStore((s) => {
+                    s.runs = [run, ...(s.runs ?? []).filter((r) => r.id !== run.id)].slice(0, MAX_RUNS);
+                }),
+            log: this.o.log,
+        };
     }
 
     private loadSession(id: string): Session {
@@ -905,6 +943,8 @@ export class Engine {
                 );
             case "projects.removeWorktree":
                 return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));
+            case "runs.start":
+                return await startRun(this.runHost(), parseRunRequest(p, { validImage, resolvePath: (path) => resolve(expandHome(path)) }));
             case "projects.trust":
                 return this.trustProject(str(p.path, "path"), Boolean(p.trust));
             case "projects.forget": {

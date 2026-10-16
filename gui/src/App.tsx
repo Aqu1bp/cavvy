@@ -21,6 +21,7 @@ import { SettingsNav, SettingsPage } from "./components/Settings";
 import { RewindDialog } from "./components/RewindDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
+import { RunSheet } from "./components/RunSheet";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function Toasts() {
@@ -228,6 +229,7 @@ export function App() {
             <RewindDialog />
             <FolderPicker />
             <TrustDialog />
+            <RunSheet />
             <Toasts />
         </div>
     );

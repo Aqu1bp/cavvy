@@ -12,6 +12,7 @@ import { copyText, isTauri, mod, os, terminalShortcut } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { Monogram } from "./Sidebar";
 import { Popover } from "./ui/Popover";
+import { RunSwitcher } from "./RunSwitcher";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
 
@@ -68,6 +69,7 @@ export function Header(p: { handle?: SessionHandle }) {
         <TitleBar
             end={
                 <>
+                    <Show when={st()}>{(s) => <RunSwitcher id={s().id} />}</Show>
                     <button class={`hb ${terminalOpen() ? "on" : ""}`} title={`Toggle terminal (${terminalShortcut})`} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}><SquareTerminal size={16} /></button>
                     <Show when={st()}>
                         <button class={`hb ${prefs.panel ? "on" : ""}`} title={`Toggle panel (${mod}+.)`} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>

@@ -192,8 +192,8 @@ function chunks(text: string): string[] {
 export function startMockLlm(o: MockOptions = {}) {
     const delay = o.delayMs ?? 12;
     let calls = 0;
-    /** Each completion asked for: the model, and what it was for. */
-    const requests: { model: string; kind: "title" | "summary" | "turn" }[] = [];
+    /** Each completion asked for: the model, what it was for, the prompt that started the turn and the images with it. */
+    const requests: { model: string; kind: "title" | "summary" | "turn"; prompt: string; images: number }[] = [];
     const server = Bun.serve({
         hostname: "127.0.0.1",
         port: o.port ?? 0,
@@ -233,7 +233,8 @@ export function startMockLlm(o: MockOptions = {}) {
             const enc = new TextEncoder();
             const id = `chatcmpl-${calls}`;
             const model = body.model ?? "mock-opus";
-            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary" });
+            const images = Array.isArray(promptMsg.content) ? promptMsg.content.filter((c: Json) => c.type === "image_url").length : 0;
+            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary", prompt, images });
             const stream = new ReadableStream({
                 async start(ctrl) {
                     const send = (obj: Json) => ctrl.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));

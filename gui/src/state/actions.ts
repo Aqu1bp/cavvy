@@ -122,9 +122,14 @@ export async function exportSession(id: string) {
     }
 }
 
+/** What a message's attachments add to the request that sends it (images today), for sessions and runs alike. */
+export function attachmentParams(attachments: Attachment[]): { images?: { mediaType: string; data: string }[] } {
+    const images = attachments.map((a) => ({ mediaType: a.mediaType, data: a.data }));
+    return images.length ? { images } : {};
+}
+
 /** Send from the composer: to the open session, or a new one in the home screen's project. */
 export async function send(text: string, attachments: Attachment[] = []): Promise<boolean> {
-    const images = attachments.map((a) => ({ mediaType: a.mediaType, data: a.data }));
     let id = app.activeId;
     if (text.startsWith("/") && clientCommand(id, text)) return true;
     try {
@@ -138,7 +143,7 @@ export async function send(text: string, attachments: Attachment[] = []): Promis
             if (!h) return false;
             id = h.id;
         }
-        await rpc.call("session.send", { id, text, images: images.length ? images : undefined });
+        await rpc.call("session.send", { id, text, ...attachmentParams(attachments) });
         return true;
     } catch (e) {
         reportError(e);

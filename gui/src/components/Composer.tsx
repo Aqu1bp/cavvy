@@ -4,10 +4,11 @@ import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
+import { comparePicks, focusComposer, setComparePicks, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
 import { tokens, usd } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
-import { EffortMenu, FastModeToggle, ModelPicker } from "./ModelPicker";
+import { EffortMenu, FastModeToggle, ModelPicker, type CompareOption } from "./ModelPicker";
+import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { Popover } from "./ui/Popover";
@@ -86,7 +87,7 @@ function ContextRing(p: { sessionId: string }) {
     );
 }
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element }) {
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
@@ -108,6 +109,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
     const shell = () => text().startsWith("!");
     const draftKey = () => p.sessionId ?? "home";
+    /** The models picked to compare, when that's on here. */
+    const runPicks = () => (!p.sessionId && p.compare?.available ? comparePicks() : undefined);
 
     const resize = () => {
         if (!ta) return;
@@ -221,11 +224,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const submit = async () => {
         const t = text();
         if ((!t.trim() && !attachments().length) || sending()) return;
-        setSending(true);
         const atts = attachments();
-        const ok = await send(t, atts);
+        const picks = runPicks();
+        if (picks && (picks.length < 2 || !t.trim() || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2 to 4 models, or turn off Compare in the model picker." : "Write the task first: every model gets the same prompt.", "warn");
+        setSending(true);
+        const ok = picks ? await startRun({ path: app.homeCwd!, models: picks, text: t, attachments: atts, mode: mode() }) : await send(t, atts);
         setSending(false);
         if (!ok) return;
+        // One run at a time: the next prompt goes to the default model unless Compare is turned on again.
+        if (picks) setComparePicks(undefined);
         if (t.trim()) {
             history.push(t);
             if (history.length > 100) history.shift();
@@ -464,7 +471,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 </div>
                 <div class="composer-bar">
                     <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(e) => e.currentTarget.files && void addFiles(e.currentTarget.files)} />
-                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} />
+                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
                     <FastModeToggle current={st()?.model} currentRef={app.settings.model} enabled={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy} />
                     <EffortMenu current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
@@ -478,9 +485,19 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <Show
                         when={busy() && !canSend()}
                         fallback={
-                            <button class="send" disabled={!canSend() || sending()} onClick={() => void submit()} title={prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`} aria-label="Send">
-                                <ArrowUp size={17} stroke-width={2.4} />
-                            </button>
+                            <Show
+                                when={(runPicks()?.length ?? 0) >= 2}
+                                fallback={
+                                    <button class="send" disabled={!canSend() || sending() || Boolean(runPicks())} onClick={() => void submit()} title={runPicks() ? "Pick 2 to 4 models to compare" : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`} aria-label="Send">
+                                        <ArrowUp size={17} stroke-width={2.4} />
+                                    </button>
+                                }
+                            >
+                                <button class="send wide" disabled={!text().trim() || sending()} onClick={() => void submit()} title={`Each model gets this prompt in a new worktree (${prefs.enterSends ? "Enter" : `${mod}+Enter`})`}>
+                                    <span>Send to {runPicks()!.length} models</span>
+                                    <ArrowUp size={15} stroke-width={2.4} />
+                                </button>
+                            </Show>
                         }
                     >
                         <button class="send stop" onClick={() => interrupt(p.sessionId)} title="Stop (Esc)" aria-label="Stop">
