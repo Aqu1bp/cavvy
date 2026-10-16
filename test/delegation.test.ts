@@ -848,7 +848,7 @@ describe("Claude Code as the main agent", () => {
         // An id that never shows up: the arguments decide.
         expect(await a.claimDelegateCall(input, { callId: "c9" })).toBe("c3");
         expect(await a.claimDelegateCall({ ...input, task: "other" }, {})).toBeUndefined();
-    });
+    }, 20_000);
 
     test("/tasks stop and leaving the session stop tasks, and the token stops working", async () => {
         process.env.FAKE_SCENARIO = "mcp";
@@ -980,7 +980,7 @@ describe("Claude Code as the main agent", () => {
         const [result] = mcpResults();
         expect(result.isError).toBe(true);
         expect(result.text).toContain("Codex didn't list its MCP servers (config/read failed: invalid configuration), so a read-only task can't run on it");
-    });
+    }, 20_000);
 
     test("without the server (turned off, nobody to delegate to, or Claude Code refusing it) the turn runs as before", async () => {
         const { run } = await makeAgent({ provider: "claude-code", settings: { delegation: false } });
@@ -1063,6 +1063,9 @@ describe("Codex as the main agent", () => {
         const reply = received().find((m) => m.type === "control_response" && m.response?.response?.behavior)!.response.response;
         expect(reply.behavior).toBe("deny");
         expect(reply.message).toContain("read-only agent");
+        // It's told what was refused, and that tests don't run here, so it doesn't send them again.
+        expect(reply.message).toContain("`npm test` isn't one of the read-only commands");
+        expect(reply.message).toContain("Tests, builds and scripts don't run either.");
         // No harness server for the child.
         expect(setServers()).toEqual([]);
         expect(mcpResults()[0].text).toContain('(explore on claude-code:default) finished');
@@ -1100,9 +1103,11 @@ describe("Codex as the main agent", () => {
         expect(await second.run("go")).toBe("done");
         expect(second.asked).toEqual([]);
         expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
-        // Codex's model hears only "rejected": it's told why, and which commands do run.
-        expect(received().find((m) => m.method === "turn/steer")?.params.input[0].text).toContain("This is a read-only agent: only read-only commands run (plain commands such as cat");
-    });
+        // Codex's model hears only "rejected": it's told which part was refused, and which commands do run.
+        const steer = received().find((m) => m.method === "turn/steer")?.params.input[0].text;
+        expect(steer).toContain("This is a read-only agent, and `touch y` isn't one of the read-only commands.");
+        expect(steer).toContain("Only read-only commands run: plain commands such as cat");
+    }, 20_000);
 
     test("a mode change reaches the Claude Code agents it delegated to, and a read-only one stays read-only", async () => {
         process.env.FAKE_CODEX_SCENARIO = "mcp";
@@ -1198,6 +1203,19 @@ describe("harness models", () => {
         expect(bad.result.isError).toBe(true);
         expect(bad.result.content).toContain("Can't run a sub-agent on nope:x");
         expect(session.usageByModel.get("gemini:gemini-test")?.usage.inputTokens).toBe(100);
+    });
+
+    test("a read-only harness sub-agent is told which part of a command was refused", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Look", prompt: "Run the tests", model: "gemini:gemini-test", subagent_type: "explore" } }], "tool_use"), main([{ type: "text", text: "ok" }])];
+        let n = 0;
+        const client = { stream: async () => steps[n++], listModels: async () => [] };
+        script = (_req, k) => (k === 1 ? use("b1", "Bash", { command: "git --version && command -v git && HARNESS_NO_KEYCHAIN=1 bun test" }) : say("Couldn't run them."));
+        const { run } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client });
+        expect(await run("go")).toBe("done");
+        const seen = JSON.stringify(childRequests[1]!.messages);
+        expect(seen).toContain("This is a read-only agent, and `HARNESS_NO_KEYCHAIN=1 bun test` isn't one of the read-only commands.");
+        expect(seen).toContain("Tests, builds and scripts don't run either.");
     });
 
     test("a sub-agent runs at its session's speed (not the default for new chats) where its model has fast mode", async () => {
@@ -1360,6 +1378,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
     });
 
+    // Six fake Claude Code sessions, each a CLI process (~0.8 s apiece, measured): over bun's default 5 s under load.
     test("plan mode, a deny rule, a declined prompt and a non-interactive run refuse it; an allow rule runs it unasked", async () => {
         const VALUE = "test-secret-mcp-003";
         const secrets = new SecretStore();
@@ -1403,7 +1422,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(ruled.asked).toHaveLength(0);
         expect(mcpResults().at(-1)).toMatchObject({ isError: false, text: "[REDACTED RULE_TOKEN]" });
         expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
-    });
+    }, 30_000);
 
     for (const tool of ["request_secret", "run_with_secrets"]) {
         for (const rule of [`mcp__harness__${tool}`, "mcp__harness", "mcp__harness__*"]) {

@@ -2196,6 +2196,14 @@ button.strip-ctl[aria-expanded="true"] {
     gap: 3px;
 }
 
+/* ---- MCP servers dialog ---- */
+
+/* Lines up with the icon column of the rows above. */
+.prow .mcp-spacer {
+    width: 16px;
+    flex: none;
+}
+
 /* ---- Project scripts (title line) ----------------------------------- */
 
 /* Run the main script | open the menu: one control, split by a hairline. */

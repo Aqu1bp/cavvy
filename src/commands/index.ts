@@ -59,6 +59,9 @@ import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { clockTime, limitLines } from "../backends/limits";
+import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
+import type { McpServerInfo } from "../mcp/info";
+import { mayStart } from "../mcp/manager";
 
 export interface Command {
     name: string;
@@ -1222,12 +1225,92 @@ async function configCommand(app: App) {
     }
 }
 
+/** The approval card, as lines: what will run, where it's declared, and what approving does. Same facts as the GUI's. */
+function mcpCardLines(app: App, info: McpServerInfo): string[] {
+    const row = (label: string, value: string) => `${theme.muted(padEnd(label, 12))}${value}`;
+    const out: string[] = [theme.warning("MCP servers run with your user permissions. Only approve servers you trust.")];
+    if (info.why) out.push(theme.warning(info.why));
+    out.push("");
+    if (info.transport === "http") {
+        out.push(row("URL", info.url ?? ""));
+        out.push(row("Headers", info.headerNames?.length ? `${info.headerNames.join(", ")} ${theme.muted("(values not shown)")}` : theme.muted("none")));
+    } else {
+        out.push(row("Command", info.command ?? ""));
+        if (!info.args?.length) out.push(row("Arguments", theme.muted("none")));
+        else info.args.forEach((a, i) => out.push(row(i ? "" : "Arguments", `${theme.muted(`${i + 1}.`)} ‹${a}›`)));
+        out.push(row("Runs in", info.cwd ?? ""));
+        out.push(row("Env", info.envNames?.length ? `${info.envNames.join(", ")} ${theme.muted("(values not shown)")}` : theme.muted("none")));
+    }
+    if (info.declaredIn) out.push(row("Declared in", displayPath(info.declaredIn, app.cwd)));
+    out.push(row("Saved in", `${displayPath(paths.localSettings(app.cwd), app.cwd)} ${theme.muted("(this folder only)")}`));
+    if (info.masked) out.push(theme.muted("Values that look like secrets are masked."));
+    if (info.hidden) out.push(theme.warning("It contains invisible or control characters, shown as ⟨U+…⟩."));
+    for (const c of info.cut ?? []) out.push(theme.warning(`Cut to fit: ${c}.`));
+    out.push("", theme.muted(approvalMeaning(app.model?.provider, trustedByUser(app.cwd))));
+    return out;
+}
+
+/**
+ * A folder trusted for this session only (it had nothing to protect at
+ * startup) isn't trusted by the user: approving its .mcp.json servers asks
+ * for that first.
+ */
+async function trustForApproval(app: App): Promise<boolean> {
+    if (trustedByUser(app.cwd)) return true;
+    const header = [
+        theme.warning("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened."),
+        theme.muted(app.cwd),
+        "",
+        theme.muted("Its settings, hooks and memory files already apply this session. Trusting it is saved, and lets you approve its .mcp.json servers."),
+    ];
+    if (!(await confirm(app, "Trust this folder first?", header, "Trust this folder", "Cancel"))) return false;
+    try {
+        trustFolder(app.cwd);
+    } catch (e) {
+        app.notice(redact((e as Error).message), "warn");
+    }
+    return trustedByUser(app.cwd);
+}
+
+/** Shown the card, and approved if the user says yes; false if they didn't (or it changed meanwhile). */
+async function approveMcp(app: App, name: string): Promise<boolean> {
+    for (;;) {
+        if (!(await trustForApproval(app))) return false;
+        const info = app.mcp.describe(name);
+        if (!info?.fingerprint) return false;
+        if (!(await confirm(app, `Allow ${info.label} to run?`, mcpCardLines(app, info)))) return false;
+        try {
+            const st = await app.mcp.approve(name, info.fingerprint);
+            await withProgress(app, [theme.permission(bold(`Connecting ${info.label}…`))], () => app.mcp.start(st));
+            return true;
+        } catch (e) {
+            if (!(e instanceof McpApprovalError)) throw e;
+            app.notice(e.message, "warn");
+            // Changed while the card was open (or trust was taken back): look again.
+            if (e.code !== "changed" && e.code !== "needs_trust") return false;
+        }
+    }
+}
+
 async function mcpCommand(app: App, args: string) {
     const [sub, name] = args.split(/\s+/);
+    const guarded = async (fn: () => Promise<unknown>) => {
+        try {
+            await fn();
+        } catch (e) {
+            if (!(e instanceof McpApprovalError)) throw e;
+            app.notice(e.message, "warn");
+        }
+    };
     if (sub === "reconnect" && name) {
-        await app.mcp.restart(name);
+        await guarded(async () => {
+            const st = await app.mcp.reconnect(name);
+            if (st.status === "needs-approval") app.notice(`${name} needs approval${st.approval?.reason === "changed" ? " again: what it runs changed" : ""}. Run /mcp to review it.`, "warn");
+        });
         return;
     }
+    // What the GUI (or an edit to .mcp.json) changed since.
+    await app.mcp.sync();
     for (;;) {
         const servers = [...app.mcp.servers.values()];
         if (!servers.length) {
@@ -1246,12 +1329,14 @@ async function mcpCommand(app: App, args: string) {
                 case "connected":
                     return theme.success(`✔ connected · ${s.tools.length} tools${s.era ? ` · ${s.era}` : ""}`);
                 case "failed":
-                    return theme.error(`✘ failed: ${truncate((s.error ?? "").split("\n")[0]!, 60)}`);
+                    return theme.error(`✘ failed: ${truncate(visible((s.error ?? "").split("\n")[0]!).text, 60)}`);
                 case "needs-approval":
-                    return theme.warning("needs approval");
+                    return theme.warning(s.approval?.reason === "changed" ? "needs approval again (changed)" : s.approval?.reason === "legacy" ? "needs approval once more" : "needs approval");
                 case "connecting":
                 case "pending":
                     return theme.muted("connecting…");
+                case "disabled":
+                    return theme.muted(s.approval?.state === "rejected" ? "rejected" : "disabled");
                 default:
                     return theme.muted(s.status);
             }
@@ -1259,52 +1344,52 @@ async function mcpCommand(app: App, args: string) {
         const pick = (await app.showDialog(
             new SelectDialog<string>({
                 title: "MCP servers",
-                items: servers.map((s) => ({ label: bold(s.name), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : "settings" })),
+                items: servers.map((s) => ({ label: bold(visible(s.name).text), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : "settings" })),
                 numbers: true,
             }),
         )) as string | undefined;
         if (!pick) return;
         const st = app.mcp.servers.get(pick);
-        if (!st) continue;
-        type A = "approve" | "reject" | "reconnect" | "tools" | "error" | "disable" | "enable";
+        const info = app.mcp.describe(pick);
+        if (!st || !info) continue;
+        type A = "approve" | "reject" | "revoke" | "reconnect" | "tools" | "error" | "disable" | "enable";
         const actions: SelectItem<A>[] = [];
-        const cfgLine = st.config.url ? `${st.config.url}` : `${st.config.command ?? ""} ${(st.config.args ?? []).join(" ")}`;
-        if (st.status === "needs-approval") actions.push({ label: "Approve and connect", value: "approve", description: "saved to this project's local settings" }, { label: "Reject", value: "reject" });
+        const project = st.source === "project";
+        const approval = st.approval?.state;
+        const offInFile = st.config.disabled === true;
+        if (project && !offInFile && (approval === "needs-approval" || approval === "rejected")) actions.push({ label: approval === "rejected" ? "Enable (review and approve)…" : "Review and approve…", value: "approve", description: "saved to this folder's local settings" });
+        if (project && (approval === "needs-approval" || approval === "approved")) actions.push({ label: "Reject", value: "reject", description: "keeps it off until you approve it again" });
         if (st.status === "connected") actions.push({ label: "Show tools", value: "tools" }, { label: "Reconnect", value: "reconnect" }, { label: "Disable for this session", value: "disable" });
         if (st.status === "failed") actions.push({ label: "Show error", value: "error" }, { label: "Reconnect", value: "reconnect" });
-        if (st.status === "disabled") actions.push({ label: "Enable", value: "enable" });
-        const a = (await app.showDialog(new SelectDialog<A>({ title: st.name, header: [theme.muted(truncate(cfgLine, 200)), theme.muted(`source: ${st.source === "project" ? ".mcp.json (project)" : "settings"}`)], items: actions, numbers: true }))) as A | undefined;
+        // A rejected project server is enabled through the card above, never straight away.
+        if (st.status === "disabled" && (!project || mayStart(st))) actions.push({ label: "Enable", value: "enable", description: "for this session" });
+        if (project && approval === "approved" && !st.approval?.viaAll) actions.push({ label: "Revoke approval", value: "revoke", description: "stops it; it asks again" });
+        const header = project
+            ? mcpCardLines(app, info)
+            : [theme.muted(info.transport === "http" ? (info.url ?? "") : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted("source: settings")];
+        if (project && offInFile) header.unshift(theme.muted('Turned off in .mcp.json ("disabled": true).'));
+        if (approval === "rejected") header.unshift(theme.muted("You rejected this server."));
+        const a = (await app.showDialog(new SelectDialog<A>({ title: info.label, header, items: actions, numbers: true }))) as A | undefined;
         if (!a) continue;
-        if (a === "approve" || a === "enable") {
-            if (st.source === "project") {
-                if (a === "approve" && !(await confirm(app, `Allow ${st.name} to run?`, [theme.warning("MCP servers run with your user permissions. Only approve servers you trust."), theme.muted(truncate(cfgLine, 200))]))) continue;
-                updateSettings("local", app.cwd, (s) => {
-                    s.enabledMcpjsonServers = [...new Set([...(s.enabledMcpjsonServers ?? []), st.name])];
-                    s.disabledMcpjsonServers = (s.disabledMcpjsonServers ?? []).filter((n) => n !== st.name);
-                });
-                app.reloadSettings();
-                app.mcp.load();
-            } else st.status = "pending";
-            const s2 = app.mcp.servers.get(st.name);
-            if (s2) await app.mcp.start(s2);
+        if (a === "approve") {
+            await approveMcp(app, st.name);
+        } else if (a === "enable") {
+            await app.mcp.enable(st.name);
         } else if (a === "reject") {
-            updateSettings("local", app.cwd, (s) => {
-                s.disabledMcpjsonServers = [...new Set([...(s.disabledMcpjsonServers ?? []), st.name])];
-                s.enabledMcpjsonServers = (s.enabledMcpjsonServers ?? []).filter((n) => n !== st.name);
-            });
-            app.reloadSettings();
-            app.mcp.load();
+            await guarded(() => app.mcp.reject(st.name));
+        } else if (a === "revoke") {
+            await guarded(() => app.mcp.revoke(st.name));
         } else if (a === "reconnect") {
-            await withProgress(app, [theme.permission(bold(`Reconnecting ${st.name}…`))], () => app.mcp.restart(st.name));
+            await guarded(() => withProgress(app, [theme.permission(bold(`Reconnecting ${info.label}…`))], () => app.mcp.reconnect(st.name)));
         } else if (a === "disable") {
             await st.client?.close();
             st.client = undefined;
             st.status = "disabled";
         } else if (a === "tools") {
-            app.print(["", heading(`${st.name} tools`), ...st.tools.map((t) => `  ${bold(t.name)}${t.annotations?.readOnlyHint ? theme.muted(" (read-only)") : ""} ${theme.muted(truncate((t.description ?? "").split("\n")[0]!, termCols() - t.name.length - 20))}`)]);
+            app.print(["", heading(`${info.label} tools`), ...st.tools.map((t) => `  ${bold(visible(t.name).text)}${t.annotations?.readOnlyHint ? theme.muted(" (read-only)") : ""} ${theme.muted(truncate(visible(maskConfigValues((t.description ?? "").split("\n")[0]!, st.config)).text, termCols() - t.name.length - 20))}`)]);
             return;
         } else if (a === "error") {
-            app.print(["", heading(`${st.name} error`), ...(st.error ?? "").split("\n").map((l) => theme.error("  " + l))]);
+            app.print(["", heading(`${info.label} error`), ...(info.error ?? "").split("\n").map((l) => theme.error("  " + l))]);
             return;
         }
     }

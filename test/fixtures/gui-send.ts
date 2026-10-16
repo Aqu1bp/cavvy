@@ -25,6 +25,7 @@ const rpc = { call: async (method: string, params: any) => {
     return { queued: false };
 } };
 const noop = () => {};
+const mcpOpenings: { focus?: string }[] = [];
 function mount(key: string) {
     return createRoot((dispose) => ({ ...createComposerDraft(() => key), dispose }));
 }
@@ -51,10 +52,13 @@ mock.module("../../gui/src/state/app", () => ({
 }));
 mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
 mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: noop }));
-mock.module("../../gui/src/state/ui", () => Object.fromEntries([
-    "requestComposerFocus", "setAgentFocus", "setContextCardOpen", "setFolderPickerOpen", "setModePickerOpen",
-    "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab",
-].map((name) => [name, noop])));
+mock.module("../../gui/src/state/ui", () => ({
+    setMcpOpen: (value: { focus?: string }) => mcpOpenings.push(value),
+    ...Object.fromEntries([
+        "requestComposerFocus", "setAgentFocus", "setContextCardOpen", "setFolderPickerOpen", "setModePickerOpen",
+        "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab",
+    ].map((name) => [name, noop])),
+}));
 const { send } = await import("../../gui/src/state/actions");
 const textFile = "# attached notes\n";
 const pdf = "%PDF-1.4\n%%EOF\n";
@@ -216,3 +220,17 @@ for (const command of ["/cost", "/new"]) {
     composer.dispose();
     composer = undefined;
 }
+
+// /mcp uses the shared command parser and opens the dialog without a model turn.
+app.activeId = "original";
+calls.length = 0;
+assert.equal(await send("/mcp"), "command");
+assert.equal(await send("/mcp server-name"), "command");
+assert.deepEqual(mcpOpenings, [{ focus: undefined }, { focus: "server-name" }]);
+assert.deepEqual(calls, []);
+app.activeId = undefined;
+const beforeMcp = created;
+assert.equal(await send("/mcp"), "command");
+assert.equal(created, beforeMcp);
+assert.equal(mcpOpenings.length, 2);
+assert.deepEqual(calls, []);
