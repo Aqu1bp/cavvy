@@ -148,7 +148,7 @@ Whatever the mode:
 
 - Deny rules always win.
 - Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode.
-- Edits to the harness's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/` and `.codex/` always ask, except in bypass mode.
+- Edits to the harness's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/` and `.codex/` always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.harness/`, `.mcp.json` and `.git` ask.
 
 When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.harness/settings.local.json`), or decline and say what to do instead.
 
