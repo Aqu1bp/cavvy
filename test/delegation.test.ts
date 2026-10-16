@@ -21,6 +21,7 @@ const { McpClient } = await import("../src/mcp/client");
 const { redact } = await import("../src/util/redact");
 const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
+const { SecretStore } = await import("../src/agent/secrets");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -119,7 +120,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
+    for (const k of ["FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -153,6 +154,8 @@ interface Opts {
     headless?: boolean;
     /** Save the session to disk. */
     persist?: boolean;
+    ui?: import("../src/tools/types").UiBridge;
+    secrets?: import("../src/agent/secrets").SecretStore;
 }
 
 async function makeAgent(o: Opts) {
@@ -171,12 +174,12 @@ async function makeAgent(o: Opts) {
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets },
         helpers: { resolveModel },
         listings: () => listings,
         host: {
             emit: (e) => events.push(e),
-            ui: {},
+            ui: o.ui ?? {},
             askPermission: o.headless
                 ? undefined
                 : async (req) => {
@@ -1259,13 +1262,20 @@ describe("the app", () => {
     test("a stopped sub-agent's prompt is withdrawn, and one still queued isn't shown", async () => {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
-        (app as any).renderLive = () => {};
         app.session = Session.create(cwd, { persist: false });
         const shown: string[] = [];
+        const seen = new Set<object>();
+        // Observe the visible dialog, not its construction: all interactive
+        // prompts now share a queue, including questions and masked inputs.
+        (app as any).renderLive = () => {
+            const current = (app as any).dialogs.at(-1);
+            if (!current || seen.has(current)) return;
+            seen.add(current);
+            shown.push(current.render(100, 30).join("\n").match(/Bash\(\w+\)/)?.[0] ?? "unknown");
+        };
         const dialog = (app as any).permissionDialog.bind(app);
-        (app as any).permissionDialog = (r: PermissionRequest) => (shown.push(r.title), dialog(r));
         const ask = (title: string, signal?: AbortSignal): Promise<PermissionResponse> =>
-            (app as any).askPermission({ tool: { name: "Bash", category: "execute" }, input: { command: "ls" }, title, decision: { behavior: "ask" }, agentLabel: "Watch (gemini:gemini-test)", signal });
+            (app as any).askPermission({ tool: { name: "Bash", category: "execute" }, input: { command: "ls", description: title }, title, decision: { behavior: "ask" }, agentLabel: "Watch (gemini:gemini-test)", signal });
         const stopped = new AbortController();
         const first = ask("Bash(one)", stopped.signal);
         const second = ask("Bash(two)", stopped.signal);
@@ -1276,7 +1286,7 @@ describe("the app", () => {
         expect(await first).toEqual({ allow: false });
         expect(await second).toEqual({ allow: false });
         // The next one in line is another agent's: it's shown.
-        await until(() => shown.length === 2);
+        await until(() => shown.includes("Bash(three)"));
         expect(shown).toEqual(["Bash(one)", "Bash(three)"]);
         (app as any).dialogs.at(-1).cancel();
         expect(await another).toEqual({ allow: false });
@@ -1287,5 +1297,225 @@ describe("the app", () => {
         late.abort();
         expect(await pending).toEqual({ allow: false });
         expect((app as any).dialogs).toEqual([]);
+    });
+});
+
+describe("secrets in Claude Code and Codex sessions (request_secret, run_with_secrets)", () => {
+    const cksum = (v: string) => Bun.spawnSync(["sh", "-c", 'printf %s "$1" | cksum | awk \'{print $1, $2}\'', "sh", v]).stdout.toString().trim();
+    const matches = (name: string, v: string) => `[ "$(printf %s "$${name}" | cksum | awk '{print $1, $2}')" = "${cksum(v)}" ] && echo MATCH || echo NO-MATCH`;
+    const purpose = "To deploy the demo app.";
+
+    test("asks through the same card, runs with Harness's Bash after a check, and the value never reaches the CLI", async () => {
+        const VALUE = "test-secret-mcp-001";
+        const secrets = new SecretStore();
+        const asked: string[] = [];
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([
+            { tool: "request_secret", args: { name: "DEPLOY_TOKEN", purpose } },
+            { tool: "run_with_secrets", args: { command: `echo "deploying with $DEPLOY_TOKEN"; ${matches("DEPLOY_TOKEN", VALUE)}`, secrets: ["DEPLOY_TOKEN"], description: "Deploy the demo" } },
+        ]);
+        const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async (name, p) => (asked.push(`${name}: ${p}`), VALUE) } });
+        expect(await t.run("deploy it")).toBe("done");
+
+        const set = setServers()[0].request.servers.harness;
+        expect(set.tools).toEqual([...TOOLS, "request_secret", "run_with_secrets"].map((name) => ({ name, permission_policy: "always_allow" })));
+        expect(asked).toEqual([`DEPLOY_TOKEN: ${purpose}`]);
+        const [handle, ran] = mcpResults();
+        expect(handle.isError).toBe(false);
+        expect(handle.text).toStartWith("The user provided DEPLOY_TOKEN. Run commands that need it with the harness run_with_secrets tool");
+        expect(ran).toEqual({ tool: "run_with_secrets", text: "deploying with [REDACTED DEPLOY_TOKEN]\nMATCH", isError: false });
+
+        // The check ran, and showed the command as written.
+        expect(t.asked).toHaveLength(1);
+        const perm = t.asked[0]!;
+        expect(perm.tool.name).toBe("Bash");
+        expect(String((perm.input as any).command)).toStartWith('echo "deploying with $DEPLOY_TOKEN"');
+        expect(perm.decision.reason).toContain("the secret DEPLOY_TOKEN");
+        expect(perm.decision.suggestions).toEqual([]);
+        expect(perm.title).toBe("RunWithSecrets(DEPLOY_TOKEN)");
+        expect(perm.secrets).toEqual(["DEPLOY_TOKEN"]);
+        // So a cancelled call withdraws its prompt.
+        expect(perm.signal).toBeInstanceOf(AbortSignal);
+
+        const titles = t.events.flatMap((e) => (e.type === "tool_start" ? [e.title] : []));
+        expect(titles).toEqual(expect.arrayContaining(["RequestSecret(DEPLOY_TOKEN)", "RunWithSecrets(Deploy the demo)"]));
+        expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
+        expect(JSON.stringify(t.events)).not.toContain(VALUE);
+        expect(secrets.names()).toEqual(["DEPLOY_TOKEN"]);
+    });
+
+    test("the CLI's own environment never holds it", async () => {
+        const VALUE = "test-secret-mcp-002";
+        const secrets = new SecretStore();
+        secrets.set("ENV_CHECK_TOKEN", VALUE);
+        process.env.FAKE_LOG_ENV = "1";
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "run_with_secrets", args: { command: matches("ENV_CHECK_TOKEN", VALUE), secrets: ["ENV_CHECK_TOKEN"] } }]);
+        const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => undefined } });
+        expect(await t.run("check")).toBe("done");
+        const env = logLines().find((l) => l.env)!.env as Record<string, string>;
+        expect(Object.keys(env)).not.toContain("ENV_CHECK_TOKEN");
+        expect(Object.values(env)).not.toContain(VALUE);
+        expect(mcpResults()[0].text).toBe("MATCH");
+        expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
+    });
+
+    test("plan mode, a deny rule, a declined prompt and a non-interactive run refuse it; an allow rule runs it unasked", async () => {
+        const VALUE = "test-secret-mcp-003";
+        const secrets = new SecretStore();
+        secrets.set("RULE_TOKEN", VALUE);
+        process.env.FAKE_SCENARIO = "mcp";
+        const ran = join(cwd, "ran.txt");
+        calls([{ tool: "run_with_secrets", args: { command: `echo "$RULE_TOKEN" > ran.txt`, secrets: ["RULE_TOKEN"] } }]);
+        const ui = { requestSecret: async () => undefined };
+
+        const plan = await makeAgent({ provider: "claude-code", secrets, ui });
+        plan.switchMode("plan");
+        await plan.run("go");
+        expect(mcpResults().at(-1)).toMatchObject({ isError: true, text: expect.stringContaining("Plan mode is active") });
+        expect(plan.asked).toHaveLength(0);
+
+        const denied = await makeAgent({ provider: "claude-code", secrets, ui, settings: { permissions: { deny: ["Bash(echo:*)"] } } });
+        await denied.run("go");
+        expect(mcpResults().at(-1)!.isError).toBe(true);
+        expect(denied.asked).toHaveLength(0);
+
+        const declined = await makeAgent({ provider: "claude-code", secrets, ui, ask: () => ({ allow: false }) });
+        await declined.run("go");
+        expect(mcpResults().at(-1)).toMatchObject({ isError: true, text: expect.stringContaining("The user declined this command") });
+        expect(existsSync(ran)).toBe(false);
+
+        const headless = await makeAgent({ provider: "claude-code", secrets, ui, headless: true });
+        await headless.run("go");
+        expect(mcpResults().at(-1)).toMatchObject({ isError: true, text: expect.stringContaining("non-interactive") });
+        expect(existsSync(ran)).toBe(false);
+
+        // Bypass mode doesn't approve it either.
+        const bypass = await makeAgent({ provider: "claude-code", secrets, ui, ask: () => ({ allow: false }) });
+        bypass.switchMode("bypassPermissions");
+        await bypass.run("go");
+        expect(bypass.asked).toHaveLength(1);
+        expect(existsSync(ran)).toBe(false);
+
+        calls([{ tool: "run_with_secrets", args: { command: `echo "$RULE_TOKEN"`, secrets: ["RULE_TOKEN"] } }]);
+        const ruled = await makeAgent({ provider: "claude-code", secrets, ui, settings: { permissions: { allow: ["Bash(echo:*)"] } } });
+        await ruled.run("go");
+        expect(ruled.asked).toHaveLength(0);
+        expect(mcpResults().at(-1)).toMatchObject({ isError: false, text: "[REDACTED RULE_TOKEN]" });
+        expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
+    });
+
+    for (const tool of ["request_secret", "run_with_secrets"]) {
+        for (const rule of [`mcp__harness__${tool}`, "mcp__harness", "mcp__harness__*"]) {
+            test(`${tool} honors its own deny rule ${rule} before asking or running`, async () => {
+                const secrets = new SecretStore();
+                secrets.set("OWN_RULE_TOKEN", "zq7Xv9Lr2Wm4Kp8T");
+                let secretPrompts = 0;
+                process.env.FAKE_SCENARIO = "mcp";
+                const args = tool === "request_secret" ? { name: "OWN_RULE_TOKEN", purpose } : { command: "echo ran > own-rule-result.txt", secrets: ["OWN_RULE_TOKEN"] };
+                calls([{ tool, args }]);
+                const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { deny: [rule], allow: ["Bash"] } } });
+                t.switchMode("bypassPermissions");
+                await t.run("go");
+                expect(mcpResults().at(-1)).toMatchObject({ isError: true, text: expect.stringContaining(rule) });
+                expect(secretPrompts).toBe(0);
+                expect(t.asked).toHaveLength(0);
+                expect(existsSync(join(cwd, "own-rule-result.txt"))).toBe(false);
+            });
+        }
+        test(`${tool} honors its own ask rule before the secret card or Bash allow`, async () => {
+            const secrets = new SecretStore();
+            secrets.set("OWN_RULE_TOKEN", "zq7Xv9Lr2Wm4Kp8T");
+            let secretPrompts = 0;
+            process.env.FAKE_SCENARIO = "mcp";
+            const args = tool === "request_secret" ? { name: "OWN_RULE_TOKEN", purpose } : { command: "echo ran > own-rule-result.txt", secrets: ["OWN_RULE_TOKEN"] };
+            calls([{ tool, args }]);
+            const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { ask: [`mcp__harness__${tool}`], allow: ["Bash"] } }, ask: () => ({ allow: false }) });
+            t.switchMode("bypassPermissions");
+            await t.run("go");
+            expect(mcpResults().at(-1)?.isError).toBe(true);
+            expect(t.asked).toHaveLength(1);
+            expect(t.asked[0]!.tool.name).toBe(`mcp__harness__${tool}`);
+            expect(t.asked[0]!.decision.suggestions).toEqual([]);
+            expect(t.asked[0]!.signal).toBeInstanceOf(AbortSignal);
+            expect(secretPrompts).toBe(0);
+            expect(existsSync(join(cwd, "own-rule-result.txt"))).toBe(false);
+        });
+    }
+
+    test("in auto mode it asks, rather than applying the sandbox's rules to a command that runs outside it", async () => {
+        const secrets = new SecretStore();
+        secrets.set("API_X_TOKEN", "test-secret-mcp-005");
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "run_with_secrets", args: { command: `curl -s -H "Authorization: Bearer $API_X_TOKEN" https://api.example.invalid/v1/me`, secrets: ["API_X_TOKEN"] } }]);
+        const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => undefined }, ask: () => ({ allow: false }) });
+        t.switchMode("auto");
+        await t.run("go");
+        expect(t.asked).toHaveLength(1);
+        expect(mcpResults().at(-1)!.text).toContain("The user declined this command");
+    });
+
+    test("bad input is refused before anyone is asked", async () => {
+        const secrets = new SecretStore();
+        let asked = 0;
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([
+            { tool: "request_secret", args: { name: "PATH", purpose } },
+            { tool: "request_secret", args: { name: "OK_TOKEN", purpose: "x".repeat(501) } },
+            { tool: "run_with_secrets", args: { command: "echo $NOT_HELD_TOKEN", secrets: ["NOT_HELD_TOKEN"] } },
+            { tool: "run_with_secrets", args: { command: "echo hi", secrets: [] } },
+        ]);
+        const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (asked++, "test-secret-never") } });
+        await t.run("go");
+        const results = mcpResults();
+        expect(results.map((r) => r.isError)).toEqual([true, true, true, true]);
+        expect(results[0].text).toContain("PATH changes how programs run");
+        expect(results[2].text).toContain("doesn't hold NOT_HELD_TOKEN");
+        expect(asked).toBe(0);
+        expect(t.asked).toHaveLength(0);
+    });
+
+    test("offered without delegation, and only when someone can be asked", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([]);
+        const only = await makeAgent({ provider: "claude-code", secrets: new SecretStore(), ui: { requestSecret: async () => undefined }, settings: { delegation: false } });
+        await only.run("go");
+        expect(setServers().at(-1).request.servers.harness.tools.map((t: { name: string }) => t.name)).toEqual(["request_secret", "run_with_secrets"]);
+        const conn = logLines().findLast((l) => l.mcpConnected);
+        expect(conn.instructions).toContain("# Secrets (harness)");
+        expect(conn.instructions).not.toContain("Delegating to other models");
+
+        rmSync(LOG, { force: true });
+        const none = await makeAgent({ provider: "claude-code", secrets: new SecretStore(), settings: { delegation: false } });
+        await none.run("go");
+        expect(setServers()).toEqual([]);
+    });
+
+    test("Codex: the same tools, the same redaction", async () => {
+        const VALUE = "test-secret-mcp-004";
+        const secrets = new SecretStore();
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([
+            { tool: "request_secret", args: { name: "CODEX_DEPLOY", purpose } },
+            { tool: "run_with_secrets", args: { command: `echo "$CODEX_DEPLOY"; ${matches("CODEX_DEPLOY", VALUE)}`, secrets: ["CODEX_DEPLOY"] } },
+        ]);
+        const t = await makeAgent({ provider: "codex", secrets, ui: { requestSecret: async () => VALUE } });
+        await t.run("go");
+        const [handle, ran] = mcpResults();
+        expect(handle.text).toMatch(/can't hold a secret/);
+        expect(ran.isError).toBe(true);
+
+        calls([
+            { tool: "request_secret", args: { name: "DEPLOY_KEY", purpose } },
+            { tool: "run_with_secrets", args: { command: `echo "$DEPLOY_KEY"; ${matches("DEPLOY_KEY", VALUE)}`, secrets: ["DEPLOY_KEY"] } },
+        ]);
+        rmSync(LOG, { force: true });
+        const t2 = await makeAgent({ provider: "codex", secrets, ui: { requestSecret: async () => VALUE } });
+        await t2.run("go");
+        const [h2, r2] = mcpResults();
+        expect(h2.text).toStartWith("The user provided DEPLOY_KEY.");
+        expect(r2).toMatchObject({ isError: false, text: "[REDACTED DEPLOY_KEY]\nMATCH" });
+        expect(t2.asked).toHaveLength(1);
+        expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
     });
 });

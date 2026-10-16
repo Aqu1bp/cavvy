@@ -106,12 +106,12 @@ Usage:
         const slice = all.slice(start - 1, start - 1 + limit);
         const partial = start > 1 || start - 1 + slice.length < all.length;
         await recordRead(ctx, abs, partial);
-        let out = numberLines(slice, start);
+        const redacted = slice.map((line) => redact(line));
+        let out = numberLines(redacted, start);
         if (start - 1 + slice.length < all.length) {
             out += `\n\n(Showing lines ${start}-${start - 1 + slice.length} of ${all.length}. Use offset/limit to read more.)`;
         }
-        const red = redact(out);
-        if (red !== out) out = red + "\n\n<system-reminder>Some secrets in this file were redacted.</system-reminder>";
+        if (redacted.some((line, i) => line !== slice[i])) out += "\n\n<system-reminder>Some secrets in this file were redacted.</system-reminder>";
         return { content: out, display: { summary: `Read ${slice.length} line${slice.length === 1 ? "" : "s"}${partial ? ` (of ${all.length})` : ""}` } };
     },
 };
@@ -125,7 +125,7 @@ function renderNotebook(json: string, abs: string): ToolResult {
             parts.push(`<cell id="${id}" type="${c.cell_type}">\n${cellSource(c)}\n</cell>`);
             for (const o of (c.outputs ?? []) as any[]) {
                 const t = o.text ?? o.data?.["text/plain"];
-                if (t) parts.push(`<output cell="${id}">\n${(Array.isArray(t) ? t.join("") : t).slice(0, 4000)}\n</output>`);
+                if (t) parts.push(`<output cell="${id}">\n${redact(Array.isArray(t) ? t.join("") : t).slice(0, 4000)}\n</output>`);
             }
         });
         return { content: redact(parts.join("\n")), display: { summary: `Read notebook (${nb.cells?.length ?? 0} cells)` } };
@@ -241,7 +241,7 @@ function snippetAround(after: string, needle: string): string {
     const span = needle.split("\n").length;
     const start = Math.max(1, lineNo - 4);
     const end = Math.min(lines.length, lineNo + span + 3);
-    return numberLines(lines.slice(start - 1, end), start);
+    return numberLines(lines.slice(start - 1, end).map((line) => redact(line)), start);
 }
 
 export const EditTool: Tool<{ file_path: string; old_string: string; new_string: string; replace_all?: boolean }> = {

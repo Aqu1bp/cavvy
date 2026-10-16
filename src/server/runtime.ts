@@ -62,6 +62,8 @@ import type {
 } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import type { Engine, Workspace } from "./engine";
+import { MCP_SERVER_NAME } from "../agent/delegation";
+import { SecretStore, secretValueError } from "../agent/secrets";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
@@ -231,7 +233,9 @@ export class Runtime {
         if (left && left !== this.mode) this.leftIn = left;
         const effort = opts.resumed ? this.ui.state.effort : undefined;
         if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
-        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map() };
+        // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
+        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
+        this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -306,6 +310,7 @@ export class Runtime {
             mcp: this.ws.mcpStatus(),
             filesChanged: this.filesChanged(),
             shells: [],
+            secrets: this.toolState.secrets?.names() ?? [],
         };
     }
 
@@ -775,6 +780,7 @@ export class Runtime {
                 ui: {
                     askQuestion: (q, options, multi) => this.askQuestion(q, options, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
+                    requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
                 drainQueued: () => this.drainQueued(),
             },
@@ -1288,6 +1294,7 @@ export class Runtime {
             this.pending.set(interaction.id, { interaction, resolve });
             this.setState({ interactions: [...this.pendingList()] });
             this.setStatus("waiting");
+            if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
             const kind = interaction.kind;
             this.engine.notify(this, kind, kind === "permission" ? `Wants to ${interaction.heading.toLowerCase()}` : kind === "question" ? interaction.question : "Plan ready for your review");
         });
@@ -1298,11 +1305,18 @@ export class Runtime {
     }
 
     respond(interactionId: string, r: InteractionResponse) {
+        if (!r || typeof r !== "object") throw new RpcError("response must be an object");
         const p = this.pending.get(interactionId);
-        if (!p) throw new Error("That request was already answered or has expired.");
-        if (p.interaction.kind !== r.kind) throw new Error("The answer doesn't match the request.");
+        if (!p) throw new RpcError("That request was already answered or has expired.", "expired");
+        if (p.interaction.kind !== r.kind) throw new RpcError("The answer doesn't match the request.");
+        // A bad value stays in the card for the user to fix; the message never quotes it.
+        if (p.interaction.kind === "secret" && r.kind === "secret" && r.value !== undefined) {
+            const bad = secretValueError(r.value, p.interaction.name);
+            if (bad) throw new RpcError(bad, "bad_secret");
+            r = { kind: "secret", value: r.value };
+        }
         // Only what was offered: "always" isn't, for a dangerous command.
-        if (p.interaction.kind === "permission" && r.kind === "permission" && !p.interaction.options.some((o) => o.id === r.choice)) throw new Error("That isn't one of the choices offered.");
+        if (p.interaction.kind === "permission" && r.kind === "permission" && !p.interaction.options.some((o) => o.id === r.choice)) throw new RpcError("That isn't one of the choices offered.");
         this.settle(interactionId, r);
     }
 
@@ -1345,9 +1359,10 @@ export class Runtime {
         };
         if (req.preview?.summary) it.summary = redact(req.preview.summary);
         if (tool.name === "Bash") {
-            it.heading = "Run a shell command";
+            it.heading = req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
             it.command = redact(String(input.command ?? ""));
             if (input.description) it.description = redact(String(input.description));
+            if (req.secrets?.length) it.secrets = [...req.secrets];
             if (decision.sandbox && Array.isArray(input.allowedHosts)) it.hosts = input.allowedHosts.map(String);
             if (!decision.dangerous && suggestions.length) {
                 const label = suggestions.map((s) => s.replace(/^Bash\((.*?)(:\*)?\)$/, "$1")).join(", ");
@@ -1419,6 +1434,26 @@ export class Runtime {
         const r = await this.interact({ kind: "question", id: this.newId(), toolId, question: redact(question), options: options.map((o) => ({ label: redact(o.label), description: o.description && redact(o.description) })), multi });
         if (toolId) this.patchBlock(toolId, { status: "running" });
         return r?.kind === "question" && r.answers?.length ? r.answers : undefined;
+    }
+
+    /** The value goes straight back to the tool, which keeps it in the session's store: nothing here holds on to it. */
+    private async requestSecret(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined> {
+        const toolId = this.runningTool("RequestSecret") ?? this.runningTool(`mcp__${MCP_SERVER_NAME}__request_secret`);
+        if (toolId) this.patchBlock(toolId, { status: "awaiting" });
+        const id = this.newId();
+        const withdraw = () => this.settle(id, undefined);
+        signal.addEventListener("abort", withdraw, { once: true });
+        try {
+            const r = await this.interact({ kind: "secret", id, toolId, name, purpose: redact(purpose) });
+            return r?.kind === "secret" ? r.value : undefined;
+        } finally {
+            signal.removeEventListener("abort", withdraw);
+            if (toolId) this.patchBlock(toolId, { status: "running" });
+        }
+    }
+
+    forgetSecret(name: string) {
+        if (!this.toolState.secrets?.forget(name)) throw new RpcError("This session doesn't hold a secret by that name.", "not_found");
     }
 
     private async approvePlan(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string }> {
@@ -1968,6 +2003,7 @@ export class Runtime {
     async close() {
         this.abort?.abort();
         this.cancelInteractions();
+        this.toolState.secrets?.clear();
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
         // What's still going (a turn being interrupted, sub-agents delegated past their turn) as far as it got.

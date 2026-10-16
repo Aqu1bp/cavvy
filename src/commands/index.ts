@@ -85,6 +85,21 @@ function ago(ms: number): string {
     return `${Math.round(s / 86400)}d ago`;
 }
 
+/** Names only: the values never reach the screen. */
+function secretsCommand(app: App, args: string) {
+    const store = app.toolState.secrets;
+    const [verb, name, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+    if (verb === "forget") {
+        if (!name || rest.length) return app.notice("Usage: /secrets forget NAME", "warn");
+        if (!store?.forget(name)) return app.notice(`This session doesn't hold a secret named ${redact(name)}.`, "warn");
+        return app.notice(`Forgot ${name}: new shell commands won't see it. Output that shows its value stays redacted.`);
+    }
+    if (verb) return app.notice("Usage: /secrets, or /secrets forget NAME", "warn");
+    const names = store?.names() ?? [];
+    if (!names.length) return app.notice("No secrets in this session. The agent can ask for one with RequestSecret.");
+    app.print(() => ["", heading("Secrets"), ...names.map((n) => `  $${n}`), theme.muted("  Shell commands in this session see these. Forget one with /secrets forget NAME."), ""]);
+}
+
 function heading(text: string): string {
     return bold(text);
 }
@@ -1548,6 +1563,7 @@ const BUILTIN: Command[] = [
             app.print((cols) => ["", heading("Todos"), ...renderTodos(todos, cols)]);
         } },
     { name: "bashes", description: "List and stop background shells", run: bashesCommand },
+    { name: "secrets", description: "List the secrets this session holds (names only), or forget one", args: "[forget NAME]", whileBusy: true, run: secretsCommand },
     { name: "add-dir", description: "Allow working in another directory", args: "<path>", run: addDirCommand },
     { name: "doctor", description: "Check the installation and providers", run: doctorCommand },
     { name: "exit", aliases: ["quit", "q"], description: "Exit", whileBusy: true, noEcho: true, run: (app) => app.exit(0) },

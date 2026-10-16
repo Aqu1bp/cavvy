@@ -45,6 +45,7 @@ import { commandList, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
+import { SecretStore, secretValueError } from "../agent/secrets";
 
 export interface AppInit {
     cwd: string;
@@ -103,6 +104,7 @@ export class App {
     lastResponse = "";
 
     private dialogs: Dialog[] = [];
+    private dialogQueue: Dialog[] = [];
     busy = false;
     private abort?: AbortController;
     private queued: string[] = [];
@@ -145,7 +147,6 @@ export class App {
     private menuIndex = 0;
     private menuHiddenFor?: string;
     private exitResolve!: () => void;
-    private permissionQueue: Promise<unknown> = Promise.resolve();
     private exiting = false;
     readonly notifier = new Notifier({
         settings: () => this.settings,
@@ -166,7 +167,7 @@ export class App {
         this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted);
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
-        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map() };
+        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
         this.editor.setHistory(loadPromptHistory(init.cwd));
     }
 
@@ -236,7 +237,7 @@ export class App {
         this.exiting = true;
         this.abort?.abort();
         const disposed = this.agent?.dispose();
-        for (const d of this.dialogs) d.cancel();
+        for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.stopTicker();
         this.screen.setLive([]);
         const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
@@ -517,6 +518,7 @@ export class App {
                 ui: {
                     askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
+                    requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
                 drainQueued: () => {
                     // Plain messages join the running turn; slash commands wait for it to end.
@@ -576,6 +578,7 @@ export class App {
         prev.release();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
+        this.toolState.secrets?.clear();
         this.makeAgent();
         this.sessionSwitched(prev, "clear");
     }
@@ -593,6 +596,7 @@ export class App {
         prev?.release();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
+        this.toolState.secrets?.clear();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
         // At startup, run() fires SessionStart.
@@ -933,32 +937,41 @@ export class App {
     // Permissions and UI bridges
 
     async showDialog<T>(d: Dialog & { done: Promise<T> }): Promise<T> {
-        this.dialogs.push(d);
-        this.renderLive();
+        this.pushDialog(d);
         try {
             return await d.done;
         } finally {
-            this.dialogs = this.dialogs.filter((x) => x !== d);
-            this.renderLive();
+            // A cancelled dialog is removed even if it hasn't been shown yet.
+            this.popDialog(d);
         }
     }
 
     pushDialog(d: Dialog) {
-        this.dialogs.push(d);
+        // A sub-agent must never redirect keystrokes meant for a masked input
+        // into a permission or question. All interactive dialogs share the queue.
+        if (this.dialogs.length || this.dialogQueue.length) this.dialogQueue.push(d);
+        else this.dialogs.push(d);
         this.renderLive();
     }
 
     popDialog(d: Dialog) {
         this.dialogs = this.dialogs.filter((x) => x !== d);
+        this.dialogQueue = this.dialogQueue.filter((x) => x !== d);
+        if (!this.dialogs.length && !this.exiting) {
+            // One abort can settle several dialogs together. Let their cleanup
+            // remove queued prompts before deciding which one to display next.
+            queueMicrotask(() => {
+                if (this.dialogs.length || this.exiting) return;
+                const next = this.dialogQueue.shift();
+                if (next) this.dialogs.push(next);
+                this.renderLive();
+            });
+        }
         this.renderLive();
     }
 
     private askPermission(req: PermissionRequest): Promise<PermissionResponse> {
-        // One prompt at a time, even with parallel sub-agents. A stopped sub-agent's prompt isn't shown.
-        const run = async (): Promise<PermissionResponse> => (req.signal?.aborted ? { allow: false } : this.permissionDialog(req));
-        const p = this.permissionQueue.then(run, run);
-        this.permissionQueue = p.catch(() => undefined);
-        return p;
+        return req.signal?.aborted ? Promise.resolve({ allow: false }) : this.permissionDialog(req);
     }
 
     private async permissionDialog(req: PermissionRequest): Promise<PermissionResponse> {
@@ -973,13 +986,14 @@ export class App {
 
         if (req.agentLabel) header.push(theme.muted(`Requested by sub-agent: ${req.agentLabel}`), "");
         if (tool.name === "Bash") {
-            title = "Bash command";
+            title = req.secrets?.length ? "Bash command with secrets" : "Bash command";
             const cmd = String(input.command ?? "");
             const { highlightCode } = await import("./highlight");
             const lines = highlightCode(cmd, "sh");
             header.push(...lines.slice(0, 12).map((l) => "  " + l));
             if (lines.length > 12) header.push(theme.subtle(`  … +${lines.length - 12} lines`));
             if (input.description) header.push(theme.muted(`  ${input.description}`));
+            if (req.secrets?.length) header.push(theme.warning(`  It gets ${req.secrets.map((n) => `$${n}`).join(", ")} in its environment.`));
             const hosts = Array.isArray(input.allowedHosts) ? input.allowedHosts.map(String) : [];
             if (decision.sandbox && hosts.length) header.push(theme.muted(`  Sandboxed, with network access to ${hosts.join(", ")}`));
             if (!decision.dangerous && suggestions.length) {
@@ -1060,6 +1074,26 @@ export class App {
         }
     }
 
+    /** A masked prompt; the value goes back to the tool and is never printed. */
+    private async requestSecret(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined> {
+        if (signal.aborted) return undefined;
+        const d = new InputDialog({
+            title: `The agent asks for a secret: ${name}`,
+            header: [purpose, theme.muted(`Only this session's shell commands see the value, as $${name}; the agent gets its name.`)],
+            secret: true,
+            exact: true,
+            placeholder: "Type or paste the value (input is hidden)",
+            color: theme.info,
+            hint: "enter to provide · esc to decline",
+            validate: (v) => secretValueError(v, name),
+        });
+        void this.notifier.notify("question");
+        const withdraw = () => d.cancel();
+        signal.addEventListener("abort", withdraw, { once: true });
+        const value = await this.showDialog(d).finally(() => signal.removeEventListener("abort", withdraw));
+        return signal.aborted ? undefined : value;
+    }
+
     private async askQuestion(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined> {
         const OTHER = "\u0000other";
         const items: SelectItem<string>[] = options.map((o) => ({ label: o.label, value: o.label, description: o.description }));
@@ -1125,6 +1159,7 @@ export class App {
     private interrupt() {
         if (!this.busy) return;
         this.abort?.abort();
+        for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.status = "Interrupting";
     }
 
