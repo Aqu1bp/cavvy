@@ -141,12 +141,31 @@ describe("setup RPC dispatch without sockets", () => {
             expect(made.setup?.script).toEqual(f.script);
             expect(f.opened).not.toHaveBeenCalled();
             await f.run(made);
-            expect(f.opened).toHaveBeenCalledWith(f.client, expect.any(String), made.path, 80, 24, { input: "touch setup-ran\r" });
+            expect(f.opened).toHaveBeenCalledWith(f.client, expect.any(String), made.path, 80, 24, { input: "touch setup-ran\r", script: { id: f.script.id, name: f.script.name } });
             expect((await f.engine.handle(f.client, "scripts.list", { cwd: f.main })).lastUsed).toBeUndefined();
             await expect(f.run(made)).rejects.toMatchObject({ code: "setup_refused" });
             expect(f.opened).toHaveBeenCalledTimes(1);
             await f.engine.handle(f.client, "scripts.run", { id: "manual", cwd: f.main, script: f.script.id, cols: 80, rows: 24 });
             expect(f.opened).toHaveBeenCalledTimes(2);
+        } finally { await f.close(); }
+    });
+
+    test("a reloaded window cancels a pending setup lookup and its consumed ticket cannot be retried", async () => {
+        const f = await fixture();
+        const key = "0123456789abcdef0123456789abcdef";
+        Object.assign(f.client, { window: key });
+        const back = { window: key, subs: new Set<string>(), send() {} };
+        f.engine.clients.add(back);
+        try {
+            const made = await f.create();
+            const params = { id: "pending-setup", cwd: made.path, script: f.script.id, cols: 80, rows: 24, setup: made.setup!.ticket };
+            const opening = f.engine.handle(f.client, "scripts.run", params).catch((e) => e);
+            expect(f.engine.setups.size).toBe(0);
+            await f.engine.handle(back, "terminal.close", { id: params.id });
+            expect(await opening).toMatchObject({ code: "terminal_not_open" });
+            expect(f.opened).not.toHaveBeenCalled();
+            await expect(f.engine.handle(f.client, "scripts.run", params)).rejects.toMatchObject({ code: "setup_refused" });
+            expect((f.engine as any).openingTerminals.size).toBe(0);
         } finally { await f.close(); }
     });
 
