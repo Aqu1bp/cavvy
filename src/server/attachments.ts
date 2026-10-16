@@ -46,6 +46,11 @@ export function checkFiles(raw: unknown, model: ModelInfo | undefined): FilePart
     if (raw.length > ATTACH_LIMITS.files) throw new RpcError(`A message can carry ${ATTACH_LIMITS.files} files at most; this one has ${raw.length}.`);
     const out: FilePart[] = [];
     let total = 0;
+    /** As kept: text redacted, which can make it longer (an edited message must fit again). */
+    let stored = 0;
+    const storedFits = () => {
+        if (stored > ATTACH_LIMITS.totalBytes) throw new RpcError(`These files come to more than ${formatBytes(ATTACH_LIMITS.totalBytes)} once the secrets in them are redacted, the most one message can carry.`);
+    };
     for (const f of raw as Partial<WireFile>[]) {
         if (typeof f?.name !== "string" || typeof f.data !== "string") throw new RpcError("Each file needs a name and its data");
         const pasted = f.pasted === true;
@@ -55,11 +60,13 @@ export function checkFiles(raw: unknown, model: ModelInfo | undefined): FilePart
         if (f.data.length % 4 !== 0 || !BASE64.test(f.data)) throw new RpcError(`${name} didn't arrive as base64`);
         const bytes = Buffer.from(f.data, "base64");
         total += bytes.length;
+        stored += bytes.length;
         if (total > ATTACH_LIMITS.totalBytes) throw new RpcError(`These files come to more than ${formatBytes(ATTACH_LIMITS.totalBytes)}, the most one message can carry.`);
         // Pasted text is text, whatever it starts with.
         if (!pasted && bytes.subarray(0, 5).toString("latin1") === "%PDF-") {
             if (bytes.length > ATTACH_LIMITS.pdfBytes) throw new RpcError(`${name} is ${formatBytes(bytes.length)}; PDFs can be ${formatBytes(ATTACH_LIMITS.pdfBytes)} at most.`);
             if (model && !readsPdf(model)) throw new RpcError(`${model.name ?? model.id} can't read PDFs. Remove ${name}, or switch to a model that can.`, "pdf_unsupported");
+            storedFits();
             out.push({ type: "file", kind: "pdf", name, size: bytes.length, mediaType: "application/pdf", data: f.data });
             continue;
         }
@@ -74,6 +81,8 @@ export function checkFiles(raw: unknown, model: ModelInfo | undefined): FilePart
         text = redact(text);
         // Stored redacted: what comes back to the box when it's edited must fit again.
         if (Buffer.byteLength(text) > ATTACH_LIMITS.textBytes) throw new RpcError(`${name} is too large to attach once the secrets in it are redacted (text files can be ${formatBytes(ATTACH_LIMITS.textBytes)} at most).`);
+        stored += Buffer.byteLength(text) - bytes.length;
+        storedFits();
         out.push({ type: "file", kind: "text", name, size: bytes.length, lines: lineCount(text), text, ...(pasted ? { pasted: true } : {}) });
     }
     return out;

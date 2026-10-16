@@ -27,7 +27,7 @@ import {
 import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS } from "./anthropic-models";
 import type { Effort } from "../config/settings";
 import { plainErrorText } from "../util/html";
-import { fileAsText, readsPdf } from "./files";
+import { fileAsText, fitMedia, readsPdf } from "./files";
 
 type BetaParams = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type BetaMessageParam = Anthropic.Beta.Messages.BetaMessageParam;
@@ -183,7 +183,7 @@ export class AnthropicProvider implements ProviderClient {
             model: m.id,
             max_tokens: maxOut,
             system: req.system ? [{ type: "text", text: req.system, ...(req.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}) }] : undefined,
-            messages: toAnthropicMessages(req.messages, stripThinking, readsPdf(req.model)),
+            messages: toAnthropicMessages(fitMedia(req.messages, readsPdf(req.model)), stripThinking, readsPdf(req.model)),
             tools: tools.length ? tools : undefined,
             stream: true,
         };

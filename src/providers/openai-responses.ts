@@ -9,7 +9,7 @@ import { apiFastModeInfo } from "./fast-mode";
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
-import { fileAsText, frameName, readsPdf } from "./files";
+import { fileAsText, fitMedia, frameName, readsPdf } from "./files";
 import { httpError } from "./openai-compat";
 import {
     ProviderError,
@@ -128,7 +128,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
             model: m.id,
             store: false,
             stream: true,
-            input: toResponsesInput(req.messages, def, m.id, readsPdf(req.model)),
+            input: toResponsesInput(fitMedia(req.messages, readsPdf(req.model)), def, m.id, readsPdf(req.model)),
         };
         // Left out, the project's own tier applies (auto); "default" would override it, so only fast is asked for.
         if (req.fastMode && m.supportsFastMode && def.id === "openai" && apiFastModeInfo(def.id, m.id, this.base).supportsFastMode) body.service_tier = "fast";

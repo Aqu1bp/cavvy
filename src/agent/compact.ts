@@ -36,7 +36,7 @@ export function compactRequestMessage(extra?: string): UserMessage {
 export function transcriptText(messages: Message[], maxChars: number): string {
     const cap = Math.floor(maxChars / 4);
     const blocks = messages
-        .map(renderForTranscript)
+        .map((m) => renderForTranscript(m, cap))
         .filter(Boolean)
         .map((b) => truncateMiddle(b, cap));
     if (!blocks.length) return "";
@@ -55,19 +55,39 @@ export function transcriptText(messages: Message[], maxChars: number): string {
     return [first, ...recent.reverse()].join("\n\n");
 }
 
-function renderForTranscript(m: Message): string {
+function renderForTranscript(m: Message, cap: number): string {
     const out: string[] = [];
+    const files: { at: number; name: string }[] = [];
     for (const p of m.content) {
         if (p.type === "text") out.push(truncateMiddle(p.text, 4000));
         else if (p.type === "tool_call") out.push(`[called ${p.name}: ${truncateMiddle(JSON.stringify(p.input), 600)}]`);
         else if (p.type === "tool_result") out.push(`[${p.isError ? "error from" : "result of"} ${p.toolName}: ${truncateMiddle(p.content, 1500)}]`);
         else if (p.type === "image") out.push("[image]");
-        // Framed here too, so a file can't pass for the transcript's own lines.
-        else if (p.type === "file") out.push(p.kind === "text" ? framedText({ ...p, text: truncateMiddle(p.text, 4000) }) : `[attached PDF ${p.name}]`);
+        else if (p.type === "file") {
+            if (p.kind === "pdf") out.push(`[the user attached ${p.name} earlier; its contents aren't included here]`);
+            else {
+                // Framed here too (shortened first), so a file can't pass for the transcript's own lines.
+                files.push({ at: out.length, name: p.name });
+                out.push(framedText({ ...p, text: truncateMiddle(p.text, 4000) }));
+            }
+        }
     }
     if (!out.length) return "";
     const results = m.content.every((p) => p.type === "tool_result");
-    return results ? out.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${out.join("\n")}`;
+    const left: string[] = [];
+    const render = () => {
+        const parts = out.filter(Boolean);
+        if (left.length) parts.push(`[${left.length === 1 ? "an attached file" : `${left.length} attached files`} left out here, too long to include: ${left.join(", ")}]`);
+        return results ? parts.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${parts.join("\n")}`;
+    };
+    // Past the cap, whole files go (the last first) rather than shortening the message through a frame.
+    let s = render();
+    for (let f = files.pop(); f && s.length > cap; f = files.pop()) {
+        out[f.at] = "";
+        left.unshift(f.name);
+        s = render();
+    }
+    return s;
 }
 
 /** The compaction request with a condensed transcript in place of the full history. */

@@ -595,6 +595,11 @@ export class Runtime {
         this.setState({ model: undefined });
     }
 
+    /** Once the model is settled: the session's first, or a switch under way (what can be sent depends on it). */
+    async modelSettled(): Promise<void> {
+        while (this.switching) await this.switching.catch(() => undefined);
+    }
+
     /** The user picked a model: a prompt sent while it's being set up waits, and starts with it. */
     switchModel(ref: string, opts: { persist?: boolean } = {}): Promise<boolean> {
         // After the one under way (the session's own, as it opens), so this one has the last word.

@@ -1099,8 +1099,8 @@ export class Engine {
                     if (!validImage(i)) throw new RpcError("Images must be PNG, JPEG, GIF or WebP, under 15 MB.");
                     return { type: "image", mediaType: String(i.mediaType), data: String(i.data) };
                 }) : [];
-                // A session just made may still be settling on its model; which one decides whether PDFs can go.
-                if (Array.isArray(p.files) && p.files.length && !rt.model) await rt.ready.catch(() => undefined);
+                // Which model decides whether PDFs can go: a session just made, or one switching models, waits until it's settled.
+                if (Array.isArray(p.files) && p.files.length) await rt.modelSettled();
                 const attached: AttachedPart[] = [...images, ...checkFiles(p.files, rt.model)];
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.

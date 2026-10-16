@@ -5,7 +5,7 @@
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
-import { fileAsText, frameName, providerReadsPdf } from "./files";
+import { fileAsText, fitMedia, frameName, providerReadsPdf } from "./files";
 import {
     ProviderError,
     type AssistantContent,
@@ -184,7 +184,7 @@ export class OpenAICompatProvider implements ProviderClient {
         const m = req.model;
         const body: Json = {
             model: m.id,
-            messages: toOpenAIMessages(req.system, req.messages, def),
+            messages: toOpenAIMessages(req.system, fitMedia(req.messages, providerReadsPdf(def)), def),
             stream: true,
         };
         if (req.tools.length) {

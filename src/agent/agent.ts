@@ -47,7 +47,7 @@ import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
-import { forBackend, readsPdf } from "../providers/files";
+import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration } from "../mcp/server";
 import {
@@ -446,10 +446,7 @@ export class Agent {
     private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.o.settings();
-        const promptText = content
-            .filter((p): p is TextPart => p.type === "text")
-            .map((p) => p.text)
-            .join("\n");
+        const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
 
         if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -1551,7 +1548,8 @@ export class Agent {
             const m = this.session.messages[i]!;
             if (m.role !== "user") continue;
             const kind = m.meta?.kind;
-            const text = () => textOf(m).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+            // A long paste rides as an attachment, but it's what the developer asked for too.
+            const text = () => [textOf(m), ...pastedTexts(m.content)].join("\n").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
             if (kind === "summary") {
                 summary = text() || undefined;
                 break;
