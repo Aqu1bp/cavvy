@@ -1382,31 +1382,23 @@ const GREP_VALUE_LONG = [
     "exclude-from", "include", "include-dir", "label", "binary-files", "group-separator",
 ];
 
-/** A glob that may expand to an option: its start isn't known, or it's a `-` (`-[e]` is -e given a file named so). */
-function optionGlob(c: SimpleCommand): boolean {
-    return !!c.globStart?.length || !!c.globbed?.some((i) => c.argv[i]!.startsWith("-"));
-}
-
 /**
  * The messages of git commit, tag and the like (`-m`, `--message`), by
  * argv index, per simple command: git neither runs nor opens them, so
  * "Fix .claude worktrees" or "Remove the rm calls" in one isn't a path or a
- * command. None when the line has something they could feed (a
- * substitution, or a pipe that could take git's output to a shell).
+ * command. Only on a line of nothing but git, written out (`git add -A &&
+ * git commit -m …`): anything else on it could change what `git` is (a
+ * function, alias, PATH, hash, sourced file) or feed it (a substitution, a
+ * pipe that could take git's output to a shell), and a redirect, expansion
+ * or glob could move the words (`-m >~/.zshrc`, `$X -m .env` with X=-F).
  */
 export function messageWords(a: CommandAnalysis): number[][] {
-    if (a.unparsable || a.hasSubstitution || a.commands.some((c) => c.after === "|")) return a.commands.map(() => []);
-    // `git() { cat "$3"; }` (any function sets unsafeExpansion), an alias, a sourced file or an eval, behind any wrapper: then it may not be git.
-    // So may a PATH set (`PATH=./bin:$PATH;`, `export PATH=…`) or a `hash -p` on the line.
-    const resolves = (c: SimpleCommand) => c.argv.some((w) => w.startsWith("PATH=")) || runLevels(c.argv).some((l) => runs(l.argv[0], ".", "source", "eval", "alias", "function", "hash"));
-    if (a.unsafeExpansion || a.commands.some(resolves)) return a.commands.map(() => []);
+    const none = a.commands.map(() => []);
+    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion || a.commands.some((c) => c.after === "|")) return none;
+    const plainGit = (c: SimpleCommand) => (c.argv[0] === "git" || c.argv[0] === "/usr/bin/git") && !c.redirectMayFail && !c.expands?.length && !c.globbed?.length;
+    if (!a.commands.every(plainGit)) return none;
     return a.commands.map((c) => {
-        // git itself, found on PATH or in a system bin, with nothing set for it; and no
-        // redirect, whose target would look like the message (`-m >~/.zshrc`).
         const argv = c.argv;
-        const dir = argv[0]!.slice(0, Math.max(0, argv[0]!.lastIndexOf("/")));
-        // Words by position, so not when one can turn into more or fewer (`$X -m .env` with X=-F).
-        if (c.redirectMayFail || c.expands?.length || optionGlob(c) || !(argv[0] === "git" || (dir && SYSTEM_BIN.has(dir) && argv[0]!.endsWith("/git")))) return [];
         const { index } = gitSubcommand(argv);
         if (!["commit", "tag", "notes", "merge", "revert", "stash"].includes(argv[index] ?? "")) return [];
         const out: number[] = [];
@@ -1445,8 +1437,8 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     const a = analyzeCommand(cmd);
     const plain = !a.unparsable && !a.hasSubstitution && !a.unsafeExpansion;
     // Words count by position, so not when one can turn into more or fewer (an
-    // expansion, a glob that may start with -) or isn't the command's (`<.env`).
-    const fixed = (c: SimpleCommand) => plain && !c.redirectMayFail && !c.expands?.length && !optionGlob(c);
+    // expansion, a glob: `--exclude dir*/.env`) or isn't the command's (`<.env`).
+    const fixed = (c: SimpleCommand) => plain && !c.redirectMayFail && !c.expands?.length && !c.globbed?.length;
     const excluded = a.commands.map((c) => new Set(fixed(c) ? exclusionWords(c.argv) : []));
     messageWords(a).forEach((m, k) => m.forEach((i) => excluded[k]!.add(i)));
     // The command line without them: blanked where they were, so the rest keeps its places.
