@@ -50,7 +50,7 @@ function blockText(b: Block): string | undefined {
         case "notice":
             return b.text;
         case "compact":
-            return b.summary;
+            return plain(b.summary);
         case "shell":
             return `${b.command}\n${b.output}`;
         default:

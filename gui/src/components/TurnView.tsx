@@ -148,7 +148,7 @@ function Compacted(p: { block: CompactBlock }) {
     createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
         <div class="compacted" data-find={p.block.id}>
-            <div class="compacted-rule">
+            <div class="compacted-rule" data-find-skip>
                 <span />
                 <button class="link-btn" onClick={() => setOpen(!open())}>
                     Conversation compacted · {open() ? "hide summary" : "view summary"}

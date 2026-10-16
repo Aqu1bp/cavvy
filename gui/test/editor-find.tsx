@@ -20,7 +20,7 @@ function check(ok: unknown, message: string): asserts ok {
 
 export async function checkEditorFind(root: HTMLElement) {
     const sessionId = "editor-find-fixture";
-    const read: ToolBlock = { t: "tool", id: "read", name: "Read", title: "Read(src/reader.ts)", input: { file_path: "src/reader.ts", offset: 7 }, status: "ok", summary: "read summary", output: "src/reader.ts output" };
+    const read: ToolBlock = { t: "tool", id: "read", name: "Read", title: "Read(src/reader.ts)", input: { file_path: "src/reader.ts", offset: 7 }, status: "ok", summary: "read details", output: "src/reader.ts output" };
     const edit: ToolBlock = {
         t: "tool", id: "edit", name: "Edit", title: "Edit(src/edited.ts)", input: { file_path: "src/edited.ts" }, status: "ok",
         diff: { path: "src/edited.ts", status: "modified", added: 1, removed: 0, hunks: [{ oldStart: 9, oldLines: 0, newStart: 9, newLines: 1, lines: [{ t: "add", text: "edited text" }] }] },
@@ -30,7 +30,7 @@ export async function checkEditorFind(root: HTMLElement) {
             { kind: "text", name: "files-quokka.txt", size: 1024, lines: 3 },
             { kind: "pdf", name: "files.pdf", size: 512 },
         ] },
-        blocks: [read, edit, { t: "text", id: "reply", text: "Inspect src/quokka.ts:12 near `src/quokka.ts:20` and [**quokka label**](src/quokka.ts:30)." }],
+        blocks: [read, edit, { t: "text", id: "reply", text: "Inspect src/quokka.ts:12 near `src/quokka.ts:20` and [**quokka label**](src/quokka.ts:30)." }, { t: "compact", id: "compact", summary: "**Important** summary", auto: false }],
     };
     const state = { id: sessionId, cwd: "/fixture", interactions: [] } as unknown as SessionState;
     const opened: { path: string; line?: number; sessionId: string }[] = [];
@@ -66,6 +66,9 @@ export async function checkEditorFind(root: HTMLElement) {
     };
     try {
         await settle();
+        // File lookups are batched on a timer; two animation frames can finish
+        // before that timer runs (especially on a fast display or a busy suite).
+        for (let i = 0; i < 100 && !finishLookup; i++) await new Promise((r) => setTimeout(r, 20));
         check(scope("prompt").querySelectorAll(".prompt-attachments .chip").length === 3, "prompt displays image, text and PDF attachment chips");
         check(findMatches([turn], "files").length === 1 && textRanges(scope("prompt"), "files").length === 1, "attachment names do not duplicate a prompt match");
         for (const label of ["files.pdf", "1 KB", "1 image"]) {
@@ -120,6 +123,24 @@ export async function checkEditorFind(root: HTMLElement) {
         check(changedAction.closest("[data-find-skip]"), "changed-files editor action is excluded from find");
         changedAction.click();
         check(opened.at(-1)?.path === "src/edited.ts" && opened.at(-1)?.line === 9 && opened.at(-1)?.sessionId === sessionId, "changed-files action keeps its session, path and line");
+
+        const compact = scope("compact");
+        check(!compact.querySelector(".compacted-summary"), "compaction summary begins folded");
+        check(findMatches([turn], "summary").length === 1 && textRanges(compact, "summary").length === 0, "folded header contributes no match to the counted summary");
+        setFindQuery("summary");
+        await settle(350);
+        check(count() === "1 of 1" && textRanges(compact, "summary").length === 1, "revealed summary has exactly the counted occurrence");
+        check(current().toString() === "summary" && current().startContainer.parentElement?.closest(".compacted-summary"), "summary selects the body occurrence instead of the hide-summary header");
+        key(input, "Enter");
+        await settle();
+        check(count() === "1 of 1" && current().startContainer.parentElement?.closest(".compacted-summary"), "stepping wraps to the body, never the header");
+        compact.querySelector<HTMLButtonElement>(".compacted-rule button")!.click();
+        check(!compact.querySelector(".compacted-summary"), "summary can be folded again");
+        setFindQuery("Important summary");
+        await settle(350);
+        check(findMatches([turn], "Important summary").length === 1 && count() === "1 of 1", "formatted compaction summary is counted as rendered Markdown");
+        check(current().toString() === "Important summary" && current().startContainer.parentElement?.closest("strong"), "formatted match is revealed and highlighted across the bold boundary");
+        check(textRanges(col, "hide summary").length === 0 && textRanges(col, "Conversation compacted").length === 0, "compaction controls never enter highlight ranges");
 
         const beforeKeys = opened.length;
         check(key(input, "Escape").defaultPrevented && !findOpen(), "Escape closes find");
