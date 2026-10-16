@@ -15,6 +15,7 @@ import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionRe
 import { canReveal, revealPath } from "../lib/platform";
 import { plural } from "../lib/format";
 import { DiffView } from "./blocks/DiffView";
+import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
 import { Segmented, Spinner } from "./ui/bits";
 
@@ -106,6 +107,8 @@ function FileHead(p: { file: Row }) {
 
 export function ReviewPane(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
+    const [publishRequest, setPublishRequest] = createSignal<string>();
+    createEffect(on(id, () => setPublishRequest(undefined)));
     const saved = lastView.get(p.handle.id);
     const [scope, setScope] = createSignal<ReviewScope>(review()?.scope ?? saved?.scope ?? "uncommitted");
     const [turnId, setTurnId] = createSignal<number | undefined>(review()?.turnId ?? saved?.turnId);
@@ -275,6 +278,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         <button class="btn sm" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: selected() })}>Commit…</button>
                     </span>
                 </Show>
+                <Show when={!noRepo()}><button class="btn sm" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>Push…</button></Show>
                 <Segmented
                     size="sm"
                     value={split() ? "split" : "unified"}
@@ -298,6 +302,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     <X size={16} />
                 </button>
             </div>
+            <Show when={git()?.repo}><PublishStatus handle={p.handle} request={publishRequest()} onClose={() => setPublishRequest(undefined)} /></Show>
             <div class="review-bar">
                 <Show when={!noRepo()} fallback={<span class="review-scope-note">{git()?.reason}</span>}>
                     <Segmented

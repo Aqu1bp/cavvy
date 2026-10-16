@@ -1308,6 +1308,18 @@ export class Engine {
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
                 return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId });
             }
+            case "session.gitPublishInfo":
+                return this.runtime(p.id).gitPublishInfo();
+            case "session.gitPrState":
+                return this.runtime(p.id).gitPrState();
+            case "session.gitPublish": {
+                if (typeof p.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(p.fingerprint) || !["push", "pr"].includes(p.action)) throw new RpcError("Invalid publish confirmation.", "invalid");
+                for (const key of ["confirmProtected", "draft"]) if (p[key] !== undefined && typeof p[key] !== "boolean") throw new RpcError(`${key} must be a boolean.`, "invalid");
+                for (const [key, limit] of [["base", 400], ["title", 250], ["body", 16000]] as const) {
+                    if (p[key] !== undefined && (typeof p[key] !== "string" || p[key].length > limit || p[key].includes("\0"))) throw new RpcError(`Invalid ${key}.`, "invalid");
+                }
+                return this.runtime(p.id).gitPublish({ fingerprint: p.fingerprint, action: p.action, confirmProtected: p.confirmProtected, base: p.base, title: p.title, body: p.body, draft: p.draft });
+            }
             case "session.gitCommit":
             case "session.gitCommitMessage": {
                 if (!Array.isArray(p.paths) || !p.paths.length || p.paths.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
