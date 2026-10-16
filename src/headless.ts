@@ -121,7 +121,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     await Promise.race([mcp.startAll(), sleep(15_000)]);
     for (const s of mcp.servers.values()) {
         if (s.status === "failed") stderr(`warning: MCP server ${s.name} failed: ${(s.error ?? "").split("\n")[0]}`);
-        if (s.status === "needs-approval") stderr(`warning: MCP server ${s.name} from .mcp.json is not approved; run harness interactively and use /mcp to approve it.`);
+        if (s.status === "needs-approval") stderr(`warning: MCP server ${s.name} from .mcp.json is not approved${s.approval?.reason === "changed" ? " (what it runs changed since it was approved)" : ""}; run harness interactively and use /mcp to approve it.`);
     }
 
     const def = getProvider(model.provider)!;
@@ -155,8 +155,9 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         // Not a session message, so redact here (WebFetch pages, reviewer prompts).
         const res = await s.client.stream({ model: s.model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) }, () => {});
         if (res.usage) {
-            const c = costOf(res.usage, s.model).usd;
-            session.recordUsage(modelRef(s.model), res.usage, c);
+            const est = costOf(res.usage, s.model);
+            const c = est.usd;
+            session.recordUsage(modelRef(s.model), res.usage, c, est.unknown);
             totalCost += c;
             totalUsage = addUsage(totalUsage, res.usage);
         }
@@ -215,9 +216,11 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
 
     const agent = new Agent({
         session,
+        trusted: () => o.trusted,
         model,
         client,
         settings: () => settings,
+        approvedMcpServers: () => mcp.approvedServers(),
         checker,
         classifier: new AutoClassifier(complete),
         tools,

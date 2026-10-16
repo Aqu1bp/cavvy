@@ -15,6 +15,7 @@
 // actions, with the agent named in the prompt. They can't delegate further,
 // and only one that can change files runs at a time.
 
+import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { ModelInfo } from "../providers/types";
 import { modelRef, parseModelRef } from "../providers/types";
 import { getProvider, type ProviderDef } from "../providers/registry";
@@ -119,12 +120,18 @@ export async function catalog(cwd: string, o: CatalogOptions = {}): Promise<stri
 // ---------------------------------------------------------------------------
 // Tasks
 
+/** An unsupported inherited effort uses the child's model default. */
+export function inheritedEffort(model: ModelInfo, effort?: Effort): Effort | undefined {
+    return effort && (!model.effortLevels || model.effortLevels.includes(effort)) ? effort : undefined;
+}
+
 export interface ChildRequest {
     description: string;
     prompt: string;
     agent: string;
     /** provider:model; the agent type's own model, or the main agent's, when absent. */
     model?: string;
+    effort?: Effort;
     /** The tool call whose result this is, to show the child's work under it. */
     callId?: string;
 }
@@ -144,6 +151,7 @@ export interface DelegatedTask {
     description: string;
     agent: string;
     model: string;
+    effort?: Effort;
     writes: boolean;
     status: "running" | ChildResult["status"];
     startedAt: number;
@@ -163,7 +171,7 @@ function duration(ms: number): string {
 
 /** A task's result (or state) for the main agent. */
 export function taskReport(t: DelegatedTask): string {
-    const head = `Task ${t.id} "${t.description}" (${t.agent} on ${t.model})`;
+    const head = `Task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""})`;
     if (t.status === "running") return `${head} is still running (${duration(Date.now() - t.startedAt)} so far).`;
     const r = t.result!;
     const spend = [`${formatTokens(r.tokens)} tokens`, r.cost === undefined ? "" : r.cost === 0 ? "on a plan" : formatUsd(r.cost), duration(r.durationMs)].filter(Boolean).join(", ");
@@ -194,7 +202,7 @@ export class Delegations {
         const writer = req.writes && running.find((t) => t.writes);
         if (writer) return `Task ${writer.id} "${writer.description}" can change files in this folder, and only one such task runs at a time. Wait for it with task_status, or use agent "explore" for read-only work.`;
         const controller = new AbortController();
-        const t: DelegatedTask = { id: `task-${++this.seq}`, description: req.description, agent: req.agent, model: req.model, writes: req.writes, status: "running", startedAt: Date.now(), callId: req.callId, delivered: false, controller, settled: Promise.resolve() };
+        const t: DelegatedTask = { id: `task-${++this.seq}`, description: req.description, agent: req.agent, model: req.model, effort: req.effort, writes: req.writes, status: "running", startedAt: Date.now(), callId: req.callId, delivered: false, controller, settled: Promise.resolve() };
         t.settled = this.run(req, controller.signal)
             .then(
                 (r) => {
@@ -284,8 +292,8 @@ export interface OrchestratorHost {
     listings(): ProviderListing[];
     /** For agent definitions. */
     projectRoot(): string;
-    /** The model ref if it can run here (provider set up), else why not. */
-    checkModel(ref: string): Promise<string | { ok: true }>;
+    /** Its supported and inherited effort if it can run here, else why not. */
+    checkModel(ref: string): Promise<string | { effortLevels?: Effort[]; effort?: Effort }>;
     /** Which of the main agent's open tool calls a delegate request belongs to. */
     claimCall(args: Record<string, unknown>, meta: Record<string, unknown>): Promise<string | undefined>;
     tasks: Delegations;
@@ -346,7 +354,8 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                     task: { type: "string", description: "Complete instructions: the goal, relevant files and context, and what to report back" },
                     description: { type: "string", description: "Short (3-6 word) summary of the task" },
                     model: { type: "string", description: "provider:model from the models tool (needed unless the agent type has its own model)" },
-                    agent: { type: "string", description: 'Agent type from the models tool: "general-purpose" (default), "explore" (read-only), or a custom one' },
+                    effort: { type: "string", description: "Reasoning effort, one the model supports (default: the session's, where the model has it)" },
+                    agent: { type: "string", description: 'Agent type from the models tool: "general-purpose" (default), "explore" (read-only: it can\'t run tests, builds or scripts either), or a custom one' },
                     wait: { type: "boolean", description: "Wait for the result (default true)" },
                     timeout_minutes: { type: "number", description: `How long to wait for the result (default ${DELEGATION_LIMITS.defaultWaitMs / 60_000}, at most ${DELEGATION_LIMITS.maxWaitMs / 60_000})` },
                 },
@@ -369,11 +378,14 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                 if (n && nativeModel(h.caller(), ref)) return { text: `${model} is one of your own ${n.models}: use ${n.own} for it. delegate is for other providers' models.`, isError: true };
                 const checked = await h.checkModel(model);
                 if (typeof checked === "string") return { text: checked, isError: true };
+                const levels = checked.effortLevels ?? EFFORT_LEVELS;
+                if (args.effort !== undefined && (typeof args.effort !== "string" || !levels.includes(args.effort as Effort))) return { text: `Unsupported effort "${String(args.effort)}" for ${model}. Valid levels: ${levels.join(", ") || "none"}.`, isError: true };
+                const effort = (args.effort as Effort | undefined) ?? checked.effort;
                 const callId = await h.claimCall(args, ctx.meta);
                 if (ctx.signal.aborted) return { text: "The call was cancelled before the task started.", isError: true };
-                const t = h.tasks.start({ description, prompt, agent: def.name, model, callId, writes: !def.readOnly, generation });
+                const t = h.tasks.start({ description, prompt, agent: def.name, model, effort, callId, writes: !def.readOnly, generation });
                 if (typeof t === "string") return { text: t, isError: true };
-                if (args.wait === false) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}). Get its result with task_status; cancel it with task_cancel.` };
+                if (args.wait === false) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
                 const limit = waitMs(args.timeout_minutes, DELEGATION_LIMITS.defaultWaitMs);
                 await h.tasks.wait([t], limit, ctx.signal);
                 if (t.status === "running") return { text: `${taskReport(t)} It keeps running: get its result with task_status (it can wait), or cancel it with task_cancel.` };

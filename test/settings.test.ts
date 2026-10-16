@@ -70,7 +70,7 @@ describe("settings scopes", () => {
             model: "anthropic:local-model",
             effort: "low",
             autoCompact: false,
-            enableAllProjectMcpServers: true,
+            // The committed project file can't approve its own .mcp.json servers (see "MCP approvals" below).
             permissions: {
                 allow: ["Read", "Edit", "WebFetch"],
                 deny: ["Bash(rm:*)", "Read(./.env)", "Bash(curl:*)"],
@@ -336,4 +336,43 @@ describe("custom commands", () => {
         expect(trusted.find((c) => c.name === "review")).toMatchObject({ source: "project", description: "Project review" });
         rmSync(paths.userCommands(), { recursive: true, force: true });
     });
+});
+
+describe("MCP approvals", () => {
+    test("the committed project file can't approve (or reject) .mcp.json servers; user and local settings can", () => {
+        const cwd = project();
+        write(paths.projectSettings(cwd), { enableAllProjectMcpServers: true, approvedMcpjsonServers: { a: "v1:x" }, enabledMcpjsonServers: ["a"], disabledMcpjsonServers: ["b"] });
+        expect(settings.loadSettings(cwd)).toEqual({});
+
+        write(paths.userSettings(), { approvedMcpjsonServers: { a: "v1:user", u: "v1:u" }, disabledMcpjsonServers: ["x"], enableAllProjectMcpServers: true });
+        write(paths.localSettings(cwd), { approvedMcpjsonServers: { a: "v1:local" }, disabledMcpjsonServers: ["y"], enabledMcpjsonServers: ["old"], enableAllProjectMcpServers: false });
+        const s = settings.loadSettings(cwd);
+        // Local decides a name both approve; rejections add up. The blanket opt-in is the user's alone (a repo can ship a settings.local.json).
+        expect(s.approvedMcpjsonServers).toEqual({ a: "v1:local", u: "v1:u" });
+        expect(s.disabledMcpjsonServers).toEqual(["x", "y"]);
+        expect(s.enabledMcpjsonServers).toEqual(["old"]);
+        expect(s.enableAllProjectMcpServers).toBe(true);
+        rmSync(paths.userSettings());
+        expect(settings.loadSettings(cwd).enableAllProjectMcpServers).toBeUndefined();
+        write(paths.userSettings(), { approvedMcpjsonServers: { a: "v1:user", u: "v1:u" }, enableAllProjectMcpServers: true });
+
+        // Untrusted: the local file's approvals don't count either.
+        const u = settings.loadSettings(cwd, { trusted: false });
+        expect(u.approvedMcpjsonServers).toEqual({ a: "v1:user", u: "v1:u" });
+        expect(u.enableAllProjectMcpServers).toBe(true);
+        rmSync(paths.userSettings());
+    });
+});
+
+test("a \"__proto__\" key in a settings file sets nothing it doesn't name", () => {
+    const cwd = project();
+    write(paths.projectSettings(cwd), '{"__proto__": {"enableAllProjectMcpServers": true, "model": "x:y"}}');
+    write(paths.localSettings(cwd), '{"approvedMcpjsonServers": {"__proto__": "v1:p", "b": "v1:b"}}');
+    const s = settings.loadSettings(cwd);
+    expect(s.enableAllProjectMcpServers).toBeUndefined();
+    expect(s.model).toBeUndefined();
+    expect(Object.getPrototypeOf(s)).toBe(Object.prototype);
+    // A server can be called "__proto__", and its approval is kept like any other.
+    expect(Object.hasOwn(s.approvedMcpjsonServers!, "__proto__")).toBe(true);
+    expect(s.approvedMcpjsonServers!.b).toBe("v1:b");
 });

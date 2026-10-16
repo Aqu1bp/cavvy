@@ -10,7 +10,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
-const { FileHistory, writeTracked, pruneFileHistory, rewindTargets, resetToolState, MAX_SNAPSHOT_BYTES } = await import("../src/agent/checkpoints");
+const { FileHistory, writeTracked, pruneFileHistory, rewindTargets, backendsIn, resetToolState, MAX_SNAPSHOT_BYTES } = await import("../src/agent/checkpoints");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { rewindCommand } = await import("../src/commands/rewind");
@@ -520,10 +520,32 @@ describe("rewinding the conversation", () => {
             { role: "user", content: [{ type: "text", text: "old style" }] },
         ];
         expect(rewindTargets(msgs)).toEqual([
-            { index: 1, text: "fix @a.ts", checkpoint: 5 },
-            { index: 3, text: "/init", checkpoint: 6 },
-            { index: 5, text: "old style", checkpoint: undefined },
+            { index: 1, text: "fix @a.ts", checkpoint: 5, backends: [] },
+            { index: 3, text: "/init", checkpoint: 6, backends: [] },
+            { index: 5, text: "old style", checkpoint: undefined, backends: [] },
         ]);
+    });
+
+    test("a prompt Claude Code or Codex answered says so: what they changed isn't in the file history", () => {
+        const prompt = (text: string): Message => ({ role: "user", content: [{ type: "text", text }], meta: { kind: "prompt", checkpoint: 1 } });
+        const msgs: Message[] = [
+            prompt("one"),
+            { ...reply([{ type: "text", text: "done" }]), provider: "claude-code", model: "opus" },
+            prompt("two"),
+            // Sent while it worked: answered along with the one before it.
+            prompt("and three"),
+            { ...reply([{ type: "text", text: "done" }]), provider: "codex", model: "gpt" },
+            prompt("four"),
+            reply([{ type: "text", text: "ok" }]),
+        ];
+        expect(rewindTargets(msgs).map((t) => [t.text, t.backends])).toEqual([
+            ["one", ["Claude Code"]],
+            ["two", ["Codex"]],
+            ["and three", ["Codex"]],
+            ["four", []],
+        ]);
+        // Everything since a prompt: what rewinding to it can't undo.
+        expect([backendsIn(msgs, 0), backendsIn(msgs, 2), backendsIn(msgs, 5)]).toEqual([["Claude Code", "Codex"], ["Codex"], []]);
     });
 });
 
@@ -683,7 +705,7 @@ describe("/rewind command", () => {
         expect(f.input()).toBe("");
         expect(f.printed.join("\n")).toContain("The conversation wasn't rewound");
         // The files it did restore changed under the model.
-        expect((s.agent as any).pendingReminders.join("\n")).toContain("- b.txt");
+        expect((s.agent as any).pendingReminders.map((r: { text: string }) => r.text).join("\n")).toContain("- b.txt");
     });
 
     test("files that can't be restored are listed, and the model is told about them", async () => {
@@ -699,7 +721,7 @@ describe("/rewind command", () => {
         expect(existsSync(b)).toBe(false);
         expect(readFileSync(a, "utf-8")).toBe("v1\n");
         expect(s.session.messages).toEqual([]);
-        const notes = (s.agent as any).pendingReminders.join("\n");
+        const notes = (s.agent as any).pendingReminders.map((r: { text: string }) => r.text).join("\n");
         expect(notes).toContain("weren't restored");
         expect(notes).toContain("- a.txt");
         expect(notes).not.toContain("b.txt");

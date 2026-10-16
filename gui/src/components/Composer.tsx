@@ -1,46 +1,49 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { ArrowUp, FileText, Folder, ImagePlus, ListEnd, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
+import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast } from "../state/app";
-import { interrupt, send, setMode, type Attachment } from "../state/actions";
+import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
+import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
-import { tokens, usd } from "../lib/format";
+import { contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
+import { cost, tokens } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
 import { EffortMenu, FastModeToggle, ModelPicker } from "./ModelPicker";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { Popover } from "./ui/Popover";
 import { Ring } from "./ui/bits";
+import { AttachmentChips } from "./AttachmentChips";
+import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
+import { PlanMeter } from "./PlanMeter";
+import { contextView } from "../lib/context";
+import { createLifetimeGuard } from "../lib/lifetime";
+import { createComposerDraft } from "../lib/composer-draft";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
-/** Unsent text and images per session, so switching sessions doesn't lose them. */
-const drafts = new Map<string, { text: string; attachments: Attachment[] }>();
 /** What was sent, for ↑ in an empty box. */
 const history: string[] = [];
-
-const MAX_IMAGE = 15 * 1024 * 1024;
 
 /** The ring, and on hover what it stands for: tokens, spend, and compacting now. */
 function ContextRing(p: { sessionId: string }) {
     let btn: HTMLButtonElement | undefined;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
-    const [open, setOpen] = createSignal(false);
+    // Shared so /context can open it.
+    const [open, setOpen] = [contextCardOpen, setContextCardOpen];
     const st = () => handleFor(p.sessionId)?.view.state;
-    const win = () => st()?.model?.contextWindow;
-    const pct = () => (st() && win() ? st()!.contextTokens / win()! : 0);
+    const view = () => contextView(st(), open());
+    const pct = () => view().pct ?? 0;
     const show = () => (clearTimeout(closeTimer), setOpen(true));
     const hide = () => (closeTimer = setTimeout(() => setOpen(false), 160));
     onCleanup(() => clearTimeout(closeTimer));
     return (
-        <Show when={st() && win()}>
+        <Show when={view().ring}>
             <button
                 ref={btn}
                 class="hb ctx-ring"
                 aria-haspopup="dialog"
                 aria-expanded={open()}
-                aria-label={`Context: ${Math.round(pct() * 100)}% used`}
+                aria-label={view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(pct() * 100)}% used`}
                 onMouseEnter={show}
                 onMouseLeave={hide}
                 onClick={() => setOpen(!open())}
@@ -51,17 +54,21 @@ function ContextRing(p: { sessionId: string }) {
                 <div onMouseEnter={show} onMouseLeave={hide}>
                     <div class="ctx-label">Context window</div>
                     <div class="ctx-line">
-                        <span class="num">
-                            {tokens(st()!.contextTokens)} of {tokens(win()!)} tokens
-                        </span>
-                        <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
+                        <span class="num">{view().line}</span>
+                        <Show when={view().pct !== undefined}>
+                            <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
+                        </Show>
                     </div>
-                    <div class="ctx-bar">
-                        <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
-                    </div>
+                    <Show when={view().pct !== undefined}>
+                        <div class="ctx-bar">
+                            <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
+                        </div>
+                    </Show>
                     <div class="ctx-grid">
                         <span>Spent</span>
-                        <span class="num">{usd(st()!.cost)}</span>
+                        <span class="num" title={st()!.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>
+                            {cost(st()!.cost, st()!.costUnknown)}
+                        </span>
                         <span>Tokens</span>
                         <span class="num">
                             {tokens(st()!.tokensIn)} in · {tokens(st()!.tokensOut)} out
@@ -87,11 +94,13 @@ function ContextRing(p: { sessionId: string }) {
 }
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element }) {
+    const whileMounted = createLifetimeGuard();
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
-    const [text, setText] = createSignal("");
-    const [attachments, setAttachments] = createSignal<Attachment[]>([]);
+    const draftKey = () => p.sessionId ?? "home";
+    const draft = createComposerDraft(draftKey, wasDeleted);
+    const { text, setText, attachments, setAttachments } = draft;
     const [menu, setMenu] = createSignal<MenuItem[]>([]);
     const [menuSel, setMenuSel] = createSignal(0);
     const [menuDismissedFor, setMenuDismissedFor] = createSignal<string>();
@@ -107,37 +116,20 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
     const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
     const shell = () => text().startsWith("!");
-    const draftKey = () => p.sessionId ?? "home";
-
     const resize = () => {
         if (!ta) return;
         ta.style.height = "auto";
         ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
     };
 
-    // Per-session drafts. Each session gets its own input box (it's made again
-    // when another session is shown), so the draft is kept when it goes away.
-    const keepDraft = (key: string) => {
-        if (text().trim() || attachments().length) drafts.set(key, { text: text(), attachments: attachments() });
-        else drafts.delete(key);
-    };
-    createEffect(
-        on(draftKey, (key, prev) => {
-            if (prev !== undefined) keepDraft(prev);
-            const d = drafts.get(key);
-            setText(d?.text ?? "");
-            setAttachments(d?.attachments ?? []);
-            requestAnimationFrame(resize);
-        }),
-    );
-    onCleanup(() => keepDraft(draftKey()));
+    createEffect(on([draftKey, text], () => requestAnimationFrame(resize)));
     // What the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();
         if (d === undefined) return;
         h()!.setDraft(undefined);
         if (d.text) setText((t) => (t.trim() ? `${d.text}\n${t}` : d.text));
-        if (d.images?.length) setAttachments((a) => [...a, ...d.images!.map((i) => ({ name: "image", mediaType: i.mediaType, data: i.data, preview: `data:${i.mediaType};base64,${i.data}` }))]);
+        if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
         requestAnimationFrame(() => {
             resize();
             ta?.focus();
@@ -150,9 +142,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     });
     createEffect(
         on(
-            () => st()?.cwd ?? app.homeCwd,
-            (cwd) => {
-                if (cwd) void rpc.call("commands.list", { cwd }).then((c) => (commands = c)).catch(() => undefined);
+            [() => (app.conn === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider],
+            ([cwd, provider]) => {
+                let current = true;
+                onCleanup(() => { current = false; });
+                commands = [];
+                // A reply from the previous project or provider must not replace this menu.
+                if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => { if (current) commands = c; }).catch(() => undefined);
             },
         ),
     );
@@ -219,23 +215,34 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
 
     // ---- sending
     const submit = async () => {
+        if (app.conn !== "open") return toast("Not sent: not connected");
         const t = text();
-        if ((!t.trim() && !attachments().length) || sending()) return;
+        if (!canSend() || sending()) return;
         setSending(true);
-        const atts = attachments();
-        const ok = await send(t, atts);
-        setSending(false);
-        if (!ok) return;
-        if (t.trim()) {
-            history.push(t);
-            if (history.length > 100) history.shift();
+        const submitted = draft.capture();
+        const { attachments: atts } = submitted.draft;
+        // A toast retry may finish after Home has unmounted too.
+        const resizeAfterSend = whileMounted(() => requestAnimationFrame(resize));
+        const sent = () => {
+            draft.clearSent(submitted);
+            resizeAfterSend();
+        };
+        const finish = whileMounted((ok: boolean | "command") => {
+            setSending(false);
+            if (!ok) return;
+            histIdx = -1;
+            setMenu([]);
+            requestAnimationFrame(resize);
+        });
+        const ok = await send(t, atts, { sent });
+        if (ok) {
+            draft.clearSent(submitted, ok === "command");
+            if (t.trim() && (ok === true || !atts.length)) {
+                history.push(t);
+                if (history.length > 100) history.shift();
+            }
         }
-        histIdx = -1;
-        setText("");
-        setAttachments([]);
-        drafts.delete(draftKey());
-        setMenu([]);
-        requestAnimationFrame(resize);
+        finish(ok);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -290,31 +297,46 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
     };
 
-    // ---- images
+    // ---- attachments: any file (sorted by what's in it, see lib/attachments), and long pastes
     const addFiles = async (files: FileList | File[]) => {
         for (const f of Array.from(files)) {
-            if (!/^image\/(png|jpeg|gif|webp)$/.test(f.type)) continue;
-            if (f.size > MAX_IMAGE) continue;
-            const data = await new Promise<string>((resolve) => {
-                const r = new FileReader();
-                r.onload = () => resolve(String(r.result));
-                r.readAsDataURL(f);
-            });
-            const base64 = data.slice(data.indexOf(",") + 1);
-            setAttachments((a) => [...a, { name: f.name || "pasted image", mediaType: f.type, data: base64, preview: URL.createObjectURL(f) }]);
+            const a = await readAttachment(f, attachments());
+            setAttachments((list) => [...list, a]);
         }
     };
     const onPaste = (e: ClipboardEvent) => {
-        const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+        const files = Array.from(e.clipboardData?.files ?? []);
         if (files.length) {
             e.preventDefault();
             void addFiles(files);
+            return;
+        }
+        const pasted = e.clipboardData?.getData("text/plain") ?? "";
+        if (isLongPaste(pasted)) {
+            e.preventDefault();
+            setAttachments((list) => [...list, pastedText(pasted, list)]);
         }
     };
+    /** A "Pasted text" chip back into the box as plain text, where the cursor is. */
+    const toText = (i: number) => {
+        const a = attachments()[i];
+        if (a?.kind !== "text") return;
+        setAttachments((list) => list.filter((_, j) => j !== i));
+        const at = ta?.selectionStart ?? text().length;
+        setText((t) => t.slice(0, at) + a.text + t.slice(ta?.selectionEnd ?? at));
+        requestAnimationFrame(() => {
+            resize();
+            ta?.focus();
+        });
+    };
+    /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
+    const model = () => st()?.model ?? app.models.flatMap((g) => g.models).find((m) => m.ref === app.settings.model);
+    const readsPdf = () => model()?.supportsPdf !== false;
+    const blocked = createMemo(() => blockedBy(attachments(), readsPdf()));
 
     /** A queued message back into the box, out of the queue. */
     // By the message's id, so a queue that moved on meanwhile doesn't lose a different one. Edited, it
-    // comes back with its images, into this session's draft (even if another is shown by then).
+    // comes back with its images and files, into this session's draft (even if another is shown by then).
     const dequeue = async (i: number, edit: boolean) => {
         const queueId = st()?.queueIds[i];
         const handle = h();
@@ -322,7 +344,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         try {
             const r = await rpc.call("session.dequeue", { id: p.sessionId, queueId, edit });
             if (!r.removed) toast("That message has already been sent", "info");
-            else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images });
+            else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images, files: r.files });
         } catch (e) {
             reportError(e);
         }
@@ -333,7 +355,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (busy()) return "Queue a message for the next step…";
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ for files, / for commands)";
     };
-    const canSend = createMemo(() => Boolean(text().trim() || attachments().length));
+    const hasContent = () => Boolean(text().trim() || attachments().length);
+    const canSend = createMemo(() => hasContent() && !blocked());
     /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
     let root: HTMLDivElement | undefined;
     const edge = () => root;
@@ -365,6 +388,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             <div class="queue-row">
                                 <ListEnd size={14} class="queue-icon" />
                                 <span class="queue-text truncate">{q}</span>
+                                <Show when={st()!.queuedAttached?.[i()]}>
+                                    {(label) => (
+                                        <span class="queue-attached truncate" title={label()}>
+                                            <Paperclip size={12} /> {label()}
+                                        </span>
+                                    )}
+                                </Show>
                                 <Show when={i() === 0}>
                                     <span class="queue-hint">Sends after this step</span>
                                 </Show>
@@ -425,18 +455,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             </Show>
             <div class="composer-box" ref={box}>
                 <Show when={attachments().length}>
-                    <div class="attachments">
-                        <For each={attachments()}>
-                            {(a, i) => (
-                                <div class="attachment">
-                                    <img src={a.preview} alt={a.name} />
-                                    <button class="attachment-x" title="Remove" aria-label="Remove image" onClick={() => setAttachments((list) => list.filter((_, j) => j !== i()))}>
-                                        <X size={11} />
-                                    </button>
-                                </div>
-                            )}
-                        </For>
-                    </div>
+                    <AttachmentChips items={attachments()} readsPdf={readsPdf()} blocked={blocked()} onRemove={(i) => setAttachments((list) => list.filter((_, j) => j !== i))} onToText={toText} />
                 </Show>
                 <div class="composer-input">
                     <Show when={shell()}>
@@ -463,22 +482,41 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     />
                 </div>
                 <div class="composer-bar">
-                    <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(e) => e.currentTarget.files && void addFiles(e.currentTarget.files)} />
+                    <input
+                        ref={fileInput}
+                        type="file"
+                        multiple
+                        hidden
+                        onChange={(e) => {
+                            const input = e.currentTarget;
+                            if (input.files) void addFiles(Array.from(input.files));
+                            // Picking the same file again should add it again.
+                            input.value = "";
+                        }}
+                    />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} />
                     <FastModeToggle current={st()?.model} currentRef={app.settings.model} enabled={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy} />
                     <EffortMenu current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
                     <span class="spacer" />
-                    <button class="hb" title="Attach images" aria-label="Attach images" onClick={() => fileInput?.click()}>
-                        <ImagePlus size={16} />
+                    <button class="hb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
+                        <Paperclip size={16} />
                     </button>
+                    <PlanMeter provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show when={p.sessionId}>
                         <ContextRing sessionId={p.sessionId!} />
                     </Show>
                     <Show
-                        when={busy() && !canSend()}
+                        when={busy() && !hasContent()}
                         fallback={
-                            <button class="send" disabled={!canSend() || sending()} onClick={() => void submit()} title={prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`} aria-label="Send">
+                            <button
+                                class="send"
+                                disabled={app.conn !== "open" || !canSend() || sending()}
+                                onClick={() => void submit()}
+                                title={app.conn !== "open" ? "Not connected" : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
+                                aria-description={app.conn !== "open" ? "Not connected" : undefined}
+                                aria-label="Send"
+                            >
                                 <ArrowUp size={17} stroke-width={2.4} />
                             </button>
                         }

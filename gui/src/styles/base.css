@@ -725,6 +725,11 @@ input[type="range"] {
     color: var(--fg-muted);
 }
 
+.menu-item.danger,
+.menu-item.danger svg {
+    color: var(--danger);
+}
+
 .menu-item:hover:not(:disabled),
 .menu-item.sel {
     background: var(--bg-hover);

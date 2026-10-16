@@ -41,6 +41,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open in this window, some maybe in other projects. Close one to run “${script.name}”.`);
         const tab = { id: crypto.randomUUID(), cwd, number: next++, script: { id: script.id, name: script.name, ...(setup ? { setup: { label: setup.label, command: setup.command } } : {}) } };
         if (setup) setupTickets.set(tab.id, setup.ticket);
+        setTabs((all) => [...all, tab]);
         setSelected(tab.id);
         setTerminalOpen(true);
     };
@@ -146,7 +147,12 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         script = undefined;
         const ticket = setupTickets.get(p.tab.id);
         setupTickets.delete(p.tab.id);
-        const failed = (why: string) => (ticket ? `The setup script “${run!.name}” didn't run. ${why.charAt(0).toUpperCase()}${why.slice(1).replace(/\.?$/, ".")} The worktree was created; you can run the script from the project scripts menu.` : `Couldn't run “${run!.name}”: ${why}`);
+        const failed = (why: string) => (run?.setup ? `The setup script “${run!.name}” didn't run. ${why.charAt(0).toUpperCase()}${why.slice(1).replace(/\.?$/, ".")} The worktree was created; you can run the script from the project scripts menu.` : `Couldn't run “${run!.name}”: ${why}`);
+        // A restored/remounted setup tab must never fall back to an ordinary script click.
+        if (run?.setup && !ticket) {
+            setEnded(failed("this setup run is no longer available."));
+            return;
+        }
         if (app.conn !== "open") {
             if (run) setEnded(failed("not connected to the harness server."));
             return;

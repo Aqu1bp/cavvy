@@ -538,7 +538,7 @@ export async function saveScript(cwd: unknown, input: { id?: unknown; name?: unk
     const fields = validateScript(input);
     const id = input.id === undefined || input.id === null || input.id === "" ? undefined : scriptId(input.id);
     const setup = input.runOnWorktreeCreate;
-    if (setup !== undefined && setup !== null && typeof setup !== "boolean") throw new RpcError("runOnWorktreeCreate must be true or false", "invalid");
+    if (setup !== undefined && typeof setup !== "boolean") throw new RpcError("runOnWorktreeCreate must be true or false", "invalid");
     const project = await keyOf(cwd);
     return updateProject(project, (p) => {
         const scripts = usable(p);

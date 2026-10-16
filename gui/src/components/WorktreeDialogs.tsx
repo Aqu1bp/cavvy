@@ -72,23 +72,27 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const runs = () => { const n = note(); return n.kind === "runs" ? n : undefined; };
     const untrusted = () => { const n = note(); return n.kind === "untrusted" ? n : undefined; };
     const unreadable = () => { const n = note(); return n.kind === "error" ? n : undefined; };
+    let setupLoad = 0;
     const loadSetup = async () => {
+        const request = ++setupLoad;
+        setSetupInfo(undefined);
+        setSetupError(undefined);
         try {
             const info = await rpc.call("scripts.setupInfo", { cwd: r.main });
-            if (open) (setSetupInfo(info), setSetupError(undefined));
+            if (open && request === setupLoad) setSetupInfo(info);
         } catch (e) {
-            if (open) setSetupError(e instanceof Error ? e.message : String(e));
+            if (open && request === setupLoad) setSetupError(e instanceof Error ? e.message : String(e));
         }
     };
-    let setupLoaded = loadSetup();
-    const offEvent = rpc.onEvent((e) => { if (e.type === "scripts.changed") setupLoaded = loadSetup(); });
+    void loadSetup();
+    const offEvent = rpc.onEvent((e) => { if (e.type === "scripts.changed") void loadSetup(); });
     onCleanup(offEvent);
     /** Only on the user's click: trusting also turns on the repository's own Harness configuration. */
     const trustRepository = async (main: string) => {
         setTrusting(true);
         try {
             await rpc.call("projects.trust", { path: main, trust: true });
-            await (setupLoaded = loadSetup());
+            await loadSetup();
         } catch (e) {
             reportError(e);
         } finally {
@@ -116,7 +120,9 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
      * own Git config can run commands on checkout), trusted first.
      */
     const create = async (trust?: string) => {
-        if (busy()) return;
+        if (busy() || trusting() || note().kind === "loading") return;
+        // Only request the setup already shown before the user clicked Create.
+        const setup = asksForSetup(note(), skipSetup());
         const b = branch().trim();
         if (!b) return setError({ field: "branch", message: "Enter a branch name." });
         setError(undefined);
@@ -124,10 +130,6 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
         try {
             if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
             if (!open) return;
-            // What the dialog says about the setup script is what's asked for, so let it say something first.
-            await setupLoaded;
-            if (!open) return;
-            const setup = asksForSetup(note(), skipSetup());
             const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }), ...(setup ? { setup: true } : {}) });
             setBusy(false);
             p.onClose();
@@ -206,6 +208,9 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                         </div>
                     )}
                 </Show>
+                <Show when={note().kind === "loading"}>
+                    <span class="wt-hint">Checking the project's setup script…</span>
+                </Show>
                 <Show when={runs()}>
                     {(n) => (
                         <div class="wt-setup">
@@ -251,7 +256,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                     <button type="button" class="btn ghost" disabled={busy()} onClick={close}>
                         Cancel
                     </button>
-                    <button type="submit" class="btn primary" disabled={busy() || !branch().trim() || !name()}>
+                    <button type="submit" class="btn primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
                         {busy() ? <Spinner size={12} /> : "Create"}
                     </button>
                 </div>

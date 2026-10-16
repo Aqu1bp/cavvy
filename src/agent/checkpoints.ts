@@ -7,7 +7,9 @@
 //   index.jsonl   append-only records (below), read back on resume
 //   blobs/<sha256> file contents, stored once per hash
 // Copies are exact and not redacted: restoring must be byte for byte, and they
-// hold the same data as the user's own files. Folders are 0700, files 0600.
+// hold the same data as the user's own files. A file holding a secret the user
+// gave the agent (RequestSecret) isn't copied: it can't be put back.
+// Folders are 0700, files 0600.
 // Files go by their real path, so one reached through a link is still one file.
 // Shell commands aren't tracked.
 
@@ -16,9 +18,11 @@ import { appendFileSync, chmodSync, closeSync, constants, existsSync, fchmodSync
 import { lstat, readdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
 import { paths } from "../config/paths";
+import { getProvider } from "../providers/registry";
 import type { Message, TextPart, UserMessage } from "../providers/types";
 import type { TodoItem, ToolState } from "../tools/types";
 import type { Session } from "./session";
+import { holdsGivenSecret } from "./secrets";
 
 /** Bigger files aren't saved, so they can't be restored. */
 export const MAX_SNAPSHOT_BYTES = 10 * 1024 * 1024;
@@ -196,10 +200,15 @@ export class FileHistory {
         renameSync(tmp, file);
     }
 
+    /** Allocate a snapshot id without changing which checkpoint owns edit-tool copies. */
+    nextId(): number {
+        this.load();
+        return (this.last = Math.max(Date.now(), this.last + 1));
+    }
+
     /** Start the checkpoint for a new user prompt. Ids are increasing timestamps. */
     begin(): number {
-        this.load();
-        this.current = this.last = Math.max(Date.now(), this.last + 1);
+        this.current = this.nextId();
         this.snapped.clear();
         return this.current;
     }
@@ -223,6 +232,8 @@ export class FileHistory {
             if (!st.isFile()) return;
             if (st.size > MAX_SNAPSHOT_BYTES) return this.append({ t: "skip", cp, path, reason: `over ${MAX_SNAPSHOT_BYTES / 1024 / 1024} MB` });
             const buf = await readFile(path);
+            // The copy would be written to disk under ~/.harness, where nothing redacts it and closing the session doesn't remove it.
+            if (holdsGivenSecret(buf)) return this.append({ t: "skip", cp, path, reason: "holds a secret you gave the agent" });
             const hash = sha256(buf);
             this.store(hash, buf);
             this.append({ t: "snap", cp, path, hash, mode: st.mode & 0o777 });
@@ -376,22 +387,63 @@ export interface RewindTarget {
     /** What the user typed: it goes back in the input box. */
     text: string;
     checkpoint?: number;
+    /** The agent backends that answered it (Claude Code, Codex): what they changed isn't in the file history. */
+    backends: string[];
 }
 
 const REMINDER = /^<system-reminder>\n([\s\S]*)\n<\/system-reminder>$/;
 
-/** Prompts the conversation can be rewound to, oldest first. Ones before a compaction are gone from the history. */
+/**
+ * Prompts the conversation can be rewound to, oldest first. Ones before a
+ * compaction are gone from the history; imported ones (from a Claude Code or
+ * Codex session) and anything up to the last of them can't be cut into.
+ */
 export function rewindTargets(messages: Message[]): RewindTarget[] {
     const out: RewindTarget[] = [];
+    let lastImported = -1;
     messages.forEach((m, index) => {
-        if (m.role !== "user") return;
+        if (m.role === "user" && m.meta?.imported) lastImported = index;
+    });
+    messages.forEach((m, index) => {
+        if (m.role !== "user" || index <= lastImported) return;
         const kind = m.meta?.kind ?? "prompt";
         if (kind !== "prompt" && kind !== "command") return;
         const first = m.content.find((p): p is TextPart => p.type === "text" && !REMINDER.test(p.text));
         const text = (m.meta?.display ?? first?.text ?? "").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-        out.push({ index, text, checkpoint: m.meta?.checkpoint });
+        out.push({ index, text, checkpoint: m.meta?.checkpoint, backends: [] });
+    });
+    out.forEach((t, i) => {
+        // A message sent while it worked is a prompt of its own, answered along with this one.
+        let next = i + 1;
+        while (next < out.length && !messages.slice(t.index, out[next]!.index).some((m) => m.role === "assistant")) next++;
+        t.backends = backendsIn(messages, t.index, out[next]?.index);
     });
     return out;
+}
+
+/**
+ * For the model, once the conversation was rewound past turns these
+ * backends answered: what they changed is still there, except in the files
+ * that were `restored` (to how they were then, their changes included).
+ */
+export function untrackedChangesNote(backends: string[], restored: string[] = []): string {
+    const except = restored.length ? `, except in these files, which were restored to how they were then:\n${restored.map((p) => `- ${p}`).join("\n")}\n` : " ";
+    return `The user rewound the conversation to an earlier point (/rewind), but any changes ${backends.join(" and ")} made to files after that point weren't undone (rewind can't restore them)${except}So files may not be as the conversation now suggests. Check them (git status, git diff) before relying on them.`;
+}
+
+/**
+ * The agent backends (Claude Code, Codex) that answered in `messages` from
+ * `from` up to `to`. They change files with their own tools, which the file
+ * history doesn't see, so rewinding can't undo what they did.
+ */
+export function backendsIn(messages: Message[], from: number, to = messages.length): string[] {
+    const names = new Set<string>();
+    for (const m of messages.slice(from, to)) {
+        if (m.role !== "assistant" || !m.provider) continue;
+        const p = getProvider(m.provider);
+        if (p?.kind === "agent") names.add(p.name);
+    }
+    return [...names];
 }
 
 /**
@@ -444,6 +496,11 @@ async function mtime(path: string): Promise<number> {
     }
 }
 
+/** Forget the history in `dir` (its session was deleted): a later one there starts afresh. */
+export function forgetFileHistory(dir: string) {
+    open.delete(dir);
+}
+
 /**
  * Delete the file history of sessions not touched in 30 days (the session
  * file and the history both count), in every project. Best effort.
@@ -473,7 +530,7 @@ export async function pruneFileHistory(opts: { keep?: string; now?: number; maxA
             try {
                 const st = await lstat(dir);
                 if (!st.isDirectory()) continue;
-                const touched = Math.max(st.mtimeMs, await mtime(join(dir, "index.jsonl")), await mtime(join(root, project, `${id}.jsonl`)));
+                const touched = Math.max(st.mtimeMs, await mtime(join(dir, "index.jsonl")), await mtime(join(dir, "turn-snapshots.jsonl")), await mtime(join(root, project, `${id}.jsonl`)));
                 if (now - touched < maxAge) continue;
                 await rm(dir, { recursive: true, force: true });
                 open.delete(dir);

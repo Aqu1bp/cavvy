@@ -2,9 +2,10 @@ import { readdir, stat, readFile } from "fs/promises";
 import { isAbsolute, join, relative } from "path";
 import type { Tool, ToolContext } from "./types";
 import { displayPath, expandPath, formatBytes, looksBinary, truncateMiddle } from "../util/files";
-import { redact } from "../util/redact";
+import { redact, redactPrefix } from "../util/redact";
 import { childEnv } from "../util/env";
 import { gitListFiles } from "../util/git";
+import { MAX_SECRET_BYTES } from "../agent/secrets";
 
 const DEFAULT_IGNORES = ["node_modules", ".git", "dist", "build", ".next", "__pycache__", ".venv", "venv", "target", ".cache", ".DS_Store"];
 
@@ -119,10 +120,13 @@ export const GrepTool: Tool<GrepInput> = {
         let out: string;
         if (rg) {
             // --null: a NUL after every printed path, so results can be filtered per file.
-            const args = ["--no-config", "--color=never", "--max-columns=500", "--max-columns-preview", "--null", "--with-filename"];
+            const args = ["--no-config", "--color=never", "--null", "--with-filename"];
             if (mode === "files_with_matches") args.push("-l");
             else if (mode === "count") args.push("-c");
             else {
+                // rg counts bytes; a displayed character can take three UTF-8 bytes,
+                // and URL encoding can triple a value's byte length.
+                args.push("--max-columns", String(3 * (500 + MAX_SECRET_BYTES)), "--max-columns-preview");
                 if (input.show_line_numbers !== false) args.push("-n");
                 if (input.context) args.push("-C", String(input.context));
                 if (input.before) args.push("-B", String(input.before));
@@ -140,7 +144,7 @@ export const GrepTool: Tool<GrepInput> = {
             const code = await proc.exited;
             ctx.signal.removeEventListener("abort", onAbort);
             if (code === 2 && !stdout) return { content: `Grep error: ${stderr.trim()}`, isError: true };
-            out = filterRgOutput(stdout, mode, (p) => Boolean(hide?.("Grep", isAbsolute(p) ? p : join(ctx.state.cwd, p))));
+            out = filterRgOutput(stdout, mode, (p) => Boolean(hide?.("Grep", isAbsolute(p) ? p : join(ctx.state.cwd, p))), input.show_line_numbers !== false);
         } else {
             out = await jsGrep(input, target, mode, ctx.signal, hide);
         }
@@ -157,7 +161,7 @@ export const GrepTool: Tool<GrepInput> = {
         const limit = input.head_limit ?? (mode === "content" ? 400 : 200);
         if (lines.length > limit) lines = lines.slice(0, limit);
         if (!total) return { content: "No matches found", display: { summary: "No matches" } };
-        let content = truncateMiddle(lines.join("\n"), 30_000);
+        let content = truncateMiddle(redact(lines.join("\n")), 30_000);
         if (total > lines.length) content += `\n(Showing ${lines.length} of ${total}. Narrow the search or raise head_limit.)`;
         const noun = mode === "files_with_matches" ? "file" : mode === "count" ? "file" : "line";
         return { content: redact(content), display: { summary: `Found ${total} ${noun}${total === 1 ? "" : "s"}` } };
@@ -186,7 +190,7 @@ export function searchFilter(ctx: Pick<ToolContext, "hidden">, toolName: string,
  * (or a `--` separator), so the path is read up to its NUL: splitting on
  * newlines first would let a filename containing one hide its real path.
  */
-export function filterRgOutput(stdout: string, mode: string, hidden: (path: string) => boolean): string {
+export function filterRgOutput(stdout: string, mode: string, hidden: (path: string) => boolean, showLineNumbers = true): string {
     if (mode === "files_with_matches") return stdout.split("\0").filter((p) => p && !hidden(p)).join("\n");
     // A path with a newline in it is checked whole and from every line start, in case it isn't one.
     const hide = (p: string) => hidden(p) || (p.includes("\n") && p.split("\n").some((_, i, parts) => hidden(parts.slice(i).join("\n"))));
@@ -207,10 +211,16 @@ export function filterRgOutput(stdout: string, mode: string, hidden: (path: stri
         const nl = stdout.indexOf("\n", nul);
         const end = nl < 0 ? stdout.length : nl;
         const path = stdout.slice(i, nul);
-        const rest = stdout.slice(nul + 1, end);
+        let rest = stdout.slice(nul + 1, end);
+        if (mode === "content") {
+            // Match against the extra preview, but choose what to show by original
+            // positions: earlier redactions can shrink an unfinished tail into view.
+            const prefix = showLineNumbers ? rest.match(/^\d+[:-]/)?.[0] ?? "" : "";
+            rest = redactPrefix(rest, prefix.length + 500).slice(0, prefix.length + 500);
+        }
         i = end + 1;
         if (hide(path)) continue;
-        out.push(path + (/^\d+-/.test(rest) ? "-" : ":") + rest);
+        out.push(path + (showLineNumbers && /^\d+-/.test(rest) ? "-" : ":") + rest);
     }
     while (out[out.length - 1] === "--") out.pop();
     return out.join("\n");
@@ -264,7 +274,7 @@ async function jsGrep(input: GrepInput, target: string, mode: string, signal: Ab
             if (last >= 0 && from > last + 1) out.push("--");
             for (let i = from; i <= to; i++) {
                 const sep = hitSet.has(i) ? ":" : "-";
-                out.push(`${f}${sep}${num ? `${i + 1}${sep}` : ""}${lines[i]!.slice(0, 500)}`);
+                out.push(`${f}${sep}${num ? `${i + 1}${sep}` : ""}${redactPrefix(lines[i]!, 500).slice(0, 500)}`);
             }
             last = Math.max(last, to);
         }

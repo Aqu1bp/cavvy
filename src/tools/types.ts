@@ -1,3 +1,4 @@
+import type { SecretStore } from "../agent/secrets";
 import type { ImagePart } from "../providers/types";
 import type { Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
@@ -64,6 +65,8 @@ export interface ToolState {
     approvedPlan?: string;
     /** Saves files before edit tools change them, for /rewind (see writeTracked). */
     fileHistory?: FileHistory;
+    /** Secrets the user gave this session (RequestSecret), for its Bash processes. */
+    secrets?: SecretStore;
 }
 
 export interface UiBridge {
@@ -71,6 +74,8 @@ export interface UiBridge {
     askQuestion?(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined>;
     /** Present a plan for approval (ExitPlanMode). Returns the chosen next mode or undefined if rejected. */
     approvePlan?(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string }>;
+    /** Ask the user to type in a secret (RequestSecret): the value, or undefined if they declined. `purpose` is already safe to show. */
+    requestSecret?(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined>;
 }
 
 export interface ToolContext {

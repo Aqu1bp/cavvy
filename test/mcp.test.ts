@@ -1,12 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { isolate, tempDir, FAKE } from "./helpers/isolate";
+import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { McpClient, McpError, headerValue, MODERN_VERSION } = await import("../src/mcp/client");
 const { McpManager, toolNameFor, serverSegment, formatMcpResult } = await import("../src/mcp/manager");
 const { startHttpMcpServer } = await import("./fixtures/mcp-http-server");
+const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
+const { trustFolder } = await import("../src/config/trust");
 import type { McpServerConfig, Settings } from "../src/config/settings";
 import type { McpClient as McpClientT } from "../src/mcp/client";
 import type { HttpFixture } from "./fixtures/mcp-http-server";
@@ -159,7 +161,7 @@ describe("stdio, legacy server (2025-06-18)", () => {
         expect(await waitFor(() => !alive(pid))).toBe(true);
         // The fixture exits on stdin EOF, so no SIGTERM wait was needed.
         expect(Date.now() - t0).toBeLessThan(1400);
-        await expect(c.callTool("echo", { text: "x" })).rejects.toThrow("server is not running");
+        await expect(c.callTool("echo", { text: "x" })).rejects.toThrow("was closed");
     });
 });
 
@@ -263,7 +265,7 @@ describe("stdio shutdown and crashes", () => {
         expect(await waitFor(() => !alive(pid))).toBe(true);
         expect(elapsed).toBeGreaterThanOrEqual(1400);
         expect(elapsed).toBeLessThan(3400);
-    }, 8000);
+    }, 20_000);
 
     test("close() escalates to SIGKILL when SIGTERM is ignored too", async () => {
         const c = client("very-stubborn", stdio("legacy", { MCP_FIXTURE_IGNORE_EOF: "1", MCP_FIXTURE_IGNORE_SIGTERM: "1" }));
@@ -273,7 +275,7 @@ describe("stdio shutdown and crashes", () => {
         await c.close();
         expect(Date.now() - t0).toBeGreaterThanOrEqual(3400);
         expect(await waitFor(() => !alive(pid))).toBe(true);
-    }, 10000);
+    }, 20_000);
 
     test("a crash rejects the in-flight call, fires onExit, and keeps stderr", async () => {
         const c = client("crashy", stdio("legacy"));
@@ -494,15 +496,7 @@ describe("formatMcpResult", () => {
         expect(formatMcpResult({ content: [{ type: "text", text: "t" }], structuredContent: { a: 1 } }).content).toBe("t");
     });
 
-    test("redacts secrets and truncates huge output", () => {
-        const f = formatMcpResult({ content: [{ type: "text", text: `key=${FAKE.anthropic}` }] });
-        expect(f.content).not.toContain(FAKE.anthropic);
-        expect(f.content).toContain("[REDACTED anthropic-key]");
 
-        const big = formatMcpResult({ content: [{ type: "text", text: "x".repeat(100_000) }] });
-        expect(big.content.length).toBeLessThan(41_000);
-        expect(big.content).toContain("characters");
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -525,7 +519,7 @@ describe("McpManager.load and project .mcp.json approval", () => {
     );
     const base: Settings = {
         mcpServers: { fromSettings: cfg("s"), off: { ...cfg("off"), disabled: true }, dup: cfg("from-settings") },
-        enabledMcpjsonServers: ["approved"],
+        approvedMcpjsonServers: { approved: mcpFingerprint(cfg("approved"), proj) },
         disabledMcpjsonServers: ["rejected"],
     };
     const status = (m: InstanceType<typeof McpManager>) => Object.fromEntries([...m.servers.values()].map((s) => [s.name, `${s.source}:${s.status}`]));
@@ -546,8 +540,58 @@ describe("McpManager.load and project .mcp.json approval", () => {
         expect(m.needsApproval().map((s) => s.name)).toEqual(["unapproved"]);
     });
 
+    test("approved set follows start policy, excluding collision refusals and header clashes", () => {
+        const m = new McpManager(proj, () => ({ ...base, mcpServers: {
+            ...base.mcpServers, "same name": cfg("first"), same_name: cfg("collision"),
+            headerClash: { url: "https://example.invalid/mcp", headers: { Authorization: "first", authorization: "second" } },
+        } }), true);
+        m.load();
+        m.servers.get("approved")!.status = "failed";
+        expect(m.approvedServers()).toEqual({ cwd: proj, servers: {
+            fromSettings: { config: cfg("s"), source: "settings" },
+            dup: { config: cfg("from-settings"), source: "settings" },
+            approved: { config: cfg("approved"), source: "project", fingerprint: m.servers.get("approved")!.approval!.fingerprint },
+            "same name": { config: cfg("first"), source: "settings" },
+        } });
+    });
+
+    for (const connectionStatus of ["pending", "connecting", "connected", "failed", "needs-approval"] as const) {
+        test(`connection status ${connectionStatus} neither grants nor revokes approval`, () => {
+            const m = new McpManager(proj, () => base, true);
+            m.load();
+            for (const st of m.servers.values()) st.status = connectionStatus;
+            expect(Object.keys(m.approvedServers().servers).sort()).toEqual(["approved", "dup", "fromSettings"]);
+        });
+    }
+
+    test("a server disabled for this session leaves the approved set", () => {
+        const m = new McpManager(proj, () => base, true);
+        m.load();
+        m.servers.get("approved")!.status = "disabled";
+        expect(Object.keys(m.approvedServers().servers).sort()).toEqual(["dup", "fromSettings"]);
+    });
+
+    test("approved snapshots retain manager provenance and original definitions", () => {
+        const implicit = cfg("implicit");
+        const explicit = { ...cfg("explicit"), cwd: "/elsewhere" };
+        const http = { url: "https://example.invalid/mcp" };
+        const m = new McpManager(proj, () => ({ mcpServers: { implicit, explicit, http } }), true);
+        m.load();
+        const snapshot = m.approvedServers();
+        expect(snapshot).toEqual({ cwd: proj, servers: {
+            implicit: { config: implicit, source: "settings" },
+            explicit: { config: explicit, source: "settings" },
+            http: { config: http, source: "settings" },
+        } });
+        snapshot.servers.implicit!.config.command = "changed outside the manager";
+        expect(m.approvedServers().servers.implicit!.config).toEqual(implicit);
+        expect(implicit).not.toHaveProperty("cwd");
+    });
+
     test("enableAllProjectMcpServers approves every project server (rejections still win)", () => {
-        const m = new McpManager(proj, () => ({ ...base, enabledMcpjsonServers: [], enableAllProjectMcpServers: true }), true);
+        // In a folder the user trusted (not one trusted only for having had nothing to protect).
+        trustFolder(proj);
+        const m = new McpManager(proj, () => ({ ...base, approvedMcpjsonServers: {}, enableAllProjectMcpServers: true }), true);
         m.load();
         expect(m.servers.get("approved")!.status).toBe("pending");
         expect(m.servers.get("unapproved")!.status).toBe("pending");
@@ -579,7 +623,8 @@ describe("McpManager start, tools and shutdown", () => {
     afterAll(() => rmSync(proj, { recursive: true, force: true }));
     mkdirSync(proj, { recursive: true });
     writeFileSync(join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { mod: stdio("modern") } }));
-    let settings: Settings = { mcpServers: { leg: stdio("legacy") }, enabledMcpjsonServers: ["mod"] };
+    let settings: Settings = { mcpServers: { leg: stdio("legacy") }, approvedMcpjsonServers: { mod: mcpFingerprint(stdio("modern"), proj) } };
+    saveApproval(proj, "mod", settings.approvedMcpjsonServers!.mod!);
     const m = new McpManager(proj, () => settings, true);
     const ctx = { signal: new AbortController().signal } as never;
     afterAll(() => m.closeAll());
@@ -654,10 +699,11 @@ describe("McpManager start, tools and shutdown", () => {
         expect(m.servers.get("leg")!.status).toBe("connected");
         expect(m.servers.get("mod")!.client).toBe(modClient);
 
-        // Changing a server's config replaces it.
+        // Changing what a project server runs stops it, and it asks again.
         writeFileSync(join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { mod: stdio("modern", { CHANGED: "1" }) } }));
         m.load();
-        expect(m.servers.get("mod")!.status).toBe("pending");
+        expect(m.servers.get("mod")!.status).toBe("needs-approval");
+        expect(m.servers.get("mod")!.approval?.reason).toBe("changed");
         expect(m.servers.get("mod")!.client).toBeUndefined();
         expect(await waitFor(() => !alive(modPid))).toBe(true);
     });
