@@ -10,7 +10,8 @@ import "./styles/overlays.css";
 import "./styles/markdown.css";
 import "./state/prefs";
 import { start } from "./state/app";
+import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { App } from "./App";
 
 start();
-render(() => <App />, document.getElementById("root")!);
+render(() => <RenderBoundary app><App /></RenderBoundary>, document.getElementById("root")!);

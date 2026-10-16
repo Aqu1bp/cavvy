@@ -802,3 +802,15 @@ svg.lucide {
 .send svg.lucide {
     stroke-width: 2;
 }
+
+/* Text-only recovery stays within its owning block, even for a long stack or tool output. */
+.render-error { margin: 12px 0; padding: 14px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.render-error p { margin: 0 0 8px; }
+.render-error pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
+.render-error-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.render-error-app { max-width: 640px; margin: 15vh auto; }
+.session-opening { padding: 32px; max-width: 850px; width: 100%; margin: 0 auto; }
+.session-opening [role="status"] { display: flex; align-items: center; gap: 8px; }
+.session-skeleton { margin-top: 24px; display: grid; gap: 12px; }
+.session-skeleton i { display: block; height: 14px; border-radius: 4px; background: var(--border); }
+.session-skeleton i:last-child { width: 65%; }

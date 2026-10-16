@@ -1,3 +1,4 @@
+import { boundary } from "../helpers/render-boundary";
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 import { readFileSync } from "node:fs";
@@ -72,7 +73,7 @@ Object.assign(second.rpc, { credentials: async () => ({ url: "ws://test", token:
 const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "utf8");
 const widgets = ["Header", "Home", "Sidebar", "SessionView", "Reconnecting", "Disconnected", "TerminalPanel", "CommandPalette", "RewindDialog", "McpDialog", "FolderPicker", "TrustDialog", "DeleteSessionDialog", "CommitDialog", "Toasts"];
 const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
-    app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
+    RenderBoundary: boundary(), Spinner: () => node("Spinner"), activate: second.activate, app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
     prefs: { sidebar: false }, isTauri: mode === "desktop", os: "other",
     settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
@@ -120,7 +121,7 @@ try {
             await settle();
             assert.ok(second.handleFor("saved")?.ready());
         } else if (mode === "transient" || mode === "retry") {
-            assert.ok(text(root).includes("Waiting to reopen your session"));
+            assert.ok(text(root).includes("Couldn't open this session"));
             if (mode === "retry") {
                 failure = undefined;
                 all(root).find((n) => n.tag === "button" && text(n) === "Retry opening session")!.props.onClick();

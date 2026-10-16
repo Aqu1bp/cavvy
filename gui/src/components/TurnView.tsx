@@ -1,3 +1,4 @@
+import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
@@ -348,6 +349,10 @@ function segments(items: Item[]): Seg[] {
 }
 
 export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void }) {
+    return <RenderBoundary raw={() => p.turn}><TurnViewContent {...p} /></RenderBoundary>;
+}
+
+function TurnViewContent(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void }) {
     const items = createMemo(() => groupBlocks(p.turn.blocks));
     const segs = createMemo(() => segments(items()));
     const running = () => p.turn.status === "running";

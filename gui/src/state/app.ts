@@ -14,6 +14,8 @@ import { mayCreateFiles } from "../lib/pathcache";
 import { paths } from "./filelinks";
 import { repeatedToast, ToastLifetime, toastMs, type Toast, type ToastAction } from "../lib/toasts";
 export type { Toast } from "../lib/toasts";
+import { DelayedPending } from "../lib/delayed-pending";
+import { safeRenderText } from "../lib/render-error";
 import { afterFailedReopen } from "../lib/reopen";
 import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
 import { composerDrafts } from "../lib/composer-draft";
@@ -147,6 +149,7 @@ export interface AppState {
     settings: GuiSettings;
     /** The session in the main view; none for the home screen. */
     activeId?: string;
+    opening?: { id: string; visible: boolean; error?: string };
     /** The project new sessions start in. */
     homeCwd?: string;
     /** The mode picked on the home screen, which new sessions start in; the saved default until then. */
@@ -345,55 +348,67 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
-/** Show a session in the main view. `cwd` is its project, for one not in the lists (an old one found by search). */
-export async function activate(id: string | undefined, cwd?: string) {
-    // A jump waiting for another session doesn't wait any more.
-    if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
-    if (!id) {
-        setApp("activeId", undefined);
-        return;
+let openingVersion = 0;
+const pending = new DelayedPending(() => {
+    if (app.opening) setApp("opening", "visible", true);
+});
+// Home, imports, deletion and other direct navigation also invalidate an open.
+createRoot(() => createEffect(() => {
+    if (app.opening && app.opening.id !== app.activeId) {
+        openingVersion++;
+        pending.cancel();
+        setApp("opening", undefined);
     }
+}));
+
+/** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
+export async function activate(id: string | undefined, cwd?: string) {
+    if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
+    if (id !== app.activeId) setFindOpen(false);
+    pending.cancel();
+    const version = ++openingVersion;
+    batch(() => {
+        setApp("activeId", id);
+        setApp("opening", id ? { id, visible: false, error: undefined } : undefined);
+        const where = (app.sessions.find((x) => x.id === id) ?? app.archived.find((x) => x.id === id))?.cwd ?? cwd;
+        if (where) setApp("homeCwd", where);
+    });
+    if (!id) return;
+    const project = app.homeCwd;
+    const current = () => version === openingVersion && app.activeId === id && app.homeCwd === project;
+    pending.start();
     try {
         const h = await openSession(id);
-        if (id !== app.activeId) setFindOpen(false);
-        setApp("activeId", id);
-        if (h.view.state.cwd) setApp("homeCwd", h.view.state.cwd);
-        markSeen(id);
+        if (!current()) return;
+        await pending.finish();
+        if (!current()) return;
+        batch(() => {
+            setApp("opening", undefined);
+            if (h.view.state.cwd) setApp("homeCwd", h.view.state.cwd);
+            markSeen(id);
+        });
     } catch (e) {
-        if (e instanceof RpcError && e.code === "needs_trust") {
-            const where = (app.sessions.find((x) => x.id === id) ?? app.archived.find((x) => x.id === id))?.cwd ?? cwd;
-            if (where) requestTrust(where, () => void activate(id, cwd));
+        if (!current()) return;
+        await pending.finish();
+        if (!current()) return;
+        if (e instanceof RpcError && e.code === "not_found") {
+            forgetSession(id);
             return;
         }
-        if (e instanceof RpcError && e.code === "not_found") forgetSession(id);
+        const error = safeRenderText(e instanceof Error ? e.message : String(e));
+        setApp("opening", { id, visible: true, error: error || "Opening failed. Try again." });
+        if (e instanceof RpcError && e.code === "needs_trust" && project) {
+            requestTrust(project, () => { if (current()) void activate(id, project); });
+        }
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
-        reportError(e);
     }
 }
 
 /** Restore only after bootstrap. Lists are capped, so absence is not deletion. */
 export async function restoreActiveSession() {
     const id = app.activeId;
-    if (!id || handles.has(id)) return;
-    const cwd = app.homeCwd;
-    const current = () => app.activeId === id && app.homeCwd === cwd;
-    try {
-        const h = await openSession(id);
-        // A slow restore must not undo navigation performed in the meantime.
-        if (!current()) return;
-        setApp("homeCwd", h.view.state.cwd);
-        markSeen(id);
-    } catch (e) {
-        if (!current()) return;
-        if (e instanceof RpcError && e.code === "not_found") {
-            forgetSession(id);
-        } else if (e instanceof RpcError && e.code === "needs_trust" && cwd) {
-            requestTrust(cwd, () => { if (current()) void restoreActiveSession(); });
-        } else {
-            // Keep the selection on transient failures for the next reconnect.
-            reportError(e);
-        }
-    }
+    if (!id || handles.has(id) || (app.opening?.id === id && !app.opening.error)) return;
+    await activate(id, app.homeCwd);
 }
 
 // Trust prompts are shown by the App component; this hands them over.

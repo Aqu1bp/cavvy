@@ -1,3 +1,4 @@
+import { RenderBoundary } from "../ui/ErrorBoundary";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { ChevronDown, FileMinus2, FilePlus2, FileText } from "lucide-solid";
 import type { DiffLine, FileDiff } from "@shared/protocol";
@@ -60,11 +61,19 @@ export function FileIcon(p: { status: FileDiff["status"]; size?: number }) {
 
 /** `headerAction`: a control at the end of the header (e.g. "Open in editor"). */
 export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolean; headerAction?: JSX.Element; split?: boolean; class?: string }) {
+    return <RenderBoundary raw={() => p.diff}><DiffViewContent {...p} /></RenderBoundary>;
+}
+
+function DiffViewContent(p: { diff: FileDiff; maxLines?: number; header?: boolean; headerAction?: JSX.Element; split?: boolean; class?: string }) {
     const [expanded, setExpanded] = createSignal(false);
     const [visible, setVisible] = createSignal(false);
     const [oldHl, setOldHl] = createSignal<string[]>();
     const [newHl, setNewHl] = createSignal<string[]>();
     let el: HTMLDivElement | undefined;
+    const [failure, setFailure] = createSignal<unknown>();
+    createEffect(() => { if (failure()) throw failure(); });
+    let token = 0;
+    onCleanup(() => token++);
 
     const rows = createMemo<Row[]>(() => {
         const out: Row[] = [];
@@ -98,12 +107,18 @@ export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolea
     // Highlight each side once the diff is on screen.
     createEffect(
         on([visible, () => p.diff], ([v, d]) => {
+            const mine = ++token;
             if (!v) return;
             const lang = langOf(d.path);
             if (!lang) return;
             const lines = d.hunks.flatMap((h) => h.lines);
-            void highlightLines(lines.filter((l) => l.t !== "add").map((l) => l.text).join("\n"), lang).then(setOldHl);
-            void highlightLines(lines.filter((l) => l.t !== "del").map((l) => l.text).join("\n"), lang).then(setNewHl);
+            const failed = (error: unknown) => {
+                if (mine === token) setFailure(() => error || new Error("Highlighting failed"));
+            };
+            void highlightLines(lines.filter((l) => l.t !== "add").map((l) => l.text).join("\n"), lang)
+                .then((html) => { if (mine === token) setOldHl(html); }).catch(failed);
+            void highlightLines(lines.filter((l) => l.t !== "del").map((l) => l.text).join("\n"), lang)
+                .then((html) => { if (mine === token) setNewHl(html); }).catch(failed);
         }),
     );
 
