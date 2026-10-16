@@ -251,6 +251,9 @@ function readOnlyRefusal(toolName: string): string {
         : "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
 }
 
+/** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
+const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
+
 function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
 }
@@ -971,6 +974,8 @@ export class Agent {
      */
     private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
         const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
+        // Only that its last turn was stopped, which it never heard (Harness stopped or died part way): said plainly.
+        if (resume && missed.length && missed.every((m) => m.role === "user" && m.meta?.kind === "interrupt")) return `${reminder(BACKEND_CUT_OFF).text}\n\n${text}`;
         const transcript = missed.length ? transcriptText(missed, 60_000) : "";
         if (!transcript) return text;
         const intro = resume

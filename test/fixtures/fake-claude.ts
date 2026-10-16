@@ -20,7 +20,7 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
+// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
@@ -484,6 +484,12 @@ async function turn(content: any[], uuid?: string) {
         toolResult("toolu_p", JSON.stringify(r), r.behavior !== "allow");
     } else if (scenario === "hang") {
         toolUse("toolu_h", "Bash", { command: "sleep 1000" });
+        await new Promise<void>((r) => (wake = r));
+        if (interrupted) return result("error_during_execution", { errors: ["Request interrupted by user"] });
+    } else if (scenario === "write-hang") {
+        // Something done, then a command that runs until it's stopped.
+        if (!(await use("toolu_wh", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" }))) return;
+        toolUse("toolu_wh2", "Bash", { command: "sleep 1000" });
         await new Promise<void>((r) => (wake = r));
         if (interrupted) return result("error_during_execution", { errors: ["Request interrupted by user"] });
     }

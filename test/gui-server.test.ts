@@ -1377,7 +1377,7 @@ describe("reopening a Claude Code session", () => {
         await c.call("models.list", { refresh: true });
         const dir = project();
         const id = await c.open("session.create", { cwd: dir });
-        await c.call("session.setModel", { id, ref: "claude-code:default" });
+        await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
         await c.call("session.setMode", { id, mode });
         await c.call("session.send", { id, text: "map the auth module" });
         await c.until(id, done, 30_000);
@@ -1468,7 +1468,7 @@ describe("reopening a Claude Code session", () => {
         try {
             const c = await client();
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "get a note written" });
             await c.until(id, (v) => done(v) && v.agents[0]?.status === "waiting", 20_000);
             await c.answer(id, { kind: "permission", choice: "yes" });
@@ -1497,8 +1497,10 @@ describe("reopening a Claude Code session", () => {
         try {
             const c = new Client(TOKEN, {}, own.port);
             await c.opened();
+            // The mock model listed (it isn't cached), so there's someone to delegate to.
+            await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "get a note written" });
             await c.until(id, (v) => done(v) && v.agents[0]?.status === "waiting", 20_000);
             const was = structuredClone(c.view(id).agents[0]!);
@@ -1540,13 +1542,14 @@ describe("reopening a Claude Code session", () => {
             const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
             const c = await client();
             const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+            await c.call("session.setModel", { id, ref: "mock:mock-opus", persist: false });
             await c.call("session.send", { id, text: "demo" });
             await c.answer(id, { kind: "permission", choice: "yes" }); // the shell command
             await c.until(id, done, 15_000);
             saveAgentConfig("claude-code", { path: fakeClaude() });
             process.env.FAKE_SCENARIO = "write";
             await c.call("models.list", { refresh: true });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "write the notes" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
             // Claude Code changing a file Harness changed before (the fake only writes out.txt itself).
@@ -1597,6 +1600,144 @@ describe("reopening a Claude Code session", () => {
             await cleanup();
         }
     }, 60_000);
+
+    /** The session's history as a model is given it next (the file's messages, rewinds applied). */
+    async function history(id: string): Promise<any[]> {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const out: any[] = [];
+        for (const l of readFileSync(findSessionAnywhere(id)!, "utf-8").trim().split("\n").map((x) => JSON.parse(x))) {
+            if (l.t === "msg") out.push(l.m);
+            else if (l.t === "rewind") out.length = l.count;
+        }
+        return out;
+    }
+    /** What a fake CLI was started with and sent (FAKE_LOG). */
+    const logged = (log: string) => readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const sentPrompts = (log: string) => logged(log).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
+    const working = (v: { turns: Turn[] }) => v.turns.length > 0 && tools(lastTurn(v)).map((b) => `${b.name}:${b.status}`).join() === "Write:ok,Bash:running";
+    const shown = (t: Turn) => t.blocks.filter((b) => b.t !== "notice").map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t));
+
+    /** A Claude Code turn under way in a server of its own, part way: it wrote a file, and a command of it is running. */
+    async function partWay(port: number) {
+        const c = new Client(TOKEN, {}, port);
+        await c.opened();
+        const id = await c.open("session.create", { cwd: project(), mode: "acceptEdits" });
+        await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+        await c.call("session.send", { id, text: "write it, then wait" });
+        await c.until(id, working, 20_000);
+        return { c, id };
+    }
+
+    /** Cut off part way, it comes back interrupted (never done), with what it did; its history says so once. */
+    async function expectCutOff(id: string, was: { turns: Turn[] }) {
+        const snap = await reopened(id);
+        expect(snap.turns.map((t) => [t.prompt?.text, t.status])).toEqual([["write it, then wait", "aborted"]]);
+        expect(shown(snap.turns[0]!)).toEqual(["Working on it.", "Write:ok", "Bash:error"]);
+        expect(tools(snap.turns[0]!)[0]!.durationMs).toBe(tools(lastTurn(was))[0]!.durationMs);
+        const h = await history(id);
+        expect(h.filter((m) => m.role === "user").map((m) => m.meta?.kind)).toEqual(["prompt", "interrupt"]);
+        expect(h.at(-1).meta.kind).toBe("interrupt");
+        // Opened again, nothing more is added.
+        await reopened(id);
+        expect((await history(id)).length).toBe(h.length);
+    }
+
+    test("a turn the server stops part way comes back interrupted, with what it had done", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "write-hang";
+        const own = await startServer({ token: TOKEN });
+        try {
+            const { c, id } = await partWay(own.port);
+            const was = structuredClone(c.view(id));
+            c.close();
+            await own.stop();
+            await expectCutOff(id, was);
+        } finally {
+            await own.stop().catch(() => undefined);
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("one cut off by the server being killed comes back the same, and Claude Code is told when it goes on", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "write-hang";
+        const log = join(tempDir("harness-gui-log-"), "claude.log");
+        // The server in a process of its own, to kill outright (the fake CLI it starts exits once its stdin closes).
+        const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures", "gui-server-child.ts")], { env: { ...process.env, CHILD_TOKEN: TOKEN }, stdout: "pipe", stderr: "ignore" });
+        try {
+            const first = await child.stdout.getReader().read();
+            const { port } = JSON.parse(new TextDecoder().decode(first.value).split("\n")[0]!);
+            const { c, id } = await partWay(port);
+            const was = structuredClone(c.view(id));
+            // What it shows is in the log within a moment, not only once the turn ends.
+            await Bun.sleep(200);
+            child.kill("SIGKILL");
+            await child.exited;
+            c.close();
+            await expectCutOff(id, was);
+            // Claude Code goes on in its own session, told that its turn there was cut off.
+            process.env.FAKE_SCENARIO = "write";
+            process.env.FAKE_LOG = log;
+            const again = await startServer({ token: TOKEN });
+            try {
+                const c2 = new Client(TOKEN, {}, again.port);
+                await c2.opened();
+                await c2.open("session.open", { id });
+                await c2.call("session.send", { id, text: "and now?" });
+                await c2.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
+                const started = logged(log).find((l) => l.argv?.includes("--resume"));
+                expect(started).toBeDefined();
+                expect(sentPrompts(log).at(-1)).toContain("was cut off");
+                // What other models are given is the history, which says so already.
+                expect(JSON.stringify((await history(id)).at(-2))).not.toContain("was cut off");
+                c2.close();
+            } finally {
+                await again.stop();
+            }
+        } finally {
+            child.kill("SIGKILL");
+            delete process.env.FAKE_LOG;
+            await cleanup();
+        }
+    }, 90_000);
+
+    test("the effort it was left at comes back too; choosing the mode it already has tells the model nothing new", async () => {
+        const log = join(tempDir("harness-gui-log-"), "claude.log");
+        try {
+            const { c, id } = await claudeCodeSession("write", "acceptEdits");
+            await c.call("session.setEffort", { id, effort: "high" });
+            c.close();
+            expect((await reopened(id)).state.effort).toBe("high");
+            process.env.FAKE_LOG = log;
+            const again = await startServer({ token: TOKEN });
+            try {
+                const c2 = new Client(TOKEN, {}, again.port);
+                await c2.opened();
+                await c2.open("session.open", { id });
+                // Picked again, as one would after a reopen that showed Manual.
+                await c2.call("session.setMode", { id, mode: "acceptEdits" });
+                await c2.call("session.send", { id, text: "and now?" });
+                await c2.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
+                expect(sentPrompts(log).at(-1)).not.toContain("switched the permission mode");
+                // The effort it runs with is the one it was left at.
+                expect(logged(log).filter((l) => l.argv).at(-1).argv.join(" ")).toContain("--effort high");
+                // Another mode is news.
+                await c2.call("session.setMode", { id, mode: "default" });
+                await c2.call("session.send", { id, text: "and then?" });
+                await c2.answer(id, { kind: "permission", choice: "yes" }); // its Write, in Manual
+                await c2.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 3, 30_000);
+                expect(sentPrompts(log).at(-1)).toContain("switched the permission mode");
+                c2.close();
+            } finally {
+                await again.stop();
+            }
+        } finally {
+            delete process.env.FAKE_LOG;
+            await cleanup();
+        }
+    }, 90_000);
 });
 
 describe("terminal WebSocket transport", () => {

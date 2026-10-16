@@ -9,7 +9,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
-const { agentsFromTurns, keptAgent, promptKey, replay, runsAgent, shownBlocks, UiLog, withoutActionsNote } = await import("../src/server/history");
+const { agentHead, agentStep, agentsFromTurns, cutOffPrompt, promptKey, replay, runsAgent, shownStep, UiLog, withoutActionsNote } = await import("../src/server/history");
 const { DELEGATE_TOOL } = await import("../src/agent/delegation");
 const { mergePath } = await import("../src/server/login-env");
 const { Session, listAllSessions, findSessionAnywhere } = await import("../src/agent/session");
@@ -278,10 +278,27 @@ describe("replay", () => {
         ];
         log.write({ t: "turn", seg: 0, index: 0, at: 1 });
         log.write({ t: "tool", id: "tu2", summary: "+1 −1", diff, durationMs: 2 });
-        log.write({ t: "blocks", seg: 0, index: 0, blocks: shownBlocks(blocks) });
+        // Written as they're shown: a call as it starts and again as it ends, one taken back, one written late (it goes where it was).
+        const step = (b: Block, after: string | null) => log.write({ t: "step", seg: 0, index: 0, block: shownStep(b)!, after });
+        const [first, ran, thought, ...rest] = blocks;
+        step(first!, null);
+        step({ ...(ran as ToolBlock), status: "running", output: undefined, durationMs: undefined }, "b2");
+        step(ran!, "b2");
+        step({ t: "text", id: "b7", text: "Retried." }, "tu1");
+        log.write({ t: "step", seg: 0, index: 0, drop: "b7" });
+        step(rest[0]!, "b3");
+        step(thought!, "tu1");
+        // A notice isn't a step.
+        expect(shownStep(rest[3]!)).toBeUndefined();
+        for (const [i, b] of rest.entries()) if (i > 0 && shownStep(b)) step(b, rest[i - 1]!.id === "b4" ? "tu4" : rest[i - 1]!.id);
+        // The sub-agents: what changed of them, and their steps.
         const subRead: Block = { t: "tool", id: "s1", name: "Read", title: "Read(a.ts)", status: "ok", output: "x".repeat(5000), diff, progress: "x" };
-        log.write({ t: "agent", agent: keptAgent({ ...agent("tu3"), turnId: "b1", status: "done", endedAt: 40, toolCount: 1, tokens: 9, blocks: [{ t: "text", id: "b9", text: "Reading." }, subRead], report: "One list.", taskId: "task-1" }) });
-        log.write({ t: "agent", agent: keptAgent({ ...agent("tu4"), turnId: "b1", activity: "Thinking", blocks: [{ t: "tool", id: "s2", name: "Grep", title: "Grep", status: "running" }] }) });
+        log.write({ t: "agent", id: "tu3", head: agentHead({ ...agent("tu3"), turnId: "b1", activity: "Reading" }) });
+        log.write({ t: "agent", id: "tu3", block: agentStep({ t: "text", id: "b9", text: "Reading." }), after: null });
+        log.write({ t: "agent", id: "tu3", block: agentStep(subRead), after: "b9" });
+        log.write({ t: "agent", id: "tu3", head: { status: "done", endedAt: 40, toolCount: 1, tokens: 9, report: "One list.", taskId: "task-1" } });
+        log.write({ t: "agent", id: "tu4", head: agentHead({ ...agent("tu4"), turnId: "b1", activity: "Thinking" }) });
+        log.write({ t: "agent", id: "tu4", block: agentStep({ t: "tool", id: "s2", name: "Grep", title: "Grep", status: "running" }), after: null });
         log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 100, status: "done" });
         const messages = [
             user("fix it"),
@@ -323,7 +340,7 @@ describe("replay", () => {
         const file = join(tempDir(), "r.jsonl");
         const log = new UiLog(file, "r", false);
         log.write({ t: "turn", seg: 0, index: 0, at: 1 });
-        log.write({ t: "blocks", seg: 0, index: 0, blocks: [{ t: "text", id: "b1", text: "The old reply." }] });
+        log.write({ t: "step", seg: 0, index: 0, block: { t: "text", id: "b1", text: "The old reply." }, after: null });
         log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 5, status: "done" });
         // Rewound, and asked again of another model.
         log.write({ t: "turn", seg: 0, index: 0, at: 9 });
@@ -337,7 +354,7 @@ describe("replay", () => {
         const file = join(tempDir(), "p.jsonl");
         const log = new UiLog(file, "p", false);
         const asked = user("the first question") as UserMessage;
-        log.write({ t: "blocks", seg: 0, index: 0, blocks: [{ t: "text", id: "b1", text: "The first answer." }], prompt: promptKey(asked) });
+        log.write({ t: "step", seg: 0, index: 0, block: { t: "text", id: "b1", text: "The first answer." }, after: null, prompt: promptKey(asked) });
         const reply = { role: "assistant", provider: "claude-code", model: "opus", content: [{ type: "text", text: "The second answer." }] } as Message;
         let n = 0;
         const run = (prompt: Message) => replay({ segments: [{ messages: [prompt, reply] }], current: [prompt, reply], ui: new UiLog(file, "p"), meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
@@ -347,16 +364,64 @@ describe("replay", () => {
         expect(run(asked)[0]!.blocks.map((b) => b.t === "text" && b.text)).toEqual(["The first answer."]);
     });
 
-    test("the log keeps the session's last mode and context; nothing is written once it's closed", () => {
+    test("the log keeps the session's last mode, effort and context; nothing is written once it's closed", () => {
         const file = join(tempDir(), "m.jsonl");
         const log = new UiLog(file, "m", false);
-        log.write({ t: "state", mode: "auto" });
+        log.write({ t: "state", mode: "auto", effort: "low" });
         log.write({ t: "state", contextTokens: 1234, messages: 2 });
-        log.write({ t: "state", mode: "plan" });
+        log.write({ t: "state", mode: "plan", effort: "high" });
         // Its session let go of (another process may have it now).
         log.close();
         log.write({ t: "state", mode: "acceptEdits" });
-        expect(new UiLog(file, "m").state).toEqual({ mode: "plan", contextTokens: 1234, messages: 2 });
+        expect(new UiLog(file, "m").state).toEqual({ mode: "plan", effort: "high", contextTokens: 1234, messages: 2 });
+    });
+
+    test("a sub-agent's log keeps its latest steps, counting the rest, and what's no longer so about it", () => {
+        const file = join(tempDir(), "a.jsonl");
+        const log = new UiLog(file, "a", false);
+        log.write({ t: "agent", id: "tu1", head: agentHead({ ...agent("tu1"), status: "done", endedAt: 5, report: "First." }) });
+        let after: string | null = null;
+        for (let i = 0; i < 130; i++) {
+            log.write({ t: "agent", id: "tu1", block: { t: "text", id: `x${i}`, text: `step ${i}` }, after });
+            after = `x${i}`;
+        }
+        // Running again (Codex's, messaged after it answered): it hasn't ended, and has no report yet.
+        log.write({ t: "agent", id: "tu1", head: { status: "running", endedAt: null, report: null } });
+        // A step of one never seen isn't anyone's.
+        log.write({ t: "agent", id: "tu9", block: { t: "text", id: "y", text: "?" }, after: null });
+        const a = new UiLog(file, "a").agents;
+        expect([...a.keys()]).toEqual(["tu1"]);
+        const run = a.get("tu1")!;
+        expect([run.status, "endedAt" in run, "report" in run, run.description, run.blocks.length, run.dropped, run.blocks[0]!.t === "text" && run.blocks[0]!.text]).toEqual(["running", false, false, "Review auth", 100, 30, "step 30"]);
+    });
+
+    test("a turn the log saw start and never end, with nothing after its prompt that says how it ended, was cut off", () => {
+        const file = join(tempDir(), "c.jsonl");
+        const log = new UiLog(file, "c", false);
+        const answered = { role: "assistant", provider: "p", model: "m", content: [{ type: "text", text: "Done." }] } as Message;
+        const calling = { role: "assistant", provider: "p", model: "m", content: [{ type: "tool_call", id: "c1", name: "Bash", input: {} }] } as Message;
+        const results = { role: "user", content: [{ type: "tool_result", toolCallId: "c1", toolName: "Bash", content: "ok" }], meta: { kind: "tool_results" } } as Message;
+        log.write({ t: "turn", seg: 0, index: 0, at: 1 });
+        log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 2, status: "done" });
+        log.write({ t: "turn", seg: 0, index: 2, at: 3 });
+        const ui = new UiLog(file, "c");
+        const at = (messages: Message[], seg = 0) => cutOffPrompt(ui, seg, messages);
+        const before = [user("first"), answered];
+        expect(at([...before, user("second")])).toBe(2);
+        // Part way through its tools (a model's own turn).
+        expect(at([...before, user("second"), calling, results])).toBe(2);
+        // It said how it ended.
+        expect(at([...before, user("second"), user("[Request interrupted by user]", "interrupt")])).toBeUndefined();
+        expect(at([...before, user("second"), calling, { ...results, content: [...results.content, { type: "text", text: "[Request interrupted by user for tool use]" }] } as Message])).toBeUndefined();
+        expect(at([...before, user("second"), answered])).toBeUndefined();
+        // It went on where the log isn't kept (a terminal).
+        expect(at([...before, user("second"), user("third")])).toBeUndefined();
+        // Rewound past it, or compacted since.
+        expect(at(before)).toBeUndefined();
+        expect(at([...before, user("second")], 1)).toBeUndefined();
+        // The one that ended isn't.
+        log.write({ t: "turn", seg: 0, index: 2, at: 3, end: 4, status: "error" });
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...before, user("second")])).toBeUndefined();
     });
 
     test("turns from before a compaction are kept, marked archived and not rewindable", () => {
