@@ -464,7 +464,7 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
                                     <span class={`nd st-${a.status}`} />
                                 </span>
                                 <span class="agr-text">
-                                    <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>
+                                    <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>{" "}
                                     <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`}>
                                         {a.model ? `${shortModelRef(a.model)} · ` : ""}
                                         {agentLine(a)}
@@ -550,13 +550,14 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                     <span class="tool-icon">
                         <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
                     </span>
-                    <span class="tool-verb">{label().verb}</span>
+                    {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
+                    <span class="tool-verb">{label().verb}</span>{" "}
                     <Show when={label().arg}>
-                        <span class="tool-arg truncate">{label().arg}</span>
+                        <span class="tool-arg truncate">{label().arg}</span>{" "}
                     </Show>
                     <span class="tool-meta">
                         <Show when={p.tool.sandboxed}>
-                            <span class="tool-tag" title="Ran in the sandbox">
+                            <span class="tool-tag" title="Ran in the sandbox" data-find-skip>
                                 <ShieldCheck size={11} /> sandbox
                             </span>
                         </Show>
@@ -564,13 +565,15 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                             <span class="truncate">{meta()}</span>
                         </Show>
                         <Show when={p.tool.diff && p.tool.status === "ok"}>
-                            <span class="stat">
+                            <span class="stat" data-find-skip>
                                 <span class="add">+{p.tool.diff!.added}</span>
                                 <span class="del">−{p.tool.diff!.removed}</span>
                             </span>
                         </Show>
                         <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
-                            <span class="tool-dur num">{duration(p.tool.durationMs!)}</span>
+                            <span class="tool-dur num" data-find-skip>
+                                {duration(p.tool.durationMs!)}
+                            </span>
                         </Show>
                         <StatusIcon tool={p.tool} />
                     </span>

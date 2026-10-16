@@ -93,7 +93,9 @@ export function Narration(p: { block: TextBlock }) {
                 <span class="slot">
                     <MessageSquareText size={16} />
                 </span>
-                <span class="wtext truncate">“{line()}”</span>
+                <span class="wtext truncate" data-find-skip>
+                    “{line()}”
+                </span>
                 <span class="end">
                     <ChevronRight size={14} class="chev" />
                 </span>

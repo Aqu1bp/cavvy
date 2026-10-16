@@ -3,13 +3,13 @@
 // literal, bounded.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, utimesSync, writeFileSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { searchSessions, snippetAround, clearSearchCache } = await import("../src/server/search");
-const { projectStateDir } = await import("../src/config/paths");
+const { searchSessions, snippetAround, clearSearchCache, searchCacheSize, SEARCH_LIMITS } = await import("../src/server/search");
+const { paths, projectStateDir } = await import("../src/config/paths");
 const { readSegments, replay, STEERING, UiLog } = await import("../src/server/history");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { Engine } = await import("../src/server/engine");
@@ -236,6 +236,58 @@ describe("searching session files", () => {
         expect((await searchSessions("lima later words")).hits[0]).toMatchObject({ id: s.id, index: 2 });
     });
 
+    test("the cache counts all it keeps: folded text, turn starts, turn times by record", async () => {
+        const limits = { ...SEARCH_LIMITS };
+        try {
+            // Prompts of only an image start turns but have no text; a reply has its text twice (as written, folded).
+            const recs: Rec[] = [];
+            for (let i = 0; i < 3000; i++) recs.push({ t: "msg", m: { role: "user", content: [{ type: "image", mediaType: "image/png", data: "QUJD" }], meta: { kind: "prompt" } } });
+            recs.push(reply("sierra " + "x".repeat(1000)));
+            const s = write(recs);
+            const ui = join(projectStateDir(s.cwd), "ui");
+            mkdirSync(ui, { recursive: true });
+            writeFileSync(join(ui, `${s.id}.jsonl`), Array.from({ length: 50 }, (_, i) => JSON.stringify({ t: "turn", seg: 0, index: i, at: i })).join("\n") + "\n");
+            const only = (id: string) => id === s.id;
+            clearSearchCache();
+            expect((await searchSessions("sierra", { include: only })).hits).toHaveLength(1);
+            const kept = searchCacheSize();
+            expect(kept).toMatchObject({ docs: 1, turnTimes: 1, records: 50 });
+            expect(kept.chars).toBeGreaterThan(3000 * 32 + 2 * 1007);
+            // Over the limits: given back, not kept.
+            SEARCH_LIMITS.cacheChars = 50_000;
+            SEARCH_LIMITS.cacheTurnTimes = 10;
+            clearSearchCache();
+            expect((await searchSessions("sierra", { include: only })).hits).toHaveLength(1);
+            expect(searchCacheSize()).toEqual({ docs: 0, chars: 0, turnTimes: 0, records: 0 });
+        } finally {
+            Object.assign(SEARCH_LIMITS, limits);
+            clearSearchCache();
+        }
+    });
+
+    test("symlinked project folders, session files and GUI logs aren't followed", async () => {
+        // A folder elsewhere, linked in as a project.
+        const elsewhere = tempDir("harness-search-elsewhere-");
+        writeFileSync(join(elsewhere, "20260101-000000-feed01.jsonl"), [{ t: "meta", id: "20260101-000000-feed01", cwd: elsewhere, createdAt: 0, version: "1" }, prompt("tango linked folder")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        symlinkSync(elsewhere, join(paths.projectsDir(), "linked-project"));
+        // A session file elsewhere, linked into a real project.
+        const real = write([prompt("victor real session")]);
+        const outside = join(tempDir("harness-search-file-"), "s.jsonl");
+        writeFileSync(outside, [{ t: "meta", id: "x", cwd: real.cwd, createdAt: 0, version: "1" }, prompt("uniform linked file")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        symlinkSync(outside, join(projectStateDir(real.cwd), "20260101-000000-feed02.jsonl"));
+        // A GUI log elsewhere, linked in for the real session.
+        const log = join(tempDir("harness-search-log-"), "ui.jsonl");
+        writeFileSync(log, JSON.stringify({ t: "turn", seg: 0, index: 0, at: 7_777 }) + "\n");
+        mkdirSync(join(projectStateDir(real.cwd), "ui"), { recursive: true });
+        symlinkSync(log, join(projectStateDir(real.cwd), "ui", `${real.id}.jsonl`));
+        clearSearchCache();
+        expect((await searchSessions("tango linked folder")).hits).toHaveLength(0);
+        expect((await searchSessions("uniform linked file")).hits).toHaveLength(0);
+        const v = (await searchSessions("victor real session")).hits[0]!;
+        expect(v.id).toBe(real.id);
+        expect(v.at).not.toBe(7_777);
+    });
+
     test("the snippet is a short stretch around the match", () => {
         const text = "word ".repeat(200) + "the NEEDLE is here " + "more ".repeat(200);
         const at = text.indexOf("NEEDLE");
@@ -356,5 +408,29 @@ describe("speed", () => {
         expect(r.hits.map((h) => h.id)).toEqual([old.id]);
         expect(rounds).toBeGreaterThan(2);
         expect(rounds).toBeLessThan(12);
+    });
+});
+
+describe("listing a big project folder", () => {
+    test("yields and checks for a newer search every so many files, and a budget spent listing is partial", async () => {
+        const cwd = join(tempDir("harness-search-big-"), "big");
+        const dir = projectStateDir(cwd);
+        mkdirSync(dir, { recursive: true });
+        for (let i = 0; i < 3000; i++) {
+            const id = `20250101-000000-${i.toString(16).padStart(6, "0")}`;
+            writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify({ t: "meta", id, cwd, createdAt: 0, version: "1" }) + "\n");
+        }
+        const folders = readdirSync(paths.projectsDir()).length;
+        let checks = 0;
+        const none = await searchSessions("whiskey", { include: () => false, stale: () => (checks++, false) });
+        expect(none.partial).toBe(false);
+        // Once a folder (or once after listing) would be the folder count plus one; inside this one, every 64 files too.
+        expect(checks).toBeGreaterThanOrEqual(folders + Math.floor(3000 / 64));
+        // A newer search while it lists: it stops there.
+        let n = 0;
+        expect(await searchSessions("whiskey", { stale: () => ++n > folders + 5 })).toMatchObject({ hits: [], stale: true });
+        // No time left once it's listed: partial, even though no session was looked at.
+        const late = await searchSessions("whiskey", { include: () => false, budgetMs: 0 });
+        expect(late.partial).toBe(true);
     });
 });

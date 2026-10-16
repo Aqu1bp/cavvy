@@ -5,7 +5,7 @@
 // aren't searched, and lines too long to be worth parsing (a pasted image's
 // base64) are only counted.
 
-import { closeSync, openSync, readdirSync, readSync, statSync } from "fs";
+import { closeSync, lstatSync, openSync, readdirSync, readSync } from "fs";
 import { basename, dirname, join } from "path";
 import { paths } from "../config/paths";
 import type { Message } from "../providers/types";
@@ -32,9 +32,18 @@ export const SEARCH_LIMITS = {
     /** Per query: reading stops after this long or this many bytes, and what was found so far is returned. */
     budgetMs: 2500,
     budgetBytes: 768 * 1024 * 1024,
-    /** Text kept across queries. */
+    /** What's kept across queries, in characters (each piece of text, its folded copy, and a cost per entry, turn start and session). */
     cacheChars: 64 * 1024 * 1024,
+    /** Turn times kept across queries, in records. */
+    cacheTurnTimes: 200_000,
 };
+
+/** Rough cost, in characters, of what's kept besides the text itself. */
+const ENTRY_COST = 64;
+const START_COST = 32;
+const DOC_COST = 256;
+/** The listing yields (and checks the budget) after this many files. */
+const LIST_TICK = 64;
 
 interface Entry {
     seg: number;
@@ -52,6 +61,7 @@ interface Doc {
     entries: Entry[];
     /** Where each turn starts (a prompt, a command, a steering message), as replay starts them. */
     starts: { seg: number; index: number }[];
+    /** All it keeps, in characters (see SEARCH_LIMITS.cacheChars). */
     chars: number;
 }
 
@@ -65,11 +75,24 @@ interface TurnTimes {
 const docs = new Map<string, Doc>();
 const times = new Map<string, TurnTimes>();
 let cachedChars = 0;
+let cachedTimes = 0;
 
 export function clearSearchCache() {
     docs.clear();
     times.clear();
     cachedChars = 0;
+    cachedTimes = 0;
+}
+
+/** What the cache holds now (for tests). */
+export function searchCacheSize(): { docs: number; chars: number; turnTimes: number; records: number } {
+    return { docs: docs.size, chars: cachedChars, turnTimes: times.size, records: cachedTimes };
+}
+
+/** Not followed: a symlinked folder or file isn't part of the Harness home. */
+function plainStat(path: string) {
+    const st = lstatSync(path);
+    return st.isSymbolicLink() ? undefined : st;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +309,7 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
     );
     if (!done) return undefined;
     if (!doc.title) doc.title = first ?? doc.entries.find((e) => e.role === "user")?.text;
-    doc.chars = doc.entries.reduce((n, e) => n + e.text.length, 0);
+    doc.chars = DOC_COST + (doc.cwd?.length ?? 0) + (doc.title?.length ?? 0) + doc.starts.length * START_COST + doc.entries.reduce((n, e) => n + e.text.length + e.folded.length + ENTRY_COST, 0);
     return doc;
 }
 
@@ -309,10 +332,11 @@ async function turnTimes(sessionFile: string, id: string, ctl: Control): Promise
     const file = join(dirname(sessionFile), "ui", `${id}.jsonl`);
     let st;
     try {
-        st = statSync(file);
+        st = plainStat(file);
     } catch {
         return [];
     }
+    if (!st?.isFile()) return [];
     const cached = times.get(file);
     if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) return cached.turns;
     const turns: TurnTimes["turns"] = [];
@@ -331,8 +355,17 @@ async function turnTimes(sessionFile: string, id: string, ctl: Control): Promise
         ctl,
     ).catch(() => false);
     if (!done) return turns;
-    if (times.size > 2000) times.clear();
+    const old = times.get(file);
+    if (old) cachedTimes -= old.turns.length;
+    times.delete(file);
     times.set(file, { size: st.size, mtimeMs: st.mtimeMs, turns });
+    cachedTimes += turns.length;
+    // Oldest first out, by records (one log can hold many).
+    for (const [f, t] of times) {
+        if (cachedTimes <= SEARCH_LIMITS.cacheTurnTimes) break;
+        times.delete(f);
+        cachedTimes -= t.turns.length;
+    }
     return turns;
 }
 
@@ -405,27 +438,33 @@ async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; s
     } catch {
         return out;
     }
+    let seen = 0;
     for (const d of dirs) {
         if (!(await ctl.tick())) return undefined;
         const dir = join(root, d);
         let names: string[];
         try {
+            if (!plainStat(dir)?.isDirectory()) continue;
             names = readdirSync(dir);
         } catch {
             continue;
         }
         for (const f of names) {
             if (!f.endsWith(".jsonl")) continue;
+            // A folder of thousands: other requests still run, and a newer search or the budget still stops it.
+            if (++seen % LIST_TICK === 0 && !(await ctl.tick())) return undefined;
             const file = join(dir, f);
             try {
-                const st = statSync(file);
-                if (st.isFile()) out.push({ id: f.slice(0, -".jsonl".length), file, size: st.size, mtimeMs: st.mtimeMs });
+                const st = plainStat(file);
+                if (st?.isFile()) out.push({ id: f.slice(0, -".jsonl".length), file, size: st.size, mtimeMs: st.mtimeMs });
             } catch {
                 // vanished or unreadable
             }
         }
     }
-    return out.sort((x, y) => y.mtimeMs - x.mtimeMs);
+    out.sort((x, y) => y.mtimeMs - x.mtimeMs);
+    // The budget may have run out while listing: then nothing after it counts as whole.
+    return (await ctl.tick()) ? out : undefined;
 }
 
 /**

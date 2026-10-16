@@ -38,10 +38,11 @@ function blockText(b: Block): string | undefined {
             return plain(b.text);
         case "tool": {
             const l = toolLabel(b);
-            // A sub-agent's row shows its task (and model), not the word "Agent".
-            if (b.agent) return l.arg;
+            // A sub-agent's row starts with its task, not the word "Agent".
+            if (b.agent) return typeof b.input?.description === "string" && b.input.description.trim() ? b.input.description.trim() : l.arg;
+            // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
             const meta = b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
-            return [l.verb, l.arg].filter(Boolean).join(" ") + (meta ? `\n${meta}` : "");
+            return [l.verb, l.arg, meta].filter(Boolean).join(" ");
         }
         case "notice":
             return b.text;
