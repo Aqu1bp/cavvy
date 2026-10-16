@@ -9,7 +9,7 @@ import { closeSync, lstatSync, openSync, readdirSync, readSync } from "fs";
 import { basename, dirname, join } from "path";
 import { paths } from "../config/paths";
 import type { Message } from "../providers/types";
-import { redact } from "../util/redact";
+import { redact, redactionVersion } from "../util/redact";
 import { promptText, STEERING, withoutActionsNote } from "./history";
 import { foldCase } from "./protocol";
 
@@ -56,6 +56,7 @@ interface Entry {
 interface Doc {
     size: number;
     mtimeMs: number;
+    redaction: number;
     cwd?: string;
     title?: string;
     entries: Entry[];
@@ -246,21 +247,25 @@ function textOfParts(m: Message, keep: (text: string) => string | undefined): st
 }
 
 /** The searchable text of a message: a prompt, a steering message, a reply. Tool results, thinking and images aren't. */
-function messageText(m: Message): { role: "user" | "assistant"; text: string } | undefined {
+function messageText(m: Message, clean = (text: string) => text): { role: "user" | "assistant"; text: string } | undefined {
     if (!m || !Array.isArray(m.content)) return undefined;
     if (m.role === "user") {
         const kind = m.meta?.kind ?? "prompt";
-        if (kind === "prompt" || kind === "command") return { role: "user", text: promptText(m) };
-        if (kind === "tool_results") return { role: "user", text: textOfParts(m, (t) => (t.startsWith(STEERING) ? t.slice(STEERING.length).trim() : undefined)) };
+        if (kind === "prompt" || kind === "command") return { role: "user", text: promptText({
+            ...m,
+            content: m.content.map((p) => p.type === "text" ? { ...p, text: clean(p.text) } : p),
+            ...(m.meta?.display !== undefined ? { meta: { ...m.meta, display: clean(m.meta.display) } } : {}),
+        }) };
+        if (kind === "tool_results") return { role: "user", text: textOfParts(m, (t) => (t.startsWith(STEERING) ? clean(t.slice(STEERING.length)).trim() : undefined)) };
         return undefined;
     }
-    if (m.role === "assistant") return { role: "assistant", text: withoutActionsNote(textOfParts(m, (t) => t)) };
+    if (m.role === "assistant") return { role: "assistant", text: withoutActionsNote(clean(textOfParts(m, (t) => t))) };
     return undefined;
 }
 
 /** A session file as search sees it: its messages' text, placed the way replay places them (compactions, rewinds). */
 async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control): Promise<Doc | undefined> {
-    const doc: Doc = { size, mtimeMs, entries: [], starts: [], chars: 0 };
+    const doc: Doc = { size, mtimeMs, redaction: redactionVersion(), entries: [], starts: [], chars: 0 };
     let seg = 0;
     let count = 0;
     let first: string | undefined;
@@ -283,9 +288,11 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
                 try {
                     if (startsTurn(l.m)) doc.starts.push({ seg, index: count });
                     const found = messageText(l.m);
-                    const text = found && clip(found.text.trim());
+                    // Match the original text, but redact display text before
+                    // replay's trimming/reminder removal or our size cap.
+                    const text = found && clip(messageText(l.m, redact)!.text);
                     if (found && text) {
-                        doc.entries.push({ seg, index: count, role: found.role, text, folded: foldCase(text) });
+                        doc.entries.push({ seg, index: count, role: found.role, text, folded: foldCase(clip(found.text)) });
                         if (found.role === "user" && first === undefined && seg === 0) first = text;
                     }
                 } catch {
@@ -480,7 +487,9 @@ async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; s
 export async function searchSessions(query: string, o: SearchOptions = {}): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
     const limit = Math.max(1, Math.min(o.limit ?? 50, 200));
     const fq = foldCase(query);
-    const ctl = new Control(o.stale ?? (() => false), o.budgetMs ?? SEARCH_LIMITS.budgetMs, o.budgetBytes ?? SEARCH_LIMITS.budgetBytes);
+    const redaction = redactionVersion();
+    const outdated = () => redaction !== redactionVersion() || Boolean(o.stale?.());
+    const ctl = new Control(outdated, o.budgetMs ?? SEARCH_LIMITS.budgetMs, o.budgetBytes ?? SEARCH_LIMITS.budgetBytes);
     const hits: SearchHit[] = [];
     if (!fq) return { hits, partial: false, stale: false };
     for (const f of (await sessionFiles(ctl)) ?? []) {
@@ -488,7 +497,7 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
         if (o.include && !o.include(f.id)) continue;
         if (!(await ctl.tick())) break;
         let doc = docs.get(f.file);
-        if (!doc || doc.size !== f.size || doc.mtimeMs !== f.mtimeMs) {
+        if (!doc || doc.size !== f.size || doc.mtimeMs !== f.mtimeMs || doc.redaction !== redactionVersion()) {
             try {
                 doc = await readDoc(f.file, f.size, f.mtimeMs, ctl);
             } catch {
@@ -530,6 +539,8 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
             });
         }
     }
-    const stale = ctl.stopped === "stale";
-    return { hits: stale ? [] : hits, partial: Boolean(ctl.stopped), stale };
+    // Registration can happen at any yield, even after an earlier hit was built.
+    // Never return snippets assembled under the old secret registry.
+    const stale = ctl.stopped === "stale" || outdated();
+    return { hits: stale ? [] : hits, partial: stale || Boolean(ctl.stopped), stale };
 }

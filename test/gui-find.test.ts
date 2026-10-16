@@ -88,15 +88,21 @@ test.skipIf(!chrome)("find reveals live arguments and linked paths without count
     let browser: ReturnType<typeof Bun.spawn> | undefined;
     let server: ReturnType<typeof Bun.serve> | undefined;
     try {
-        const { build } = await import("../gui/node_modules/vite/dist/node/index.js");
         const out = join(scratch, "dist");
-        await build({
+        const config = {
             root: resolve(import.meta.dir, "../gui"),
             configFile: resolve(import.meta.dir, "../gui/vite.config.ts"),
             envFile: false,
             logLevel: "error",
             build: { outDir: out, rollupOptions: { input: resolve(import.meta.dir, "../gui/test/live-find.html") } },
-        });
+        };
+        // Vite's custom Error initialization fails in Bun after the full suite
+        // has run, though it works in a fresh process. Keep compilation isolated.
+        const vite = resolve(import.meta.dir, "../gui/node_modules/vite/dist/node/index.js");
+        const built = Bun.spawnSync([process.execPath, "--no-env-file", "-e",
+            `import { build } from ${JSON.stringify(vite)}; await build(${JSON.stringify(config)});`,
+        ], { timeout: 30_000, stdout: "pipe", stderr: "pipe" });
+        if (built.exitCode !== 0) throw new Error(`Find fixture build failed (${built.exitCode}): ${built.stderr.toString()}${built.stdout.toString()}`);
         server = Bun.serve({
             hostname: "127.0.0.1", port: 0,
             async fetch(request) {

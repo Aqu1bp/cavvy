@@ -2,10 +2,30 @@ import { afterAll, expect, test } from "bun:test";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
-const { registerSecret, unregisterSecret, redact, redactPrefix } = await import("../src/util/redact");
+const { registerSecret, unregisterSecret, redact, redactPrefix, redactionVersion } = await import("../src/util/redact");
 const { SecretStore } = await import("../src/agent/secrets");
 const { BashTool } = await import("../src/tools/bash");
 afterAll(() => iso.cleanup());
+
+test("redaction versions change only when registered values or labels change", () => {
+    const value = "revision-test-secret-837492";
+    const before = redactionVersion();
+    try {
+        registerSecret(value, "REVISION_A");
+        expect(redactionVersion()).toBe(before + 1);
+        registerSecret(value, "REVISION_A");
+        expect(redactionVersion()).toBe(before + 1);
+        registerSecret(value, "REVISION_B");
+        expect(redactionVersion()).toBe(before + 2);
+        expect(redact(value)).toBe("[REDACTED REVISION_B]");
+        unregisterSecret(value);
+        expect(redactionVersion()).toBe(before + 3);
+        unregisterSecret(value);
+        expect(redactionVersion()).toBe(before + 3);
+    } finally {
+        unregisterSecret(value);
+    }
+});
 
 function noFragments(text: string, values: string[]) {
     for (const value of values) for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));

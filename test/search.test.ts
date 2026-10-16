@@ -11,7 +11,8 @@ const iso = isolate();
 const { searchSessions, snippetAround, clearSearchCache, searchCacheSize, SEARCH_LIMITS } = await import("../src/server/search");
 const { paths, projectStateDir } = await import("../src/config/paths");
 const { readSegments, replay, STEERING, UiLog, promptKey } = await import("../src/server/history");
-const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+const { registerSecret, unregisterSecret, knownSecrets } = await import("../src/util/redact");
+const { SecretStore } = await import("../src/agent/secrets");
 const { Engine } = await import("../src/server/engine");
 const { writeImportedSession } = await import("../src/server/cli-import");
 import type { SessionSearchResult, Turn } from "../src/server/protocol";
@@ -371,6 +372,123 @@ describe("searching session files", () => {
             expect(t.title).not.toContain("Q9x");
         } finally {
             unregisterSecret(long);
+        }
+    });
+
+    test("requested secrets redact cached search snippets and titles in every supported encoding", async () => {
+        const value = "search p@ss/!'()*~>?>~-9284";
+        const uri = encodeURIComponent(value);
+        const quote = uri.replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+        const forms = [value, uri, quote, quote.replace(/%2F/g, "/"), quote.replace(/%20/g, "+"),
+            ...[value, value + "\n"].flatMap((text) => [Buffer.from(text).toString("base64"), Buffer.from(text).toString("base64url")])];
+        const marker = "[REDACTED SEARCH_ENCODING_TOKEN]";
+        const sessions = forms.map((form, i) => {
+            const query = `encoded-search-${i}`;
+            return { ...write([{ t: "title", title: `Credential ${form}` }, prompt(query), reply(`${form} ${query} accepted`)]), query, form };
+        });
+        // Populate the cache before the user supplies the secret, without changing any files afterward.
+        for (const { query, form } of sessions) {
+            const hit = (await searchSessions(query)).hits.find((h) => h.role === "assistant")!;
+            expect(hit.snippet).toContain(form);
+        }
+        const previous = new Set(knownSecrets());
+        const secrets = new SecretStore();
+        try {
+            secrets.set("SEARCH_ENCODING_TOKEN", value);
+            secrets.forget("SEARCH_ENCODING_TOKEN"); // Forgetting must not unredact old transcripts.
+            for (const { id, query, form } of sessions) {
+                const hits = (await searchSessions(query)).hits;
+                expect(hits).toHaveLength(2);
+                for (const hit of hits) {
+                    expect(hit.id).toBe(id);
+                    expect(hit.title).toContain(marker);
+                    expect(hit.title).not.toContain(form);
+                    expect(hit.snippet.slice(...hit.match!)).toBe(query);
+                }
+                const reply = hits.find((h) => h.role === "assistant")!;
+                expect(reply.snippet).toContain(marker);
+                expect(reply.snippet).not.toContain(form.replace(/=+$/, ""));
+            }
+            // Already-redacted transcripts keep the named marker and correct highlight offsets.
+            write([prompt("saved-marker-query"), reply(`${marker} saved-marker-query accepted`)]);
+            const saved = (await searchSessions("saved-marker-query")).hits.find((h) => h.role === "assistant")!;
+            expect(saved.snippet).toBe(`${marker} saved-marker-query accepted`);
+            expect(saved.snippet.slice(...saved.match!)).toBe("saved-marker-query");
+        } finally {
+            secrets.clear();
+            for (const secret of knownSecrets()) if (!previous.has(secret)) unregisterSecret(secret);
+        }
+    });
+
+    test("new secrets invalidate clipped cached text and supersede in-flight snippets", async () => {
+        const value = "Q9yZ2x".repeat(1000);
+        const query = "late-secret-query";
+        const head = "word ".repeat(Math.floor((256 * 1024 - 5000) / 5));
+        write([prompt("long old paste"), reply(`${head}${query} ${value} after`)], { age: 100 });
+        const older = write([prompt("an older unrelated session")], { age: 200 });
+        const warm = (await searchSessions(query)).hits[0]!;
+        expect(warm.snippet).toContain("Q9yZ2x");
+        const previous = new Set(knownSecrets());
+        const secrets = new SecretStore();
+        try {
+            // A registry change while a query is yielding must also discard any
+            // snippets it already assembled, not just invalidate the next query.
+            const inFlight = await searchSessions(query, { include: (id) => {
+                if (id === older.id) secrets.set("SEARCH_LATE_TOKEN", value);
+                return true;
+            } });
+            expect(inFlight.stale).toBe(true);
+            expect(inFlight.hits).toEqual([]);
+            const fresh = await searchSessions(query);
+            expect(fresh.stale).toBe(false);
+            expect(fresh.hits).toHaveLength(1);
+            expect(fresh.hits[0]!.snippet).toContain("[REDACTED SEARCH_LATE_TOKEN]");
+            expect(fresh.hits[0]!.snippet).not.toContain("Q9yZ2x");
+            expect(fresh.hits[0]!.snippet.slice(...fresh.hits[0]!.match!)).toBe(query);
+        } finally {
+            secrets.clear();
+            for (const secret of knownSecrets()) if (!previous.has(secret)) unregisterSecret(secret);
+        }
+    });
+
+    test.each(["reply", "prompt", "display", "steering"])("space-padded secrets retain their full context in a %s", async (kind) => {
+        const query = `padded-search-${kind}-password`;
+        const value = `  ${query}-9284  `;
+        const record = kind === "reply" ? reply(value) : kind === "prompt" ? prompt(value)
+            : kind === "display" ? prompt("backend wrapping", { meta: { kind: "prompt", display: value } }) : results("steer", "tool output", value);
+        write([record]);
+        expect((await searchSessions(query)).hits[0]!.snippet).toContain(query);
+        registerSecret(value, "SEARCH_PADDED_TOKEN");
+        try {
+            const hit = (await searchSessions(query)).hits[0]!;
+            expect(hit.snippet).toBe("[REDACTED SEARCH_PADDED_TOKEN]");
+            expect(hit.match).toBeUndefined();
+        } finally {
+            unregisterSecret(value);
+        }
+    });
+
+    test("overlapping credentials leave no fragments in search snippets or titles", async () => {
+        const left = "wR8mK2nP7vD4qL9x";
+        const right = "7vD4qL9xtH3cF6sJ2bY5";
+        const key = "sk-ant-api03-M8qT5vK2sP9nR6wJ4yF7cD3hL1aX0eZ8";
+        const prefix = key.slice(0, 20);
+        const text = `overlap-search-query ${left}${right.slice(8)} ${key}`;
+        const expected = "overlap-search-query [REDACTED SEARCH_RIGHT_TOKEN] [REDACTED anthropic-key]";
+        write([{ t: "title", title: text }, prompt("overlap credentials"), reply(text)]);
+        registerSecret(left, "SEARCH_LEFT_TOKEN");
+        registerSecret(right, "SEARCH_RIGHT_TOKEN");
+        registerSecret(prefix, "SEARCH_PREFIX_TOKEN");
+        try {
+            const hit = (await searchSessions("overlap-search-query")).hits[0]!;
+            expect(hit.snippet).toBe(expected);
+            expect(hit.title).toBe(expected);
+            expect(hit.snippet.slice(...hit.match!)).toBe("overlap-search-query");
+            const hidden = (await searchSessions(right)).hits[0]!;
+            expect(hidden.snippet).not.toContain("tH3cF6");
+            expect(hidden.match).toBeUndefined();
+        } finally {
+            for (const secret of [left, right, prefix]) unregisterSecret(secret);
         }
     });
 
