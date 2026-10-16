@@ -213,6 +213,9 @@ test("Send as message stays pending, retains a failed retry, and dismisses after
         expect(failed.level).toBe("error");
         expect(failed.running).toBe(false);
         expect(failed.action).toBe(action);
+        // Reported once, in the retry toast, with the original error.
+        expect(failed.message).toContain("Disconnected");
+        expect(toasts.filter((t) => t.message.includes("Disconnected"))).toHaveLength(1);
         expect(sent).toBe(0);
 
         pending = Promise.withResolvers<any>();
