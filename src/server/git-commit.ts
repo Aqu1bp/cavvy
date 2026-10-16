@@ -179,9 +179,14 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         // git add's line-ending conversion and core.filemode=false behavior depend
         // on the selected files' existing index entries, not just on HEAD.
         await copyEntries(lock, privateIndex);
+        const sparse = new Set((await git(root, ["ls-files", "-v", "-z"], { index: lock })).out
+            .split("\0").filter((entry) => /^s /i.test(entry)).map((entry) => entry.slice(2)));
         for (const path of selected) {
             const file = files.find((f) => relative(root, resolve(cwd, f.path)) === path);
             const stat = await lstat(join(root, path)).catch(() => undefined);
+            if (!stat && sparse.has(path)) {
+                throw new RpcError(`Cannot commit absent skip-worktree file: ${path}. Restore it in the working tree before selecting it.`, "git");
+            }
             if (!stat || (stat.isDirectory() && file?.kind !== "submodule")) {
                 await git(root, ["update-index", "--force-remove", "--", path], { index: privateIndex, literal: true });
             } else {

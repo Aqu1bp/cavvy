@@ -58,6 +58,23 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("an absent skip-worktree selection is refused without committing a deletion", async () => {
+        const dir = repo({ "sparse.txt": "old\n" });
+        write(dir, "sparse.txt", "staged\n");
+        git(dir, "add", "--", "sparse.txt");
+        git(dir, "update-index", "--skip-worktree", "--", "sparse.txt");
+        rmSync(join(dir, "sparse.txt"));
+        const before = index(dir);
+        const head = git(dir, "rev-parse", "HEAD");
+        expect((await gitChanges(dir, { scope: "uncommitted" })).files.some((f) => f.path === "sparse.txt")).toBe(true);
+
+        await expect(gitCommit(dir, ["sparse.txt"], "sparse change")).rejects.toThrow("skip-worktree");
+
+        expect(index(dir)).toBe(before);
+        expect(git(dir, "rev-parse", "HEAD")).toBe(head);
+        expect(existsSync(join(dir, ".git", "index.lock"))).toBe(false);
+    });
+
     test("internal index reconciliation cannot run post-index-change hooks", async () => {
         const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n", "flagged.txt": "old\n" });
         write(dir, "selected.txt", "new\n");
