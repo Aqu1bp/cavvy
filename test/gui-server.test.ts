@@ -1229,6 +1229,7 @@ describe("project scripts", () => {
             expect(c.events.some((e) => e.type.startsWith("terminal."))).toBe(false);
             const id = "script-terminal";
             const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+            const heard = other.events.length;
             const result = await c.call("scripts.run", { id, cwd: linked, script: s.id, cols: 90, rows: 24 });
             expect(result).toMatchObject({ id, script: s });
             // In the worktree it was run from, not the main checkout where it was defined.
@@ -1239,6 +1240,7 @@ describe("project scripts", () => {
             expect(c.events.some((e) => e.type === "terminal.exit" && e.id === id)).toBe(false);
             // Only the window that ran it sees its output; it's remembered as the last one run.
             expect(other.events.some((e) => e.type === "terminal.data")).toBe(false);
+            await waitFor(() => other.events.slice(heard).some((e) => e.type === "scripts.changed" && e.project === main), "last-used broadcast");
             expect((await other.call("scripts.list", { cwd: main })).lastUsed).toBe(s.id);
             await c.call("terminal.close", { id });
         } finally { c.close(); other.close(); }

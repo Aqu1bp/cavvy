@@ -4,9 +4,9 @@
 // never in the project's .harness/, and nothing runs one but a click in the GUI.
 // A repository's main checkout and its worktrees share one list.
 
-import { spawnSync } from "bun";
 import { randomUUID } from "crypto";
-import { closeSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { realpath, stat } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { ensureDir, harnessHome } from "../config/paths";
 import { gitArgv, gitEnv } from "../util/git";
@@ -25,6 +25,11 @@ interface Store {
     /** By project key (see projectKey). */
     projects: Record<string, ProjectEntry>;
 }
+
+// Nothing here holds up the server's one thread while it waits: git and the
+// folder checks run asynchronously, and a save waits its turn for the lock
+// with timers. Only the store's own small read and write are synchronous, so
+// that nothing comes between them.
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -64,37 +69,49 @@ export function validateScript(input: { name?: unknown; command?: unknown; icon?
 }
 
 /** The project's folder: an existing directory, by its real path. */
-export function projectFolder(cwd: unknown): string {
+export async function projectFolder(cwd: unknown): Promise<string> {
     if (typeof cwd !== "string" || !cwd || !isAbsolute(cwd)) throw new RpcError("The project folder must be an absolute path", "invalid");
-    let dir: string;
     try {
-        dir = realpathSync(cwd);
-        if (!statSync(dir).isDirectory()) throw new Error();
+        const dir = await realpath(cwd);
+        if ((await stat(dir)).isDirectory()) return dir;
     } catch {
-        throw new RpcError(`The project folder no longer exists: ${cwd}`, "not_found");
+        // gone
     }
-    return dir;
+    throw new RpcError(`The project folder no longer exists: ${cwd}`, "not_found");
 }
 
 // ---------------------------------------------------------------------------
 // Project keys
 
-function git(cwd: string, args: string[]): string | undefined {
+async function git(cwd: string, args: string[]): Promise<string | undefined> {
     try {
-        const r = spawnSync(gitArgv(args), { cwd, env: gitEnv(), stdout: "pipe", stderr: "ignore", timeout: 3000 });
+        const proc = Bun.spawn(gitArgv(args), { cwd, env: gitEnv(), stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3000 });
+        const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
         // Only git's line terminator: a path can itself end in a newline.
-        return r.exitCode === 0 ? r.stdout.toString().replace(/\n$/, "") : undefined;
+        return code === 0 ? out.replace(/\n$/, "") : undefined;
     } catch {
         return undefined;
     }
 }
 
-function canonical(path: string): string {
+async function canonical(path: string): Promise<string> {
     try {
-        return realpathSync(path);
+        return await realpath(path);
     } catch {
         return path;
     }
+}
+
+/**
+ * A folder's key, for a little while: the GUI asks on every window focus, and
+ * a folder rarely becomes (or stops being) part of a repository. Lookups
+ * already under way are shared.
+ */
+const KEY_TTL_MS = 10_000;
+const keys = new Map<string, { key: Promise<string>; at: number }>();
+
+export function forgetProjectKeys() {
+    keys.clear();
 }
 
 /**
@@ -105,18 +122,31 @@ function canonical(path: string): string {
  * Anywhere else, the folder itself. Read-only git plumbing, safe in an
  * untrusted folder.
  */
-export function projectKey(folder: string): string {
-    const dir = canonical(folder);
-    const top = git(dir, ["rev-parse", "--show-toplevel"]);
-    const common = top ? git(dir, ["rev-parse", "--git-common-dir"]) : undefined;
+export function projectKey(folder: string): Promise<string> {
+    const now = Date.now();
+    for (const [dir, k] of keys) if (now - k.at > KEY_TTL_MS) keys.delete(dir);
+    const known = keys.get(folder);
+    if (known) return known.key;
+    const key = lookUpKey(folder);
+    keys.set(folder, { key, at: now });
+    // A failed lookup isn't kept.
+    key.catch(() => keys.delete(folder));
+    return key;
+}
+
+async function lookUpKey(folder: string): Promise<string> {
+    const dir = await canonical(folder);
+    const [top, common] = await Promise.all([git(dir, ["rev-parse", "--show-toplevel"]), git(dir, ["rev-parse", "--git-common-dir"])]);
     if (!top || !common) return dir;
-    const commonDir = canonical(resolve(dir, common));
+    const [commonDir, topDir] = await Promise.all([canonical(resolve(dir, common)), canonical(top)]);
     // A bare repository's worktrees have no main checkout: the git dir names the project.
     const main = basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
-    const below = relative(canonical(top), dir);
+    const below = relative(topDir, dir);
     const outside = below === ".." || below.startsWith(`..${sep}`) || isAbsolute(below);
     return below && !outside ? join(main, below) : main;
 }
+
+const keyOf = async (cwd: unknown) => projectKey(await projectFolder(cwd));
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -192,12 +222,12 @@ const LOCK_WAIT_MS = 2000;
 /** A lock is held for one read and write; one this old was left by a process that died holding it. */
 const LOCK_STALE_MS = 5000;
 
-function sleepSync(ms: number) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/** Held around a read-change-write, so another server process (the desktop app and a `harness gui`) can't interleave its own. */
-function withLock<T>(fn: () => T): T {
+/**
+ * Held around a read-change-write, so another server process (the desktop app
+ * and a `harness gui`) can't interleave its own; another request in this one
+ * waits for it too. Waiting is on a timer, so the server carries on meanwhile.
+ */
+async function withLock<T>(fn: () => T): Promise<T> {
     const lock = `${scriptsFile()}.lock`;
     ensureDir(dirname(lock));
     const deadline = Date.now() + LOCK_WAIT_MS;
@@ -213,7 +243,7 @@ function withLock<T>(fn: () => T): T {
                 // released meanwhile
             }
             if (Date.now() > deadline) throw new RpcError("The project scripts are being saved by another Harness window; try again", "busy");
-            sleepSync(10);
+            await Bun.sleep(10);
         }
     }
     try {
@@ -230,11 +260,11 @@ function withLock<T>(fn: () => T): T {
 }
 
 /**
- * Read, change, write, with nothing in between: within the server, requests
- * run on one thread, so edits from two windows apply one after the other;
- * across server processes, the lock keeps them apart.
+ * Read, change, write, with nothing in between: under the lock, and with no
+ * await inside, so edits from two windows or two server processes apply one
+ * after the other.
  */
-function update<T>(fn: (store: Store) => T): T {
+function update<T>(fn: (store: Store) => T): Promise<T> {
     return withLock(() => {
         const store = readStore();
         const result = fn(store);
@@ -258,16 +288,16 @@ const gone = () => new RpcError("That script no longer exists (it may have been 
 // ---------------------------------------------------------------------------
 // Operations (each takes the folder the request names; errors are RpcErrors for the GUI)
 
-export function listScripts(cwd: unknown): ProjectScripts {
-    const project = projectKey(projectFolder(cwd));
+export async function listScripts(cwd: unknown): Promise<ProjectScripts> {
+    const project = await keyOf(cwd);
     return view(project, readStore().projects[project]);
 }
 
 /** Creates a script, or, given `id`, updates that one. */
-export function saveScript(cwd: unknown, input: { id?: unknown; name?: unknown; command?: unknown; icon?: unknown }): { project: string; script: ProjectScript } {
-    const project = projectKey(projectFolder(cwd));
+export async function saveScript(cwd: unknown, input: { id?: unknown; name?: unknown; command?: unknown; icon?: unknown }): Promise<{ project: string; script: ProjectScript }> {
     const fields = validateScript(input);
     const id = input.id === undefined || input.id === null || input.id === "" ? undefined : scriptId(input.id);
+    const project = await keyOf(cwd);
     return update((store) => {
         const entry = (store.projects[project] ??= { scripts: [] });
         const clash = entry.scripts.find((s) => s.id !== id && s.name.toLowerCase() === fields.name.toLowerCase());
@@ -286,9 +316,9 @@ export function saveScript(cwd: unknown, input: { id?: unknown; name?: unknown; 
     });
 }
 
-export function deleteScript(cwd: unknown, id: unknown): { project: string } {
-    const project = projectKey(projectFolder(cwd));
+export async function deleteScript(cwd: unknown, id: unknown): Promise<{ project: string }> {
     const sid = scriptId(id);
+    const project = await keyOf(cwd);
     return update((store) => {
         const entry = store.projects[project];
         if (!entry?.scripts.some((s) => s.id === sid)) throw gone();
@@ -299,9 +329,9 @@ export function deleteScript(cwd: unknown, id: unknown): { project: string } {
 }
 
 /** `ids`: every script's id, in the new order. */
-export function reorderScripts(cwd: unknown, ids: unknown): ProjectScripts {
-    const project = projectKey(projectFolder(cwd));
+export async function reorderScripts(cwd: unknown, ids: unknown): Promise<ProjectScripts> {
     if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) throw new RpcError("ids must be a list of script ids", "invalid");
+    const project = await keyOf(cwd);
     return update((store) => {
         const entry = store.projects[project] ?? { scripts: [] };
         const byId = new Map(entry.scripts.map((s) => [s.id, s]));
@@ -312,17 +342,17 @@ export function reorderScripts(cwd: unknown, ids: unknown): ProjectScripts {
 }
 
 /** The stored script to run in `cwd`. */
-export function findScript(cwd: unknown, id: unknown): { project: string; script: ProjectScript } {
-    const project = projectKey(projectFolder(cwd));
+export async function findScript(cwd: unknown, id: unknown): Promise<{ project: string; script: ProjectScript }> {
     const sid = scriptId(id);
+    const project = await keyOf(cwd);
     const script = readStore().projects[project]?.scripts.find((s) => s.id === sid);
     if (!script) throw gone();
     return { project, script: { ...script } };
 }
 
 /** Remembers the script the header button runs next. */
-export function markUsed(project: string, id: string) {
-    update((store) => {
+export async function markUsed(project: string, id: string) {
+    await update((store) => {
         const entry = store.projects[project];
         if (entry?.scripts.some((s) => s.id === id)) entry.lastUsed = id;
     });

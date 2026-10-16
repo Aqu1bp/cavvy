@@ -683,33 +683,31 @@ export class Engine {
                 this.terminals.close(client, str(p.id, "id"));
                 return null;
             case "scripts.list":
-                return listScripts(p.cwd);
+                return await listScripts(p.cwd);
             case "scripts.save": {
-                const { project, script } = saveScript(p.cwd, { id: p.id, name: p.name, command: p.command, icon: p.icon });
+                const { project, script } = await saveScript(p.cwd, { id: p.id, name: p.name, command: p.command, icon: p.icon });
                 this.broadcast({ type: "scripts.changed", project });
                 return script;
             }
             case "scripts.delete": {
-                const { project } = deleteScript(p.cwd, p.id);
+                const { project } = await deleteScript(p.cwd, p.id);
                 this.broadcast({ type: "scripts.changed", project });
                 return null;
             }
             case "scripts.reorder": {
-                const list = reorderScripts(p.cwd, p.ids);
+                const list = await reorderScripts(p.cwd, p.ids);
                 this.broadcast({ type: "scripts.changed", project: list.project });
                 return list;
             }
             case "scripts.run": {
                 // Only ever from a click in the GUI: the stored command, typed into a terminal the window can see and stop.
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
-                const { project, script } = findScript(p.cwd, p.script);
+                const { project, script } = await findScript(p.cwd, p.script);
+                // The window may have gone while the script was looked up.
+                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
                 const opened = this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, { input: `${script.command}\r` });
-                try {
-                    markUsed(project, script.id);
-                    this.broadcast({ type: "scripts.changed", project });
-                } catch {
-                    // It ran; the header just won't remember it.
-                }
+                // It's running; remembering it for the header button needn't hold up the reply, and may fail quietly.
+                void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
                 return { ...opened, script };
             }
             case "hello": {

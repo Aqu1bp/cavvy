@@ -5,7 +5,7 @@ import type { ServerEvent } from "../src/server/protocol";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { deleteScript, findScript, listScripts, markUsed, projectFolder, projectKey, reorderScripts, saveScript, scriptsFile, validateScript } = await import("../src/server/scripts");
+const { deleteScript, findScript, forgetProjectKeys, listScripts, markUsed, projectFolder, projectKey, reorderScripts, saveScript, scriptsFile, validateScript } = await import("../src/server/scripts");
 const { Terminals } = await import("../src/server/terminals");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 
@@ -67,116 +67,135 @@ describe("validation", () => {
         expect(() => validateScript({ name: "a", command: "x", icon: 3 })).toThrow("Unknown script icon");
     });
 
-    test("the project folder must be an existing absolute directory", () => {
-        expect(() => projectFolder("relative/path")).toThrow("absolute path");
-        expect(() => projectFolder(undefined)).toThrow("absolute path");
-        expect(() => projectFolder(join(folder(), "gone"))).toThrow("no longer exists");
+    test("the project folder must be an existing absolute directory", async () => {
+        await expect(projectFolder("relative/path")).rejects.toThrow("absolute path");
+        await expect(projectFolder(undefined)).rejects.toThrow("absolute path");
+        await expect(projectFolder(join(folder(), "gone"))).rejects.toThrow("no longer exists");
         const dir = folder();
         writeFileSync(join(dir, "file"), "");
-        expect(() => projectFolder(join(dir, "file"))).toThrow("no longer exists");
+        await expect(projectFolder(join(dir, "file"))).rejects.toThrow("no longer exists");
     });
 });
 
 describe("project keys", () => {
-    test("a repository and its worktrees share the main checkout's key; a subfolder keeps its own", () => {
+    test("a repository and its worktrees share the main checkout's key; a subfolder keeps its own", async () => {
         const { main, linked } = repoWithWorktree();
-        expect(projectKey(main)).toBe(main);
-        expect(projectKey(linked)).toBe(main);
-        expect(projectKey(join(main, "packages", "web"))).toBe(join(main, "packages", "web"));
-        expect(projectKey(join(linked, "packages", "web"))).toBe(join(main, "packages", "web"));
+        expect(await projectKey(main)).toBe(main);
+        expect(await projectKey(linked)).toBe(main);
+        expect(await projectKey(join(main, "packages", "web"))).toBe(join(main, "packages", "web"));
+        expect(await projectKey(join(linked, "packages", "web"))).toBe(join(main, "packages", "web"));
         // A folder whose name starts with two dots is still a subfolder, not the root.
-        expect(projectKey(join(main, "..tools"))).toBe(join(main, "..tools"));
+        expect(await projectKey(join(main, "..tools"))).toBe(join(main, "..tools"));
     });
 
-    test("outside git, the folder itself", () => {
+    test("outside git, the folder itself", async () => {
         const dir = folder();
-        expect(projectKey(dir)).toBe(dir);
+        expect(await projectKey(dir)).toBe(dir);
+    });
+
+    test("a folder's key is looked up once for a little while, not on every request", async () => {
+        const dir = folder();
+        const first = projectKey(dir);
+        expect(projectKey(dir)).toBe(first);
+        expect(await first).toBe(dir);
+        expect(projectKey(dir)).toBe(first);
+        forgetProjectKeys();
+        const again = projectKey(dir);
+        expect(again).not.toBe(first);
+        expect(await again).toBe(dir);
     });
 });
 
 describe("storage", () => {
     beforeAll(resetStore);
 
-    test("scripts saved in a worktree show up in the main checkout and other worktrees, and nowhere else", () => {
+    test("scripts saved in a worktree show up in the main checkout and other worktrees, and nowhere else", async () => {
         resetStore();
         const { main, linked } = repoWithWorktree();
-        const { script, project } = saveScript(linked, { name: "dev", command: "bun run dev", icon: "play" });
+        const { script, project } = await saveScript(linked, { name: "dev", command: "bun run dev", icon: "play" });
         expect(project).toBe(main);
-        expect(listScripts(main)).toEqual({ project: main, scripts: [script] });
-        expect(listScripts(linked).scripts).toEqual([script]);
-        expect(listScripts(folder()).scripts).toEqual([]);
+        expect(await listScripts(main)).toEqual({ project: main, scripts: [script] });
+        expect((await listScripts(linked)).scripts).toEqual([script]);
+        expect((await listScripts(folder())).scripts).toEqual([]);
         // Not in the repository: nothing under .harness/ in either checkout.
         expect(existsSync(join(main, ".harness"))).toBe(false);
         expect(existsSync(join(linked, ".harness"))).toBe(false);
     });
 
-    test("create, update, delete; names are unique per project ignoring case", () => {
+    test("create, update, delete; names are unique per project ignoring case", async () => {
         resetStore();
         const dir = folder();
-        const dev = saveScript(dir, { name: "Dev", command: "bun run dev" }).script;
-        const test = saveScript(dir, { name: "test", command: "bun test", icon: "test" }).script;
-        expect(() => saveScript(dir, { name: "dev", command: "other" })).toThrow("already has a script named “Dev”");
-        expect(() => saveScript(dir, { id: test.id, name: " DEV ", command: "bun test" })).toThrow("already has a script named");
+        const dev = (await saveScript(dir, { name: "Dev", command: "bun run dev" })).script;
+        const test = (await saveScript(dir, { name: "test", command: "bun test", icon: "test" })).script;
+        await expect(saveScript(dir, { name: "dev", command: "other" })).rejects.toThrow("already has a script named “Dev”");
+        await expect(saveScript(dir, { id: test.id, name: " DEV ", command: "bun test" })).rejects.toThrow("already has a script named");
         // Renaming a script to itself in another case is fine.
-        const renamed = saveScript(dir, { id: dev.id, name: "dev", command: "bun run dev --port 4000", icon: "debug" }).script;
+        const renamed = (await saveScript(dir, { id: dev.id, name: "dev", command: "bun run dev --port 4000", icon: "debug" })).script;
         expect(renamed).toEqual({ id: dev.id, name: "dev", command: "bun run dev --port 4000", icon: "debug" });
-        expect(listScripts(dir).scripts).toEqual([renamed, test]);
+        expect((await listScripts(dir)).scripts).toEqual([renamed, test]);
         // The same name in another project is a different script.
-        expect(saveScript(folder(), { name: "dev", command: "make dev" }).script.name).toBe("dev");
-        deleteScript(dir, dev.id);
-        expect(listScripts(dir).scripts).toEqual([test]);
-        expect(() => deleteScript(dir, dev.id)).toThrow("no longer exists");
-        expect(() => saveScript(dir, { id: dev.id, name: "dev", command: "x" })).toThrow("no longer exists");
-        expect(() => deleteScript(dir, "../../etc")).toThrow("Unknown script");
+        expect((await saveScript(folder(), { name: "dev", command: "make dev" })).script.name).toBe("dev");
+        await deleteScript(dir, dev.id);
+        expect((await listScripts(dir)).scripts).toEqual([test]);
+        await expect(deleteScript(dir, dev.id)).rejects.toThrow("no longer exists");
+        await expect(saveScript(dir, { id: dev.id, name: "dev", command: "x" })).rejects.toThrow("no longer exists");
+        await expect(deleteScript(dir, "../../etc")).rejects.toThrow("Unknown script");
     });
 
-    test("bad input never reaches the store", () => {
+    test("bad input never reaches the store", async () => {
         resetStore();
         const dir = folder();
-        expect(() => saveScript(dir, { name: "evil", command: "echo hi\nrm -rf ~" })).toThrow("single line");
-        expect(() => saveScript("not/absolute", { name: "a", command: "b" })).toThrow("absolute path");
-        expect(() => saveScript(dir, { name: "", command: "b" })).toThrow("name");
+        await expect(saveScript(dir, { name: "evil", command: "echo hi\nrm -rf ~" })).rejects.toThrow("single line");
+        await expect(saveScript("not/absolute", { name: "a", command: "b" })).rejects.toThrow("absolute path");
+        await expect(saveScript(dir, { name: "", command: "b" })).rejects.toThrow("name");
         expect(existsSync(scriptsFile())).toBe(false);
     });
 
-    test("a project holds at most 50 scripts", () => {
+    test("a project holds at most 50 scripts", async () => {
         resetStore();
         const dir = folder();
-        for (let i = 0; i < 50; i++) saveScript(dir, { name: `s${i}`, command: `echo ${i}` });
-        expect(() => saveScript(dir, { name: "one more", command: "echo" })).toThrow("at most 50 scripts");
+        for (let i = 0; i < 50; i++) await saveScript(dir, { name: `s${i}`, command: `echo ${i}` });
+        await expect(saveScript(dir, { name: "one more", command: "echo" })).rejects.toThrow("at most 50 scripts");
         // Editing one still works at the cap.
-        const first = listScripts(dir).scripts[0]!;
-        expect(saveScript(dir, { id: first.id, name: "first", command: "echo first" }).script.name).toBe("first");
+        const first = (await listScripts(dir)).scripts[0]!;
+        expect((await saveScript(dir, { id: first.id, name: "first", command: "echo first" })).script.name).toBe("first");
     });
 
-    test("reorder takes every id once, or says the list changed", () => {
+    test("saves made at the same moment in one server are all kept", async () => {
         resetStore();
         const dir = folder();
-        const [a, b, c] = ["a", "b", "c"].map((name) => saveScript(dir, { name, command: `echo ${name}` }).script);
-        expect(reorderScripts(dir, [c!.id, a!.id, b!.id]).scripts.map((s) => s.name)).toEqual(["c", "a", "b"]);
-        expect(listScripts(dir).scripts.map((s) => s.name)).toEqual(["c", "a", "b"]);
-        expect(() => reorderScripts(dir, [a!.id, b!.id])).toThrow("changed in another window");
-        expect(() => reorderScripts(dir, [a!.id, a!.id, b!.id])).toThrow("changed in another window");
-        expect(() => reorderScripts(dir, "nope")).toThrow("list of script ids");
+        await Promise.all(Array.from({ length: 20 }, (_, i) => saveScript(dir, { name: `n${i}`, command: `echo ${i}` })));
+        expect((await listScripts(dir)).scripts.length).toBe(20);
     });
 
-    test("the last script run is remembered until it's deleted", () => {
+    test("reorder takes every id once, or says the list changed", async () => {
         resetStore();
         const dir = folder();
-        const a = saveScript(dir, { name: "a", command: "echo a" });
-        const b = saveScript(dir, { name: "b", command: "echo b" });
-        expect(findScript(dir, b.script.id).script).toEqual(b.script);
-        markUsed(b.project, b.script.id);
-        expect(listScripts(dir).lastUsed).toBe(b.script.id);
-        deleteScript(dir, b.script.id);
-        expect(listScripts(dir).lastUsed).toBeUndefined();
-        markUsed(a.project, "not-a-script");
-        expect(listScripts(dir).lastUsed).toBeUndefined();
+        const [a, b, c] = [(await saveScript(dir, { name: "a", command: "echo a" })).script, (await saveScript(dir, { name: "b", command: "echo b" })).script, (await saveScript(dir, { name: "c", command: "echo c" })).script];
+        expect((await reorderScripts(dir, [c.id, a.id, b.id])).scripts.map((s) => s.name)).toEqual(["c", "a", "b"]);
+        expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["c", "a", "b"]);
+        await expect(reorderScripts(dir, [a.id, b.id])).rejects.toThrow("changed in another window");
+        await expect(reorderScripts(dir, [a.id, a.id, b.id])).rejects.toThrow("changed in another window");
+        await expect(reorderScripts(dir, "nope")).rejects.toThrow("list of script ids");
     });
 
-    test("the store is private to the user and replaced whole", () => {
+    test("the last script run is remembered until it's deleted", async () => {
         resetStore();
-        saveScript(folder(), { name: "a", command: "echo a" });
+        const dir = folder();
+        const a = await saveScript(dir, { name: "a", command: "echo a" });
+        const b = await saveScript(dir, { name: "b", command: "echo b" });
+        expect((await findScript(dir, b.script.id)).script).toEqual(b.script);
+        await markUsed(b.project, b.script.id);
+        expect((await listScripts(dir)).lastUsed).toBe(b.script.id);
+        await deleteScript(dir, b.script.id);
+        expect((await listScripts(dir)).lastUsed).toBeUndefined();
+        await markUsed(a.project, "not-a-script");
+        expect((await listScripts(dir)).lastUsed).toBeUndefined();
+    });
+
+    test("the store is private to the user and replaced whole", async () => {
+        resetStore();
+        await saveScript(folder(), { name: "a", command: "echo a" });
         expect(statSync(scriptsFile()).mode & 0o777).toBe(0o600);
         expect(JSON.parse(readFileSync(scriptsFile(), "utf-8")).version).toBe(1);
     });
@@ -186,44 +205,64 @@ describe("storage", () => {
         const dir = folder();
         const writer = (n: number) => Bun.spawn([process.execPath, "-e", `
             const { saveScript } = await import(${JSON.stringify(join(import.meta.dir, "../src/server/scripts.ts"))});
-            for (let i = 0; i < 20; i++) saveScript(${JSON.stringify(dir)}, { name: "p${n}-" + i, command: "echo " + i });
+            for (let i = 0; i < 20; i++) await saveScript(${JSON.stringify(dir)}, { name: "p${n}-" + i, command: "echo " + i });
         `], { env: { ...process.env, HARNESS_HOME: iso.home }, stdout: "ignore", stderr: "pipe" });
         const procs = [writer(1), writer(2)];
         const codes = await Promise.all(procs.map((p) => p.exited));
         for (const p of procs) if (p.exitCode) throw new Error(await new Response(p.stderr).text());
         expect(codes).toEqual([0, 0]);
-        expect(listScripts(dir).scripts.length).toBe(40);
+        expect((await listScripts(dir)).scripts.length).toBe(40);
         expect(existsSync(`${scriptsFile()}.lock`)).toBe(false);
     }, 20_000);
 
-    test("a lock left by a process that died is taken over; a live one makes a save wait, then give up", () => {
+    test("a lock left by a process that died is taken over", async () => {
         resetStore();
         const lock = `${scriptsFile()}.lock`;
         writeFileSync(lock, "999999");
         const old = new Date(Date.now() - 60_000);
         utimesSync(lock, old, old);
         const dir = folder();
-        saveScript(dir, { name: "a", command: "echo a" });
+        await saveScript(dir, { name: "a", command: "echo a" });
         expect(existsSync(lock)).toBe(false);
-        writeFileSync(lock, String(process.pid));
+        expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["a"]);
+    });
+
+    test("waiting for another process's lock doesn't hold up the server, and gives up after a while", async () => {
+        resetStore();
+        const lock = `${scriptsFile()}.lock`;
+        const dir = folder();
+        await saveScript(dir, { name: "a", command: "echo a" });
+        writeFileSync(lock, "1");
         try {
-            expect(() => saveScript(dir, { name: "b", command: "echo b" })).toThrow("being saved by another Harness window");
+            const started = Date.now();
+            const waiting = saveScript(dir, { name: "b", command: "echo b" });
+            // The call hands back at once; meanwhile timers run and other requests are answered.
+            expect(Date.now() - started).toBeLessThan(500);
+            let ticks = 0;
+            const timer = setInterval(() => ticks++, 20);
+            expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["a"]);
+            await expect(waiting).rejects.toThrow("being saved by another Harness window");
+            clearInterval(timer);
+            expect(Date.now() - started).toBeGreaterThanOrEqual(1900);
+            expect(ticks).toBeGreaterThan(20);
         } finally {
             rmSync(lock, { force: true });
         }
-        expect(listScripts(dir).scripts.map((s) => s.name)).toEqual(["a"]);
-    });
+        // Once it's released, a save goes through.
+        await saveScript(dir, { name: "b", command: "echo b" });
+        expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["a", "b"]);
+    }, 10_000);
 
-    test("a store that isn't valid JSON is reported, and left alone", () => {
+    test("a store that isn't valid JSON is reported, and left alone", async () => {
         writeFileSync(scriptsFile(), "{ not json");
         const dir = folder();
-        expect(() => listScripts(dir)).toThrow("isn't valid JSON");
-        expect(() => saveScript(dir, { name: "a", command: "echo a" })).toThrow("isn't valid JSON");
+        await expect(listScripts(dir)).rejects.toThrow("isn't valid JSON");
+        await expect(saveScript(dir, { name: "a", command: "echo a" })).rejects.toThrow("isn't valid JSON");
         expect(readFileSync(scriptsFile(), "utf-8")).toBe("{ not json");
         resetStore();
     });
 
-    test("entries edited by hand that don't hold up are never offered to run", () => {
+    test("entries edited by hand that don't hold up are never offered to run", async () => {
         const dir = folder();
         const good = { id: "good-1", name: "ok", command: "echo ok" };
         writeFileSync(scriptsFile(), JSON.stringify({ version: 1, projects: { [dir]: { lastUsed: "bad-1", scripts: [
@@ -233,8 +272,8 @@ describe("storage", () => {
             { id: "../x", name: "id", command: "echo" },
             { id: "good-2", name: "OK", command: "echo duplicate name" },
         ] } } }));
-        expect(listScripts(dir)).toEqual({ project: dir, scripts: [good] });
-        expect(() => findScript(dir, "bad-1")).toThrow("no longer exists");
+        expect(await listScripts(dir)).toEqual({ project: dir, scripts: [good] });
+        await expect(findScript(dir, "bad-1")).rejects.toThrow("no longer exists");
         resetStore();
     });
 });
