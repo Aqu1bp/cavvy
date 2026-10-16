@@ -593,6 +593,8 @@ export function isReadOnlyCommand(cmd: string): boolean {
     // substitution already fails the hasSubstitution check above; a quoted-literal one (single quotes) does
     // not, so reject any assignment whose value carries one.
     if (a.commands.some((c) => c.argv.some((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w) && /\$\(|`/.test(w.slice(w.indexOf("=") + 1))))) return false;
+    // `$_` is the last word of the command before, which the line itself chose: `echo -delete; find . $_`.
+    if (a.commands.some((c) => c.expands?.some((i) => /\$\{?_(?![A-Za-z0-9_])/.test(c.argv[i]!)))) return false;
     // The checks read words as written. An expansion inside other text can be empty and leave text they
     // never saw (an option, say); one standing alone, or before a path, is a value, not hidden text.
     if (a.commands.some((c) => c.expands?.some((i) => !STANDALONE_EXPANSION.test(c.argv[i]!)))) return false;
