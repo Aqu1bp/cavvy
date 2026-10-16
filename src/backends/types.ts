@@ -69,7 +69,7 @@ export interface BackendHost {
     permission(req: BackendPermission): Promise<PermissionAnswer>;
     /** One answer list per question; undefined when the user dismissed them. */
     askQuestions(questions: BackendQuestion[]): Promise<string[][] | undefined>;
-    approvePlan(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string }>;
+    approvePlan(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string; handoff?: boolean }>;
     /** The backend changed modes itself (a plan was approved). */
     setMode(m: PermissionMode): void;
     /** Tokens and spend for this turn; `cost` 0 when it's covered by the user's plan. */

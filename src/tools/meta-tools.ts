@@ -77,6 +77,14 @@ Only use this for tasks that require writing code or making changes, not for res
                 display: { summary: "Plan approved" },
             };
         }
+        // Taken to another session (a new worktree): nothing more happens here, and plan mode stays on.
+        if (decision.handoff) {
+            return {
+                content: `The user is carrying out this plan in another session instead. ${decision.feedback ?? ""}\nDon't continue it here: stay in plan mode, change nothing, and end your turn now with one short sentence.`,
+                isError: true,
+                display: { summary: "Plan handed off to a new session" },
+            };
+        }
         return {
             content: `The user rejected the plan and wants you to keep planning.${decision.feedback ? ` Their feedback: ${decision.feedback}` : ""}\nStay in plan mode: do not modify files.`,
             isError: true,

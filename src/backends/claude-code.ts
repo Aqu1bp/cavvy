@@ -959,6 +959,8 @@ class ClaudeTurn {
                 return { behavior: "allow", updatedInput: raw, updatedPermissions: [{ type: "setMode", mode: MODES[mode], destination: "session" }] };
             }
             const fb = r.feedback?.trim();
+            // Taken to another session: this turn stops here, still in plan mode.
+            if (r.handoff) return { behavior: "deny", message: `The user is carrying out this plan in another session instead. ${fb ?? ""} Don't continue it here.`, interrupt: true };
             return fb ? { behavior: "deny", message: `The user wants changes to the plan:\n${fb}` } : { behavior: "deny", message: "The user rejected the plan. Wait for them to say how to proceed.", interrupt: true };
         }
         // The harness's own tools (delegating to other models): what a delegated agent does is checked when it does it.

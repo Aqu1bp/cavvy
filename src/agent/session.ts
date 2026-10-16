@@ -8,6 +8,7 @@ import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
 import type { Message, Usage } from "../providers/types";
+import type { PlanLink } from "../server/protocol";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
 
@@ -65,7 +66,27 @@ type Line =
     | { t: "rewind"; count: number }
     | { t: "usage"; usage: Usage; cost: number; model: string }
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number };
+    | { t: "backend"; provider: string; id: string | null; synced?: number }
+    /** A plan the agent presented (ExitPlanMode), kept so it can be saved or taken elsewhere later: Claude Code's never reach the messages. */
+    | { t: "plan"; id: string; text: string; at: number }
+    /** A plan taken to a new worktree: where it came from, or where it went. Older versions skip these lines. */
+    | { t: "planLink"; link: PlanLink };
+
+/** Plans and links kept in memory; the file keeps them all. */
+const PLANS_KEPT = 20;
+/** A plan's text as stored: more than any plan needs. */
+export const PLAN_MAX_CHARS = 200_000;
+
+export interface PresentedPlan {
+    id: string;
+    text: string;
+    at: number;
+}
+
+function validLink(l: unknown): l is PlanLink {
+    const x = l as Record<string, unknown> | null;
+    return Boolean(x) && (x!.role === "from" || x!.role === "to") && ["session", "folder", "path", "branch"].every((k) => typeof x![k] === "string") && typeof x!.at === "number";
+}
 
 /**
  * An agent backend's session behind this one, and how much of this session's
@@ -101,6 +122,9 @@ export class Session {
     usageByModel = new Map<string, { usage: Usage; cost: number }>();
     /** Agent backends' own sessions, by provider. */
     backends = new Map<string, BackendSession>();
+    /** Plans presented, oldest first (the last few). */
+    plans: PresentedPlan[] = [];
+    planLinks: PlanLink[] = [];
     private file: string;
     private persist: boolean;
 
@@ -222,6 +246,18 @@ export class Session {
         this.write({ t: "backend", provider, id, synced });
     }
 
+    addPlan(id: string, text: string): PresentedPlan {
+        const plan = { id, text: redact(text.slice(0, PLAN_MAX_CHARS)), at: Date.now() };
+        this.plans = [...this.plans.filter((p) => p.id !== id), plan].slice(-PLANS_KEPT);
+        this.write({ t: "plan", ...plan });
+        return plan;
+    }
+
+    addPlanLink(link: PlanLink) {
+        this.planLinks = [...this.planLinks, link].slice(-PLANS_KEPT);
+        this.write({ t: "planLink", link });
+    }
+
     forgetBackendSession(provider: string) {
         if (!this.backends.delete(provider)) return;
         this.write({ t: "backend", provider, id: null });
@@ -314,6 +350,8 @@ export class Session {
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost);
+            else if (l.t === "plan" && typeof l.id === "string" && typeof l.text === "string") s.plans = [...s.plans.filter((p) => p.id !== l.id), { id: l.id, text: l.text, at: typeof l.at === "number" ? l.at : 0 }].slice(-PLANS_KEPT);
+            else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
         }
         repairTail(s);
         return s;
@@ -594,7 +632,7 @@ function sessionHead(file: string): SessionHead {
         let wanted: boolean | undefined;
         const decide = () => {
             const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend)"/.test(prefix);
+            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|plan|planLink)"/.test(prefix);
             if (!wanted) parts = [Buffer.from(prefix, "latin1")];
         };
         for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
@@ -702,6 +740,15 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
     }
     out.sort((a, b) => b.updatedAt - a.updatedAt);
     return out.slice(0, limit);
+}
+
+/** The folder a session file records, without loading it. */
+export function sessionFolder(file: string): string | undefined {
+    try {
+        return sessionHead(file).cwd;
+    } catch {
+        return undefined;
+    }
 }
 
 /** The folders of sessions another running process has open: all of them, however old (a session takes its lock with its first message). */
