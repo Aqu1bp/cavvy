@@ -854,6 +854,11 @@ export class Runtime {
             const task = this.agent?.delegatedTasks.find((t) => t.callId === id);
             if (task) this.agentPatch(id, { taskId: task.id, ...(a.model || !this.model || task.model === modelRef(this.model) ? {} : { model: task.model }) });
         }
+        // A new turn of one that had ended (Codex's, messaged after it answered): it's running again, and its next answer is its report.
+        if (e.type === "request_start" && a.endedAt !== undefined && a.status !== "running" && a.status !== "waiting") {
+            this.agentText.delete(id);
+            this.agentPatch(id, { status: "running", endedAt: undefined, report: undefined });
+        }
         switch (e.type) {
             case "request_start":
             case "thinking":

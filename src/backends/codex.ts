@@ -265,9 +265,11 @@ export class CodexBackend implements AgentBackendClient {
 
     /** Turns running now: the main agent's, and sub-agents' on Codex. */
     private turns = new Set<CodexTurn>();
+    /** Codex's own sub-agents' labels, by thread: one resumed in a later turn is shown by the name it had. */
+    private labels = new Map<string, string>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = new CodexTurn(this.def, t);
+        const turn = new CodexTurn(this.def, t, this.labels);
         this.turns.add(turn);
         try {
             return await turn.run();
@@ -303,6 +305,10 @@ interface OpenItem {
     changes?: FileChange[];
     /** The sub-agent of Codex's whose item it is (none: the main thread's). */
     sub?: SubAgent;
+    /** An MCP tool call's server and tool. */
+    mcp?: { server: string; tool: string };
+    /** Codex is asking about it (an MCP call's approval): another of its questions isn't about this one. */
+    asking?: boolean;
 }
 
 interface FileChange {
@@ -348,7 +354,7 @@ interface SubAgent {
 }
 
 /** Notifications from a thread not known yet to be a sub-agent's: what it would show. */
-const SHOWN_FROM_SUBAGENTS = new Set(["turn/started", "turn/completed", "item/started", "item/completed", "item/commandExecution/outputDelta", "error", "warning", "configWarning"]);
+const SHOWN_FROM_SUBAGENTS = new Set(["turn/started", "turn/completed", "item/started", "item/completed", "item/commandExecution/outputDelta", "item/fileChange/patchUpdated", "error", "warning", "configWarning"]);
 
 class CodexTurn {
     private rpc!: Rpc;
@@ -389,6 +395,8 @@ class CodexTurn {
     constructor(
         private def: ProviderDef,
         private t: BackendTurn,
+        /** Sub-agents' labels by thread, kept across turns (the client's). */
+        private labels = new Map<string, string>(),
     ) {}
 
     modeChanged(m: PermissionMode) {
@@ -584,6 +592,9 @@ class CodexTurn {
             case "item/commandExecution/outputDelta":
                 if (p.delta) this.host.emit({ type: "tool_progress", id: p.itemId, text: p.delta });
                 break;
+            case "item/fileChange/patchUpdated":
+                this.patchUpdated(p);
+                break;
             case "item/started":
                 this.onItemStarted(p.item ?? {});
                 break;
@@ -728,6 +739,9 @@ class CodexTurn {
             case "item/commandExecution/outputDelta":
                 if (p.delta) this.subEmit(sub, { type: "tool_progress", id: String(p.itemId ?? ""), text: p.delta });
                 break;
+            case "item/fileChange/patchUpdated":
+                this.patchUpdated(p);
+                break;
             case "turn/completed": {
                 if (p.turn?.id && sub.turnId && p.turn.id !== sub.turnId) break;
                 const status = p.turn?.status;
@@ -744,6 +758,12 @@ class CodexTurn {
                 break;
             }
         }
+    }
+
+    /** A file change's patch as Codex streams it: what its approval is checked against. */
+    private patchUpdated(p: any) {
+        const open = this.items.get(String(p.itemId ?? ""));
+        if (open && Array.isArray(p.changes)) open.changes = fileChanges(p);
     }
 
     private subEmit(sub: SubAgent, e: AgentEvent) {
@@ -764,11 +784,21 @@ class CodexTurn {
     private claimThreads(threads: unknown, call: string, label: string, from?: SubAgent) {
         for (const thread of Array.isArray(threads) ? threads : []) {
             if (typeof thread !== "string" || thread === this.threadId || this.subs.has(thread)) continue;
+            if (!from) {
+                this.labels.delete(thread);
+                this.labels.set(thread, label);
+                if (this.labels.size > 200) this.labels.delete(this.labels.keys().next().value!);
+            }
             this.subs.set(thread, from ? { call: from.call, label: from.label, nested: true, answer: { parts: [], last: "" } } : { call, label, nested: false, answer: { parts: [], last: "" } });
             const early = this.unclaimed.get(thread) ?? [];
             this.unclaimed.delete(thread);
             for (const [method, p] of early) this.onSubThread(method, p, thread);
         }
+    }
+
+    /** Threads named that aren't known here as sub-agents (nor the main thread). */
+    private unknownThreads(threads: unknown): string[] {
+        return (Array.isArray(threads) ? threads : []).filter((t): t is string => typeof t === "string" && t !== this.threadId && !this.subs.has(t));
     }
 
     private onItemStarted(item: any, sub?: SubAgent) {
@@ -791,7 +821,7 @@ class CodexTurn {
             case "mcpToolCall": {
                 const name = `mcp__${String(item.server ?? "")}__${String(item.tool ?? "")}`;
                 const input = item.arguments && typeof item.arguments === "object" ? item.arguments : {};
-                open = { name, input, title: `${String(item.server ?? "")} - ${String(item.tool ?? "")} (MCP)`, started: Date.now() };
+                open = { name, input, title: `${String(item.server ?? "")} - ${String(item.tool ?? "")} (MCP)`, started: Date.now(), mcp: { server: String(item.server ?? ""), tool: String(item.tool ?? "") } };
                 break;
             }
             case "webSearch": {
@@ -806,9 +836,16 @@ class CodexTurn {
                     const prompt = typeof item.prompt === "string" ? item.prompt : "";
                     const label = subAgentLabel(prompt);
                     open = { name: "Task", input: { description: label, prompt }, title: `Task(${label})`, started: Date.now() };
+                } else if (RUNS_SUBAGENT.has(String(item.tool)) && this.unknownThreads(item.receiverThreadIds).length) {
+                    // One from an earlier turn, set going again (resumed, or messaged): shown as a sub-agent, as a spawn is.
+                    const prompt = typeof item.prompt === "string" ? item.prompt : "";
+                    const label = this.labels.get(this.unknownThreads(item.receiverThreadIds)[0]!) ?? subAgentLabel(prompt);
+                    open = { name: "Task", input: { description: label, prompt }, title: `Task(${label})`, started: Date.now() };
                 } else open = { name: String(item.tool ?? item.type), input: {}, title: COLLAB_TITLES[String(item.tool)] ?? String(item.tool ?? item.type), started: Date.now() };
                 break;
             }
+            case "subAgentActivity":
+                return this.subAgentActivity(item, sub);
             case "dynamicToolCall":
             case "imageView":
             case "imageGeneration": {
@@ -840,6 +877,10 @@ class CodexTurn {
         }
         if (item.type === "contextCompaction") {
             if (!sub) this.host.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
+            return;
+        }
+        if (item.type === "subAgentActivity") {
+            this.subAgentActivity(item, sub);
             return;
         }
         const open = this.items.get(id);
@@ -877,19 +918,45 @@ class CodexTurn {
             case "collabAgentToolCall": {
                 const threads = item.receiverThreadIds;
                 if (item.tool === "spawnAgent") {
-                    if (!failed) this.claimThreads(threads, id, String(open.input.description ?? "sub-agent"), sub);
+                    // The call ends first: what its sub-agent did before Codex said whose it was (even all of it) comes after.
                     this.endItem(id, open, failed ? "Codex couldn't start the sub-agent." : "The sub-agent started; what it does shows under it.", failed);
+                    if (!failed) this.claimThreads(threads, id, String(open.input.description ?? "sub-agent"), sub);
                     break;
                 }
                 // What the sub-agents it waited on (or messaged) last said.
                 const states = item.agentsStates && typeof item.agentsStates === "object" ? Object.entries<any>(item.agentsStates) : [];
-                const said = states.map(([thread, st]) => `${this.subs.get(thread)?.label ?? "Sub-agent"}: ${String(st?.status ?? "unknown")}${typeof st?.message === "string" && st.message.trim() ? `\n${st.message}` : ""}`).join("\n\n");
+                const said = states.map(([thread, st]) => `${this.subs.get(thread)?.label ?? this.labels.get(thread) ?? "Sub-agent"}: ${String(st?.status ?? "unknown")}${typeof st?.message === "string" && st.message.trim() ? `\n${st.message}` : ""}`).join("\n\n");
                 this.endItem(id, open, said || (failed ? "Failed" : "Done"), failed);
+                // A sub-agent of an earlier turn set going again: what it does shows under this call.
+                const unknown = RUNS_SUBAGENT.has(String(item.tool)) && !failed ? this.unknownThreads(threads) : [];
+                for (const thread of unknown) this.claimThreads([thread], id, open.name === "Task" ? String(open.input.description ?? "") : (this.labels.get(thread) ?? "Codex sub-agent"), sub);
                 break;
             }
             default:
                 this.endItem(id, open, failed ? "Failed" : "Done", failed);
         }
+    }
+
+    /**
+     * Codex's newer sub-agents (multi_agent_v2) are announced by an item of
+     * their own naming the thread, not by a spawn call: one that starts
+     * shows as a sub-agent, as a spawn does. Its later activity (messaged,
+     * finished) shows in its own thread's events.
+     */
+    private subAgentActivity(item: any, sub?: SubAgent) {
+        const id = String(item.id ?? "");
+        const thread = typeof item.agentThreadId === "string" ? item.agentThreadId : "";
+        // Started, or one of an earlier turn's messaged again (unknown here).
+        if ((item.kind !== "started" && item.kind !== "interacted") || !id || !thread || thread === this.threadId || this.subs.has(thread)) return;
+        const name = typeof item.agentPath === "string" ? (item.agentPath.split("/").filter(Boolean).pop() ?? "") : "";
+        const label = this.labels.get(thread) ?? subAgentLabel(name.replace(/[_-]+/g, " "));
+        const open: OpenItem = { name: "Task", input: { description: label, prompt: "" }, title: `Task(${label})`, started: Date.now(), sub };
+        const e: AgentEvent = { type: "tool_start", call: { type: "tool_call", id, name: open.name, input: open.input }, title: open.title };
+        if (sub) this.subEmit(sub, e);
+        else this.host.emit(e);
+        // Over at once, as a spawn call is; then what its sub-agent did shows under it.
+        this.endItem(id, open, item.kind === "started" ? "The sub-agent started; what it does shows under it." : "The sub-agent was messaged; what it does shows under it.", false);
+        this.claimThreads([thread], id, label, sub);
     }
 
     private takeRefusal(id: string, fallback: string): string {
@@ -949,9 +1016,16 @@ class CodexTurn {
             }
             case "item/fileChange/requestApproval": {
                 const open = this.items.get(String(p.itemId ?? ""));
-                const changes = open?.changes ?? [];
+                // A sub-agent's change Codex asks about before saying whose thread it is: the change as it was announced.
+                const changes = open?.changes ?? this.unclaimedChanges(p.threadId, p.itemId);
                 if (!changes.length && typeof p.grantRoot === "string") {
                     const a = await this.host.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel });
+                    return { decision: this.decision(a, p.itemId, from) };
+                }
+                if (!changes.length) {
+                    // Nothing to check against the rules (or to show): refused, not approved blind.
+                    const a: PermissionAnswer = { allow: false, message: `${APP_TITLE} doesn't know which files this change writes, so it can't check it against your rules.`, stop: false };
+                    this.host.emit({ type: "notice", level: "warn", message: `Refused a change Codex asked about: ${a.message}` });
                     return { decision: this.decision(a, p.itemId, from) };
                 }
                 const first = changes[0];
@@ -1025,6 +1099,8 @@ class CodexTurn {
                     : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel },
             );
             const d = this.decision(a, call?.id, from);
+            const asked = call?.id ? this.items.get(call.id) : undefined;
+            if (asked) asked.asking = false;
             if (d === "accept") return reply("accept", {});
             // Codex goes on after a no to an MCP call (even "cancel"): the turn is stopped here, as the user asked.
             if (d === "cancel") this.interrupt(from);
@@ -1058,15 +1134,37 @@ class CodexTurn {
         return reply("accept", content);
     }
 
-    /** The MCP tool call Codex asks about: the open one it names, or one made up from what it says. */
+    /** The changes of a file change announced on a thread not known as a sub-agent's yet. */
+    private unclaimedChanges(thread: unknown, itemId: unknown): FileChange[] {
+        const early = typeof thread === "string" ? (this.unclaimed.get(thread) ?? []) : [];
+        let changes: FileChange[] = [];
+        for (const [method, p] of early) {
+            if (p?.item?.id === itemId && (method === "item/started" || method === "item/completed")) changes = fileChanges(p.item);
+            else if (method === "item/fileChange/patchUpdated" && p?.itemId === itemId) changes = fileChanges(p);
+        }
+        return changes;
+    }
+
+    /**
+     * The MCP tool call Codex asks about, whose rules then apply. Codex's
+     * question names the tool ('… to run tool "write_thing"?', 0.163) but
+     * not the call, so it's the open call of that server and thread whose
+     * tool it names (with the same arguments, else the first not asked
+     * about yet). One it doesn't name for sure is checked as the whole
+     * server (`mcp__server`): no rule for one of its tools approves it.
+     */
     private mcpCall(server: string, params: unknown, message: string, from: Origin | undefined): { id?: string; name: string; input: Record<string, unknown>; title?: string } {
-        const prefix = `mcp__${server}__`;
-        const open = [...this.items].filter(([, it]) => it.name.startsWith(prefix) && it.sub === from?.sub && !(from && !from.sub)).reverse();
-        const same = open.find(([, it]) => JSON.stringify(it.input) === JSON.stringify(params ?? {})) ?? (open.length === 1 ? open[0] : undefined);
-        if (same) return { id: same[0], name: same[1].name, input: same[1].input, title: same[1].title };
-        const tool = message.match(/run tool "([^"]+)"/)?.[1];
         const input = params && typeof params === "object" && !Array.isArray(params) ? (params as Record<string, unknown>) : {};
-        return { name: tool ? `${prefix}${tool}` : `mcp__${server}`, input, title: tool ? `${server} - ${tool} (MCP)` : undefined };
+        const open = [...this.items].filter(([, it]) => it.mcp?.server === server && !it.asking && it.sub === from?.sub && !(from && !from.sub));
+        const named = open.filter(([, it]) => message.includes(`run tool "${it.mcp!.tool}"`));
+        const pick = named.find(([, it]) => JSON.stringify(it.input) === JSON.stringify(input)) ?? named[0];
+        if (pick) {
+            pick[1].asking = true;
+            return { id: pick[0], name: pick[1].name, input: pick[1].input, title: pick[1].title };
+        }
+        const tool = message.match(/run tool "([A-Za-z0-9_.-]+)"\?/)?.[1];
+        if (tool) return { name: `mcp__${server}__${tool}`, input, title: `${server} - ${tool} (MCP)` };
+        return { name: `mcp__${server}`, input, title: `${server} (MCP)` };
     }
 
     /**
@@ -1198,6 +1296,9 @@ function minus(a: Tokens, b: Tokens): Tokens | undefined {
     const d = Object.fromEntries(TOKEN_FIELDS.map((k) => [k, a[k] - b[k]])) as Tokens;
     return TOKEN_FIELDS.every((k) => d[k] >= 0) ? d : undefined;
 }
+
+/** Codex's sub-agent tools that set one going (again) other than a spawn. */
+const RUNS_SUBAGENT = new Set(["sendInput", "resumeAgent", "sendMessage", "followupTask"]);
 
 /** Codex's sub-agent tools other than spawning one, in a few words. */
 const COLLAB_TITLES: Record<string, string> = {

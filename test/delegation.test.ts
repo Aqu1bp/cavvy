@@ -119,7 +119,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
+    for (const k of ["FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -906,6 +906,19 @@ describe("Claude Code as the main agent", () => {
         expect(report).toEndWith("\n\nFinished.\n\n[Codex used: Task(Count the files), Wait for sub-agents]");
         // Neither its own narration nor its sub-agent's words.
         for (const not of ["Running it.", "Looking around.", "CHILD_REPORT"]) expect(report).not.toContain(not);
+    });
+
+    test("a delegated Codex agent's report is redacted, as its stored turn is", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_CODEX_SCENARIO = "cmd";
+        const token = "ghp_" + "a".repeat(36);
+        process.env.FAKE_FINAL_TEXT = `Done. The token is ${token}.`;
+        calls([{ tool: "delegate", args: { task: "Touch x", description: "Touch", model: "codex:gpt-test" } }]);
+        const { run } = await makeAgent({ provider: "claude-code" });
+        expect(await run("go")).toBe("done");
+        const report = mcpResults()[0].text as string;
+        expect(report).toContain("Done. The token is [REDACTED github-token].");
+        expect(report).not.toContain(token);
     });
 
     test("a read-only agent on Codex can't change anything, the user isn't asked, and it goes on to its report", async () => {

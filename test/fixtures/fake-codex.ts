@@ -24,7 +24,9 @@
 // FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web
 //                     subagent: Codex's own sub-agent (spawnAgent, then wait): its thread runs a command (which
 //                     asks from its thread under untrusted), says something, answers and has usage of its own;
-//                     FAKE_CHILD_EARLY=1 sends its first events before the spawn says which thread is whose
+//                     FAKE_CHILD_EARLY=1 sends its first events before the spawn says which thread is whose;
+//                     FAKE_RESUME_AGENT=1 resumes the sub-agent (of an earlier turn) instead of spawning it;
+//                     FAKE_CHILD_TWICE=1 messages it after it answered, and it works again
 //                     elicit: an MCP tool call Codex asks about (an elicitation of its own, FAKE_ELICIT=approval,
 //                     the default), or an MCP server's form (FAKE_ELICIT=form) or link (FAKE_ELICIT=url)
 //                     web: a web search whose query comes only when it completes
@@ -167,37 +169,73 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     if (scenario === "subagent") {
         const child = "thr-child";
         const childTurn = `turn-c${turnSeq}`;
+        // FAKE_SUBAGENT_V2=1: as multi_agent_v2 announces one, with an item naming its thread rather than a spawn call.
+        const v2 = process.env.FAKE_SUBAGENT_V2 === "1";
         const spawn = { type: "collabAgentToolCall", id: `spawn-${turnId}`, tool: "spawnAgent", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [] as string[], prompt: "Count the files\nin src, then report.", model: "", reasoningEffort: "medium", agentsStates: {} };
-        notify("item/started", { threadId, turnId, item: spawn });
+        const activity = (kind: string) => ({ type: "subAgentActivity", id: `act-${kind}-${turnId}`, kind, agentThreadId: child, agentPath: "/root/count_files", model: "gpt-test", reasoningEffort: "medium" });
+        // FAKE_RESUME_AGENT=1: the sub-agent is one of an earlier turn's, resumed (v2: messaged again).
+        const resume = process.env.FAKE_RESUME_AGENT === "1";
+        if (resume) Object.assign(spawn, { id: `resume-${turnId}`, tool: "resumeAgent", receiverThreadIds: [child], prompt: null });
+        const begins = resume ? "interacted" : "started";
+        if (v2) {
+            notify("item/started", { threadId, turnId, item: activity(begins) });
+            notify("item/completed", { threadId, turnId, item: activity(begins) });
+        } else notify("item/started", { threadId, turnId, item: spawn });
         const childStarts = () => {
             notify("turn/started", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "inProgress" } });
             notify("item/agentMessage/delta", { threadId: child, turnId: childTurn, itemId: "c-msg1", delta: "Looking around." });
             notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg1", text: "Looking around.", phase: "commentary" } });
         };
-        if (process.env.FAKE_CHILD_EARLY === "1") childStarts();
-        notify("item/completed", { threadId, turnId, item: { ...spawn, status: "completed", receiverThreadIds: [child], model: "gpt-test", agentsStates: { [child]: { status: "pendingInit", message: null } } } });
+        // FAKE_CHILD_EARLY=1: its first events come before the spawn says whose thread it is; =all: all of them.
+        const early = process.env.FAKE_CHILD_EARLY;
+        if (early === "1" || early === "all") childStarts();
+        if (early === "all") await childRest();
+        if (!v2) notify("item/completed", { threadId, turnId, item: { ...spawn, status: "completed", receiverThreadIds: [child], model: "gpt-test", agentsStates: { [child]: { status: "pendingInit", message: null } } } });
         const wait = { type: "collabAgentToolCall", id: `wait-${turnId}`, tool: "wait", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [child], prompt: null, model: null, reasoningEffort: null, agentsStates: {} };
-        notify("item/started", { threadId, turnId, item: wait });
-        if (process.env.FAKE_CHILD_EARLY !== "1") childStarts();
-        // What only concerns the sub-agent's thread: a warning, an error it recovers from, a compaction.
-        notify("warning", { threadId: child, message: "Model metadata for `gpt-test` not found." });
-        notify("error", { threadId: child, turnId: childTurn, willRetry: false, error: { message: "child stream hiccup" } });
-        notify("thread/compacted", { threadId: child, turnId: childTurn });
-        const cmd = { type: "commandExecution", id: `c-cmd-${turnId}`, command: "/bin/zsh -lc 'touch y'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch y" }], aggregatedOutput: null, exitCode: null };
-        notify("item/started", { threadId: child, turnId: childTurn, item: cmd });
-        notify("item/commandExecution/outputDelta", { threadId: child, turnId: childTurn, itemId: cmd.id, delta: "working\n" });
-        const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
-        const childDecision = runsItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
-        log({ childRan: childDecision === "accept" });
-        notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
-        spend(child, childTurn, tokens(5000, 1000, 50));
-        notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg2", text: "CHILD_REPORT: 2 files.", phase: "final_answer" } });
-        notify("turn/completed", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "completed", error: null } });
-        notify("item/completed", { threadId, turnId, item: { ...wait, status: "completed", agentsStates: { [child]: { status: "completed", message: "CHILD_REPORT: 2 files." } } } });
+        if (!v2) notify("item/started", { threadId, turnId, item: wait });
+        if (!early) childStarts();
+        if (early !== "all") await childRest();
+        if (v2) {
+            notify("item/started", { threadId, turnId, item: activity("completed") });
+            notify("item/completed", { threadId, turnId, item: activity("completed") });
+        } else notify("item/completed", { threadId, turnId, item: { ...wait, status: "completed", agentsStates: { [child]: { status: "completed", message: "CHILD_REPORT: 2 files." } } } });
+        // FAKE_CHILD_TWICE=1: messaged after it answered, the sub-agent works again (a second turn of its thread).
+        if (process.env.FAKE_CHILD_TWICE === "1") {
+            const send = { type: "collabAgentToolCall", id: `send-${turnId}`, tool: "sendInput", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [child], prompt: "Now count the tests.", model: null, reasoningEffort: null, agentsStates: {} };
+            notify("item/started", { threadId, turnId, item: send });
+            notify("item/completed", { threadId, turnId, item: { ...send, status: "completed" } });
+            const again = `${childTurn}b`;
+            notify("turn/started", { threadId: child, turn: { id: again, rootTurnId: turnId, status: "inProgress" } });
+            const cmd = { type: "commandExecution", id: `c-cmd2-${turnId}`, command: "/bin/zsh -lc 'touch z'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch z" }], aggregatedOutput: null, exitCode: null };
+            notify("item/started", { threadId: child, turnId: again, item: cmd });
+            const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
+            const d = runsItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: again, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+            notify("item/completed", { threadId: child, turnId: again, item: { ...cmd, status: d === "accept" ? "completed" : "declined", exitCode: d === "accept" ? 0 : null, aggregatedOutput: d === "accept" ? "ok\n" : null } });
+            notify("item/completed", { threadId: child, turnId: again, item: { type: "agentMessage", id: "c-msg3", text: "CHILD_REPORT: 3 tests.", phase: "final_answer" } });
+            notify("turn/completed", { threadId: child, turn: { id: again, rootTurnId: turnId, status: "completed", error: null } });
+        }
+        async function childRest() {
+            // What only concerns the sub-agent's thread: a warning, an error it recovers from, a compaction.
+            notify("warning", { threadId: child, message: "Model metadata for `gpt-test` not found." });
+            notify("error", { threadId: child, turnId: childTurn, willRetry: false, error: { message: "child stream hiccup" } });
+            notify("thread/compacted", { threadId: child, turnId: childTurn });
+            const cmd = { type: "commandExecution", id: `c-cmd-${turnId}`, command: "/bin/zsh -lc 'touch y'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch y" }], aggregatedOutput: null, exitCode: null };
+            notify("item/started", { threadId: child, turnId: childTurn, item: cmd });
+            notify("item/commandExecution/outputDelta", { threadId: child, turnId: childTurn, itemId: cmd.id, delta: "working\n" });
+            const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
+            const childDecision = runsItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+            log({ childRan: childDecision === "accept" });
+            notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
+            spend(child, childTurn, tokens(5000, 1000, 50));
+            notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg2", text: "CHILD_REPORT: 2 files.", phase: "final_answer" } });
+            notify("turn/completed", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "completed", error: null } });
+        }
     } else if (scenario === "elicit") {
         const kind = process.env.FAKE_ELICIT ?? "approval";
         const item = { type: "mcpToolCall", id: `mcp-${turnId}`, server: "probe", tool: "write_thing", arguments: { what: "x" }, status: "inProgress", result: null, error: null };
         notify("item/started", { threadId, turnId, item });
+        // FAKE_ELICIT_OTHER_CALL=1: another call of the same server, with the same arguments, still open (started after it).
+        if (process.env.FAKE_ELICIT_OTHER_CALL === "1") notify("item/started", { threadId, turnId, item: { ...item, id: `mcp-read-${turnId}`, tool: "read_thing" } });
         // As Codex 0.163 sends them: its own question before an MCP tool call, or a server's form or link passed on.
         const params =
             kind === "approval"
@@ -216,7 +254,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         notify("item/completed", { threadId, turnId, item: { ...ws, query: "bun test runner", action: { type: "search", query: "bun test runner", queries: ["bun test runner"] } } });
     } else if (scenario === "rename") {
         const change = { type: "fileChange", id: `fc-${turnId}`, changes: [{ path: join(cwd, "a.txt"), kind: { type: "update", move_path: join(cwd, "secrets", "a.txt") }, diff: "" }], status: "inProgress" };
-        notify("item/started", { threadId, turnId, item: change });
+        if (process.env.FAKE_UNANNOUNCED !== "1") notify("item/started", { threadId, turnId, item: change });
         decision = (await serverRequest("item/fileChange/requestApproval", { threadId, turnId, itemId: change.id, reason: null, grantRoot: null }))?.decision;
         notify("item/completed", { threadId, turnId, item: { ...change, status: decision === "accept" ? "completed" : "declined" } });
     } else if (scenario === "perms") {
@@ -268,7 +306,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     }
     spend(threadId, turnId, tokens(120, 20, 30, 5));
     if (decision === "cancel" || t.interrupted) return finish("interrupted");
-    notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Finished.", ...phase("final_answer") } });
+    notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: process.env.FAKE_FINAL_TEXT ?? "Finished.", ...phase("final_answer") } });
     finish("completed");
 }
 

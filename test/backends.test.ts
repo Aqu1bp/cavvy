@@ -60,7 +60,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -656,18 +656,67 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(agent.contextTokens).toBe(150);
     });
 
-    test("a sub-agent's events from before the spawn said whose they are still go under it", async () => {
+    for (const early of ["1", "all"])
+        test(`a sub-agent's events from before the spawn said whose they are (${early === "1" ? "its first" : "all of them"}) still go under it, after the spawn call ends`, async () => {
+            process.env.FAKE_SCENARIO = "subagent";
+            process.env.FAKE_CHILD_EARLY = early;
+            const { run, events, session, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+            expect(await run("go")).toBe("done");
+            expect(streamed(events)).not.toContain("Looking around.");
+            expect(said(session)).not.toContain("Looking around.");
+            const spawn = events.find((e) => e.type === "tool_start" && e.call.name === "Task") as Extract<AgentEvent, { type: "tool_start" }>;
+            const sub = subEvents(events, spawn.call.id);
+            expect(sub[0]?.event.type).toBe("request_start");
+            expect(sub.flatMap((e) => (e.event.type === "text" ? [e.event.text] : []))).toEqual(["CHILD_REPORT: 2 files."]);
+            expect(sub.at(-1)?.event).toEqual({ type: "turn_end", reason: "done" });
+            // The call's end comes first: the GUI takes a Task's result as the report of a sub-agent that has already ended.
+            const spawnEnd = events.findIndex((e) => e.type === "tool_end" && e.call.id === spawn.call.id);
+            expect(spawnEnd).toBeLessThan(events.indexOf(sub[0]!));
+            // Asking before Codex said whose thread it is: a sub-agent of Codex's all the same.
+            expect(asked.map((a) => a.agentLabel)).toEqual([early === "all" ? "Codex sub-agent" : "Count the files"]);
+        });
+
+    test("a sub-agent Codex announces with an item of its own (multi_agent_v2) shows the same way", async () => {
         process.env.FAKE_SCENARIO = "subagent";
-        process.env.FAKE_CHILD_EARLY = "1";
+        process.env.FAKE_SUBAGENT_V2 = "1";
         const { run, events, session } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
         expect(await run("go")).toBe("done");
-        expect(streamed(events)).not.toContain("Looking around.");
-        expect(said(session)).not.toContain("Looking around.");
-        const spawn = events.find((e) => e.type === "tool_start" && e.call.name === "Task") as Extract<AgentEvent, { type: "tool_start" }>;
-        const sub = subEvents(events, spawn.call.id);
-        expect(sub[0]?.event.type).toBe("request_start");
+        const tasks = events.filter((e): e is Extract<AgentEvent, { type: "tool_start" }> => e.type === "tool_start" && e.call.name === "Task");
+        // One per sub-agent: the item saying it finished isn't another.
+        expect(tasks.map((e) => [e.call.id, e.call.input])).toEqual([["act-started-turn-1", { description: "count files", prompt: "" }]]);
+        const sub = subEvents(events, "act-started-turn-1");
+        expect(sub.find((e) => e.event.type === "tool_start")?.event).toMatchObject({ call: { name: "Bash", input: { command: "touch y" } } });
+        expect(sub.flatMap((e) => (e.event.type === "text" ? [e.event.text] : []))).toEqual(["CHILD_REPORT: 2 files."]);
         expect(sub.at(-1)?.event).toEqual({ type: "turn_end", reason: "done" });
+        expect(said(session)).not.toContain("CHILD_REPORT");
+        expect(said(session)).toContain("[Codex used: Task(count files)]");
     });
+
+    for (const v2 of [false, true])
+        test(`a sub-agent of an earlier turn, set going again${v2 ? " (multi_agent_v2)" : ""}, shows under that call by the name it had`, async () => {
+            process.env.FAKE_SCENARIO = "subagent";
+            if (v2) process.env.FAKE_SUBAGENT_V2 = "1";
+            const { run, events, session, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+            expect(await run("go")).toBe("done");
+            const label = v2 ? "count files" : "Count the files";
+            process.env.FAKE_RESUME_AGENT = "1";
+            events.length = 0;
+            asked.length = 0;
+            expect(await run("go on")).toBe("done");
+            const tasks = events.filter((e): e is Extract<AgentEvent, { type: "tool_start" }> => e.type === "tool_start" && e.call.name === "Task");
+            expect(tasks.map((e) => [e.call.id.replace(/-turn-\d+$/, ""), e.title])).toEqual([[v2 ? "act-interacted" : "resume", `Task(${label})`]]);
+            const sub = subEvents(events, tasks[0]!.call.id);
+            expect(sub.every((e) => e.label === label)).toBe(true);
+            expect(sub[0]?.event.type).toBe("request_start");
+            expect(sub.find((e) => e.event.type === "tool_start")?.event).toMatchObject({ call: { name: "Bash", input: { command: "touch y" } } });
+            expect(sub.flatMap((e) => (e.event.type === "text" ? [e.event.text] : []))).toEqual(["CHILD_REPORT: 2 files."]);
+            expect(sub.at(-1)?.event).toEqual({ type: "turn_end", reason: "done" });
+            expect(asked.map((a) => a.agentLabel)).toEqual([label]);
+            // Not the main agent's.
+            expect(streamed(events)).not.toContain("Looking around.");
+            expect(toolEnds(events).filter((e) => e.call.name === "Bash")).toHaveLength(0);
+            expect(said(session)).not.toContain("CHILD_REPORT");
+        });
 
     test("declining a sub-agent's command: what the user said goes into its turn, and the main turn isn't ended for it", async () => {
         process.env.FAKE_SCENARIO = "subagent";
@@ -715,6 +764,16 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
             expect(elicitations()[0].action).toBe(reason ? "decline" : "accept");
             if (reason) expect(toolEnds(ruled.events)[0]!.result).toMatchObject({ isError: true, content: expect.stringMatching(reason) });
         }
+
+        // Another call of the same server still open, with the same arguments, for a tool the user allows: the question
+        // names the tool, so it's that one's rules that apply, and the user is asked.
+        process.env.FAKE_ELICIT_OTHER_CALL = "1";
+        rmSync(LOG, { force: true });
+        const two = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["mcp__probe__read_thing"] } }, ask: () => ({ allow: false, feedback: "not that" }) });
+        expect(await two.run("go")).toBe("done");
+        expect(two.asked.map((a) => a.tool.name)).toEqual(["mcp__probe__write_thing"]);
+        expect(elicitations()[0].action).toBe("decline");
+        delete process.env.FAKE_ELICIT_OTHER_CALL;
 
         // Nobody to ask: declined, saying why.
         rmSync(LOG, { force: true });
@@ -772,6 +831,16 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(asked[0]).toContain("https://probe.example/login");
         expect(asked[0]).toContain("Sign in to Probe.");
         expect(elicitations()).toEqual([{ action: "accept", content: null, _meta: null }]);
+    });
+
+    test("a change Codex asks about without having said what it writes is refused, not approved blind", async () => {
+        process.env.FAKE_SCENARIO = "rename";
+        process.env.FAKE_UNANNOUNCED = "1";
+        const { run, events, asked } = await makeAgent({ provider: "codex", mode: "acceptEdits", ask: () => ({ allow: true }) });
+        expect(await run("rename it")).toBe("done");
+        expect(asked).toEqual([]);
+        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("decline");
+        expect(notices(events).join("\n")).toMatch(/doesn't know which files this change writes/);
     });
 
     test("a web search is saved with its query, which Codex sends only when it's done", async () => {

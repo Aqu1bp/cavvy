@@ -116,13 +116,14 @@ class Client {
 
     private answered = new Set<string>();
 
-    /** Answer the next request the session makes (ops arrive a moment after replies, so skip ones already answered). */
-    async answer(id: string, response: InteractionResponse) {
+    /** Answer the next request the session makes (ops arrive a moment after replies, so skip ones already answered); `before` looks at the view as it asks. */
+    async answer(id: string, response: InteractionResponse, before?: () => void) {
         const fresh = (v: { state: SessionState }) => v.state.interactions.find((i) => !this.answered.has(i.id));
         await this.until(id, (v) => Boolean(fresh(v)));
         const it = fresh(this.view(id))!;
         this.answered.add(it.id);
         expect(it.kind).toBe(response.kind);
+        before?.();
         await this.call("session.respond", { id, interactionId: it.id, response });
         return it;
     }
@@ -969,10 +970,12 @@ describe("sub-agents", () => {
         expect(v.agents.map((a) => [a.status, a.report])).toEqual([["failed", undefined]]);
     }, 45_000);
 
-    test("Codex's own sub-agent: a chip with its tools and its answer as the report, asking as itself; the reply and context are the main thread's", async () => {
+    for (const early of [undefined, "all"])
+    test(`Codex's own sub-agent${early ? " that did everything before the spawn said whose it was" : ""}: a chip with its tools and its answer as the report, asking as itself; the reply and context are the main thread's`, async () => {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("codex", { path: fakeCodex() });
         process.env.FAKE_SCENARIO = "subagent";
+        if (early) process.env.FAKE_CHILD_EARLY = early;
         try {
             const c = await client();
             const id = await c.open("session.create", { cwd: project() });
@@ -982,7 +985,8 @@ describe("sub-agents", () => {
             const ask = await c.answer(id, { kind: "permission", choice: "yes" });
             await c.until(id, done, 30_000);
             const v = c.view(id);
-            expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(["Bash", "Count the files", v.agents[0]?.id]);
+            // Asked before Codex said whose thread it is, it's a sub-agent of Codex's, not yet that chip.
+            expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(early ? ["Bash", "Codex sub-agent", undefined] : ["Bash", "Count the files", v.agents[0]?.id]);
             expect(v.agents).toHaveLength(1);
             const a = v.agents[0]!;
             expect([a.description, a.status, a.report]).toEqual(["Count the files", "done", "CHILD_REPORT: 2 files."]);
@@ -998,6 +1002,40 @@ describe("sub-agents", () => {
             c.close();
         } finally {
             delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CHILD_EARLY;
+            removeAgentConfig("codex");
+        }
+    }, 45_000);
+
+    test("Codex's own sub-agent messaged after it answered: running again, asking as itself, and its new answer is its report", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("codex", { path: fakeCodex() });
+        process.env.FAKE_SCENARIO = "subagent";
+        process.env.FAKE_CHILD_TWICE = "1";
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.send", { id, text: "count the files, then the tests" });
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            // Its second turn's command: the chip it asks from is working again.
+            let during: unknown;
+            const ask = await c.answer(id, { kind: "permission", choice: "yes" }, () => {
+                const a = c.view(id).agents[0];
+                during = a && [a.status, a.endedAt, a.report];
+            });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            expect(v.agents).toHaveLength(1);
+            const a = v.agents[0]!;
+            expect(ask.kind === "permission" && [ask.agentLabel, ask.agentId]).toEqual(["Count the files", a.id]);
+            expect(during).toEqual(["waiting", undefined, undefined]);
+            expect([a.status, a.report]).toEqual(["done", "CHILD_REPORT: 3 tests."]);
+            expect(a.blocks.flatMap((b) => (b.t === "tool" ? [`${b.name}:${b.status}`] : []))).toEqual(["Bash:ok", "Bash:ok"]);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CHILD_TWICE;
             removeAgentConfig("codex");
         }
     }, 45_000);

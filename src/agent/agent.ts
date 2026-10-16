@@ -976,7 +976,8 @@ export class Agent {
         this.session.push({ role: "assistant", content, provider, model: this.model.id, stopReason: r.reason === "done" ? "end_turn" : "other" });
         // As a sub-agent it reports its answer (not what it said on the way), then, shorter, what it did.
         const answer = (r.answer ?? r.text).trim();
-        this.backendReport = [answer, r.actions.length ? backendActionsNote(name, r.actions, REPORT_ACTIONS_CHARS) : ""].filter(Boolean).join("\n\n");
+        // Redacted as the stored turn is: it goes to another model.
+        this.backendReport = redact([answer, r.actions.length ? backendActionsNote(name, r.actions, REPORT_ACTIONS_CHARS) : ""].filter(Boolean).join("\n\n"));
     }
 
     /** The last backend turn as its report, when this agent is a sub-agent on a backend. */
