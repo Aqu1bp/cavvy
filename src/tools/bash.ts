@@ -34,7 +34,8 @@ function failureHint(sandbox: Sandbox, output: string, proxy: CommandProxy | und
     return hints.length ? hints.join("\n") : undefined;
 }
 
-function pickShell(): string {
+/** The shell commands run in: the user's, if it's bash or zsh. */
+export function pickShell(): string {
     const sh = process.env.SHELL ?? "";
     if (/\/(bash|zsh)$/.test(sh) && existsSync(sh)) return sh;
     return existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";

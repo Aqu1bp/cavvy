@@ -296,3 +296,32 @@ describe("usage with no known price isn't saved as free", () => {
         expect(formatCost(1.5, undefined)).toBe("$1.50");
     });
 });
+
+describe("the environment block warns about GNU and bash habits that fail here", () => {
+    test("macOS with BSD tools, and zsh", async () => {
+        const { shellNotes } = await import("../src/agent/system-prompt");
+        const bsd = (p: string) => ({ sed: "/usr/bin/sed", date: "/bin/date" })[p] ?? null;
+        const notes = shellNotes("darwin", "/bin/zsh", bsd);
+        expect(notes).toHaveLength(2);
+        expect(notes[0]).toContain("no `timeout`");
+        expect(notes[0]).toContain("sed -i ''");
+        expect(notes[1]).toContain("$pipestatus");
+        expect(notes[1]).toContain("--include='*.ts'");
+        // GNU tools on PATH (coreutils' gnubin): nothing to say about them.
+        expect(shellNotes("darwin", "/bin/bash", (p) => `/opt/homebrew/opt/coreutils/libexec/gnubin/${p}`)).toEqual([]);
+        expect(shellNotes("linux", "/bin/bash", () => "/usr/bin/x")).toEqual([]);
+    });
+
+    test("the prompt names the shell commands actually run in", async () => {
+        const { environmentBlock } = await import("../src/agent/system-prompt");
+        const { pickShell } = await import("../src/tools/bash");
+        const saved = process.env.SHELL;
+        process.env.SHELL = "/usr/local/bin/fish";
+        try {
+            expect(environmentBlock(tempDir(), { provider: "x", id: "y" } as any, false)).toContain(`Shell: ${pickShell()}`);
+            expect(pickShell()).not.toContain("fish");
+        } finally {
+            process.env.SHELL = saved;
+        }
+    });
+});
