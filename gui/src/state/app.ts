@@ -23,6 +23,8 @@ rpc.retriesCredentials = isTauri;
 // ---------------------------------------------------------------------------
 // Toasts
 
+// Two wrapped rows fit above Home's input even in a 600px-tall window.
+const MAX_TOASTS = 2;
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
 const toastTimers = new Map<number, { life: ToastLifetime; timer?: ReturnType<typeof setTimeout> }>();
@@ -52,7 +54,7 @@ export function toast(message: string, level: Toast["level"] = "info", action?: 
         return;
     }
     const id = ++toastId;
-    for (const old of toasts.slice(0, Math.max(0, toasts.length - 3))) dismissToast(old.id);
+    for (const old of toasts.slice(0, Math.max(0, toasts.length - MAX_TOASTS + 1))) dismissToast(old.id);
     setToasts((t) => [...t, { id, level, message, count: 1, action }]);
     const life = new ToastLifetime(toastMs(level, ms), performance.now());
     if (document.hidden) life.pause("hidden", performance.now());

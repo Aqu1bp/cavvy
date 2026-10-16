@@ -1689,8 +1689,8 @@ button.strip-ctl[aria-expanded="true"] {
     position: fixed;
     right: 20px;
     top: 60px;
-    /* Four 44px rows and three 8px gaps fit without clipping or scrolling. */
-    max-height: 200px;
+    /* The two-toast limit fits two 52px rows and an 8px gap without scrolling. */
+    max-height: 112px;
     width: min(440px, calc(100vw - 40px));
     z-index: 80;
     display: flex;
@@ -1712,11 +1712,6 @@ button.strip-ctl[aria-expanded="true"] {
     display: none;
 }
 
-/* Home centers its input. Keep its scroll viewport below four toast rows. */
-.app:has(.toast) .home {
-    margin-top: 228px;
-}
-
 .toast {
     flex: none;
     pointer-events: auto;
@@ -1724,7 +1719,7 @@ button.strip-ctl[aria-expanded="true"] {
     align-items: center;
     gap: 10px;
     max-width: 100%;
-    height: 44px;
+    min-height: 44px;
     padding: 8px 10px;
     border-radius: 14px;
     background: var(--bg-elev);
@@ -1751,11 +1746,14 @@ button.strip-ctl[aria-expanded="true"] {
 }
 
 .toast-msg {
+    display: -webkit-box;
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
+    line-height: 18px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 
 .toast-count,

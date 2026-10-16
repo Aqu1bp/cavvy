@@ -59,7 +59,7 @@ export function changedOutside(): number {
 /** Git's view of a session's folder; fetched again as edits land, when a turn starts or ends, and on changedOutside(). */
 export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope = () => "uncommitted", base: () => string | undefined = () => undefined) {
     return createResource(
-        () => ({ id: handle().id, scope: scope(), base: base(), n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() }),
+        () => app.conn === "open" && { id: handle().id, scope: scope(), base: base(), n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() },
         ({ id, scope, base }) => fetchGitChanges(id, scope, base),
     );
 }
