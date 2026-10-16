@@ -3,6 +3,7 @@
 // shown, stored, or sent to a model. Known-format keys that the harness does
 // not own (e.g. a teammate's key in a .env file) are caught by pattern.
 
+import { SECRET_PATTERNS as PATTERNS } from "./secret-patterns";
 import { APP_NAME } from "../config/name";
 
 const exact = new Map<string, { label: string; prefix?: Uint32Array }>();
@@ -12,21 +13,6 @@ let revision = 0;
 export function redactionVersion(): number {
     return revision;
 }
-
-const PATTERNS: [RegExp, string][] = [
-    [/sk-ant-(?:api|admin|oat|sid)\d{0,2}-[A-Za-z0-9_-]{20,}/g, "anthropic-key"],
-    [/sk-or-v1-[A-Za-z0-9]{32,}/g, "openrouter-key"],
-    [/sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}/g, "openai-key"],
-    [/\bAIza[0-9A-Za-z_-]{35}\b/g, "google-key"],
-    [/\bgsk_[A-Za-z0-9]{40,}\b/g, "groq-key"],
-    [/\bxai-[A-Za-z0-9]{40,}\b/g, "xai-key"],
-    [/\btvly-[A-Za-z0-9_-]{20,}\b/g, "tavily-key"],
-    [/\bgh[pousr]_[A-Za-z0-9]{36,}\b/g, "github-token"],
-    [/\bgithub_pat_[A-Za-z0-9_]{50,}\b/g, "github-token"],
-    [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "aws-key-id"],
-    [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "slack-token"],
-    [/\bya29\.[A-Za-z0-9._-]{20,}/g, "google-token"],
-];
 
 export function registerSecret(value: string | undefined, label = "secret") {
     if (!value || value.length < 8) return;

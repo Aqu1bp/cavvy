@@ -13,7 +13,7 @@ export default defineConfig({
     server: {
         port: 5173,
         strictPort: true,
-        fs: { allow: [".", shared] },
+        fs: { allow: [".", shared, fileURLToPath(new URL("../src/util/secret-patterns.ts", import.meta.url))] },
     },
     build: {
         // WebKit (macOS, Linux) and WebView2: modern, but not bleeding edge.
