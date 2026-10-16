@@ -309,9 +309,9 @@ function secretFlags(args: unknown): [string, string, number, boolean][] {
     return out;
 }
 
-/** Does `text` hold one of the server's env, header, URL or argument secrets? */
-export function hasConfigValue(text: string, config: McpServerConfig): boolean {
-    return configSecrets(config).some(([value]) => text.includes(value));
+/** In serialized JSON, look for the escaped representation of a secret, in keys as well as values. */
+export function hasConfigValue(text: string, config: McpServerConfig, serialized = false): boolean {
+    return configSecrets(config).some(([value]) => text.includes(serialized ? JSON.stringify(value).slice(1, -1) : value));
 }
 
 /** HTTP header names aren't case-sensitive: two that differ only in case would be sent combined, in whatever order they were written. */

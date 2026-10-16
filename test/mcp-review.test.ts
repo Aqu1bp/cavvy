@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { isolate, tempDir } from "./helpers/isolate";
+import { isolate, tempDir, FAKE } from "./helpers/isolate";
 import type { McpServerConfig } from "../src/config/settings";
 
 const iso = isolate();
@@ -399,22 +399,6 @@ test("a tool with a secret in a nested schema property is hidden without renamin
     }
 });
 
-test("payload masking leaves protocol keys, discriminators, URIs and binary data untouched", async () => {
-    const { maskMcpResult, maskMcpSchema } = await import("../src/mcp/payload");
-    const config = { env: { TOKEN: "text", SECRET: "content", KEY: "image/png", AUTH: "object", COOKIE: "cGl4ZWw=" } };
-    const result = maskMcpResult({ content: [
-        { type: "text", text: "text content" },
-        { type: "image", mimeType: "image/png", data: "cGl4ZWw=" },
-        { type: "resource", resource: { uri: "text://content", mimeType: "text/plain", text: "text content" } },
-    ], structuredContent: { content: "text" } }, config);
-    expect(result.content).toEqual([
-        { type: "text", text: "[REDACTED env TOKEN] [REDACTED env SECRET]" },
-        { type: "image", mimeType: "image/png", data: "cGl4ZWw=" },
-        { type: "resource", resource: { uri: "text://content", mimeType: "text/plain", text: "[REDACTED env TOKEN] [REDACTED env SECRET]" } },
-    ]);
-    expect(result.structuredContent).toEqual({ "[REDACTED env SECRET]": "[REDACTED env TOKEN]" });
-    expect(maskMcpSchema({ type: "object", properties: { value: { type: "string" } } }, config)).toEqual({ type: "object", properties: { value: { type: "string" } } });
-});
 
 test("only credential-named or long env/header values count as secrets", async () => {
     const { maskConfigValues } = await import("../src/mcp/approval");
@@ -423,4 +407,93 @@ test("only credential-named or long env/header values count as secrets", async (
     const config = { env: { MODE: "text", LOG_LEVEL: "info", FORMAT: "json", FIELD: "properties", SETTING: ordinary, OTHER: long, TOKEN: "abc" }, headers: { "X-Mode": "content", Authorization: "Bearer xy", Cookie: "id=zw" } };
     const masked = maskConfigValues(`text info json properties content ${ordinary} ${long} abc xy zw`, config);
     expect(masked).toBe(`text info json properties content ${ordinary} [REDACTED env OTHER] [REDACTED env TOKEN] [REDACTED header Authorization] [REDACTED header Cookie]`);
+});
+
+test("final tool results mask secrets in resource URIs and omitted media MIME strings", async () => {
+    const secret = "resource-secret-value";
+    const uri = `https://example.com/resource?token=${secret}`;
+    const escaped = 'payload"secret\\value';
+    let content: unknown[] = [];
+    let structuredContent: unknown;
+    const server = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        async fetch(req) {
+            const body = await req.json() as { method: string; id: number };
+            return Response.json({ jsonrpc: "2.0", id: body.id, result: body.method === "server/discover"
+                ? { supportedVersions: [MODERN_VERSION] }
+                : body.method === "tools/list" ? { tools: [{ name: "echo", inputSchema: { type: "object" } }] }
+                : { content, structuredContent } });
+        },
+    });
+    const m = await approved(folder(), { url: server.url.href, env: { TOKEN: secret, SECRET: escaped } });
+    try {
+        await m.startAll();
+        const tool = m.tools()[0]!;
+        const samples = [
+            { type: "resource_link", uri, name: "link" },
+            { type: "resource", resource: { uri, text: "body" } },
+            { type: "resource", resource: { uri, blob: "AAAA", mimeType: `application/${secret}` } },
+            { type: "audio", data: "AAAA", mimeType: `audio/${secret}` },
+            { type: "image", data: "AAAA", mimeType: `image/${secret}` },
+        ];
+        for (const sample of samples) {
+            content = [sample];
+            const result = await tool.run({}, ctx);
+            expect(result.isError).toBe(false);
+            expect(JSON.stringify(result)).not.toContain(secret);
+            expect(result.content).toContain("[REDACTED env TOKEN]");
+        }
+        content = [];
+        structuredContent = { [escaped]: escaped };
+        const structured = await tool.run({}, ctx);
+        expect(JSON.parse(structured.content)).toEqual({ "[REDACTED env SECRET]": "[REDACTED env SECRET]" });
+        structuredContent = undefined;
+        // Generic credentials are redacted at the same final boundary, with the output still bounded.
+        content = [{ type: "text", text: `key=${FAKE.anthropic}` }];
+        const key = await tool.run({}, ctx);
+        expect(key.content).not.toContain(FAKE.anthropic);
+        expect(key.content).toContain("[REDACTED anthropic-key]");
+        // Put a secret across the formatter's former truncation boundary (40% of 40,000).
+        content = [{ type: "text", text: "x".repeat(15_995) + secret + "x".repeat(100_000) }];
+        const big = await tool.run({}, ctx);
+        expect(big.content.length).toBeLessThan(41_000);
+        expect(big.content).toContain("characters");
+        expect(big.content).not.toContain(secret.slice(0, 5));
+    } finally {
+        await m.closeAll();
+        server.stop(true);
+    }
+});
+
+test("serialized schema screening hides dependency arrays and extension keys without changing ordinary schemas", async () => {
+    const secret = "schema-secret-value";
+    const escaped = 'schema"secret\\value';
+    const ordinary = { type: "object", properties: { trigger: { type: "string" } }, additionalProperties: false };
+    const server = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        async fetch(req) {
+            const body = await req.json() as { method: string; id: number };
+            return Response.json({ jsonrpc: "2.0", id: body.id, result: body.method === "server/discover"
+                ? { supportedVersions: [MODERN_VERSION] }
+                : { tools: [
+                    { name: "dependency", inputSchema: { ...ordinary, dependencies: { trigger: [secret] } } },
+                    { name: "extension", inputSchema: { ...ordinary, [secret]: true } },
+                    { name: "escaped_key", inputSchema: { ...ordinary, [escaped]: true } },
+                    { name: "escaped_value", inputSchema: { ...ordinary, dependencies: { trigger: [escaped] } } },
+                    { name: "literal_const", inputSchema: { ...ordinary, properties: { value: { const: { description: secret } } } } },
+                    { name: "literal_enum", inputSchema: { ...ordinary, properties: { value: { enum: [{ title: secret }] } } } },
+                    { name: "ordinary", inputSchema: ordinary },
+                ] } });
+        },
+    });
+    const m = await approved(folder(), { url: server.url.href, env: { TOKEN: secret, SECRET: escaped } });
+    try {
+        await m.startAll();
+        expect(m.tools().map((tool) => tool.name)).toEqual(["mcp__srv__ordinary"]);
+        expect(m.tools()[0]!.parameters).toEqual(ordinary);
+        expect(m.describe("srv")!.error).toContain("6 tools were hidden");
+    } finally {
+        await m.closeAll();
+        server.stop(true);
+    }
 });

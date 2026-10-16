@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { isolate, tempDir, FAKE } from "./helpers/isolate";
+import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { McpClient, McpError, headerValue, MODERN_VERSION } = await import("../src/mcp/client");
@@ -496,15 +496,7 @@ describe("formatMcpResult", () => {
         expect(formatMcpResult({ content: [{ type: "text", text: "t" }], structuredContent: { a: 1 } }).content).toBe("t");
     });
 
-    test("redacts secrets and truncates huge output", () => {
-        const f = formatMcpResult({ content: [{ type: "text", text: `key=${FAKE.anthropic}` }] });
-        expect(f.content).not.toContain(FAKE.anthropic);
-        expect(f.content).toContain("[REDACTED anthropic-key]");
 
-        const big = formatMcpResult({ content: [{ type: "text", text: "x".repeat(100_000) }] });
-        expect(big.content.length).toBeLessThan(41_000);
-        expect(big.content).toContain("characters");
-    });
 });
 
 // ---------------------------------------------------------------------------

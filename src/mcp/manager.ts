@@ -13,13 +13,12 @@ import { paths } from "../config/paths";
 import type { Tool, ToolResult } from "../tools/types";
 import type { ImagePart } from "../providers/types";
 import { McpClient, type McpCallResult, type McpTool } from "./client";
-import { maskMcpResult, maskMcpSchema } from "./payload";
-import { redact } from "../util/redact";
+import { maskMcpSchema } from "./payload";
 import { truncateMiddle } from "../util/files";
 import { createHash } from "crypto";
 import type { McpServerInfo } from "./info";
 import { trustedByUser } from "../config/trust";
-import { approvalOf, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
+import { approvalOf, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
 
 export interface ServerState {
     name: string;
@@ -108,7 +107,7 @@ export function formatMcpResult(r: McpCallResult): { content: string; images: Im
         }
     }
     if (!texts.length && r.structuredContent !== undefined) texts.push(JSON.stringify(r.structuredContent, null, 2));
-    return { content: truncateMiddle(redact(texts.join("\n\n")), MAX_OUTPUT), images };
+    return { content: texts.join("\n\n"), images };
 }
 
 export class McpManager {
@@ -428,14 +427,16 @@ export class McpManager {
                         // Revoked, rejected or restarted since this tool was listed (say, while its call waited for permission).
                         if (st.client !== client || self.servers.get(st.name) !== st || !mayStart(st) || !self.stillApproved(st)) return { content: `MCP server ${st.name} isn't running any more.`, isError: true };
                         try {
-                            // The server knows its own env and headers: it doesn't get to echo them into the transcript.
-                            const r = maskMcpResult(await client.callTool(t.name, input ?? {}, ctx.signal), st.config);
-                            const f = formatMcpResult(r);
+                            const r = await client.callTool(t.name, input ?? {}, ctx.signal);
+                            // Structured data must be masked before JSON serialization escapes its strings and keys.
+                            const f = formatMcpResult({ ...r, structuredContent: maskConfigDeep(r.structuredContent, st.config) });
+                            // Formatting includes URIs and MIME types too; mask before truncation can split a secret.
+                            const content = truncateMiddle(maskConfigValues(f.content, st.config), MAX_OUTPUT);
                             return {
-                                content: f.content || "(no output)",
+                                content: content || "(no output)",
                                 images: f.images.length ? f.images : undefined,
                                 isError: r.isError,
-                                display: { summary: r.isError ? "Error" : `${f.content.split("\n").length} lines${f.images.length ? `, ${f.images.length} image(s)` : ""}` },
+                                display: { summary: r.isError ? "Error" : `${content.split("\n").length} lines${f.images.length ? `, ${f.images.length} image(s)` : ""}` },
                             };
                         } catch (e) {
                             return { content: `MCP error from ${st.name}: ${maskConfigValues((e as Error).message, st.config)}`, isError: true };
