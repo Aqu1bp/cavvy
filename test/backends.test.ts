@@ -61,7 +61,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -1631,5 +1631,34 @@ describe("Claude Code MCP approval boundary", () => {
             expect(start.argv).not.toContain("--mcp-config");
             expect(JSON.stringify(start.argv)).not.toContain(sentinel);
         }
+    });
+});
+
+
+describe("Codex project MCP boundary", () => {
+    test("trusted threads disable project servers, including project modifications to user servers", async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ personal: { command: "personal" }, shared: { command: "original" } });
+        process.env.FAKE_PROJECT_MCP = JSON.stringify({ project: { command: "hostile" }, shared: { env: { OVERRIDE: "hostile" } }, "dotted.name": { command: "hostile" } });
+        const { run } = await makeAgent({ provider: "codex", trusted: true });
+        await run("hello");
+        expect(received().find((m) => m.method === "config/read").params).toEqual({ cwd, includeLayers: true });
+        const config = received().find((m) => m.method === "thread/start").params.config;
+        expect(config).toEqual({ mcp_servers: { project: { enabled: false }, shared: { enabled: false }, "dotted.name": { enabled: false } } });
+        await run("resume");
+        expect(received().find((m) => m.method === "thread/resume").params.config).toEqual(config);
+    });
+
+    test("missing provenance disables all configured servers, and a failed read prevents the turn", async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ personal: { command: "personal" } });
+        process.env.FAKE_NO_CONFIG_LAYERS = "1";
+        const { run, events } = await makeAgent({ provider: "codex", trusted: true });
+        await run("hello");
+        expect(received().find((m) => m.method === "thread/start").params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });
+        expect(notices(events).join("\n")).toContain("all configured MCP servers are disabled");
+        rmSync(LOG, { force: true });
+        process.env.FAKE_NO_CONFIG_READ = "1";
+        const second = await makeAgent({ provider: "codex", trusted: true });
+        expect(await second.run("hello")).toBe("error");
+        expect(received().some((m) => m.method === "thread/start")).toBe(false);
     });
 });

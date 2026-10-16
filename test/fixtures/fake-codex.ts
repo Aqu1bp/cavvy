@@ -340,14 +340,23 @@ async function handle(m: any) {
     const reply = (result: unknown) => out({ id: m.id, result });
     const fail = (message: string) => out({ id: m.id, error: { code: -32600, message } });
     const p = m.params ?? {};
-    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
+    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config?.mcp_servers?.harness?.url && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
     switch (m.method) {
         case "initialize":
             if (process.env.FAKE_HANG_INIT === "1") return;
             return reply({ userAgent: "fake-codex/0.0.1", codexHome: "/tmp/none", platformFamily: "unix", platformOs: "linux" });
         case "config/read":
             if (process.env.FAKE_NO_CONFIG_READ === "1") return fail("config/read failed: invalid configuration");
-            return reply({ config: { model: null, ...(process.env.FAKE_USER_MCP ? { mcp_servers: JSON.parse(process.env.FAKE_USER_MCP) } : {}) }, origins: {} });
+            const userMcp = JSON.parse(process.env.FAKE_USER_MCP ?? "{}");
+            const projectMcp = JSON.parse(process.env.FAKE_PROJECT_MCP ?? "{}");
+            return reply({
+                config: { model: null, mcp_servers: { ...userMcp, ...projectMcp } },
+                origins: {},
+                ...(process.env.FAKE_NO_CONFIG_LAYERS === "1" ? {} : { layers: [
+                    { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp } },
+                    { name: { type: "project", dotCodexFolder: `${cwd}/.codex` }, config: { mcp_servers: projectMcp } },
+                ] }),
+            });
         case "initialized":
             return;
         case "account/read": {

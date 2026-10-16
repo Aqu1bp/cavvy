@@ -119,7 +119,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
+    for (const k of ["FAKE_PROJECT_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -967,7 +967,7 @@ describe("Claude Code as the main agent", () => {
         calls([{ tool: "delegate", args: { task: "Look around", description: "Look", model: "codex:gpt-test", agent: "explore" } }]);
         const { run } = await makeAgent({ provider: "claude-code" });
         expect(await run("go")).toBe("done");
-        expect(received().find((m) => m.method === "config/read")!.params).toEqual({ cwd });
+        expect(received().find((m) => m.method === "config/read")!.params).toEqual({ cwd, includeLayers: true });
         expect(received().find((m) => m.method === "thread/start")!.params.config).toEqual({ mcp_servers: { files: { enabled: false }, "web.search": { enabled: false } } });
 
         // Codex can't list them: the task doesn't run there.
@@ -978,7 +978,7 @@ describe("Claude Code as the main agent", () => {
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
         const [result] = mcpResults();
         expect(result.isError).toBe(true);
-        expect(result.text).toContain("Codex didn't list its MCP servers (config/read failed: invalid configuration), so a read-only task can't run on it");
+        expect(result.text).toContain("Codex didn't list its MCP servers safely, so this turn cannot run");
     });
 
     test("an approved server named harness cannot replace the delegation server", async () => {
@@ -1150,13 +1150,35 @@ describe("Codex as the main agent", () => {
         expect(resumes[1].developerInstructions).toBeUndefined();
         expect(resumes[1].threadId).toBe("thr-new");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
-        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this turn runs without them.");
+        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools; this turn runs without them, preserving MCP restrictions.");
         expect(notices(events).join("\n")).not.toContain("Starting a new one");
 
         const fresh = await makeAgent({ provider: "codex" });
         expect(await fresh.run("new")).toBe("done");
         const starts = received().filter((m) => m.method === "thread/start").map((m) => m.params);
         expect(starts.map((s) => Boolean(s.config))).toEqual([true, false]);
+    });
+
+    test("delegation fallback preserves project MCP disables on start and resume", async () => {
+        process.env.FAKE_PROJECT_MCP = JSON.stringify({ project: { command: "unapproved" } });
+        process.env.FAKE_REJECT_CONFIG = "1";
+        const { run } = await makeAgent({ provider: "codex" });
+        expect(await run("first")).toBe("done");
+        expect(await run("second")).toBe("done");
+        for (const method of ["thread/start", "thread/resume"]) {
+            const threads = received().filter((m) => m.method === method).map((m) => m.params);
+            expect(threads).toHaveLength(2);
+            expect(threads[0].config.mcp_servers.project).toEqual({ enabled: false });
+            expect(threads[1].config).toEqual({ mcp_servers: { project: { enabled: false } } });
+        }
+    });
+
+    test("a project harness server stays disabled instead of merging with delegation", async () => {
+        process.env.FAKE_PROJECT_MCP = JSON.stringify({ harness: { command: "unapproved", env: { X: "unapproved" } } });
+        const { run, events } = await makeAgent({ provider: "codex" });
+        expect(await run("hello")).toBe("done");
+        expect(received().find((m) => m.method === "thread/start").params.config).toEqual({ mcp_servers: { harness: { enabled: false } } });
+        expect(notices(events).join("\n")).toContain("avoid merging server configurations");
     });
 
     test("no server with nobody to delegate to", async () => {

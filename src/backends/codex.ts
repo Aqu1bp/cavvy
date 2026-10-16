@@ -10,6 +10,7 @@
 // reviewer answers them instead). The harness never reads Codex's
 // credentials (~/.codex/auth.json) and never signs in on its behalf.
 
+import { codexMcpOverrides } from "./codex-mcp";
 import { existsSync, readFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
@@ -442,14 +443,16 @@ class CodexTurn {
             this.billedToPlan = account.type === "chatgpt";
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
-            const o = t.orchestrator;
-            const developerInstructions = [t.appendSystemPrompt, o?.instructions].filter(Boolean).join("\n\n") || undefined;
-            let config = o ? orchestratorConfig(o) : undefined;
-            if (t.readOnly) {
-                const off = await this.mcpServersOff(t.cwd);
-                if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
-                config = off;
+            let o = t.orchestrator;
+            const overrides = await this.mcpServersOff(t.cwd, Boolean(t.readOnly), o?.name);
+            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
+            const off = overrides.config;
+            if (overrides.reservedCollision) {
+                this.host.emit({ type: "notice", level: "warn", message: "Codex already has a server named harness; it is disabled and this turn runs without Harness delegation to avoid merging server configurations." });
+                o = undefined;
             }
+            const developerInstructions = [t.appendSystemPrompt, o?.instructions].filter(Boolean).join("\n\n") || undefined;
+            const config = o && !t.readOnly ? { mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
             // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
@@ -464,8 +467,8 @@ class CodexTurn {
                     return await this.rpc.request(method, params);
                 } catch (e) {
                     if (this.aborted || !o) throw e;
-                    const r = await this.rpc.request(method, { ...params, config: undefined, developerInstructions: t.appendSystemPrompt || undefined });
-                    this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them.` });
+                    const r = await this.rpc.request(method, { ...params, config: off, developerInstructions: t.appendSystemPrompt || undefined });
+                    this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools; this turn runs without them, preserving MCP restrictions.` });
                     return r;
                 }
             };
@@ -987,23 +990,17 @@ class CodexTurn {
         this.host.emit(e);
     }
 
-    /**
-     * For a read-only sub-agent: thread config that turns off the MCP
-     * servers in the user's Codex config (as seen from this folder), since
-     * Codex runs tools set to "approve" there without asking, and they may
-     * change things. Thread config is merged into the user's, so each is
-     * turned off by name. Why it can't, if Codex doesn't list them.
-     */
-    private async mcpServersOff(cwd: string): Promise<Record<string, unknown> | undefined | string> {
-        let servers: unknown;
+    /** Read the CLI's effective config and provenance before thread/start or resume can launch servers. */
+    private async mcpServersOff(cwd: string, readOnly: boolean, reservedName?: string) {
         try {
-            servers = (await this.rpc.request("config/read", { cwd }))?.config?.mcp_servers;
+            const r = codexMcpOverrides(await this.rpc.request("config/read", { cwd, includeLayers: true }), readOnly, reservedName);
+            if (r.missingProvenance) this.host.emit({ type: "notice", level: "warn", message: "Codex did not identify its config layers; all configured MCP servers are disabled for this turn." });
+            return r;
         } catch (e) {
             if (this.aborted) throw e;
-            return `Codex didn't list its MCP servers (${redact((e as Error).message).replace(/^Codex:\s*/, "")}), so a read-only task can't run on it: their tools couldn't be turned off.`;
+            // Errors from the CLI can contain server secrets; never echo them.
+            return "Codex didn't list its MCP servers safely, so this turn cannot run: unapproved servers could not be turned off.";
         }
-        const names = servers && typeof servers === "object" && !Array.isArray(servers) ? Object.keys(servers) : [];
-        return names.length ? { mcp_servers: Object.fromEntries(names.map((n) => [n, { enabled: false }])) } : undefined;
     }
 
     /** Where a request comes from, when it isn't the main thread: one of Codex's sub-agents (or a thread not known as one). */
