@@ -746,6 +746,9 @@ export class App {
         this.lastEventAt = Date.now();
         this.agentWork = true;
         switch (e.type) {
+            case "activity":
+                this.status = e.text;
+                break;
             case "request_start":
                 this.status = undefined;
                 this.thinkingNow = false;
@@ -884,6 +887,7 @@ export class App {
             a.sub.tools.push(e.title);
             if (a.sub.tools.length > 3) a.sub.tools.shift();
         } else if (e.type === "usage") a.sub.tokens += e.usage.outputTokens + e.usage.inputTokens + (e.usage.cacheReadTokens ?? 0);
+        else if (e.type === "activity") a.progress = e.text ?? "";
         else if (e.type === "notice" && e.level === "error") a.progress = e.message;
         else if (e.type === "turn_end" && this.detached.get(parentId) === a) {
             this.detached.delete(parentId);

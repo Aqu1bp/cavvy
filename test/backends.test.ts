@@ -64,7 +64,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -1906,11 +1906,11 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
     test("a never-ending shell has a bounded wait and the model knows its lifetime", async () => {
         process.env.FAKE_SCENARIO = "shell-background-stuck";
         const saved = { ...backgroundTiming };
-        Object.assign(backgroundTiming, { maxWaitMs: 100, pollMs: 20 });
+        Object.assign(backgroundTiming, { commandWaitMs: 100, pollMs: 20 });
         try {
             const a = await makeAgent({ provider: "claude-code" });
             expect(await a.run("run checks and wait")).toBe("done");
-            expect(notices(a.events).join("\n")).toMatch(/warn: Stopped waiting for 1 background/);
+            expect(notices(a.events).join("\n")).toMatch(/warn: Stopped 1 background/);
             const args = starts()[0].argv;
             expect(args[args.indexOf("--append-system-prompt") + 1]).toContain("Background commands and monitors");
         } finally { Object.assign(backgroundTiming, saved); }
@@ -1948,5 +1948,134 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(handoff).not.toContain("You've hit your limit");
         expect(handoff).not.toContain("usage limit was reached");
         if (scenario.startsWith("partial-error")) expect(handoff).toContain("The first check passed.");
+    });
+});
+
+
+describe("Claude Code background grace (#60 follow-up)", () => {
+    test("default grace is ten minutes, invalid settings fall back, and zero disables waiting", async () => {
+        const { claudeBackgroundWaitMs } = await import("../src/backends/claude-code");
+        expect(claudeBackgroundWaitMs(undefined)).toBe(600_000);
+        for (const value of [-1, Infinity, NaN, "10"]) expect(claudeBackgroundWaitMs(value)).toBe(600_000);
+        expect(claudeBackgroundWaitMs(0)).toBe(0);
+        expect(claudeBackgroundWaitMs(12)).toBe(12_000);
+    });
+
+    for (const scenario of ["shell-background-stuck", "monitor-background-stuck"]) test(`${scenario}: configured grace ends normally, names stopped work and sends a durable next-prompt reminder`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const saved = { ...backgroundTiming };
+        backgroundTiming.pollMs = 10;
+        const session = Session.create(cwd, { system: "test" });
+        try {
+            const a = await makeAgent({ provider: "claude-code", session, settings: { claudeCode: { backgroundWaitSec: 0.04 } } });
+            const start = Date.now();
+            expect(await a.run("wait for checks")).toBe("done");
+            expect(Date.now() - start).toBeLessThan(3000);
+            expect(notices(a.events).join("\n")).toMatch(/Stopped.*Wait for checks.*grace expired/);
+            expect(JSON.stringify(session.messages)).toContain("Waiting for checks.");
+            const label = `Waiting for background ${scenario.startsWith("shell") ? "command" : "monitor"}: Wait for checks · Esc to stop it`;
+            expect(a.events.some((e) => e.type === "activity" && e.text === label)).toBe(true);
+            expect(session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" } });
+            session.release();
+            const reopened = Session.load(session.file);
+            try {
+                expect(reopened.notices.some((n) => n.text.includes("Wait for checks"))).toBe(true);
+                process.env.FAKE_SCENARIO = "none";
+                const b = await makeAgent({ provider: "claude-code", session: reopened });
+                expect(await b.run("continue")).toBe("done");
+                expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks");
+                expect(userTexts().at(-1)).toContain("Wait for checks");
+                expect(userTexts().at(-1)).toContain("do not wait for their old task IDs");
+            } finally { reopened.release(); }
+        } finally { session.release(); Object.assign(backgroundTiming, saved); }
+    });
+
+    test("a Stop hook continuation receives the stopped-task reminder on that next prompt", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const a = await makeAgent({ provider: "claude-code", settings: {
+            claudeCode: { backgroundWaitSec: 0 },
+            hooks: { Stop: [{ command: "if [ ! -f hook-ran ]; then touch hook-ran; printf 'Keep going' >&2; exit 2; fi" }] },
+        } });
+        expect(await a.run("wait for checks")).toBe("done");
+        expect(userTexts()).toHaveLength(2);
+        expect(userTexts()[1]).toContain("A Stop hook asked you to keep going");
+        expect(userTexts()[1]).toContain("Harness stopped these Claude Code background tasks");
+        expect(userTexts()[1]).toContain("Wait for checks");
+    });
+
+    test("a zero shell grace does not shorten a background agent's limit", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0 } } });
+        expect(await a.run("map auth")).toBe("done");
+        expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+        expect(notices(a.events).some((n) => n.includes("Stopped"))).toBe(false);
+    });
+
+    test("Esc stops the wait promptly while preserving output and the next-prompt reminder", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const a = await makeAgent({ provider: "claude-code" });
+        const ac = new AbortController();
+        const done = a.run("wait for checks", ac.signal);
+        while (!a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for background command"))) await Bun.sleep(10);
+        const start = Date.now();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(Date.now() - start).toBeLessThan(1500);
+        expect(JSON.stringify(a.session.messages)).toContain("Waiting for checks.");
+        expect(notices(a.events).join("\n")).toContain("interrupted by user");
+        process.env.FAKE_SCENARIO = "none";
+        expect(await a.run("continue")).toBe("done");
+        expect(userTexts().at(-1)).toContain("background command: Wait for checks");
+    });
+
+    for (const command of ["bun run dev", "npm start", "pnpm run serve", "yarn watch", "vite", "tail -f out.log", "node --watch server.js"]) test(`long-lived command ends without the grace: ${command}`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_COMMAND = command;
+        const a = await makeAgent({ provider: "claude-code" });
+        const start = Date.now();
+        expect(await a.run("start the server")).toBe("done");
+        expect(Date.now() - start).toBeLessThan(3000);
+        expect(a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for"))).toBe(false);
+        expect(notices(a.events).join("\n")).toContain("recognized long-lived server/watcher");
+        process.env.FAKE_SCENARIO = "none";
+        await a.run("continue");
+        expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks");
+    });
+
+    test("finite commands are not classified by a word in output or a Vite build", async () => {
+        const { longLivedClaudeCommand } = await import("../src/backends/claude-code");
+        for (const command of ["bun test", "vite build", "echo start", "printf dev", "tail -n 20 out.log", "npm run restart-checks"]) expect(longLivedClaudeCommand(command)).toBe(false);
+    });
+
+    for (const [command, scenario] of [["sleep 150", "shell-background-mixed"], ["bun run dev", "shell-background-mixed"], ["bun run dev", "shell-background-nested"]]) test(`mixed shell/agent work stops only the shell and keeps the agent limit: ${scenario} ${command}`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        process.env.FAKE_COMMAND = command;
+        process.env.FAKE_BACKGROUND_MS = "220";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.pollMs = 10;
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.04 } } });
+            expect(await a.run("start both")).toBe("done");
+            expect(received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id)).toEqual(["background-1"]);
+            if (command === "bun run dev") expect(notices(a.events).join("\n")).toContain("recognized long-lived server/watcher");
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+            expect(a.events.some((e) => e.type === "subagent" && e.event.type === "turn_end" && e.event.reason === "done")).toBe(true);
+            expect(a.events.some((e) => e.type === "activity" && e.text === "Waiting for background sub-agent: Map auth · Esc to stop it")).toBe(true);
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
+    for (const failure of ["reject", "hang"]) test(`an unconfirmed selective stop cannot leave the turn stuck (${failure})`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "bun run dev";
+        process.env.FAKE_STOP_TASK = failure;
+        process.env.FAKE_BACKGROUND_MS = "10000";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { stopTimeoutMs: 40, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            expect(await a.run("start both")).toBe("done");
+            expect(notices(a.events).join("\n")).toContain("did not confirm a task stop");
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("Map auth");
+        } finally { Object.assign(backgroundTiming, saved); }
     });
 });

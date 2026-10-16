@@ -81,6 +81,7 @@ import type { PlanLimits } from "../server/protocol";
 
 export type AgentEvent =
     | { type: "request_start" }
+    | { type: "activity"; text?: string }
     | { type: "text"; text: string }
     | { type: "thinking"; text: string }
     | { type: "tool_call_start"; id: string; name: string }
@@ -915,6 +916,7 @@ export class Agent {
             effort: s.effort,
             fastMode: this.fastMode(),
             appendSystemPrompt: this.o.appendSystemPrompt,
+            backgroundWaitSec: s.claudeCode?.backgroundWaitSec,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             trusted,
             approvedMcpServers,
@@ -1092,8 +1094,15 @@ export class Agent {
             return await this.runBackendTurn(backend, parts, signal);
         } finally {
             this.delegateCalls = [];
+            // Written after the backend sync cursor: a resumed CLI must see this
+            // on its next prompt, including after reopening or switching models.
+            if (this.backendStopReminders.length) {
+                this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder" } });
+            }
         }
     }
+
+    private backendStopReminders: string[] = [];
 
     private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
         const provider = this.model.provider;
@@ -1192,7 +1201,7 @@ export class Agent {
                 for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
                 if (h?.blocked) {
                     stopRounds++;
-                    prompt = reminder(`A Stop hook asked you to keep going:\n${redact(h.blocked)}`).text;
+                    prompt = reminder([`A Stop hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0)].join("\n\n")).text;
                     promptImages = [];
                     promptDocuments = [];
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
@@ -1207,6 +1216,11 @@ export class Agent {
 
     /** The turn in this session's history, as text: other models (and /export) see what the backend said and did. */
     private recordBackendTurn(provider: string, name: string, r: BackendResult) {
+        if (r.backgroundStopped?.length) {
+            const message = `Harness stopped these ${name} background tasks: ${r.backgroundStopped.join("; ")}. They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.`;
+            this.session.recordNotice("warn", message);
+            this.backendStopReminders.push(message);
+        }
         const content: AssistantMessage["content"] = [];
         if (r.text.trim()) content.push({ type: "text", text: r.text });
         if (r.actions.length) content.push({ type: "text", text: backendActionsNote(name, r.actions) });
@@ -1956,6 +1970,7 @@ function redactResult(r: ToolResult): ToolResult {
  * tool output and what they say too.
  */
 function redactBackendEvent(e: AgentEvent): AgentEvent {
+    if (e.type === "activity") return { ...e, text: e.text === undefined ? undefined : redact(e.text) };
     if (e.type === "tool_progress") return { ...e, text: redact(e.text) };
     if (e.type === "tool_end") return { ...e, result: redactResult(e.result) };
     if (e.type === "subagent") return { ...e, event: e.event.type === "text" ? { ...e.event, text: redact(e.event.text) } : redactBackendEvent(e.event) };

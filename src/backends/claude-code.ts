@@ -48,13 +48,50 @@ export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background work once the prompt is answered (changeable for tests). */
 export const backgroundTiming = {
-    /** At most this long; then they're stopped with Claude Code, and the user is told. */
+    /** Agents and other non-command work keep the existing one-hour limit. */
     maxWaitMs: 60 * 60_000,
+    /** Shells and monitors get a shorter grace; dev servers should not hold a turn open. */
+    commandWaitMs: 10 * 60_000,
+    /** A selective stop must answer promptly, or shutdown is the only safe fallback. */
+    stopTimeoutMs: 5000,
     /** After one ends, how long Claude Code has to start its turn with the report before the run ends without it. */
     settleMs: 3000,
     /** How often to look for messages the user sent meanwhile (they go to Claude Code in the same run). */
     pollMs: 300,
 };
+
+export function claudeBackgroundWaitMs(seconds: unknown): number {
+    return typeof seconds === "number" && seconds >= 0 && Number.isFinite(seconds * 1000) ? seconds * 1000 : backgroundTiming.commandWaitMs;
+}
+
+/** Deliberately conservative command heuristic, never run on an agent's prose. */
+export function longLivedClaudeCommand(command: string): boolean {
+    return command.split(/(?:&&|\|\||[;\n])/).some((part) => {
+        const words = part.trim().split(/\s+/).map((w) => w.replace(/^["']|["']$/g, ""));
+        while (words[0] === "env" || /^[A-Za-z_][A-Za-z_0-9]*=/.test(words[0] ?? "")) words.shift();
+        const exe = words[0]?.split("/").at(-1);
+        if (["echo", "printf"].includes(exe ?? "")) return false;
+        if (words.some((w) => /^--watch(?:=|$)/.test(w))) return true;
+        if (exe === "tail") return words.some((w) => /^-(?:[^-]*[fF]|-follow)(?:$|=)/.test(w));
+        if (["dev", "serve", "start", "watch"].includes(exe ?? "")) return true;
+        if (exe === "vite") return !words.slice(1).some((w) => ["build", "optimize", "--help", "--version", "-h", "-v"].includes(w));
+        if (["bun", "npm", "pnpm", "yarn"].includes(exe ?? "")) {
+            const script = words[1] === "run" ? words[2] : words[1];
+            return /^(?:dev|serve|start|watch)(?::[\w-]+)?$/.test(script ?? "");
+        }
+        return false;
+    });
+}
+
+interface BackgroundWork {
+    id?: string;
+    agent: boolean;
+    /** Shell or Monitor: subject to the shorter grace. */
+    commandTask?: boolean;
+    monitor?: boolean;
+    command?: string;
+    label: string;
+}
 
 /** What a background sub-agent's Agent call says when it ends without a report. */
 const LAUNCH_END: Record<string, string> = {
@@ -287,6 +324,14 @@ class ClaudeTurn {
     private agentTokens = new Map<string, number>();
     /** Waiting on the background, since. */
     private waitingSince?: number;
+    private commandWaitingSince?: number;
+    private waitingLabel?: string;
+    private taskCommands = new Map<string, string>();
+    private shellCommands = new Map<string, string>();
+    private stoppedTaskIds = new Set<string>();
+    private stoppedBackground = new Set<string>();
+    private pendingStops = new Map<string, { task: BackgroundWork; since: number }>();
+    private stopFailed = false;
     private pollTimer?: ReturnType<typeof setInterval>;
     private settleTimer?: ReturnType<typeof setTimeout>;
     /** The run is being ended (its process stopped). */
@@ -326,7 +371,7 @@ class ClaudeTurn {
         if (t.resumeId) a.push("--resume", t.resumeId);
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
         a.push("--append-system-prompt", [t.appendSystemPrompt,
-            "Harness keeps this Claude Code process alive while reported background work runs, for up to 60 minutes after an answer. Background commands and monitors do not survive process shutdown, a user interrupt, or the wait timeout. Wait for finite work and consume its results before declaring success; stop long-lived servers and monitors when no longer needed. Work not reported by the CLI cannot be waited for.",
+            `Harness waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after an answer for reported background commands and monitors; sub-agents retain their 60-minute limit. Background commands and monitors do not survive process shutdown, a user interrupt, or their grace timeout. Recognized dev servers/watchers are stopped without waiting after the answer. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
@@ -357,6 +402,7 @@ class ClaudeTurn {
         if (this.aborted || this.finishing) return;
         this.prompted = true;
         this.busy = true;
+        this.clearWaitStatus();
         // Its answer is waited for now, not a report turn.
         clearTimeout(this.settleTimer);
         this.settleTimer = undefined;
@@ -386,16 +432,16 @@ class ClaudeTurn {
 
     /**
      * All reported background work, including shell commands and monitors.
-     * Long-lived work is bounded by maxWaitMs and can be interrupted.
+     * Shells/monitors have a separate grace; all waits can be interrupted.
      */
-    private inBackground(): { agent: boolean; label: string }[] {
+    private inBackground(): BackgroundWork[] {
         // Its sub-agents until Claude Code says each is over, listed or not (the list can drop one before that comes).
         const agents = this.unreported();
         const tasks = new Set(agents.map((id) => this.agentTasks.get(id)));
         const labels = new Set(agents.filter((id) => !this.agentTasks.has(id)).map((id) => this.agentLabels.get(id) ?? "sub-agent"));
         // And what else it lists (a sub-agent there that's one of those once only).
-        const listed = (this.background ?? []).filter((t) => !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
-        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ agent: t.type === "local_agent", label: t.description || "background task" }))];
+        const listed = (this.background ?? []).filter((t) => !this.stoppedTaskIds.has(t.id) && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
+        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? this.taskCommands.get(t.id) ?? t.description : undefined, label: t.description || "background task" }))];
     }
 
     /** Background sub-agents Claude Code hasn't said are over. */
@@ -425,15 +471,40 @@ class ClaudeTurn {
         // A timer may have awaited a snapshot while the message loop received fresh work.
         if (this.busy || this.unanswered.size || !this.answered) return false;
         const left = this.inBackground();
+        if (this.stopFailed || [...this.pendingStops.values()].some((p) => Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
+            this.noteStopped(left, "Claude Code did not confirm a task stop; ending its process");
+            this.toldStopped = true;
+            return true;
+        }
+        if (this.pendingStops.size) return false;
+        const commands = left.filter((t) => t.commandTask);
+        if (!commands.length) this.commandWaitingSince = undefined;
+        else this.commandWaitingSince ??= Date.now();
+        const servers = commands.filter((t) => t.command && longLivedClaudeCommand(t.command));
+        const expired = commands.length && Date.now() - this.commandWaitingSince! >= claudeBackgroundWaitMs(this.t.backgroundWaitSec);
+        const stopping = expired ? commands : servers;
+        if (stopping.length) {
+            const why = expired ? `background grace expired after ${claudeBackgroundWaitMs(this.t.backgroundWaitSec) / 1000}s` : "recognized long-lived server/watcher";
+            if (stopping.length === left.length) {
+                this.noteStopped(stopping, why);
+                this.toldStopped = true;
+                return true;
+            }
+            // Keep agents and other finite work alive: stop only these task IDs.
+            this.waitFor(left);
+            for (const task of stopping) this.stopTask(task, why);
+            return false;
+        }
         if (left.length) {
             // Work it lists after a report came: the report turn is waited for with it, not before it's done.
             clearTimeout(this.settleTimer);
             this.settleTimer = undefined;
             this.waitFor(left);
-            if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
+            if (left.every((t) => t.commandTask) || Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
             // Waited long enough (only between Claude Code's turns, so none is cut short): what's left stops with it.
             const ms = backgroundTiming.maxWaitMs;
             this.toldStopped = true;
+            this.rememberStopped(left);
             this.host.emit({ type: "notice", level: "warn", message: `Stopped waiting for ${describeBackground(left)} after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.ceil(ms / 1000)}s`}. ${left.length === 1 ? "It was" : "They were"} stopped with Claude Code, so ${left.length === 1 ? "its report" : "their reports"} won't come.` });
             return true;
         }
@@ -476,7 +547,43 @@ class ClaudeTurn {
         return true;
     }
 
-    private waitFor(left: { agent: boolean; label: string }[]) {
+    private rememberStopped(tasks: BackgroundWork[]) {
+        for (const t of tasks) this.stoppedBackground.add(`${t.agent ? "sub-agent" : t.monitor ? "background monitor" : t.commandTask ? "background command" : "background task"}: ${t.label}`);
+    }
+
+    private noteStopped(tasks: BackgroundWork[], why: string) {
+        if (!tasks.length) return;
+        this.rememberStopped(tasks);
+        this.host.emit({ type: "notice", level: "warn", message: `Stopped ${describeBackground(tasks)} (${why}). They will not produce further results.` });
+    }
+
+    private stopTask(task: BackgroundWork, why: string) {
+        if (!task.id) { this.stopFailed = true; return; }
+        const id = task.id;
+        const request = requestId();
+        this.pendingStops.set(id, { task, since: Date.now() });
+        this.controls.set(request, (response) => {
+            this.controls.delete(request);
+            this.pendingStops.delete(id);
+            if (response.subtype !== "success") { this.stopFailed = true; return; }
+            this.stoppedTaskIds.add(id);
+            this.noteStopped([task], why);
+        });
+        this.proc.send({ type: "control_request", request_id: request, request: { subtype: "stop_task", task_id: id } });
+    }
+
+    private clearWaitStatus() {
+        if (this.waitingLabel === undefined) return;
+        this.waitingLabel = undefined;
+        this.host.emit({ type: "activity" });
+    }
+
+    private waitFor(left: BackgroundWork[]) {
+        const label = `Waiting for ${left.map((t) => `${t.agent ? "background sub-agent" : t.monitor ? "background monitor" : t.commandTask ? "background command" : "background task"}: ${t.label}`).join("; ")} · Esc to stop ${left.length === 1 ? "it" : "them"}`;
+        if (label !== this.waitingLabel) {
+            this.waitingLabel = label;
+            this.host.emit({ type: "activity", text: label });
+        }
         if (this.waitingSince !== undefined) return;
         this.waitingSince = Date.now();
         this.host.emit({ type: "notice", level: "info", message: `Waiting for ${describeBackground(left)} to report back: the turn ends once Claude Code has the results (Esc stops them).` });
@@ -492,6 +599,8 @@ class ClaudeTurn {
         clearInterval(this.pollTimer);
         this.pollTimer = undefined;
         this.waitingSince = undefined;
+        this.commandWaitingSince = undefined;
+        this.clearWaitStatus();
     }
 
     /** End the run from outside its loop: Claude Code is stopped (it would otherwise wait on its background work), and its output ends. */
@@ -590,12 +699,13 @@ class ClaudeTurn {
             const what = describeBackground(lost.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })));
             this.host.emit({ type: "notice", level: "warn", message: `${what} stopped with Claude Code before reporting back.` });
         }
-        const remaining = (this.background ?? []).filter((t) => t.type !== "local_agent");
-        if (remaining.length && !this.aborted && !this.toldStopped) this.host.emit({ type: "notice", level: "warn", message: `${describeBackground(remaining.map((t) => ({ agent: false, label: t.description || t.type })))} stopped with Claude Code before reporting back.` });
+        const remaining = this.inBackground().filter((t) => !t.agent);
+        if (remaining.length && !this.toldStopped) this.noteStopped(remaining, this.aborted ? "interrupted by user" : "Claude Code process ended");
+        const backgroundStopped = this.stoppedBackground.size ? [...this.stoppedBackground] : undefined;
         for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
-        if (this.aborted) return { reason: "aborted", text, actions: this.actions };
+        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped };
         const error = this.failure && this.diagnostic && !this.failure.includes(this.diagnostic) ? `${this.failure} ${this.diagnostic}` : this.failure;
         // A session it can't find ends with an error result (or exit) before init.
         const err = this.proc.stderr();
@@ -603,12 +713,12 @@ class ClaudeTurn {
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
             const why = [error, cliMessage(err)].filter(Boolean).join(": ") || `claude exited with code ${code}`;
-            return { reason: "error", text, actions: this.actions, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
+            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
         }
         const reason = this.reason ?? "done";
         // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.
         if (reason === "done" && !text.trim() && !this.actions.length && !this.t.prompt.trimStart().startsWith("/")) this.host.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
-        return { reason, text, actions: this.actions, error };
+        return { reason, text, actions: this.actions, error, backgroundStopped };
     }
 
     private fastModeNotice?: string;
@@ -663,6 +773,7 @@ class ClaudeTurn {
         this.reportFastMode(m);
         switch (m.subtype) {
             case "init":
+                this.clearWaitStatus();
                 // Each turn starts with one, a turn Claude Code takes itself (with background reports) too.
                 this.busy = true;
                 this.reportsDue = 0;
@@ -683,7 +794,7 @@ class ClaudeTurn {
                     const next = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
                     // A shell/Monitor may leave the list before its notification and
                     // automatic report turn. Give that turn the same grace as agents.
-                    this.reportsDue += (this.background ?? []).filter((t) => t.type !== "local_agent" && !next.some((n: { id: string }) => n.id === t.id)).length;
+                    this.reportsDue += (this.background ?? []).filter((t) => t.type !== "local_agent" && !this.pendingStops.has(t.id) && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)).length;
                     this.background = next;
                 }
                 break;
@@ -701,6 +812,7 @@ class ClaudeTurn {
                 break;
             case "task_started": {
                 const id = String(m.tool_use_id ?? "");
+                if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, this.shellCommands.get(id)!);
                 if (this.agentLabels.has(id) && typeof m.task_id === "string") this.agentTasks.set(id, m.task_id);
                 if (m.is_backgrounded === true && this.agentLabels.has(id)) this.backgroundAgents.add(id);
                 this.agentStarted(id);
@@ -712,6 +824,7 @@ class ClaudeTurn {
                 // was waiting on, or how it ended).
                 const id = String(m.tool_use_id ?? "");
                 const summary = typeof m.summary === "string" ? m.summary.trim() : "";
+                if (this.pendingStops.has(m.task_id) || this.stoppedTaskIds.has(m.task_id)) break;
                 const listed = this.background?.find((t) => t.id === m.task_id);
                 if (listed && !this.agentLabels.has(id)) {
                     this.background = this.background!.filter((t) => t.id !== m.task_id);
@@ -789,6 +902,7 @@ class ClaudeTurn {
                 if (over) continue;
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
                 this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
                 this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
             }
@@ -817,6 +931,7 @@ class ClaudeTurn {
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
                 this.host.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }

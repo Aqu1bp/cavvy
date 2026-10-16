@@ -475,13 +475,33 @@ async function turn(content: any[], uuid?: string) {
         text(folded.length ? `Adjusted: ${folded.map((m) => m.text).join(" | ")}` : "No steering received before result.");
         return result("success", { user_message_uuids: [uuid, ...folded.map((m) => m.uuid)].slice(-64) });
     }
-    if (scenario.startsWith("shell-background") || scenario === "monitor-background") {
-        const type = scenario === "monitor-background" ? "monitor_mcp" : "local_bash";
+    if (scenario.startsWith("shell-background") || scenario.startsWith("monitor-background")) {
+        const type = scenario.startsWith("monitor-background") ? "monitor_mcp" : "local_bash";
+        const nested = scenario === "shell-background-nested";
+        if (nested) {
+            agentCall(true);
+            afterResult?.();
+            afterResult = undefined;
+        }
+        if (type === "local_bash") {
+            const input = { command: process.env.FAKE_COMMAND ?? "sleep 150; echo done", description: "Wait for checks", run_in_background: true };
+            if (nested) sub("toolu_agent", "assistant", [{ type: "tool_use", id: "background-tool", name: "Bash", input }]);
+            else toolUse("background-tool", "Bash", input);
+            out({ type: "system", subtype: "task_started", task_id: "background-1", tool_use_id: "background-tool", is_backgrounded: true, session_id: sessionId });
+            if (nested) sub("toolu_agent", "user", [{ type: "tool_result", tool_use_id: "background-tool", content: "Command running in background", is_error: false }]);
+            else toolResult("background-tool", "Command running in background", false);
+        }
+        if (scenario === "shell-background-mixed") {
+            agentCall(true);
+            const finishAgent = afterResult;
+            afterResult = undefined;
+            finishAgent?.();
+        }
         bgTasks.set("background-1", { task_id: "background-1", task_type: type, description: "Wait for checks" });
         backgroundChanged();
         text("Waiting for checks.");
         result("success");
-        if (scenario !== "shell-background-stuck") setTimeout(async () => {
+        if (!["shell-background-stuck", "shell-background-mixed", "shell-background-nested", "monitor-background-stuck"].includes(scenario)) setTimeout(async () => {
             bgTasks.delete("background-1");
             backgroundChanged();
             await Bun.sleep(80);
@@ -616,6 +636,16 @@ for await (const chunk of Bun.stdin.stream()) {
                     }
                 }
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { added: [...mcpServers.keys()], removed: [], errors } } });
+            } else if (sub === "stop_task") {
+                if (process.env.FAKE_STOP_TASK === "hang") continue;
+                if (process.env.FAKE_STOP_TASK === "reject") {
+                    out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "stop failed" } });
+                    continue;
+                }
+                bgTasks.delete(m.request.task_id);
+                backgroundChanged();
+                out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
+                out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, status: "stopped", summary: "Stopped by host", session_id: sessionId });
             } else if (sub === "interrupt") {
                 if (process.env.FAKE_IGNORE_STOP === "1") continue;
                 interrupted = true;

@@ -183,7 +183,7 @@ function Shell(p: { block: ShellBlock }) {
 }
 
 /** Labels that say more than "Working": the turn is in a special state. */
-const SPECIAL = /^(Retrying|Compacting|Interrupting|Connecting)/;
+const SPECIAL = /^(Retrying|Compacting|Interrupting|Connecting|Waiting for background)/;
 
 /** At the top of the turn while it runs: "Working for 48s", Esc to interrupt. */
 export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean }) {
@@ -210,9 +210,11 @@ export function LiveHead(p: { state: SessionState; since?: number; waiting?: boo
                     </Show>
                 </Show>
                 <span class="grow" />
-                <span class="live-hint">
-                    <kbd>Esc</kbd> to interrupt
-                </span>
+                <Show when={p.waiting || !p.state.activity?.label.startsWith("Waiting for background")}>
+                    <span class="live-hint">
+                        <kbd>Esc</kbd> to interrupt
+                    </span>
+                </Show>
             </div>
             <div class="rule" />
         </>

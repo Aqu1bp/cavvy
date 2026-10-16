@@ -799,3 +799,20 @@ test("a reopened task comes back with its own sub-agents, whose calls are in its
         ["innermost", "t1", "inner", "stopped", true],
     ]);
 });
+
+test("backend background waiting reaches the GUI live activity and clears when work resumes", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    const runtime = await engine.createSession(tempDir("background-status-"));
+    try {
+        await runtime.ready;
+        const text = "Waiting for background command: Run checks · Esc to stop it";
+        (runtime as any).onEvent({ type: "activity", text });
+        runtime.flush();
+        expect(runtime.snapshot().state.activity?.label).toBe(text);
+        (runtime as any).onEvent({ type: "activity" });
+        runtime.flush();
+        expect(runtime.snapshot().state.activity).toBeUndefined();
+        (runtime as any).onEvent({ type: "request_start" });
+        expect(runtime.snapshot().state.activity?.label).toBe("Thinking");
+    } finally { await engine.stop(); }
+});

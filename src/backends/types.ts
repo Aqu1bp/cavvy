@@ -95,6 +95,8 @@ export interface BackendTurn {
     effort?: Effort;
     fastMode?: boolean;
     appendSystemPrompt?: string;
+    /** Grace for Claude Code background shells/monitors (seconds, default 600). */
+    backgroundWaitSec?: number;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
@@ -145,6 +147,8 @@ export interface BackendResult {
     /** What the backend did, e.g. Bash(npm test). */
     actions: string[];
     error?: string;
+    /** Background work stopped by this run, for a durable next-prompt reminder. */
+    backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
 }
