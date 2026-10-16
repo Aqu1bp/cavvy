@@ -313,13 +313,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     /** A queued message back into the box, out of the queue. */
-    // The server hands it back as a draft (with its images); by text, so a queue that moved on isn't misread.
+    // By the message's id, so a queue that moved on meanwhile doesn't lose a different one. Edited, it
+    // comes back with its images, into this session's draft (even if another is shown by then).
     const dequeue = async (i: number, edit: boolean) => {
-        const q = st()?.queued[i];
-        if (q === undefined || !p.sessionId) return;
+        const queueId = st()?.queueIds[i];
+        const handle = h();
+        if (queueId === undefined || !p.sessionId || !handle) return;
         try {
-            const { removed } = await rpc.call("session.dequeue", { id: p.sessionId, index: i, text: q, edit });
-            if (!removed) toast("That message has already been sent", "info");
+            const r = await rpc.call("session.dequeue", { id: p.sessionId, queueId, edit });
+            if (!r.removed) toast("That message has already been sent", "info");
+            else if (edit) handle.setDraft({ text: r.text ?? "", images: r.images });
         } catch (e) {
             reportError(e);
         }

@@ -149,8 +149,9 @@ export function parseVerdict(text: string): ClassifierVerdict | undefined {
 
 /** The quick step's word: only a plain ALLOW lets the action through. */
 export function parseFast(text: string): "allow" | "review" {
-    // The word alone (formatting aside): "ALLOW, but only if…" or "Allow? No, block it" get the full review.
-    return /^[\W_]*allow[\W_]*$/i.test(text.trim()) ? "allow" : "review";
+    // The word alone, with at most markdown and a full stop around it: "ALLOW, but only if…",
+    // "Allow? No, block it" or "ALLOW — нет" get the full review. (\W would let any non-ASCII text by.)
+    return /^[*_`"'\s]*allow[*_`"'.!\s]*$/i.test(text.trim()) ? "allow" : "review";
 }
 
 /** Larger actions go to the user rather than being shown to the reviewer in part. */

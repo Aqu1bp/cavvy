@@ -409,28 +409,30 @@ describe("sessions", () => {
         c.close();
     });
 
-    test("a queued message taken back to edit comes back with its images; a click on one already gone removes nothing", async () => {
+    test("queued messages are taken out by id: an edited one comes back, images too, to the window that asked; one already gone removes nothing", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });
         await c.call("session.send", { id, text: "demo" });
         await c.until(id, (v) => v.state.interactions.length > 0);
         const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-        await c.call("session.send", { id, text: "explain this", images: [{ mediaType: "image/png", data: png }] });
-        await c.call("session.send", { id, text: "and then this" });
+        const gif = "R0lGODlhAQABAAAAACw=";
+        // Two screenshots without text: the same as far as their text goes.
+        await c.call("session.send", { id, text: "", images: [{ mediaType: "image/png", data: png }] });
+        await c.call("session.send", { id, text: "", images: [{ mediaType: "image/gif", data: gif }] });
         await c.until(id, (v) => v.state.queued.length === 2);
-        // The window showed the queue before it moved on: the message there now isn't the one clicked.
-        expect(await c.call("session.dequeue", { id, index: 0, text: "and then this", edit: true })).toEqual({ removed: false });
-        expect(c.events.some((e) => e.type === "draft" && e.sessionId === id)).toBe(false);
-        expect(await c.call("session.dequeue", { id, index: 0, text: "explain this", edit: true })).toEqual({ removed: true });
+        const [first, second] = c.view(id).state.queueIds;
+        expect(c.view(id).state.queued).toEqual(["", ""]);
+        expect(first).not.toBe(second);
+        expect(await c.call("session.dequeue", { id, queueId: first, edit: true })).toEqual({ removed: true, text: "", images: [{ mediaType: "image/png", data: png }] });
         await c.until(id, (v) => v.state.queued.length === 1);
-        expect(c.view(id).state.queued).toEqual(["and then this"]);
-        await c.until(id, () => c.events.some((e) => e.type === "draft" && e.sessionId === id));
-        const draft = c.events.find((e) => e.type === "draft" && e.sessionId === id) as Extract<ServerEvent, { type: "draft" }>;
-        expect(draft).toMatchObject({ text: "explain this", images: [{ mediaType: "image/png", data: png }] });
-        // Removing (not editing) hands nothing back.
-        expect(await c.call("session.dequeue", { id, index: 0, text: "and then this" })).toEqual({ removed: true });
+        expect(c.view(id).state.queueIds).toEqual([second]);
+        // A click from a window that still showed the first one: the second stays.
+        expect(await c.call("session.dequeue", { id, queueId: first, edit: true })).toEqual({ removed: false });
+        expect(c.view(id).state.queueIds).toEqual([second]);
+        // Removing (not editing) hands nothing back; nothing is broadcast as a draft either way.
+        expect(await c.call("session.dequeue", { id, queueId: second })).toEqual({ removed: true });
         await c.until(id, (v) => v.state.queued.length === 0);
-        expect(c.events.filter((e) => e.type === "draft" && e.sessionId === id)).toHaveLength(1);
+        expect(c.events.some((e) => e.type === "draft" && e.sessionId === id)).toBe(false);
         await c.call("session.interrupt", { id });
         await c.until(id, done);
         c.close();

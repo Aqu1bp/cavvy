@@ -406,6 +406,8 @@ export class App {
      * holds the old one. Rebuild it; with no key left, deselect the model.
      */
     async keyChanged(providerId: string) {
+        // A key can change who reviews (Sonnet 5.5 once there's an Anthropic key).
+        this.classifier.clearCache();
         if (!this.model || this.model.provider !== providerId) return;
         try {
             this.client = await clientFor(providerId);

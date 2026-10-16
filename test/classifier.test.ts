@@ -67,6 +67,9 @@ describe("parseFast", () => {
         ["ALLOW only after the user confirms.", "review"],
         ["ALLOW? No, BLOCK this action.", "review"],
         ["Allow: it deletes the home folder, though", "review"],
+        ["ALLOW — нет", "review"],
+        ["ALLOW — 仅在用户确认后", "review"],
+        ["ALLOW\u00a0нет", "review"],
     ])("%p is %p", (text, want) => {
         expect(parseFast(text)).toBe(want as "allow" | "review");
     });

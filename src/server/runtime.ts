@@ -64,6 +64,7 @@ interface Pending {
 }
 
 interface Queued {
+    id: number;
     text: string;
     images?: ImagePart[];
 }
@@ -115,6 +116,7 @@ export class Runtime {
     private flushTimer?: ReturnType<typeof setTimeout>;
     private abort?: AbortController;
     private queued: Queued[] = [];
+    private queueSeq = 0;
     private pending = new Map<string, Pending>();
     private ui: UiLog;
     /** Compactions so far: the transcript segment new prompts belong to. */
@@ -217,6 +219,7 @@ export class Runtime {
             ...this.tokenTotals(),
             todos: this.toolState.todos.map((t) => ({ ...t })),
             queued: [],
+            queueIds: [],
             interactions: [],
             mcp: this.ws.mcpStatus(),
             filesChanged: this.filesChanged(),
@@ -373,8 +376,6 @@ export class Runtime {
 
     /** A provider's key changed: rebuild the client, or deselect the model when the key is gone. */
     async keyChanged(providerId: string) {
-        // A key can change who reviews (Sonnet 5.5 once there's an Anthropic key).
-        this.classifier.clearCache();
         if (this.model?.provider !== providerId) {
             if (!this.model) await this.track(this.initModel());
             return;
@@ -1101,7 +1102,7 @@ export class Runtime {
         const take = this.queued.filter((q) => !q.images?.length && !q.text.startsWith("/") && !q.text.startsWith("!"));
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
-        this.setState({ queued: this.queued.map((q) => q.text) });
+        this.setState(this.queueState());
         const texts = take.map((q) => q.text);
         // After tool calls they ride along with the results; otherwise they're a prompt of their own.
         const last = this.session.messages[this.session.messages.length - 1];
@@ -1124,8 +1125,8 @@ export class Runtime {
         const trimmed = text.trim();
         if (!trimmed && !images?.length) return { queued: false };
         if (this.busy) {
-            this.queued.push({ text, images });
-            this.setState({ queued: this.queued.map((q) => q.text) });
+            this.queued.push({ id: ++this.queueSeq, text, images });
+            this.setState(this.queueState());
             return { queued: true };
         }
         void this.dispatch(text, images).catch((e) => this.notice(redact((e as Error).message), "error"));
@@ -1222,7 +1223,7 @@ export class Runtime {
         if (aborted) return this.returnQueued();
         const next = this.queued.shift();
         if (!next) return;
-        this.setState({ queued: this.queued.map((q) => q.text) });
+        this.setState(this.queueState());
         await this.dispatch(next.text, next.images).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
@@ -1232,17 +1233,20 @@ export class Runtime {
         const text = this.queued.map((q) => q.text).filter((t) => t.trim()).join("\n\n");
         this.engine.draft(this, text, this.queued.flatMap((q) => q.images ?? []));
         this.queued = [];
-        this.setState({ queued: [] });
+        this.setState(this.queueState());
     }
 
-    /** Out of the queue; with `edit`, back into the input box (text and images). */
-    dequeue(index: number, opts: { text?: string; edit?: boolean } = {}): boolean {
-        const q = this.queued[index];
-        if (!q || (opts.text !== undefined && q.text !== opts.text)) return false;
-        this.queued.splice(index, 1);
-        this.setState({ queued: this.queued.map((x) => x.text) });
-        if (opts.edit) this.engine.draft(this, q.text, q.images);
-        return true;
+    private queueState() {
+        return { queued: this.queued.map((q) => q.text), queueIds: this.queued.map((q) => q.id) };
+    }
+
+    /** Out of the queue, by its id (a message the queue has moved past isn't there any more). */
+    dequeue(queueId: number): Queued | undefined {
+        const i = this.queued.findIndex((q) => q.id === queueId);
+        if (i < 0) return undefined;
+        const [q] = this.queued.splice(i, 1);
+        this.setState(this.queueState());
+        return q;
     }
 
     interrupt() {

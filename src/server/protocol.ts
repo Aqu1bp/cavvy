@@ -304,6 +304,8 @@ export interface SessionState {
     tokensOut: number;
     todos: TodoEntry[];
     queued: string[];
+    /** Each queued message's id, in the same order (for session.dequeue). */
+    queueIds: number[];
     interactions: Interaction[];
     mcp: McpStatus[];
     /** Files this session's edit tools changed (the Changes panel). */
@@ -501,8 +503,8 @@ export interface Methods {
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };
     "session.export": { params: { id: string }; result: { markdown: string } };
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
-    /** `text`: only if that's still the message there (the queue may have moved on). `edit`: back into the input box, images too. */
-    "session.dequeue": { params: { id: string; index: number; text?: string; edit?: boolean }; result: { removed: boolean } };
+    /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images too. */
+    "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[] } };
     "models.list": { params: { refresh?: boolean }; result: ProviderModels[] };
     "providers.list": { params: Record<string, never>; result: ProviderInfo[] };
     /** `model`: the default model it set, when there was none yet. */

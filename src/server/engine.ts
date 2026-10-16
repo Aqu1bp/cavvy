@@ -587,6 +587,8 @@ export class Engine {
     }
 
     private async afterKeyChange(id: string) {
+        // A key can change who reviews: forget verdicts now, not after the listings (which can be slow).
+        for (const r of this.runtimes.values()) r.classifier.clearCache();
         await this.refreshListings(true);
         await Promise.all([...this.runtimes.values()].map((r) => r.keyChanged(id).catch(() => undefined)));
     }
@@ -756,8 +758,12 @@ export class Engine {
                 return this.runtime(p.id).changes();
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
-            case "session.dequeue":
-                return { removed: this.runtime(p.id).dequeue(num(p.index, -1), { text: typeof p.text === "string" ? p.text : undefined, edit: p.edit === true }) };
+            case "session.dequeue": {
+                const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
+                if (!q) return { removed: false };
+                // Edited, it goes back to the window that asked (not to every one showing the session).
+                return p.edit === true ? { removed: true, text: q.text, images: q.images?.map((i) => ({ mediaType: i.mediaType, data: i.data })) } : { removed: true };
+            }
             case "session.pin":
             case "session.settle":
             case "session.archive": {
