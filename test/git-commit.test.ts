@@ -58,6 +58,20 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("commits in a repository whose directory name ends in a space", async () => {
+        const original = repo({ "selected.txt": "old\n" });
+        const dir = `${original} `;
+        renameSync(original, dir);
+        git(dir, "config", "core.hooksPath", join(dir, ".git", "hooks"));
+        write(dir, "selected.txt", "new\n");
+
+        await gitCommit(dir, ["selected.txt"], "preserve directory whitespace");
+
+        expect(git(dir, "show", "HEAD:selected.txt")).toBe("new\n");
+        expect(git(dir, "status", "--porcelain")).toBe("");
+        expect(existsSync(join(dir, ".git", "index.lock"))).toBe(false);
+    });
+
     test("split-index reconciliation preserves unchecked entries and stored flags", async () => {
         const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n", "flagged.txt": "old\n" });
         git(dir, "config", "core.splitIndex", "true");

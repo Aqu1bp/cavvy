@@ -155,7 +155,7 @@ async function selectForCommit(cwd: string, paths: string[], signal?: AbortSigna
 /** Merge/rebase commits need their own workflow; this dialog makes ordinary commits. */
 async function checkOperation(root: string, signal?: AbortSignal) {
     for (const name of ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"]) {
-        const path = (await runGit(root, ["rev-parse", "--path-format=absolute", "--git-path", name], { signal })).out.trimEnd();
+        const path = (await runGit(root, ["rev-parse", "--path-format=absolute", "--git-path", name], { signal })).out.replace(/\n$/, "");
         if (await lstat(path).catch(() => undefined)) throw new RpcError(`Cannot commit while a merge, rebase, cherry-pick or revert is in progress (${name}). Finish or abort it first.`, "git");
     }
 }
@@ -165,9 +165,9 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
     cwd = canonical(cwd);
     if (!message.trim() || message.includes("\0") || Buffer.byteLength(message) > 64 * 1024) throw new RpcError("Enter a commit message (at most 64 KiB, without NUL characters).", "invalid");
     const files = await selectForCommit(cwd, paths, options.signal);
-    const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).out.trimEnd();
+    const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).out.replace(/\n$/, "");
     await checkOperation(root, options.signal);
-    const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).out.trimEnd();
+    const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).out.replace(/\n$/, "");
     const lock = `${index}.lock`;
     const held = await open(lock, "wx").catch((e) => {
         if (e.code === "EEXIST") throw new RpcError("Git's index is locked by another operation. Wait for it to finish and try again.", "busy");
