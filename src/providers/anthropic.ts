@@ -179,11 +179,10 @@ export class AnthropicProvider implements ProviderClient {
             tools.push({ type: t.webSearchVersion, name: "web_search", max_uses: 8 } as Anthropic.Beta.Messages.BetaToolUnion);
         }
 
-        const params: BetaParams = {
+        const params: Omit<BetaParams, "messages"> = {
             model: m.id,
             max_tokens: maxOut,
             system: req.system ? [{ type: "text", text: req.system, ...(req.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}) }] : undefined,
-            messages: [],
             tools: tools.length ? tools : undefined,
             stream: true,
         };

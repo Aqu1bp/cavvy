@@ -3,7 +3,7 @@
 // for the model, how each provider is sent a PDF, and that attachments
 // survive the queue, an interrupt, replay, redaction, compaction and export.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -702,6 +702,24 @@ describe("conversation-wide limits, and the user's own words", () => {
             server.stop(true);
         }
     }, 60_000);
+
+    test("without media, request fitting never measures the body or serializes it again", () => {
+        const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
+        let serialized = 0;
+        const body = { toJSON: () => (serialized++, { messages }) };
+        const measured = spyOn(Buffer, "byteLength");
+        try {
+            // The SDK receives its object untouched; fetch adapters serialize just once in build.
+            expect(fitRequest(messages, true, () => body)).toBe(body);
+            expect(serialized).toBe(0);
+            const payload = fitRequest(messages, true, () => JSON.stringify(body));
+            expect(payload).toBe('{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}');
+            expect(serialized).toBe(1);
+            expect(measured).not.toHaveBeenCalled();
+        } finally {
+            measured.mockRestore();
+        }
+    });
 
     test("request fitting lowers the media actually retained, even when the normal cap is underfilled", () => {
         const messages: Message[] = [{ role: "user", content: [{ type: "image", mediaType: "image/png", data: b64(Buffer.alloc(1024 * 1024)) }] }];

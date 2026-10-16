@@ -124,7 +124,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
     async stream(req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<AssistantMessage> {
         const def = this.def;
         const m = req.model;
-        const body: Json = {
+        const body: Json & { input?: never } = {
             model: m.id,
             store: false,
             stream: true,
@@ -147,7 +147,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
         }
         if (req.cacheKey && !req.lightweight) body.prompt_cache_key = req.cacheKey;
 
-        const payload = JSON.stringify(fitRequest(req.messages, readsPdf(m), (messages) => ({ ...body, input: toResponsesInput(messages, def, m.id, readsPdf(m)) })));
+        const payload = fitRequest(req.messages, readsPdf(m), (messages) => JSON.stringify({ ...body, input: toResponsesInput(messages, def, m.id, readsPdf(m)) }));
 
         const items: Json[] = [];
         // Argument deltas carry item_id, not call_id: map from output_item.added.

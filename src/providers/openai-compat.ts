@@ -182,7 +182,7 @@ export class OpenAICompatProvider implements ProviderClient {
     async stream(req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<AssistantMessage> {
         const def = this.def;
         const m = req.model;
-        const body: Json = {
+        const body: Json & { messages?: never } = {
             model: m.id,
             stream: true,
         };
@@ -200,7 +200,7 @@ export class OpenAICompatProvider implements ProviderClient {
             else body.reasoning_effort = effort;
         }
 
-        const payload = JSON.stringify(fitRequest(req.messages, providerReadsPdf(def), (messages) => ({ ...body, messages: toOpenAIMessages(req.system, messages, def) })));
+        const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => JSON.stringify({ ...body, messages: toOpenAIMessages(req.system, messages, def) }));
         // A request that stops sending anything is retried instead of waited on forever.
         const stall = stallTimer(req.signal, def.id === "vertex");
         const post = async (fresh: boolean) =>

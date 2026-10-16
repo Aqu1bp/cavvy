@@ -126,16 +126,18 @@ export const REQUEST_LIMIT = 32 * 1024 * 1024;
 /** Account for JSON escaping, history, system text and tools as well as base64 media. */
 export function fitRequest<T>(messages: Message[], pdf: boolean, build: (messages: Message[]) => T): T {
     const fitted = fitMedia(messages, pdf);
-    const body = build(fitted);
-    const excess = Buffer.byteLength(JSON.stringify(body)) - REQUEST_LIMIT;
-    if (excess <= 0) return body;
     const media = fitted.reduce((n, m) => n + (m.role === "user" ? m.content.reduce((sum, p) => sum + mediaSize(p, pdf), 0) : 0), 0);
+    const body = build(fitted);
     if (!media) return body;
+    // Fetch adapters build their payload once; the SDK adapter still needs an object.
+    const size = (value: T) => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
+    const excess = size(body) - REQUEST_LIMIT;
+    if (excess <= 0) return body;
     // Use bytes actually retained: lowering an underfilled cap might otherwise remove nothing.
     const budget = Math.max(0, media - excess);
     const smaller = build(fitMedia(messages, pdf, budget));
     // Omission notes can outweigh tiny media. Fall back once, never loop on oversized text.
-    return budget && Buffer.byteLength(JSON.stringify(smaller)) > REQUEST_LIMIT ? build(fitMedia(messages, pdf, 0)) : smaller;
+    return budget && size(smaller) > REQUEST_LIMIT ? build(fitMedia(messages, pdf, 0)) : smaller;
 }
 
 /** What stands in for a PDF where the model can't read one. */
