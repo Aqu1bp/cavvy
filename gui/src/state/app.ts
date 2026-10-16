@@ -17,6 +17,7 @@ import { repeatedToast, ToastLifetime, toastMs, type Toast, type ToastAction } f
 export type { Toast } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
 import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
+import { composerStorage } from "../lib/drafts";
 import { composerDrafts } from "../lib/composer-draft";
 
 export const rpc = new Rpc(credentials, windowKey);
@@ -507,6 +508,7 @@ function forgetSession(id: string) {
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
+    composerStorage.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
     setApp("archived", (l) => l.filter((s) => s.id !== id));
     if (handles.delete(id)) setHandleVersion((v) => v + 1);
