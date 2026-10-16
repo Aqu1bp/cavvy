@@ -17,17 +17,21 @@ function classes(source: string): Set<string> {
 }
 
 test("project-scripts bare CSS classes do not target other components", async () => {
-    const css = readFileSync(join(gui, "styles/layout.css"), "utf8");
-    const marker = "/* ---- Project scripts (title line)";
-    expect(css).toContain(marker);
-    // This feature owns the final section of layout.css. Shared UI utilities are
-    // deliberately outside it; only selectors with no component scope are guarded.
-    const section = css.slice(css.indexOf(marker)).replace(/\/\*[\s\S]*?\*\//g, "");
     const bare = new Set<string>();
-    for (const rule of section.matchAll(/(?:^|[{}])\s*([^{}]+)\{/g)) {
-        for (const selector of rule[1]!.split(",")) {
-            const match = /^\.([\w-]+)$/.exec(selector.trim());
-            if (match) bare.add(match[1]!);
+    // This feature owns the final sections of these sheets. Shared UI utilities
+    // are outside them; only selectors with no component scope are guarded.
+    for (const [sheet, marker] of [
+        ["layout.css", "/* ---- Project scripts (title line)"],
+        ["overlays.css", "/* ---- Labelled form fields (the project script dialog)"],
+    ] as const) {
+        const css = readFileSync(join(gui, "styles", sheet), "utf8");
+        expect(css).toContain(marker);
+        const section = css.slice(css.indexOf(marker)).replace(/\/\*[\s\S]*?\*\//g, "");
+        for (const rule of section.matchAll(/(?:^|[{}])\s*([^{}]+)\{/g)) {
+            for (const selector of rule[1]!.split(",")) {
+                const match = /^\.([\w-]+)$/.exec(selector.trim());
+                if (match) bare.add(match[1]!);
+            }
         }
     }
     expect(bare.size).toBeGreaterThan(0);

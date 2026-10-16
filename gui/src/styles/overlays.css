@@ -465,25 +465,25 @@
 
 /* ---- Labelled form fields (the project script dialog) --------------- */
 
-.field {
+.script-field {
     display: flex;
     flex-direction: column;
     gap: 6px;
     min-width: 0;
 }
 
-.field-label {
+.script-field-label {
     font-size: 0.857rem;
     font-weight: 500;
     color: var(--fg-muted);
 }
 
-.field-hint {
+.script-field-hint {
     font-size: 0.8rem;
     color: var(--fg-subtle);
 }
 
-.field-error {
+.script-field-error {
     font-size: 0.893rem;
     color: var(--danger);
     background: var(--danger-soft);
