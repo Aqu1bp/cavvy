@@ -1,10 +1,10 @@
 import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, Info, MessageSquareText, RotateCcw, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { duration, plural, stripAnsi } from "../lib/format";
+import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { prefs } from "../state/prefs";
-import { openReview } from "../state/actions";
+import { openInEditor, openReview } from "../state/actions";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -200,12 +200,14 @@ export function LiveHead(p: { state: SessionState; since?: number; waiting?: boo
     );
 }
 
-/** What a finished turn changed, file by file (its edits' diffs, added up). */
-function turnChanges(t: Turn): { path: string; status: Diff["status"]; added: number; removed: number }[] {
-    const files = new Map<string, { path: string; status: Diff["status"]; added: number; removed: number }>();
+type Changed = { path: string; status: Diff["status"]; added: number; removed: number; line?: number };
+
+/** What a finished turn changed, file by file (its edits' diffs, added up), with where the first edit landed. */
+function turnChanges(t: Turn): Changed[] {
+    const files = new Map<string, Changed>();
     for (const b of t.blocks) {
         if (b.t !== "tool" || b.status !== "ok" || !b.diff) continue;
-        const f = files.get(b.diff.path) ?? { path: b.diff.path, status: b.diff.status, added: 0, removed: 0 };
+        const f = files.get(b.diff.path) ?? { path: b.diff.path, status: b.diff.status, added: 0, removed: 0, line: firstChangedLine(b.diff) };
         f.added += b.diff.added;
         f.removed += b.diff.removed;
         files.set(b.diff.path, f);
@@ -227,7 +229,7 @@ export function SplitPath(p: { path: string; cwd?: string }) {
 
 const FILES_SHOWN = 6;
 
-function ChangesCard(p: { turn: Turn; cwd: string }) {
+function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string }) {
     const files = createMemo(() => turnChanges(p.turn));
     const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
     const [all, setAll] = createSignal(false);
@@ -247,16 +249,23 @@ function ChangesCard(p: { turn: Turn; cwd: string }) {
                 </div>
                 <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                     {(f) => (
-                        <button class="frow" onClick={() => openReview(f.path)}>
-                            <SplitPath path={f.path} cwd={p.cwd} />
-                            <Show when={f.status === "added"}>
-                                <span class="frow-tag">new</span>
+                        <div class="frow-line">
+                            <button class="frow" onClick={() => openReview(f.path)}>
+                                <SplitPath path={f.path} cwd={p.cwd} />
+                                <Show when={f.status === "added"}>
+                                    <span class="frow-tag">new</span>
+                                </Show>
+                                <span class="stat">
+                                    <span class="add">+{f.added}</span>
+                                    <span class="del">−{f.removed}</span>
+                                </span>
+                            </button>
+                            <Show when={f.status !== "deleted"}>
+                                <button class="icon-btn row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId })}>
+                                    <SquareArrowOutUpRight size={13} />
+                                </button>
                             </Show>
-                            <span class="stat">
-                                <span class="add">+{f.added}</span>
-                                <span class="del">−{f.removed}</span>
-                            </span>
-                        </button>
+                        </div>
                     )}
                 </For>
                 <Show when={files().length > FILES_SHOWN && !all()}>
@@ -333,7 +342,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} />}
+                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} sessionId={p.state.id} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === lastBlockId()} />}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
@@ -388,7 +397,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                         )}
                     </Index>
                     <Show when={!running() && !p.turn.archived && !p.turn.imported}>
-                        <ChangesCard turn={p.turn} cwd={p.state.cwd} />
+                        <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} />
                     </Show>
                     <Show when={!running() && p.turn.prompt}>
                         <div class="turn-foot">

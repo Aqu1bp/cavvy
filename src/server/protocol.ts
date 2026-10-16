@@ -535,6 +535,17 @@ export interface GuiSettings {
     autoCompact?: boolean;
     webSearch?: string;
     allowBypass?: boolean;
+    /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
+    editor?: string;
+}
+
+/** An editor Harness knows, and whether it's on this machine (the server's). */
+export interface EditorInfo {
+    id: string;
+    name: string;
+    installed: boolean;
+    /** It can open a file at a line (an app found only as a bundle can't). */
+    lines: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +677,16 @@ export interface Methods {
     "projects.forget": { params: { path: string }; result: null };
     "fs.mentions": { params: { cwd: string; query: string }; result: string[] };
     "fs.dirs": { params: { path: string }; result: { path: string; parent?: string; dirs: string[] } };
+    /** The editors Harness knows, and the one chosen in settings. */
+    "editors.list": { params: Record<string, never>; result: { editors: EditorInfo[]; selected?: string } };
+    /**
+     * Open a file (at a line) or a project folder in the chosen editor, on the
+     * server's machine. The path is resolved against the session's folder (or
+     * `cwd`, a project open in Harness) and must be inside its workspace roots.
+     */
+    "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
+    /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
+    "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
     "commands.list": { params: { cwd: string }; result: CommandInfo[] };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };

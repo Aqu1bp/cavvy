@@ -113,6 +113,15 @@
     text-decoration-color: var(--link);
 }
 
+/* A file the session has: opens in the editor. */
+.md a.md-file {
+    cursor: pointer;
+}
+
+.md a.md-file > code {
+    color: inherit;
+}
+
 .md .md-image {
     display: inline-flex;
     align-items: center;

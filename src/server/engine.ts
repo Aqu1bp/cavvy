@@ -27,7 +27,9 @@ import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitSnapshot } from "../util/git";
 import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
-import { isInside } from "../util/files";
+import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
+import { childEnv } from "../util/env";
+import { expandPath, isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -37,6 +39,7 @@ import type {
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
+    EditorInfo,
     EffortLevel,
     GuiSettings,
     HelloResult,
@@ -69,6 +72,10 @@ export interface EngineOptions {
     unloadAfterMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
     log?: (message: string) => void;
+    /** Where to look for editors (tests point it at fake launchers). */
+    editorEnv?: () => DetectEnv;
+    /** Starts an editor (tests record the argv instead). */
+    launchEditor?: (argv: string[]) => Promise<void>;
 }
 
 /**
@@ -777,6 +784,7 @@ export class Engine {
             autoCompact: s.autoCompact,
             webSearch: s.webSearch,
             allowBypass: s.permissions?.allowBypass,
+            editor: s.editor,
         };
     }
 
@@ -800,9 +808,85 @@ export class Engine {
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
                 if ("allowBypass" in patch) perms.allowBypass = Boolean(patch.allowBypass) || undefined;
             }
+            if ("editor" in patch) {
+                if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
+                s.editor = patch.editor || undefined;
+            }
         });
         this.reloadSettings();
         return this.guiSettings(cwd);
+    }
+
+    // -----------------------------------------------------------------------
+    // Open in editor
+
+    private editorsList(): { editors: EditorInfo[]; selected?: string } {
+        const env = (this.o.editorEnv ?? defaultDetectEnv)();
+        const editors = EDITORS.filter((d) => d.style !== "reveal" || env.platform === "darwin").map((d) => {
+            const f = detectEditor(d, env);
+            return { id: d.id, name: d.name, installed: Boolean(f), lines: Boolean(f && takesLines(f)) };
+        });
+        return { editors, selected: this.guiSettings().editor };
+    }
+
+    /**
+     * The folder a path from the GUI is resolved against, and the roots it
+     * must stay inside: a session's cwd plus its additionalDirectories, or a
+     * project that's open in Harness. Any other folder is refused, so the GUI
+     * can't widen the roots by naming one.
+     */
+    private openScope(p: Record<string, any>): { cwd: string; roots: string[] } {
+        if (p.sessionId !== undefined) {
+            const rt = this.runtime(p.sessionId);
+            return { cwd: rt.ws.cwd, roots: rt.checker.workspaceRoots() };
+        }
+        const ws = this.workspaces.get(resolve(str(p.cwd, "cwd")));
+        if (!ws) throw new RpcError("That folder isn't open in Harness", "not_open");
+        const extra = ws.settings.permissions?.additionalDirectories ?? [];
+        return { cwd: ws.cwd, roots: [ws.cwd, ...extra.map((d) => expandPath(d, ws.cwd))] };
+    }
+
+    private async openInEditor(p: Record<string, any>): Promise<{ editor: string }> {
+        const id = optStr(p.editor) ?? this.guiSettings().editor;
+        if (!id) throw new RpcError("Choose an editor in Settings → General → Open files with.", "no_editor");
+        const def = editorById(id);
+        if (!def) throw new RpcError("Unknown editor", "invalid");
+        const env = (this.o.editorEnv ?? defaultDetectEnv)();
+        if (env.platform === "win32") throw new RpcError("Opening files in an editor isn't supported on Windows yet.", "unsupported");
+        const found = detectEditor(def, env);
+        if (!found) throw new RpcError(`${def.name} isn't installed on this computer. Choose another editor in Settings → General.`, "not_installed");
+        const line = position(p.line, "line", MAX_LINE);
+        const col = position(p.col, "col", MAX_COL);
+        const folder = p.folder === true;
+        const { cwd, roots } = this.openScope(p);
+        const t = confinePath(str(p.path, "path"), cwd, roots);
+        if (folder && !t.dir) throw new RpcError(`${p.path} isn't a folder`, "invalid");
+        if (!folder && t.dir && def.style !== "reveal") throw new RpcError(`${p.path} is a folder`, "invalid");
+        // The real location, so a symlink in the path can't be swapped after the
+        // check. (A file or folder replaced in the moment between the check and
+        // the editor opening it isn't caught: that needs the editor to take an
+        // open handle, which none of these launchers do.)
+        const argv = editorArgv(found, { path: t.real, line, col, folder });
+        await (this.o.launchEditor ?? launchEditor)(argv);
+        return { editor: def.name };
+    }
+
+    private pathsExist(p: Record<string, any>): (string | null)[] {
+        if (!Array.isArray(p.paths)) throw new RpcError("paths must be a list", "invalid");
+        if (p.paths.length > 200) throw new RpcError("At most 200 paths at a time", "limit");
+        const { cwd, roots } = this.openScope(p);
+        // Not linked: what the chosen editor (any, before one is chosen) would open as a project.
+        const chosen = this.guiSettings().editor;
+        const def = chosen ? editorById(chosen) : undefined;
+        return p.paths.map((raw: unknown) => {
+            try {
+                const t = confinePath(checkPathInput(raw), cwd, roots);
+                // The real file decides, as in fs.open: a link named like a solution may be a text file, and the other way round.
+                return t.dir || opensAsProject(def, t.real) ? null : t.path;
+            } catch {
+                return null;
+            }
+        });
     }
 
     private commandsFor(cwd: string): CommandInfo[] {
@@ -1085,6 +1169,12 @@ export class Engine {
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));
+            case "editors.list":
+                return this.editorsList();
+            case "fs.open":
+                return this.openInEditor(p);
+            case "fs.exists":
+                return this.pathsExist(p);
             case "commands.list":
                 return this.commandsFor(str(p.cwd, "cwd"));
             case "settings.get":
@@ -1126,6 +1216,23 @@ function listDirs(path: string): { path: string; parent?: string; dirs: string[]
     }
     const parent = dirname(p);
     return { path: p, parent: parent !== p ? parent : undefined, dirs };
+}
+
+/**
+ * Starts an editor's launcher and lets it run on its own. Launchers that hand
+ * the file to a running editor exit at once; one that fails quickly (a broken
+ * install) is reported, and one still running after a moment is the editor.
+ */
+async function launchEditor(argv: string[]): Promise<void> {
+    let proc: ReturnType<typeof Bun.spawn>;
+    try {
+        proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: childEnv(), detached: true });
+    } catch (e) {
+        throw new RpcError(`Couldn't start ${basename(argv[0] ?? "")}: ${(e as Error).message}`);
+    }
+    const code = await Promise.race([proc.exited, Bun.sleep(1500).then(() => undefined)]);
+    proc.unref();
+    if (code !== undefined && code !== 0) throw new RpcError(`${basename(argv[0] ?? "")} exited with status ${code}`);
 }
 
 function validImage(i: { mediaType: unknown; data: unknown }): boolean {
