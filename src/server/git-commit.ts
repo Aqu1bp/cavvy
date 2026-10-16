@@ -217,9 +217,8 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             files.flatMap((f) => [f.path, ...(f.from ? [f.from] : [])]).map((p) => relative(root, resolve(cwd, p))),
         );
         const originalEntries = await unselectedEntries(root, lock, selected, { signal: options.signal });
-        const validateUnselected = async (recovering = false) => {
-            const opts = { signal: options.signal, recovery: recovering };
-            if (await unselectedEntries(root, lock, selected, opts) !== originalEntries) {
+        const validateUnselected = async () => {
+            if (await unselectedEntries(root, lock, selected, { signal: options.signal }) !== originalEntries) {
                 throw new RpcError("Unchecked index entries or flags changed while preparing the commit. Reopen the dialog.", "git");
             }
         };
@@ -320,9 +319,8 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             if (published.out.trim() !== hash) throw e;
         }
         try {
-            // Publication may have completed before cancellation. Reconcile using
-            // bounded, hook-free reads even when the caller has been aborted.
-            await validateUnselected(true);
+            // The copy was validated before publication while holding the lock.
+            // Install it without further cancellable reads, even during shutdown.
             await rename(lock, index);
             ownsLock = false;
         } catch (e) {
