@@ -900,6 +900,8 @@ describe("sub-agents", () => {
         const a = v.agents[0]!;
         expect([a.description, a.status, a.taskId]).toEqual(["Map auth", "done", undefined]);
         expect(a.endedAt).toBeGreaterThanOrEqual(a.startedAt);
+        // The tokens Claude Code says it used.
+        expect(a.tokens).toBe(2345);
         // Its tool calls finish too; one it never got a result for is closed with it.
         expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "Write:ok", "Task:ok", "Glob:error", "src/auth registers sign-in strategies in one list."]);
         const subTools = a.blocks.filter((b): b is ToolBlock => b.t === "tool");
@@ -920,13 +922,44 @@ describe("sub-agents", () => {
         ["agent-background", "launched first"],
         ["agent-background-late", "launched after its first step"],
     ])
-        test(`Claude Code's sub-agent in the background (${when}) stops with the turn, without the launch note as its report`, async () => {
+        test(`Claude Code's sub-agent in the background (${when}) keeps the turn going until it reports back`, async () => {
             const v = await claudeCodeTurn(scenario);
             expect(v.agents).toHaveLength(1);
             const a = v.agents[0]!;
-            expect([a.description, a.status, a.report]).toEqual(["Map auth", "stopped", undefined]);
-            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t))).toEqual(["Read:ok", "Glob:error"]);
+            const REPORT = "src/auth registers sign-in strategies in one list.";
+            expect([a.description, a.status, a.report, a.tokens]).toEqual(["Map auth", "done", REPORT, 4321]);
+            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "Glob:ok", REPORT]);
+            // A sub-agent row in the transcript, open while it ran, with its report rather than the launch note.
+            const call = tools(lastTurn(v)).find((b) => b.agent)!;
+            expect([call.name, call.status, call.output]).toEqual(["Task", "ok", REPORT]);
+            expect(call.durationMs).toBeGreaterThanOrEqual(250);
+            expect(texts(lastTurn(v))).toContain("The explorer reported back");
         }, 45_000);
+
+    test("Claude Code's background sub-agent that never finishes: the turn stops waiting, and says so", async () => {
+        const { backgroundTiming } = await import("../src/backends/claude-code");
+        const saved = { ...backgroundTiming };
+        backgroundTiming.maxWaitMs = 500;
+        try {
+            const v = await claudeCodeTurn("agent-background-stuck");
+            expect(v.agents.map((a) => [a.status, a.report])).toEqual([["stopped", undefined]]);
+            const notices = lastTurn(v).blocks.flatMap((b) => (b.t === "notice" ? [b.text] : []));
+            expect(notices.some((n) => /^Stopped waiting for 1 background sub-agent/.test(n))).toBe(true);
+        } finally {
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 45_000);
+
+    test("a Claude Code session shows its context: the window Claude Code reports, and the tokens in it", async () => {
+        const v = await claudeCodeTurn("agent-quiet");
+        expect(v.state.model?.contextWindow).toBe(200000);
+        expect(v.state.contextTokens).toBe(1015);
+    }, 45_000);
+
+    test("a Claude Code turn with no reply says so instead of ending blank", async () => {
+        const v = await claudeCodeTurn("silent");
+        expect(lastTurn(v).blocks.map((b) => (b.t === "notice" ? b.text : b.t))).toEqual(["Claude Code ended the turn without a reply."]);
+    }, 45_000);
 
     test("Claude Code's sub-agent that shows nothing before it finishes still gets a chip with its report", async () => {
         const v = await claudeCodeTurn("agent-quiet");

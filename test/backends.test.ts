@@ -24,6 +24,7 @@ const { deniedWithin } = await import("../src/permissions/rules");
 const { stopTiming } = await import("../src/backends/cli");
 const { backendActionsNote } = await import("../src/agent/agent");
 const { withoutActionsNote } = await import("../src/server/history");
+const { backgroundTiming } = await import("../src/backends/claude-code");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -60,7 +61,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -396,6 +397,142 @@ describe("Claude Code backend", () => {
         expect(await agent.compact({ auto: false, signal: new AbortController().signal, instructions: "keep the plan" })).toBe(true);
         expect(userTexts().at(-1)).toBe("/compact keep the plan");
         expect(events.some((e) => e.type === "compact_end")).toBe(true);
+    });
+});
+
+describe("Claude Code's background work (live test findings)", () => {
+    const REPORT = "src/auth registers sign-in strategies in one list.";
+    const texts = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "text" ? [(e as any).text as string] : [])).join("");
+    const subEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "subagent" && e.event.type === "turn_end" ? [e.event.reason] : []));
+    const taskEnd = (events: AgentEvent[]) => toolEnds(events).find((e) => e.call.name === "Task")!;
+
+    test("a sub-agent in the background keeps the turn going until Claude Code has its report and has answered with it", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        const { run, events, session } = await makeAgent({ provider: "claude-code" });
+        expect(await run("map the auth module")).toBe("done");
+        // One run of Claude Code: the sub-agent isn't stopped with the prompt's answer.
+        expect(starts()).toHaveLength(1);
+        expect(subEnds(events)).toEqual(["done"]);
+        // The Agent call is open while the sub-agent works: its result is the report, and it took as long as the sub-agent.
+        const end = taskEnd(events);
+        expect([end.result.content, end.result.isError]).toEqual([REPORT, false]);
+        expect(end.durationMs).toBeGreaterThanOrEqual(250);
+        // Claude Code's own turn with the report is part of this one, and the user is told what it waits for.
+        expect(texts(events)).toContain("The explorer reported back");
+        expect(notices(events).join("\n")).toMatch(/^info: Waiting for 1 background sub-agent \(Map auth\)/m);
+        expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("The explorer reported back");
+    });
+
+    test("...and its usage is what Claude Code reports for it", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        const { run, events } = await makeAgent({ provider: "claude-code" });
+        await run("map the auth module");
+        const used = events.flatMap((e) => (e.type === "subagent" && e.event.type === "usage" ? [e.event.usage.inputTokens + e.event.usage.outputTokens + (e.event.usage.cacheReadTokens ?? 0)] : []));
+        // Its total so far (task_progress), then what it came to (task_notification): counted once.
+        expect(used.reduce((a, b) => a + b, 0)).toBe(4321);
+    });
+
+    test("a background sub-agent that never finishes is waited on only so long, and the user is told it was stopped", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.maxWaitMs = 400;
+        try {
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            expect(await run("map the auth module")).toBe("done");
+            expect(subEnds(events)).toEqual(["aborted"]);
+            expect(taskEnd(events).result.isError).toBe(true);
+            expect(notices(events).join("\n")).toMatch(/^warn: Stopped waiting for 1 background sub-agent \(Map auth\)/m);
+        } finally {
+            Object.assign(backgroundTiming, saved);
+        }
+    });
+
+    test("esc while it waits on a background sub-agent stops it", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const ac = new AbortController();
+        const { run, events } = await makeAgent({ provider: "claude-code" });
+        const done = run("map the auth module", ac.signal);
+        while (!notices(events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+        const t = Date.now();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(Date.now() - t).toBeLessThan(stopTiming.interruptMs);
+        expect(subEnds(events)).toEqual(["aborted"]);
+    });
+
+    test("a message the user sends while it waits goes to Claude Code in the same run", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SECOND_SCENARIO = "none";
+        process.env.FAKE_BACKGROUND_MS = "1500";
+        let waiting = false;
+        let sent = false;
+        const a = await makeAgent({
+            provider: "claude-code",
+            drainQueued: () => {
+                if (!waiting || sent) return [];
+                sent = true;
+                return ["and check the tests"];
+            },
+        });
+        const done = a.run("map the auth module");
+        while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+        waiting = true;
+        expect(await done).toBe("done");
+        expect(starts()).toHaveLength(1);
+        expect(userTexts().slice(-1)).toEqual(["and check the tests"]);
+        expect(subEnds(a.events)).toEqual(["done"]);
+        expect(texts(a.events)).toContain("The explorer reported back");
+    });
+
+    test("with an API key, Claude Code's own turn with the report doesn't count the run's spend twice", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_API_KEY_SOURCE = "ANTHROPIC_API_KEY";
+        const { run, session } = await makeAgent({ provider: "claude-code" });
+        await run("map the auth module");
+        // Each result's total_cost_usd includes the run's earlier ones (0.5, then 1).
+        expect(session.cost).toBe(1);
+    });
+
+    test("a resumed turn isn't ended by Claude Code's report on a sub-agent the last run left behind", async () => {
+        const { run, events, session } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_STALE_TASK = "1";
+        const from = events.length;
+        expect(await run("second")).toBe("done");
+        const later = events.slice(from);
+        // The prompt's own answer, not the empty turn before it.
+        expect(texts(later)).toBe("Working on it.All done.");
+        expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("All done.");
+        expect(notices(later).join("\n")).toMatch(/didn't finish before the previous session ended/);
+    });
+
+    test("a reply with nothing in it says so", async () => {
+        process.env.FAKE_SCENARIO = "silent";
+        const { run, events } = await makeAgent({ provider: "claude-code" });
+        expect(await run("go")).toBe("done");
+        expect(notices(events)).toEqual(["warn: Claude Code ended the turn without a reply."]);
+    });
+
+    test("results that don't say which prompt they answer (an older Claude Code) still end the turn", async () => {
+        process.env.FAKE_OLD_RESULTS = "1";
+        process.env.FAKE_SCENARIO = "agent-background";
+        const { run, events } = await makeAgent({ provider: "claude-code" });
+        expect(await run("map the auth module")).toBe("done");
+        expect(subEnds(events)).toEqual(["done"]);
+    });
+
+    test("the context is updated as Claude Code works, not only when its turn ends", async () => {
+        process.env.FAKE_SCENARIO = "hang";
+        const ac = new AbortController();
+        const { run, events, agent, session } = await makeAgent({ provider: "claude-code" });
+        const done = run("go", ac.signal);
+        while (!events.some((e) => e.type === "tool_start")) await Bun.sleep(10);
+        // From the request's usage (10 + 1000 cached + 5 out), before any result; nothing is counted twice.
+        expect(events.some((e) => e.type === "usage" && e.contextTokens === 1015)).toBe(true);
+        expect(agent.contextTokens).toBe(1015);
+        expect(session.usageByModel.size).toBe(0);
+        ac.abort();
+        await done;
     });
 });
 
