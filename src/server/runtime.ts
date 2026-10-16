@@ -62,7 +62,6 @@ import type {
 } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import type { Engine, Workspace } from "./engine";
-import { RpcError } from "./rpc-error";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { SecretStore, secretValueError } from "../agent/secrets";
 
