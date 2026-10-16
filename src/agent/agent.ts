@@ -24,7 +24,8 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
-import type { Settings } from "../config/settings";
+import type { Effort, Settings } from "../config/settings";
+import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
@@ -35,20 +36,24 @@ import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
-import { isReadOnlyCommand } from "../permissions/bash-safety";
+import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
 import { fireHooks, runHooks } from "./hooks";
-import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, transcriptText } from "./compact";
+import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
+import { TurnSnapshots } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
+import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
-import { registerTools, type Registration } from "../mcp/server";
+import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
+import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
+import { BashTool } from "../tools/bash";
 import {
     DELEGATE_TOOL,
     DELEGATION_LIMITS,
@@ -56,6 +61,7 @@ import {
     Delegations,
     catalog,
     delegationAvailable,
+    inheritedEffort,
     orchestrationInstructions,
     orchestratorTitle,
     orchestratorTools,
@@ -68,6 +74,7 @@ import { suggestBashRules } from "../permissions/bash-safety";
 import { trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { expandPath } from "../util/files";
+import type { PlanLimits } from "../server/protocol";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -90,6 +97,10 @@ export type AgentEvent =
     | { type: "compact_start"; auto: boolean }
     | { type: "compact_end"; summary: string }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
+    /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
+    | { type: "limits"; limits: PlanLimits; partial: boolean }
+    /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
+    | { type: "cli_commands"; provider: string; names: string[] }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
@@ -107,6 +118,8 @@ export interface PermissionRequest {
     classifierReason?: string;
     /** Ends when the request no longer matters (its sub-agent was stopped): the prompt is withdrawn. */
     signal?: AbortSignal;
+    /** run_with_secrets: the secrets the command gets in its environment, by name. Prompts show them. */
+    secrets?: string[];
 }
 
 export interface PermissionResponse {
@@ -147,6 +160,8 @@ export interface AgentOptions {
     model: ModelInfo;
     client: ProviderClient;
     settings: () => Settings;
+    /** Read the current manager at each turn (including after approval changes). */
+    approvedMcpServers?: () => ApprovedMcpServers;
     checker: PermissionChecker;
     classifier?: AutoClassifier;
     /** Fixed list, or a getter (MCP tools appear once their servers connect). */
@@ -156,6 +171,8 @@ export interface AgentOptions {
     host: AgentHost;
     helpers?: Helpers;
     isSubagent?: boolean;
+    /** Current folder trust; private working-tree snapshots require it. */
+    trusted?: () => boolean;
     /** A sub-agent's type and task, for its SubagentStop hooks. */
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
@@ -183,6 +200,10 @@ export interface AgentOptions {
 }
 
 const MAX_RETRIES = 10;
+/** Requests that got nothing back for minutes (sse.ts) are tried this many more times. */
+const MAX_STALL_RETRIES = 2;
+/** After the results of tools a turn was stopped in. */
+const TOOL_INTERRUPT = "[Request interrupted by user for tool use]";
 /** Starts the text of a message the user sent while tools were running. */
 const STEERING = "The user sent this message while you were working:\n";
 
@@ -240,15 +261,60 @@ function isContextOverflow(e: unknown): boolean {
     return (err?.status === 400 || err?.status === 413 || err?.status === undefined) && /prompt is too long|context.{0,20}(length|window|limit)|maximum context|too many (input )?tokens|input (is )?too long|exceeds the context|exceeds the maximum number of tokens/i.test(msg);
 }
 
-/** What a read-only agent hears when it tries to change something: for a command, which ones do run. */
-function readOnlyRefusal(toolName: string): string {
-    return toolName === "Bash"
-        ? "This is a read-only agent: only read-only commands run (plain commands such as cat, rg, wc or git log, and pipes of them; no loops, subshells, $(…) or > redirects). Report what should be changed instead."
-        : "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+/**
+ * What a read-only agent hears when it tries to change something. For a
+ * command: what in it isn't read-only (so it doesn't send the same command
+ * again), and which ones do run.
+ */
+function readOnlyRefusal(toolName: string, command?: string, why?: string): string {
+    if (toolName !== "Bash") return "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+    const what = why ?? (command !== undefined ? notReadOnly(command) : undefined);
+    return `This is a read-only agent, and ${what ?? "this command isn't read-only"}. Only read-only commands run: plain commands such as cat, rg, wc or git log, and pipes of them, with no loops, subshells, $(…) or > redirects. Tests, builds and scripts don't run either. Leave out or replace just that part, or report what should be run or changed instead.`;
 }
+
+/** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
+const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
 
 function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
+}
+
+/** Notes that say where something is now: only the latest of each kind matters. */
+type StateKind = "mode" | "model";
+
+interface PendingNote {
+    text: string;
+    kind?: StateKind;
+    /** For a state note: where it was when the model last heard ("" when that's unknown, after a rewind). */
+    from?: string;
+}
+
+const PLAN_NOTE =
+    "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.";
+
+/** What the model hears when the mode went from `from` (as it last heard) to `to`. */
+function modeNote(from: string, to: PermissionMode): string {
+    if (to === "plan") return PLAN_NOTE;
+    if (from === "plan") return `Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`;
+    return `The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`;
+}
+
+/** Which state a note (a reminder's text) reports, this version's wording or an earlier one's. */
+function stateKind(note: string): StateKind | undefined {
+    if (/^(Plan mode is now active\.|Plan mode has ended\.|The user switched the permission mode to |The permission mode is ")/.test(note)) return "mode";
+    if (/^(The user switched the model to |You are running as )/.test(note)) return "model";
+    return undefined;
+}
+
+/**
+ * A message without its notes on the mode or model: in the transcript a
+ * backend is given of turns it missed they're stale ("You are now running
+ * as" another model), and its own turn says where things are now.
+ */
+function withoutStateNotes(m: Message): Message {
+    if (m.role !== "user") return m;
+    const content = m.content.filter((p) => p.type !== "text" || !promptNotes({ ...m, content: [p] }).some((n) => stateKind(n)));
+    return content.length === m.content.length ? m : { ...m, content };
 }
 
 export class Agent {
@@ -256,10 +322,17 @@ export class Agent {
     model: ModelInfo;
     client: ProviderClient;
     readonly state: ToolState;
-    private pendingReminders: string[] = [];
+    readonly turnSnapshots?: TurnSnapshots;
+    private pendingReminders: PendingNote[] = [];
+    /** Why the model call is being retried right now (shown if the user stops it meanwhile). */
+    private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
     private running = false;
+    /** The session is being let go; awaited checkpoints must not append another prompt or tool result. */
+    private cutOff = false;
+    /** This turn's prompt is in the session. */
+    private prompted = false;
     /** Prompt tokens of the most recent request (context usage). */
     contextTokens = 0;
     private lastUsageTotal = 0;
@@ -268,6 +341,9 @@ export class Agent {
     /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
     private delegations?: Delegations;
     private registration?: Registration;
+    /** What the harness MCP server offers this turn, and its instructions (read by the server on each request). */
+    private serverTools: ServerTool[] = [];
+    private serverInstructions = "";
     /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
     private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
     private disposed = false;
@@ -280,7 +356,10 @@ export class Agent {
         this.client = o.client;
         this.state = o.toolState;
         // Edits are saved into this session's file history; sub-agents get their parent's.
-        if (!o.isSubagent) this.state.fileHistory = FileHistory.for(o.session);
+        if (!o.isSubagent) {
+            this.state.fileHistory = FileHistory.for(o.session);
+            this.turnSnapshots = TurnSnapshots.for(o.session, this.state.cwd);
+        }
     }
 
     get tools(): Tool<any>[] {
@@ -301,9 +380,25 @@ export class Agent {
         this.session.setModel(modelRef(model));
     }
 
+    /** Take back a note of where the mode or model is that hasn't been sent. */
+    dropStateNote(kind: StateKind) {
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== kind);
+    }
+
     /** Queue a note for the model, delivered with the next user message. */
     addReminder(text: string) {
-        this.pendingReminders.push(text);
+        this.pendingReminders.push({ text });
+    }
+
+    /**
+     * A note of where the mode or model is now, replacing one of the same kind
+     * not sent yet: the model hears the current state once, not each step on
+     * the way (and nothing if it's back where the model last heard it was).
+     */
+    private noteState(kind: StateKind, from: string, to: string, text: (from: string) => string) {
+        const origin = this.pendingReminders.find((r) => r.kind === kind)?.from ?? from;
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== kind);
+        if (origin !== to) this.pendingReminders.push({ kind, from: origin, text: text(origin) });
     }
 
     noteModeChange(from: PermissionMode, to: PermissionMode) {
@@ -312,15 +407,13 @@ export class Agent {
         // sub-agents running on Claude Code or Codex, each in its own mode (a read-only one stays read-only).
         if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
         for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(to);
-        if (to === "plan") {
-            this.addReminder(
-                "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.",
-            );
-        } else if (from === "plan") {
-            this.addReminder(`Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`);
-        } else {
-            this.addReminder(`The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`);
-        }
+        this.noteState("mode", from, to, (origin) => modeNote(origin, to));
+    }
+
+    /** The user picked another model (`from` is the one before, provider:id). */
+    noteModelChange(from: string, to: ModelInfo) {
+        const ref = modelRef(to);
+        this.noteState("model", from, ref, () => `The user switched the model to ${to.name ?? to.id} (${ref}). You are now running as this model.`);
     }
 
     /** The system prompt as sent: the session's, plus --append-system-prompt. */
@@ -370,6 +463,7 @@ export class Agent {
     async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
+        this.prompted = false;
         // Interrupting a turn stops the delegated tasks still running, those in the background too
         // (delegated on an earlier turn, maybe before a switch to another model).
         const onAbort = () => this.cancelTasks();
@@ -377,18 +471,19 @@ export class Agent {
         try {
             return await this.runInner(content, opts);
         } finally {
+            await this.turnSnapshots?.end();
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
+            this.prompted = false;
         }
     }
 
     private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.o.settings();
-        const promptText = content
-            .filter((p): p is TextPart => p.type === "text")
-            .map((p) => p.text)
-            .join("\n");
+        const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
+        const checkpoint = await this.checkpoint(opts.display ?? promptText);
+        if (this.cutOff) return "aborted";
 
         if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -404,8 +499,9 @@ export class Agent {
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
-        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r));
-        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
+        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
+        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
+        this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
         if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal);
@@ -415,22 +511,27 @@ export class Agent {
         let pauses = 0;
         let stopHookRounds = 0;
         let overflowCompacted = false;
+        /** The model has said or done something this turn. */
+        let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
 
         while (true) {
             if (signal.aborted) return this.interrupted(false);
             if (++turns > maxTurns) {
-                this.emit({ type: "notice", level: "warn", message: `Stopped after ${maxTurns} model turn${maxTurns === 1 ? "" : "s"} (max turns).` });
+                this.endNotice("warn", `Stopped after ${maxTurns} model turn${maxTurns === 1 ? "" : "s"} (max turns).`);
                 this.emit({ type: "turn_end", reason: "max_turns" });
                 return "max_turns";
             }
 
             if (this.shouldAutoCompact()) {
-                const ok = await this.compact({ auto: true, signal, continuing: true }).catch((e) => {
-                    if (isAbort(e, signal)) throw e;
+                let ok = false;
+                try {
+                    ok = await this.compact({ auto: true, signal, continuing: true });
+                } catch (e) {
+                    // Stopped while compacting: an interrupt like any other, not an unexpected error.
+                    if (isAbort(e, signal)) return this.interrupted(false);
                     this.emit({ type: "notice", level: "warn", message: `Auto-compact failed: ${(e as Error).message}` });
-                    return false;
-                });
+                }
                 if (ok) overflowCompacted = true;
             }
 
@@ -448,7 +549,7 @@ export class Agent {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
                 }
-                this.emit({ type: "notice", level: "error", message: redact((e as Error).message || String(e)) });
+                this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
             }
@@ -463,6 +564,7 @@ export class Agent {
             if (msg.usage) this.recordUsage(msg.usage);
 
             const calls = toolCallsOf(msg);
+            if (calls.length || textOf(msg).trim()) answered = true;
 
             if (msg.stopReason === "pause_turn" && !calls.length && pauses++ < 5) continue;
 
@@ -478,12 +580,12 @@ export class Agent {
                     meta: { kind: "tool_results" },
                 });
                 if (msg.stopReason === "refusal") {
-                    this.emit({ type: "notice", level: "warn", message: "The model declined to continue this request." });
+                    this.endNotice("warn", "The model declined to continue this request.");
                     this.emit({ type: "turn_end", reason: "done" });
                     return "done";
                 }
                 if (++maxTokenStrikes >= 3) {
-                    this.emit({ type: "notice", level: "error", message: "The model kept hitting the output token limit. Try raising maxOutputTokens or asking for smaller steps." });
+                    this.endNotice("error", "The model kept hitting the output token limit. Try raising maxOutputTokens or asking for smaller steps.");
                     this.emit({ type: "turn_end", reason: "error" });
                     return "error";
                 }
@@ -492,13 +594,18 @@ export class Agent {
             }
 
             if (!calls.length) {
-                if (msg.stopReason === "max_tokens") this.emit({ type: "notice", level: "warn", message: "Response was cut off at the output token limit." });
-                else if (msg.stopReason === "refusal") this.emit({ type: "notice", level: "warn", message: "The model declined this request." });
+                if (msg.stopReason === "max_tokens") this.endNotice("warn", "Response was cut off at the output token limit.");
+                else if (msg.stopReason === "refusal") this.endNotice("warn", "The model declined this request.");
+                // Nothing at all came back this turn: say so rather than end it blank.
+                else if (!answered && !textOf(msg).trim()) this.endNotice("warn", `${this.model.name ?? this.model.id} sent back an empty response${msg.stopReason === "end_turn" ? "" : ` (stop reason: ${msg.stopReason})`}. Try again, or another model.`);
 
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
-                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
+                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                        this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    });
+                    if (this.cutOff) return "aborted";
                     continue;
                 }
 
@@ -521,12 +628,23 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
-            if (signal.aborted) extra.push({ type: "text", text: "[Request interrupted by user for tool use]" });
-            else {
+            let recorded = false;
+            const record = (checkpoint?: number) => {
+                this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(checkpoint !== undefined ? { checkpoint } : {}) } });
+                recorded = true;
+            };
+            if (!signal.aborted) {
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                if (queued.length) {
+                    extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                    await this.checkpoint(queued.join("\n"), true, record);
+                }
             }
-            this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results" } });
+            if (this.cutOff) return "aborted";
+            // Steering saved the completed results before its capture: an interrupt is a new message.
+            if (signal.aborted && recorded) return this.interrupted(false);
+            if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
+            if (!recorded) record();
             if (signal.aborted) {
                 this.emit({ type: "turn_end", reason: "aborted" });
                 return "aborted";
@@ -539,8 +657,14 @@ export class Agent {
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
-    private checkpoint(): number | undefined {
-        return this.o.isSubagent ? undefined : this.state.fileHistory?.begin();
+    private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
+        // Steering inside tool results isn't a /rewind target: keep its edit copies with the original prompt.
+        const history = this.o.isSubagent ? undefined : this.state.fileHistory;
+        const cp = snapshotOnly ? history?.nextId() : history?.begin();
+        // Once drained, queued text must be on disk before a capture can yield to session shutdown.
+        record?.(cp);
+        if (cp !== undefined && this.o.trusted?.()) await this.turnSnapshots?.begin(cp, redact(prompt));
+        return cp;
     }
 
     /**
@@ -551,23 +675,73 @@ export class Agent {
      */
     rewind(index: number) {
         if (this.running) throw new Error("Agent is already running");
-        const prompt = this.session.messages[index];
+        const dropped = this.session.messages.slice(index);
+        const prompt = dropped[0];
         this.session.rewind(index);
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
         resetToolState(this.state, this.session.messages);
         this.o.classifier?.clearCache();
-        if (prompt?.role === "user") this.pendingReminders.unshift(...promptNotes(prompt));
+        // Notes about the mode or model aren't queued again as they were: what's current is said instead.
+        const notes = prompt?.role === "user" ? promptNotes(prompt) : [];
+        this.pendingReminders.unshift(...notes.filter((n) => !stateKind(n)).map((text) => ({ text })));
         // The mode may have changed in the dropped turns: say what it is now.
         const mode = this.o.mode.get();
-        if (mode === "plan") this.noteModeChange("default", "plan");
-        else this.addReminder(`The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}`);
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
+        this.pendingReminders.push({ kind: "mode", from: "", text: mode === "plan" ? modeNote("", "plan") : `The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}` });
+        // So may the model, if a dropped prompt told it of a switch (a switch since is still queued).
+        const switched = dropped.some((m) => m.role === "user" && promptNotes(m).some((n) => stateKind(n) === "model"));
+        if (switched && !this.pendingReminders.some((r) => r.kind === "model")) {
+            this.pendingReminders.push({ kind: "model", from: "", text: `You are running as ${this.model.name ?? this.model.id} (${modelRef(this.model)}).` });
+        }
     }
 
     private interrupted(_duringTools: boolean): TurnEndReason {
+        // Stopped while waiting to try again: what it was waiting on is why nothing came back.
+        if (this.retrying) this.session.recordNotice("warn", `Stopped while retrying: ${this.retrying}`);
+        this.retrying = undefined;
         this.session.push({ role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }], meta: { kind: "interrupt" } });
         this.emit({ type: "turn_end", reason: "aborted" });
         return "aborted";
+    }
+
+    /**
+     * Its session is being closed while this turn is still stopping (a CLI
+     * backend gets seconds to answer an interrupt; a tool may not stop at
+     * once): note the interrupt now, as the turn would have. The caller lets
+     * the file go right after, so what the turn still writes is dropped, not
+     * recorded after this.
+     */
+    noteStopped(): Promise<void> {
+        this.cutOff = true;
+        const stopping = this.turnSnapshots?.stop() ?? Promise.resolve();
+        // Not running, or its prompt isn't in yet (then nothing of the turn is).
+        if (!this.running || !this.prompted) return stopping;
+        const last = this.session.messages.at(-1);
+        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return stopping;
+        const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
+        if (!calls.length) {
+            this.interrupted(false);
+            return stopping;
+        }
+        // Tools still running: their calls get results, or the next request is refused.
+        this.session.push({
+            role: "user",
+            content: [...calls.map((c) => ({ type: "tool_result" as const, toolCallId: c.id, toolName: c.name, content: "Interrupted by user", isError: true })), { type: "text", text: TOOL_INTERRUPT }],
+            meta: { kind: "tool_results" },
+        });
+        this.emit({ type: "turn_end", reason: "aborted" });
+        return stopping;
+    }
+
+    /**
+     * A notice that says how the turn ended: shown now, and kept in the
+     * session file, so a reopened session shows why the turn stopped (it's
+     * never sent to a model).
+     */
+    private endNotice(level: "warn" | "error", message: string) {
+        this.session.recordNotice(level, message);
+        this.emit({ type: "notice", level, message });
     }
 
     private emit(e: AgentEvent) {
@@ -580,7 +754,7 @@ export class Agent {
 
     private recordUsage(usage: Usage) {
         const cost = costOf(usage, this.model);
-        this.session.recordUsage(modelRef(this.model), usage, cost.usd);
+        this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         this.contextTokens = promptTokens(usage) + usage.outputTokens;
         this.lastUsageTotal = this.session.messages.length;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
@@ -609,19 +783,30 @@ export class Agent {
     // Model calls with retries
 
     private async callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
-        for (let attempt = 1; ; attempt++) {
-            this.emit({ type: "request_start" });
-            try {
-                return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
-            } catch (e) {
-                if (isAbort(e, signal)) throw new ProviderError("aborted");
-                const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
-                if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
-                const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
-                const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
-                this.emit({ type: "retry", attempt, delayMs: delay, reason: redact(pe.message) });
-                await sleep(delay, signal);
+        let stalls = 0;
+        this.retrying = undefined;
+        try {
+            for (let attempt = 1; ; attempt++) {
+                this.emit({ type: "request_start" });
+                try {
+                    return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+                } catch (e) {
+                    if (isAbort(e, signal)) throw new ProviderError("aborted");
+                    const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
+                    // Each stall waits minutes for a byte: after a few, the provider is down, and the turn says so.
+                    if (pe.stalled && ++stalls > MAX_STALL_RETRIES) throw pe;
+                    if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
+                    const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
+                    const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
+                    const reason = redact(pe.message);
+                    this.retrying = `${reason} (attempt ${attempt})`;
+                    this.emit({ type: "retry", attempt, delayMs: delay, reason });
+                    await sleep(delay, signal);
+                }
             }
+        } finally {
+            // Interrupted while waiting, the reason is still there for interrupted().
+            if (!signal.aborted) this.retrying = undefined;
         }
     }
 
@@ -664,7 +849,7 @@ export class Agent {
             summary = textOf(res);
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
-                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd);
+                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
             }
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
@@ -677,7 +862,7 @@ export class Agent {
             const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
             // ~2.5 characters per token leaves room for code and JSON.
             const maxChars = window ? Math.max(2_000, Math.min(400_000, Math.floor((window - maxOut - 2_000) * 2.5))) : 100_000;
-            const transcript = transcriptText(history, maxChars);
+            const transcript = compactTranscriptText(history, maxChars);
             if (!transcript.trim()) throw new Error("Nothing in the conversation to summarize");
             const req = this.request([transcriptCompactRequest(transcript, opts.instructions)], opts.signal, {
                 system: "You summarize conversations between a user and an AI coding assistant so the work can continue in a fresh context.",
@@ -701,8 +886,28 @@ export class Agent {
     // -----------------------------------------------------------------------
     // Agent backends (src/backends): Claude Code and Codex run the turn
 
+    /** Approvals as they stand for each CLI launch (a Stop-hook continuation or a resume retry starts another), never more than the turn began with. */
+    private freshApprovals(base: { approvedMcpServers?: ApprovedMcpServers }): ApprovedMcpServers | undefined {
+        if (!base.approvedMcpServers) return undefined;
+        try {
+            return this.o.approvedMcpServers?.();
+        } catch {
+            return undefined;
+        }
+    }
+
     private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
         const s = this.o.settings();
+        let trusted = false;
+        let approvedMcpServers: ApprovedMcpServers | undefined;
+        try {
+            // Implicit session trust does not authorize CLI project configuration.
+            trusted = trustedByUser(this.state.cwd);
+            approvedMcpServers = this.o.approvedMcpServers?.();
+        } catch {
+            trusted = false;
+            host.emit({ type: "notice", level: "warn", message: "Could not check folder trust or approved MCP servers; this turn runs without project configuration or MCP servers." });
+        }
         return {
             cwd: this.state.cwd,
             model: this.model,
@@ -711,8 +916,8 @@ export class Agent {
             fastMode: this.fastMode(),
             appendSystemPrompt: this.o.appendSystemPrompt,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
-            // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.
-            trusted: trustedByUser(this.state.cwd),
+            trusted,
+            approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
             orchestrator: this.orchestrator(),
@@ -726,28 +931,49 @@ export class Agent {
     // Delegation (src/agent/delegation.ts): a backend main agent hands tasks
     // to other providers' models through the harness's MCP tools.
 
-    /** The MCP server for this turn; none for sub-agents, when turned off, or with no other provider to delegate to. */
+    /**
+     * The MCP server for this turn; none for sub-agents. Delegation tools when it's on and there's another provider to
+     * delegate to; secret tools when there's someone to ask.
+     */
     private orchestrator(): OrchestratorServer | undefined {
-        if (this.o.isSubagent || this.disposed || this.o.settings().delegation === false) return undefined;
+        if (this.o.isSubagent || this.disposed) return undefined;
         const caller = this.model.provider;
-        if (!delegationAvailable(caller, this.listings())) return undefined;
-        const tasks = this.tasks();
-        const tools = orchestratorTools({
-            caller: () => this.model.provider,
-            listings: () => this.listings(),
-            projectRoot: () => this.state.projectRoot,
-            checkModel: (ref) => this.checkModel(ref),
-            claimCall: (args, meta) => this.claimDelegateCall(args, meta),
-            tasks,
-        });
+        const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
+        const store = this.state.secrets;
+        const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
+        if (!delegating && !(store && ask)) return undefined;
+        const tools: ServerTool[] = [];
+        const instructions: string[] = [];
+        if (delegating) {
+            tools.push(
+                ...orchestratorTools({
+                    caller: () => this.model.provider,
+                    listings: () => this.listings(),
+                    projectRoot: () => this.state.projectRoot,
+                    checkModel: (ref) => this.checkModel(ref),
+                    claimCall: (args, meta) => this.claimDelegateCall(args, meta),
+                    tasks: this.tasks(),
+                }),
+            );
+            instructions.push(orchestrationInstructions(caller, this.oneShot));
+        }
+        if (store && ask) {
+            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeSecretTool(name, input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
+            instructions.push(SECRET_INSTRUCTIONS);
+        }
+        this.serverTools = tools;
+        this.serverInstructions = instructions.join("\n\n");
         // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
-        this.registration ??= registerTools(tools, () => (this.model.provider === "codex" ? undefined : orchestrationInstructions(this.model.provider, this.oneShot)));
+        this.registration ??= registerTools(
+            () => this.serverTools,
+            () => (this.model.provider === "codex" ? undefined : this.serverInstructions),
+        );
         return {
             name: MCP_SERVER_NAME,
             url: this.registration.url,
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
-            instructions: orchestrationInstructions(caller, this.oneShot),
+            instructions: this.serverInstructions,
             // Above the longest wait, so the harness's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
         };
@@ -812,14 +1038,14 @@ export class Agent {
     }
 
     /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
-    private async checkModel(ref: string): Promise<string | { ok: true }> {
+    private async checkModel(ref: string): Promise<string | { effortLevels?: Effort[]; effort?: Effort }> {
         const p = parseModelRef(ref);
         if (!p) return `"${ref}" isn't a model reference (provider:model).`;
         const r = await this.o.helpers?.resolveModel?.(ref);
         if (!r) return `${getProvider(p.provider)?.name ?? p.provider} isn't set up in ${APP_TITLE}, so ${ref} can't run here. Call models to see what can.`;
         const listed = this.listings().find((l) => l.provider.id === p.provider)?.models;
         if (listed?.length && !listed.some((m) => m.id === p.id)) return `${p.provider} has no model "${p.id}". Call models (with provider "${p.provider}") to see its models.`;
-        return { ok: true };
+        return { effortLevels: r.model.effortLevels, effort: inheritedEffort(r.model, this.o.settings().effort) };
     }
 
     /**
@@ -849,13 +1075,16 @@ export class Agent {
      * one gets what other models said since its last turn.
      */
     private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
-        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex);
-        const transcript = missed.length ? transcriptText(missed, 60_000) : "";
-        if (!transcript) return text;
+        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
+        // Only that its last turn was stopped, which it never heard (Harness stopped or died part way): said plainly.
+        if (resume && missed.length && missed.every((m) => m.role === "user" && m.meta?.kind === "interrupt")) return `${reminder(BACKEND_CUT_OFF).text}\n\n${text}`;
+        const { text: transcript, shortenedChars } = handoffTranscript(missed, 60_000);
+        if (!transcript && !shortenedChars) return text;
         const intro = resume
             ? "While another model answered in this session, the conversation went on. Here is what happened since your last turn:"
             : "This conversation started before you joined it (with another model, or before the history was compacted or rewound). Here it is so far:";
-        return `<conversation-so-far>\n${intro}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
+        const shortened = shortenedChars ? ` Parts of it were shortened or left out (${shortenedChars} characters); the user's messages are given whole where they fit.` : "";
+        return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
     }
 
     private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
@@ -870,8 +1099,7 @@ export class Agent {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
         let promptIndex = this.session.messages.length - 1;
-        const text = parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
-        const images = parts.filter((p): p is ImagePart => p.type === "image");
+        const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
         const host: BackendHost = {
             emit: (e) => this.emitFromBackend(e),
@@ -905,33 +1133,40 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
-            drainQueued: () => {
+            drainQueued: async () => {
+                if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (!queued.length) return [];
-                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
-                return [textOf(m)];
+                let text = "";
+                await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                    const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    text = textOf(m);
+                });
+                if (this.cutOff) return [];
+                return [text];
             },
         };
         const base = this.backendTurn(signal, host);
         let stopRounds = 0;
         let prompt = text;
         let promptImages = images;
+        let promptDocuments = documents;
         while (true) {
             const resume = this.session.backends.get(provider);
             this.emit({ type: "request_start" });
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, resumeId: resume?.id, forkSession: resume?.fork });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
-                this.emit({ type: "notice", level: "error", message: redact((e as Error).message || String(e)) });
+                this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
             }
@@ -943,11 +1178,11 @@ export class Agent {
             }
             if (declined) return this.endBackendTurn(provider, "denied");
             if (result.reason === "error") {
-                this.emit({ type: "notice", level: "error", message: redact(result.error || `${name} stopped with an error.`) });
+                this.endNotice("error", redact(result.error || `${name} stopped with an error.`));
                 return this.endBackendTurn(provider, "error");
             }
             if (result.reason === "max_turns") {
-                this.emit({ type: "notice", level: "warn", message: `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).` });
+                this.endNotice("warn", `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).`);
                 return this.endBackendTurn(provider, "max_turns");
             }
             const settings = this.o.settings();
@@ -958,6 +1193,7 @@ export class Agent {
                     stopRounds++;
                     prompt = reminder(`A Stop hook asked you to keep going:\n${redact(h.blocked)}`).text;
                     promptImages = [];
+                    promptDocuments = [];
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
                     promptIndex = this.session.messages.length - 1;
                     this.syncBackend(provider, 1);
@@ -987,7 +1223,8 @@ export class Agent {
     /** The backend session has now seen everything up to here (minus `pending` messages it hasn't been sent yet). */
     private syncBackend(provider: string, pending = 0) {
         const b = this.session.backends.get(provider);
-        if (b) this.session.setBackendSession(provider, b.id, this.session.messages.length - pending);
+        // Until the native fork answers with its own id, the shared source has seen no new messages.
+        if (b && !b.fork) this.session.setBackendSession(provider, b.id, this.session.messages.length - pending);
     }
 
     private endBackendTurn(provider: string, reason: TurnEndReason): TurnEndReason {
@@ -1010,7 +1247,7 @@ export class Agent {
         this.emit({ type: "compact_start", auto: opts.auto });
         const host: BackendHost = {
             emit: (e) => {
-                if (e.type === "notice" || e.type === "retry") this.emit(e);
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
             },
             mode: () => this.o.mode.get(),
             permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),
@@ -1041,7 +1278,7 @@ export class Agent {
             if (call.name === DELEGATE_TOOL && e.type === "tool_start") this.delegateCalls.push({ id: call.id, input: (call.input ?? {}) as Record<string, unknown>, claimed: false });
             else if (call.name === DELEGATE_TOOL) this.delegateCalls = this.delegateCalls.filter((c) => c.id !== call.id);
         }
-        const own = e.type === "tool_start" ? orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) : undefined;
+        const own = e.type === "tool_start" ? (orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? secretToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>)) : undefined;
         if (own && e.type === "tool_start") e = { ...e, title: own };
         else if (e.type === "tool_end" && e.title) {
             // Retitled at its end (its input only known then): titled as at its start.
@@ -1075,11 +1312,76 @@ export class Agent {
 
     private recordBackendUsage(usage: Usage, o: { contextTokens?: number; contextWindow?: number }) {
         const cost = costOf(usage, this.model);
-        this.session.recordUsage(modelRef(this.model), usage, cost.usd);
+        this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;
         if (o.contextTokens) this.contextTokens = o.contextTokens;
         this.lastUsageTotal = this.session.messages.length;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
+    }
+
+    /** The CLI auto-approves our MCP tools, so their explicit rules must be enforced here. */
+    private async authorizeSecretTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
+        const refuse = (text: string): ServerToolResult => ({ text, isError: true });
+        const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, secretToolTitle(name, input));
+        // Like the command check below, explicit asks still apply in bypass mode.
+        const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
+        if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
+        if (signal.aborted) return refuse("Interrupted by user");
+        if (decision.behavior !== "ask" || !decision.rule) return undefined;
+        if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
+        const answer = await this.o.host.askPermission({ tool, input, title: tool.title(input), decision: { ...decision, suggestions: [] }, signal });
+        if (signal.aborted) return refuse("Interrupted by user");
+        if (!answer.allow) return refuse("The user declined this tool call. Don't retry it; wait for the user to say how to proceed.");
+        return undefined;
+    }
+
+    /**
+     * run_with_secrets (Claude Code, Codex): one command with Harness's Bash and those secrets. The CLI approves
+     * Harness's tools without asking, so the check is here, at least as strict as backendPermission's for a
+     * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule runs it without asking
+     * (no mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
+     */
+    private async runWithSecrets(o: { command: string; names: string[]; description?: string; timeoutMs?: number }, signal: AbortSignal): Promise<ServerToolResult> {
+        const refuse = (text: string): ServerToolResult => ({ text, isError: true });
+        const store = this.state.secrets;
+        if (!store) return refuse("This session holds no secrets.");
+        const input = { command: o.command, description: o.description, timeout: o.timeoutMs };
+        const mode = this.o.mode.get();
+        if (this.o.readOnly) return refuse(readOnlyRefusal("run_with_secrets"));
+        if (mode === "plan") return refuse("Plan mode is active: run_with_secrets runs nothing until the user approves a plan.");
+        const cwd = this.state.cwd;
+        // As in the default mode: it runs outside any sandbox (so auto mode's sandbox rules don't fit it), and modes don't approve it.
+        const decision = this.o.checker.check(BashTool, input, "default", cwd);
+        if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
+        const names = o.names.join(", ");
+        if (!(decision.behavior === "allow" && decision.rule)) {
+            if (!this.o.host.askPermission) return refuse("Permission to run a command with secrets was not granted (non-interactive session).");
+            const ask = {
+                ...decision,
+                behavior: "ask" as const,
+                reason: `Runs with ${o.names.length === 1 ? "the secret" : "the secrets"} ${names} in its environment.${decision.behavior === "ask" && decision.reason ? ` ${decision.reason}` : ""}`,
+                // Once at a time: an "always" here would also let the agent's own shell run such commands unasked.
+                suggestions: [],
+                sandbox: undefined,
+                needsClassifier: undefined,
+            };
+            // The signal withdraws the prompt if the CLI cancels the call.
+            const answer = await this.o.host.askPermission({ tool: BashTool, input, title: `RunWithSecrets(${names})`, decision: ask, secrets: o.names, signal });
+            if (signal.aborted) return refuse("Interrupted by user");
+            if (!answer.allow) {
+                const fb = answer.feedback?.trim();
+                return refuse(fb ? `The user declined this command and said:\n${redact(fb)}` : "The user declined this command. Don't retry it; wait for the user to say how to proceed.");
+            }
+        }
+        // Its own copy of the state: these secrets only, and a cd in it doesn't move the session.
+        const state: ToolState = { ...this.state, secrets: store.only(o.names) };
+        let r: ToolResult;
+        try {
+            r = await BashTool.run(input, { ...this.toolContext("", signal), state, onProgress: undefined });
+        } catch (e) {
+            r = { content: signal.aborted ? "Interrupted by user" : `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
+        }
+        return { text: redact(r.content), isError: r.isError };
     }
 
     /**
@@ -1100,7 +1402,7 @@ export class Agent {
         // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
         if (this.o.readOnly) {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
-            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name), stop: false };
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
@@ -1190,8 +1492,9 @@ export class Agent {
             setMode: (m) => {
                 const from = this.o.mode.get();
                 this.o.mode.set(m);
-                // ExitPlanMode reports the change in its own result.
+                // ExitPlanMode reports the change in its own result: the model knows the mode now.
                 if (from !== "plan") this.noteModeChange(from, m);
+                else this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
             },
             onProgress: (text) => this.emit({ type: "tool_progress", id: callId, text }),
             ui: this.o.host.ui,
@@ -1296,7 +1599,7 @@ export class Agent {
         // Read-only agents (explore) never change anything.
         if (this.o.readOnly) {
             const writes = tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || tool.category === "mcp" && !isReadOnly(tool, input);
-            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name)) };
+            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
         }
 
         const settings = this.o.settings();
@@ -1391,6 +1694,8 @@ export class Agent {
         } catch (e) {
             result = signal.aborted ? { content: "Interrupted by user", isError: true } : { content: `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }
+        // Tools redact their own output; this catches any that print a secret (RequestSecret's) without doing so, before hooks, windows or the model.
+        result = redactResult(result);
         const settings = this.o.settings();
         if (settings.hooks?.PostToolUse?.length && !signal.aborted) {
             const h = await runHooks(settings, "PostToolUse", { tool_name: tool.name, tool_input: input, tool_response: { content: result.content.slice(0, 20_000), is_error: Boolean(result.isError) }, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -1422,7 +1727,8 @@ export class Agent {
             const m = this.session.messages[i]!;
             if (m.role !== "user") continue;
             const kind = m.meta?.kind;
-            const text = () => textOf(m).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+            // A long paste rides as an attachment, but it's what the developer asked for too.
+            const text = () => [textOf(m), ...pastedTexts(m.content)].join("\n").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
             if (kind === "summary") {
                 summary = text() || undefined;
                 break;
@@ -1485,10 +1791,11 @@ export class Agent {
             // An agent type's model that isn't set up falls back to this one; one asked for by name doesn't.
             else if (req.model) return fail(`Can't run a sub-agent on ${req.model}: ${parseModelRef(req.model) ? "that provider isn't set up here, or the model isn't known" : "it isn't a provider:model reference"}. Call ListModels to see the models that can run.`);
         }
+        const effort = req.effort ?? inheritedEffort(model, this.o.settings().effort);
         const backend = isAgentBackend(client);
         const other = modelRef(model) !== modelRef(this.model);
 
-        const exclude = new Set(["Task", "ListModels", "TodoWrite", "AskUserQuestion", "ExitPlanMode"]);
+        const exclude = new Set(["Task", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode"]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         if (def.readOnly) tools = tools.filter((t) => EXPLORE_TOOLS.has(t.name) || (t.category === "mcp" && t.readOnly === true));
         if (def.tools?.length) {
@@ -1504,6 +1811,8 @@ export class Agent {
             includeGit: false,
         });
         const session = Session.create(this.state.projectRoot, { persist: false, system });
+        // Not saved itself: a Claude Code or Codex session it runs on is recorded in this one.
+        session.runsFor = this.session;
         // Prompts and progress name the model when it isn't this agent's.
         const label = other ? `${req.description} (${modelRef(model)})` : req.description;
         const parentHost = this.o.host;
@@ -1518,6 +1827,7 @@ export class Agent {
             client,
             tools,
             isSubagent: true,
+            settings: () => ({ ...this.o.settings(), effort }),
             parentRequests: () => this.requestContext(),
             delegatedTask: req.prompt,
             // At the speed the parent runs at (not fast where the parent's model has none and shows standard),
@@ -1538,14 +1848,18 @@ export class Agent {
                 todos: [],
                 shells: trackShells(this.state.shells, shellsStarted),
                 fileHistory: this.state.fileHistory,
+                // Its Bash sees the secrets the user gave this session (only the main agent can ask for one).
+                secrets: this.state.secrets,
             },
             host: {
                 emit: (e) => {
                     if (e.type === "notice" && e.level === "error") lastError = e.message;
-                    parentHost.emit({ type: "subagent", parentId: callId, label, event: e });
+                    // What its own sub-agents do (Codex's, say) is named as theirs, under this one, as they ask.
+                    parentHost.emit({ type: "subagent", parentId: callId, label, event: e.type === "subagent" ? { ...e, label: nestedAgentLabel(label, e.label) } : e });
                 },
                 // A stopped sub-agent's prompt is withdrawn (declined), so it can stop rather than wait for an answer.
-                askPermission: parentHost.askPermission ? (p) => untilAborted(parentHost.askPermission!({ ...p, agentLabel: label, signal }), signal, { allow: false }) : undefined,
+                // A backend's own sub-agent (one of Codex's) asks as itself, under this one.
+                askPermission: parentHost.askPermission ? (p) => untilAborted(parentHost.askPermission!({ ...p, agentLabel: backend && p.agentLabel ? nestedAgentLabel(label, p.agentLabel) : label, signal }), signal, { allow: false }) : undefined,
                 saveRules: parentHost.saveRules,
                 ui: {},
             },
@@ -1565,8 +1879,8 @@ export class Agent {
         // Fold the child's spend into the parent session's totals.
         let tokens = 0;
         let cost = 0;
-        for (const [m, u] of session.usageByModel) {
-            this.session.recordUsage(m, u.usage, u.cost);
+        for (const u of session.usageRecords) {
+            this.session.recordUsage(u.model, u.usage, u.cost, u.unknown);
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }
@@ -1614,7 +1928,7 @@ export function backendActionsNote(name: string, actions: string[], maxChars = A
 }
 
 const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: another agent gave you one self-contained task. Complete it, then reply with a final report. The other agent sees only your last message, so make it complete: findings, file paths with line numbers, what you changed (if anything), and anything left unresolved. Don't commit, push or make changes outside the task's scope.`;
-const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files; changes will be refused. Report what should be changed instead.";
+const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files, and don't run tests, builds or scripts; those will be refused. Report what should be changed or run instead.";
 
 /** Stands in for a backend tool the harness has no tool of its own for (rules still match its name). */
 function backendTool(name: string, title?: string): Tool<any> {
@@ -1629,6 +1943,13 @@ function backendTool(name: string, title?: string): Tool<any> {
     };
 }
 
+/** A tool's result with every known secret taken out, as the model, hooks and windows see it. */
+function redactResult(r: ToolResult): ToolResult {
+    const d = r.display;
+    const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
+    return { ...r, content: redact(r.content), display };
+}
+
 /**
  * A backend's event with its output redacted, as the harness's own tools
  * redact theirs (keys in a file the backend read, say): its sub-agents'
@@ -1636,11 +1957,12 @@ function backendTool(name: string, title?: string): Tool<any> {
  */
 function redactBackendEvent(e: AgentEvent): AgentEvent {
     if (e.type === "tool_progress") return { ...e, text: redact(e.text) };
-    if (e.type === "tool_end") {
-        const d = e.result.display;
-        const display = d && { ...d, summary: d.summary && redact(d.summary), body: d.body && redact(d.body), diff: d.diff && { path: d.diff.path, before: redact(d.diff.before), after: redact(d.diff.after) } };
-        return { ...e, result: { ...e.result, content: redact(e.result.content), display } };
-    }
+    if (e.type === "tool_end") return { ...e, result: redactResult(e.result) };
     if (e.type === "subagent") return { ...e, event: e.event.type === "text" ? { ...e.event, text: redact(e.event.text) } : redactBackendEvent(e.event) };
     return e;
+}
+
+/** How a sub-agent's own sub-agent is named (in its permission prompts, and in the GUI): under the one whose it is. */
+function nestedAgentLabel(parent: string, label: string): string {
+    return `${parent} › ${label}`;
 }

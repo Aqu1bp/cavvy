@@ -8,9 +8,9 @@ import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
-const { Session, listSessions } = await import("../src/agent/session");
-const { forkSession, forkTitle, forkCut, beforeFork } = await import("../src/agent/fork");
-const { forkUiLog, readSegments, UiLog } = await import("../src/server/history");
+const { Session, cliLinks, listSessions } = await import("../src/agent/session");
+const { forkSession, forkTitle, forkCut, forkTargets, beforeFork } = await import("../src/agent/fork");
+const { forkUiLog, promptKey, readSegments, UiLog } = await import("../src/server/history");
 const { FileHistory } = await import("../src/agent/checkpoints");
 const { App } = await import("../src/ui/app");
 const { runCommand } = await import("../src/commands/index");
@@ -84,6 +84,16 @@ describe("the fork's file", () => {
         expect(existsSync(`${f.path}.lock`)).toBe(false);
     });
 
+    test("native fork markers don't claim the original's CLI session in the sidebar", () => {
+        const s = original();
+        const f = forkSession(s, { cut: 6 });
+        expect(cliLinks(f.path)).toEqual([]);
+        expect(cliLinks(s.path)).toContainEqual({ provider: "claude-code", id: "sess-1", kind: "backend" });
+        f.setBackendSession("claude-code", "own-fork", 6);
+        expect(cliLinks(f.path)).toEqual([{ provider: "claude-code", id: "own-fork", kind: "backend" }]);
+        f.release();
+    });
+
     test("at an earlier response: everything before the next prompt, and a backend session that saw more isn't shared", () => {
         const s = original();
         const before = readFileSync(s.path, "utf-8");
@@ -97,6 +107,21 @@ describe("the fork's file", () => {
         expect(f.backends.size).toBe(0);
         expect(s.backends.get("claude-code")).toEqual({ id: "sess-1", synced: 6 });
         expect(readFileSync(s.path, "utf-8")).toBe(before);
+    });
+
+    test("imported turns can be forked at their own boundaries", () => {
+        const s = original();
+        // Use a saved imported transcript, so the file and live history agree.
+        const imported = Session.create(realpathSync(tempDir()));
+        for (const m of s.messages) imported.push(m.role === "user" && m.meta?.kind === "prompt" ? { ...m, meta: { ...m.meta, imported: true } } : m);
+        imported.setImported({ source: "claude-code", id: "cli-original", importedAt: 100, startedAt: 50, messages: 6, omitted: 2 });
+        expect(forkTargets(imported.messages).map((t) => t.index)).toEqual([0, 4]);
+        expect(forkCut(imported.messages, 0)).toBe(4);
+        const f = forkSession(imported, { cut: forkCut(imported.messages, 0) });
+        f.release();
+        expect(f.messages).toEqual(imported.messages.slice(0, 4));
+        expect(readSegments(f.path)[0]!.imported).toEqual(readSegments(imported.path)[0]!.imported);
+        expect(cliLinks(f.path)).toEqual([]);
     });
 
     test("while the original is working, none of its backend sessions are shared", () => {
@@ -119,6 +144,37 @@ describe("the fork's file", () => {
         expect(f.messages).toEqual(s.messages);
         expect(f.backends.size).toBe(0);
         expect(readSegments(f.path)).toEqual(readSegments(s.path));
+    });
+
+    test("copies ending notices and imported history metadata without backend sub-agent ownership", () => {
+        const s = original();
+        s.recordNotice("warn", "The response reached its output limit.");
+        s.setImported({ source: "claude-code", id: "imported-session", importedAt: 100, messages: 6, omitted: 2 });
+        s.recordSubagentRun("claude-code", "child-session");
+        const f = forkSession(s, { cut: 6, shareBackends: false });
+        f.release();
+        expect(f.notices).toEqual(s.notices);
+        expect(cliLinks(f.path)).toEqual([]);
+        expect(cliLinks(s.path)).toContainEqual({ provider: "claude-code", id: "imported-session", kind: "import" });
+        expect(readSegments(f.path)).toEqual(readSegments(s.path));
+        expect(readFileSync(f.path, "utf-8")).not.toContain('"t":"subagent"');
+        s.push(prompt("next"));
+        s.push(reply("later"));
+        s.recordNotice("error", "Later failure");
+        const earlier = forkSession(s, { cut: 6, shareBackends: false });
+        earlier.release();
+        expect(earlier.notices.map((n) => n.text)).toEqual(["The response reached its output limit."]);
+    });
+
+    test("repairs a final dangling tool call without changing the original", () => {
+        const s = Session.create(realpathSync(tempDir()));
+        s.push(prompt("read"));
+        s.push(call("unfinished"));
+        const before = readFileSync(s.path, "utf-8");
+        const f = forkSession(s, { cut: 2 });
+        f.release();
+        expect(f.messages[2]).toMatchObject({ role: "user", content: [{ type: "tool_result", toolCallId: "unfinished", isError: true }] });
+        expect(readFileSync(s.path, "utf-8")).toBe(before);
     });
 
     test("a rewound original: the history it has now, not the turns it rewound away", () => {
@@ -242,6 +298,29 @@ describe("the fork's file", () => {
 });
 
 describe("the timeline log", () => {
+    test("copies backend steps and their diffs, without queued work or original settings", () => {
+        const s = original();
+        const ui = new UiLog(s.path, s.meta.id);
+        const key = promptKey(s.messages[0] as any);
+        const block = { t: "tool" as const, id: "backend-edit", name: "Edit", title: "Edit a.ts", status: "ok" as const, summary: "Changed one line" };
+        const diff = { path: "a.ts", before: "a", after: "b" } as any;
+        ui.write({ t: "turn", seg: 0, index: 0, at: 111, end: 222, status: "done", prompt: key });
+        ui.write({ t: "step", seg: 0, index: 0, prompt: key, block });
+        ui.write({ t: "tool", id: block.id, diff, durationMs: 5 });
+        ui.write({ t: "step", seg: 0, index: 4, prompt: promptKey(s.messages[4] as any), block: { t: "text", id: "later", text: "Later reply" } });
+        ui.write({ t: "state", mode: "plan", effort: "high" });
+        ui.write({ t: "pending-turn", text: "queued", at: 1 });
+        const f = forkSession(s, { cut: 4 });
+        f.release();
+        forkUiLog({ file: s.path, id: s.meta.id }, { file: f.path, id: f.meta.id });
+        const copied = new UiLog(f.path, f.meta.id);
+        expect(copied.shown(0, 0, f.messages[0] as any)).toEqual([block]);
+        expect(copied.tools.get(block.id)).toMatchObject({ diff, durationMs: 5 });
+        expect([...copied.steps.keys()]).toEqual(["0:0"]);
+        expect(copied.state).toEqual({});
+        expect(readFileSync(join(dirname(f.path), "ui", `${f.meta.id}.jsonl`), "utf-8")).not.toContain("queued");
+    });
+
     test("goes along for the copied turns: their tool rows and times, not the rest", () => {
         const s = original();
         const ui = new UiLog(s.path, s.meta.id);

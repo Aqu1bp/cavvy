@@ -15,7 +15,6 @@ import { dirname, join } from "path";
 import { randomBytes } from "crypto";
 import { APP_VERSION } from "../config/paths";
 import { textOf, type Message } from "../providers/types";
-import { rewindTargets } from "./checkpoints";
 import { hold, letGo, newSessionId, redactedJson, Session, type ForkOrigin, type Line, type SessionMeta } from "./session";
 
 /**
@@ -36,6 +35,9 @@ const COPIED: Record<Line["t"], boolean> = {
     title: false,
     usage: false,
     backend: false,
+    notice: true,
+    import: true,
+    subagent: false,
 };
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
@@ -47,9 +49,21 @@ export function forkTitle(title: string): string {
     return oneLine(`Fork of ${oneLine(title).replace(/^(Fork of\s+)+/i, "") || "(untitled)"}`);
 }
 
+/** Unlike a rewind, a fork can branch from imported prompts without changing the imported original. */
+export function forkTargets(messages: Message[]): { index: number; text: string; checkpoint?: number }[] {
+    return messages.flatMap((m, index) => {
+        if (m.role !== "user") return [];
+        const kind = m.meta?.kind ?? "prompt";
+        if (kind !== "prompt" && kind !== "command") return [];
+        const first = m.content.find((p) => p.type === "text" && !/^<system-reminder>/.test(p.text));
+        const text = (m.meta?.display ?? (first?.type === "text" ? first.text : "")).replace(REMINDERS, "").trim();
+        return [{ index, text, checkpoint: m.meta?.checkpoint }];
+    });
+}
+
 /** Where a fork from the turn of the prompt at `index` ends: before the next prompt (or at the end of the history). */
 export function forkCut(messages: Message[], index: number): number {
-    return rewindTargets(messages).find((t) => t.index > index)?.index ?? messages.length;
+    return forkTargets(messages).find((t) => t.index > index)?.index ?? messages.length;
 }
 
 /**
@@ -108,7 +122,14 @@ function recordsUpTo(lines: Line[], cut: number): Line[] {
         counts.push(count);
         if (l.t === "compact" || (l.t === "rewind" && l.count < cut)) from = i + 1;
     });
-    for (let i = from; i < lines.length; i++) if (lines[i]!.t === "msg" && counts[i] === cut) return lines.slice(0, i + 1);
+    for (let i = from; i < lines.length; i++) {
+        if (lines[i]!.t !== "msg" || counts[i] !== cut) continue;
+        // A turn's ending notice follows its last message. Keep that metadata,
+        // stopping before anything changes the conversation again.
+        let end = i + 1;
+        while (end < lines.length && !["msg", "compact", "rewind"].includes(lines[end]!.t)) end++;
+        return lines.slice(0, end);
+    }
     throw new Error("The session's file doesn't have that part of the conversation.");
 }
 
@@ -153,7 +174,14 @@ function firstPrompt(lines: Line[]): string | undefined {
 export function forkSession(original: Session, o: ForkOptions): Session {
     if (!original.persisted || !existsSync(original.path)) throw new Error("This session hasn't been saved yet, so there's nothing to fork.");
     if (!Number.isInteger(o.cut) || o.cut < 1 || o.cut > original.messages.length) throw new Error("That point isn't in this conversation.");
-    const copied = recordsUpTo(parse(original.path), o.cut).filter((l) => COPIED[l.t]);
+    const source = parse(original.path);
+    const copied = recordsUpTo(source, o.cut).filter((l) => COPIED[l.t]);
+    // Import provenance is written after the imported messages. An earlier
+    // cut still needs its timeline banner, without claiming the CLI session.
+    if (!copied.some((l) => l.t === "import") && copied.some((l) => l.t === "msg" && l.m.role === "user" && l.m.meta?.imported)) {
+        const imported = source.find((l) => l.t === "import");
+        if (imported) copied.push(imported);
+    }
     // What's saved must be what the original has (a write it couldn't make, say), as written: redacted.
     if (redactedJson(historyOf(copied)) !== redactedJson(original.messages.slice(0, o.cut))) throw new Error("The saved conversation doesn't match this session's, so it can't be forked.");
 
@@ -170,7 +198,7 @@ export function forkSession(original: Session, o: ForkOptions): Session {
     const model = o.model ?? original.model;
     const lines: Line[] = [
         { t: "meta", id, cwd: original.meta.cwd, createdAt: Date.now(), version: APP_VERSION, system: original.meta.system, forkOf },
-        ...copied,
+        ...copied.map((l) => l.t === "import" ? { ...l, inherited: true as const } : l),
         { t: "title", title: forkTitle(shown) },
         ...(model ? [{ t: "model" as const, model }] : []),
         ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),

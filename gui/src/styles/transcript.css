@@ -92,6 +92,87 @@
     animation: rise 180ms var(--ease-out);
 }
 
+/* ---- Find in the conversation (⌘F) ---------------------------------- */
+
+.find-bar {
+    position: absolute;
+    top: 10px;
+    right: calc(var(--lane-r) + 12px);
+    z-index: 26;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 36px;
+    padding: 0 6px 0 12px;
+    border-radius: 10px;
+    background: var(--pop);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    box-shadow: var(--shadow-pop);
+    animation: rise 160ms var(--ease-out);
+    max-width: calc(100% - 24px);
+}
+
+.find-bar input {
+    width: 220px;
+    min-width: 0;
+    flex: 1;
+    margin-left: 4px;
+    border: 0;
+    background: transparent;
+    font-size: 0.93rem;
+}
+
+.find-count {
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+    white-space: nowrap;
+    padding: 0 4px;
+}
+
+::highlight(find-match) {
+    background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+::highlight(find-current) {
+    background-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    color: var(--fg);
+}
+
+/* The row find is showing: all of its command, title or summary, not cut short. */
+.tool.found .tool-line .truncate,
+.wrow.live.found .warg,
+.agr.found .truncate,
+.shell-block.found .shell-head code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+/* A turn opened from a search: marked for a moment. */
+.turn.flash {
+    animation: turn-flash 1.8s var(--ease-out);
+    border-radius: 12px;
+}
+
+@keyframes turn-flash {
+    0%,
+    30% {
+        background: color-mix(in srgb, var(--accent) 10%, transparent);
+        box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    100% {
+        background: transparent;
+        box-shadow: 0 0 0 8px transparent;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .turn.flash {
+        animation: none;
+        box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+}
+
 /* ---- Turns ----------------------------------------------------------- */
 
 .turn {
@@ -182,6 +263,18 @@
 
 .user-bubble .chip {
     align-self: flex-start;
+}
+
+.prompt-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    white-space: normal;
+}
+
+.prompt-attachments .chip .truncate {
+    min-width: 0;
+    max-width: 180px;
 }
 
 /* The reply: no avatar, no name. Work, folded once it's done, then what was said. */
@@ -467,9 +560,44 @@ button.wrow:hover {
 }
 
 .tool-line:hover,
-.tool.open > .tool-line {
+.tool.open > .tool-head > .tool-line {
     color: var(--fg);
     background: var(--bg-subtle);
+}
+
+.tool-head {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+/* "Open in editor" beside a tool row, a changed file or a diff header: shown on hover or focus. */
+.icon-btn.row-open {
+    width: 24px;
+    height: 24px;
+    opacity: 0;
+}
+
+.tool-head:hover > .row-open,
+.frow-line:hover > .row-open,
+.diff-head:hover > .row-open,
+.row-open:focus-visible {
+    opacity: 1;
+}
+
+.link-btn.tool-open {
+    margin-bottom: 6px;
+}
+
+.frow-line {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+.frow-line > .frow {
+    flex: 1;
 }
 
 .tool-icon {
@@ -568,13 +696,6 @@ button.wrow:hover {
 .approval-note svg {
     flex: none;
     margin-top: 2px;
-}
-
-.sub-rows {
-    display: flex;
-    flex-direction: column;
-    border-left: 1px solid var(--hairline);
-    padding-left: 6px;
 }
 
 /* ---- Sub-agents, inline ------------------------------------------------ */
@@ -789,6 +910,16 @@ button.wrow:hover {
     font-weight: 500;
 }
 
+/* "Imported from Claude Code · date": the rule's label, not a line. */
+.compacted-rule .imported-label {
+    flex: none;
+    height: auto;
+    background: none;
+    color: var(--fg-muted);
+    font-weight: 500;
+    font-size: 0.857rem;
+}
+
 .compacted-summary {
     margin-top: 10px;
     padding: 12px 16px;
@@ -912,10 +1043,12 @@ button.wrow:hover {
 /* ---- Diffs ---------------------------------------------------------- */
 
 .diff {
+    /* Code tint over a solid panel, shared by the code area and sticky gutters. */
+    --diff-bg: linear-gradient(var(--bg-code), var(--bg-code)), var(--bg-panel);
     border-radius: var(--radius-md);
     box-shadow: 0 0 0 1px var(--border);
     overflow: hidden;
-    background: var(--bg-code);
+    background: var(--diff-bg);
     font-size: 0.82rem;
 }
 
@@ -981,18 +1114,21 @@ button.wrow:hover {
 
 .dl .ln {
     position: sticky;
+    /* The positioned code cells must scroll underneath the gutter. */
+    z-index: 1;
     left: 0;
     text-align: right;
     padding: 0 8px 0 4px;
     color: var(--fg-subtle);
     user-select: none;
     -webkit-user-select: none;
-    background: var(--bg-code);
+    background: linear-gradient(var(--diff-gutter-tint, transparent), var(--diff-gutter-tint, transparent)), var(--diff-bg);
     font-size: 0.92em;
 }
 
 .dl .ln + .ln {
-    left: 3.4em;
+    /* The grid's em uses the row font; these cells use a smaller font. */
+    left: calc(3.4em / 0.92);
     border-right: 1px solid var(--border);
 }
 
@@ -1019,7 +1155,7 @@ button.wrow:hover {
 }
 
 .dl.add .ln {
-    background: color-mix(in srgb, var(--add-bg-strong) 70%, var(--bg-code));
+    --diff-gutter-tint: color-mix(in srgb, var(--add-bg-strong) 70%, var(--bg-code));
     color: var(--add-fg);
 }
 
@@ -1033,7 +1169,7 @@ button.wrow:hover {
 }
 
 .dl.del .ln {
-    background: color-mix(in srgb, var(--del-bg-strong) 70%, var(--bg-code));
+    --diff-gutter-tint: color-mix(in srgb, var(--del-bg-strong) 70%, var(--bg-code));
     color: var(--del-fg);
 }
 
@@ -1045,7 +1181,7 @@ button.wrow:hover {
 }
 
 .dl.sep .ln {
-    background: var(--bg-subtle);
+    --diff-gutter-tint: var(--bg-subtle);
 }
 
 /* Side by side: wrapped, so both halves stay in view. */

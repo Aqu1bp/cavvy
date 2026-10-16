@@ -71,10 +71,17 @@ export interface Settings {
     webSearch?: "auto" | "anthropic" | "brave" | "tavily" | "duckduckgo" | "off";
     /** Bash tool default timeout in ms. */
     bashTimeout?: number;
-    /** Servers from the project's .mcp.json the user approved. */
+    /**
+     * Servers from the project's .mcp.json the user approved: name -> a keyed
+     * hash of what it runs (src/mcp/approval.ts). Any change asks again.
+     * It and the two lists below count from user and local settings only.
+     */
+    approvedMcpjsonServers?: Record<string, string>;
+    /** Approvals by name only, from before they were bound to what runs: each server asks once more. */
     enabledMcpjsonServers?: string[];
+    /** Servers from .mcp.json the user rejected (by name). */
     disabledMcpjsonServers?: string[];
-    /** Approve every server in the project's .mcp.json. */
+    /** Approve every server in every project's .mcp.json, including later changes to what they run. User settings only. */
     enableAllProjectMcpServers?: boolean;
     /** Custom status line: a shell command whose first output line is shown. */
     statusLine?: { command: string };
@@ -86,6 +93,8 @@ export interface Settings {
     notifyAfterSeconds?: number;
     /** Claude Code and Codex get tools to hand tasks to other providers' models (default true). */
     delegation?: boolean;
+    /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
+    editor?: string;
 }
 
 export type SettingsScope = "user" | "project" | "local";
@@ -210,18 +219,23 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
  * project's and local file's deny/ask rules (they can only make things
  * stricter, and /permissions can save local rules in any folder). The
  * auto-mode reviewer comes from the user's settings alone, in any folder: a
- * project shouldn't choose who checks the actions taken in it.
+ * project shouldn't choose who checks the actions taken in it. Approvals of
+ * .mcp.json servers come from the user's and the folder's local settings,
+ * never the committed project file: a repo can't approve its own servers.
+ * (Those in local settings are keyed hashes a repo can't make; the blanket
+ * enableAllProjectMcpServers is a plain flag, so it counts from user
+ * settings alone: a repo could ship a settings.local.json.)
  */
 export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Settings {
     const trusted = opts.trusted ?? true;
     const user = loadScope("user", cwd);
-    const layers = trusted
-        ? [user, loadScope("project", cwd), loadScope("local", cwd)]
-        : [user, restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(loadScope("local", cwd))];
+    const local = loadScope("local", cwd);
+    const layers = trusted ? [user, loadScope("project", cwd), local] : [user, restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(local)];
     const merged: Settings = {};
     for (const s of layers) {
         const { permissions, env, mcpServers, hooks, ...rest } = s;
-        Object.assign(merged, rest);
+        // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
+        for (const [k, v] of Object.entries(rest)) if (k !== "__proto__") (merged as Record<string, unknown>)[k] = v;
         if (permissions) {
             const p = (merged.permissions ??= {});
             for (const key of ["allow", "ask", "deny", "additionalDirectories"] as const) {
@@ -241,7 +255,32 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     }
     if (user.reviewModel) merged.reviewModel = user.reviewModel;
     else delete merged.reviewModel;
+    mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
     return merged;
+}
+
+/** Each layer adds approvals and rejections; a later one decides a name both approve. */
+function mergeMcpApprovals(merged: Settings, own: Settings[]) {
+    const user = own[0]!;
+    delete merged.approvedMcpjsonServers;
+    delete merged.enabledMcpjsonServers;
+    delete merged.disabledMcpjsonServers;
+    delete merged.enableAllProjectMcpServers;
+    const names = (k: "enabledMcpjsonServers" | "disabledMcpjsonServers") => {
+        const all = own.flatMap((s) => (Array.isArray(s[k]) ? s[k]! : []));
+        return all.length ? [...new Set(all)] : undefined;
+    };
+    const approved: Record<string, string> = {};
+    for (const s of own) {
+        const a = s.approvedMcpjsonServers;
+        if (a && typeof a === "object" && !Array.isArray(a)) for (const [k, v] of Object.entries(a)) if (typeof v === "string") Object.defineProperty(approved, k, { value: v, enumerable: true, writable: true, configurable: true });
+    }
+    if (Object.keys(approved).length) merged.approvedMcpjsonServers = approved;
+    if (user.enableAllProjectMcpServers === true) merged.enableAllProjectMcpServers = true;
+    const enabled = names("enabledMcpjsonServers");
+    const disabled = names("disabledMcpjsonServers");
+    if (enabled) merged.enabledMcpjsonServers = enabled;
+    if (disabled) merged.disabledMcpjsonServers = disabled;
 }
 
 function restrictiveOnly(s: Settings): Settings {

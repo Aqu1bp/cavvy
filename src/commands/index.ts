@@ -40,13 +40,13 @@ import { GcloudError } from "../providers/vertex";
 import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
 import { modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
-import { formatPrice, formatTokens, formatUsd } from "../providers/pricing";
+import { formatCost, formatPrice, formatTokens, formatUsd } from "../providers/pricing";
+import { attachmentsNote } from "../providers/files";
 import { getKey, removeKey, setKey, storageDescription } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { maskKey, redact } from "../util/redact";
 import { listSessions, findSession, type Session } from "../agent/session";
-import { forkSession } from "../agent/fork";
-import { rewindTargets } from "../agent/checkpoints";
+import { forkSession, forkTargets } from "../agent/fork";
 import { forkUiLog } from "../server/history";
 import { loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
@@ -60,6 +60,10 @@ import { expandCommand, type CustomCommand } from "./custom";
 import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
+import { clockTime, limitLines } from "../backends/limits";
+import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
+import type { McpServerInfo } from "../mcp/info";
+import { mayStart } from "../mcp/manager";
 
 export interface Command {
     name: string;
@@ -85,6 +89,21 @@ function ago(ms: number): string {
     if (s < 3600) return `${Math.round(s / 60)}m ago`;
     if (s < 86400) return `${Math.round(s / 3600)}h ago`;
     return `${Math.round(s / 86400)}d ago`;
+}
+
+/** Names only: the values never reach the screen. */
+function secretsCommand(app: App, args: string) {
+    const store = app.toolState.secrets;
+    const [verb, name, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+    if (verb === "forget") {
+        if (!name || rest.length) return app.notice("Usage: /secrets forget NAME", "warn");
+        if (!store?.forget(name)) return app.notice(`This session doesn't hold a secret named ${redact(name)}.`, "warn");
+        return app.notice(`Forgot ${name}: new shell commands won't see it. Output that shows its value stays redacted.`);
+    }
+    if (verb) return app.notice("Usage: /secrets, or /secrets forget NAME", "warn");
+    const names = store?.names() ?? [];
+    if (!names.length) return app.notice("No secrets in this session. The agent can ask for one with RequestSecret.");
+    app.print(() => ["", heading("Secrets"), ...names.map((n) => `  $${n}`), theme.muted("  Shell commands in this session see these. Forget one with /secrets forget NAME."), ""]);
 }
 
 function heading(text: string): string {
@@ -943,7 +962,7 @@ async function resumeCommand(app: App, args: string) {
 /** A new session with this conversation so far, switched to; the original stays as it is (/resume goes back). */
 function forkCommand(app: App) {
     const origin = app.session;
-    if (!rewindTargets(origin.messages).length) return app.notice("Nothing to fork yet.");
+    if (!forkTargets(origin.messages).length) return app.notice("Nothing to fork yet.");
     let fork: Session;
     try {
         fork = forkSession(origin, { cut: origin.messages.length, model: app.model && modelRef(app.model) });
@@ -960,16 +979,23 @@ function costCommand(app: App) {
     const s = app.session;
     const lines = ["", heading("Session cost")];
     if (!s.usageByModel.size) lines.push(theme.muted("  No API usage yet."));
-    for (const [model, { usage, cost }] of s.usageByModel) {
+    for (const [model, { usage, cost, unknown }] of s.usageByModel) {
         lines.push(`  ${bold(model)}`);
         lines.push(
             theme.muted(
-                `    input ${formatTokens(usage.inputTokens)} · cache read ${formatTokens(usage.cacheReadTokens ?? 0)} · cache write ${formatTokens(usage.cacheWriteTokens ?? 0)} · output ${formatTokens(usage.outputTokens)}  →  ${formatUsd(cost)}`,
+                `    input ${formatTokens(usage.inputTokens)} · cache read ${formatTokens(usage.cacheReadTokens ?? 0)} · cache write ${formatTokens(usage.cacheWriteTokens ?? 0)} · output ${formatTokens(usage.outputTokens)}  →  ${unknown && !cost ? "price unknown" : formatCost(cost, unknown)}`,
             ),
         );
     }
-    lines.push(kv("Total", bold(formatUsd(s.cost)), 10), kv("Wall time", formatDuration(Date.now() - s.meta.createdAt), 10));
+    lines.push(kv("Total", bold(formatCost(s.cost, s.costUnknown)), 10), kv("Wall time", formatDuration(Date.now() - s.meta.createdAt), 10));
+    if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
+    for (const l of app.planLimits.values()) {
+        const name = getProvider(l.provider)?.name ?? l.provider;
+        lines.push("", heading(`${name} plan limits`));
+        for (const line of limitLines(l)) lines.push(`  ${line}`);
+        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(l.at)}.`));
+    }
     app.print(lines);
 }
 
@@ -989,7 +1015,7 @@ function tasksCommand(app: App, args: string) {
         const r = t.result;
         const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
         const spend = r ? theme.muted(` · ${formatTokens(r.tokens)} tokens${r.cost ? ` · ${formatUsd(r.cost)}` : ""} · ${formatDuration(r.durationMs)}`) : "";
-        lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}`)}  ${state}${spend}`);
+        lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}`)}  ${state}${spend}`);
     }
     if (tasks.some((t) => t.status === "running")) lines.push(theme.subtle("  /tasks stop stops them all; /tasks stop <id> stops one."));
     app.print(lines);
@@ -1023,7 +1049,7 @@ async function statusCommand(app: App) {
         kv("MCP servers", servers.length ? servers.map((s) => `${s.name} ${s.status === "connected" ? theme.success("✔") : s.status === "failed" ? theme.error("✘") : theme.muted(s.status)}`).join(", ") : theme.muted("none")),
         kv("Memory files", memory.length ? memory.map((f) => displayPath(f.path, app.cwd)).join(", ") : theme.muted("none (/init creates HARNESS.md)")),
         kv("Settings", (["user", "project", "local"] as SettingsScope[]).filter((s) => existsSync(settingsPath(s, app.cwd))).map((s) => displayPath(settingsPath(s, app.cwd), app.cwd)).join(", ") || theme.muted("defaults")),
-        kv("Cost so far", formatUsd(app.session.cost)),
+        kv("Cost so far", formatCost(app.session.cost, app.session.costUnknown)),
     ];
     app.print(lines);
 }
@@ -1068,7 +1094,8 @@ async function exportCommand(app: App, args: string) {
                 continue;
             }
             const t = (msg.meta?.display ?? textOf(msg)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-            if (t) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", t, "");
+            const note = attachmentsNote(msg.content);
+            if (t || note) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", ...(t ? [t] : []), ...(note ? [`*${note}*`] : []), "");
         } else {
             const t = textOf(msg).trim();
             if (t) out.push("## Assistant", "", t, "");
@@ -1216,12 +1243,92 @@ async function configCommand(app: App) {
     }
 }
 
+/** The approval card, as lines: what will run, where it's declared, and what approving does. Same facts as the GUI's. */
+function mcpCardLines(app: App, info: McpServerInfo): string[] {
+    const row = (label: string, value: string) => `${theme.muted(padEnd(label, 12))}${value}`;
+    const out: string[] = [theme.warning("MCP servers run with your user permissions. Only approve servers you trust.")];
+    if (info.why) out.push(theme.warning(info.why));
+    out.push("");
+    if (info.transport === "http") {
+        out.push(row("URL", info.url ?? ""));
+        out.push(row("Headers", info.headerNames?.length ? `${info.headerNames.join(", ")} ${theme.muted("(values not shown)")}` : theme.muted("none")));
+    } else {
+        out.push(row("Command", info.command ?? ""));
+        if (!info.args?.length) out.push(row("Arguments", theme.muted("none")));
+        else info.args.forEach((a, i) => out.push(row(i ? "" : "Arguments", `${theme.muted(`${i + 1}.`)} ‹${a}›`)));
+        out.push(row("Runs in", info.cwd ?? ""));
+        out.push(row("Env", info.envNames?.length ? `${info.envNames.join(", ")} ${theme.muted("(values not shown)")}` : theme.muted("none")));
+    }
+    if (info.declaredIn) out.push(row("Declared in", displayPath(info.declaredIn, app.cwd)));
+    out.push(row("Saved in", `${displayPath(paths.localSettings(app.cwd), app.cwd)} ${theme.muted("(this folder only)")}`));
+    if (info.masked) out.push(theme.muted("Values that look like secrets are masked."));
+    if (info.hidden) out.push(theme.warning("It contains invisible or control characters, shown as ⟨U+…⟩."));
+    for (const c of info.cut ?? []) out.push(theme.warning(`Cut to fit: ${c}.`));
+    out.push("", theme.muted(approvalMeaning(app.model?.provider, trustedByUser(app.cwd))));
+    return out;
+}
+
+/**
+ * A folder trusted for this session only (it had nothing to protect at
+ * startup) isn't trusted by the user: approving its .mcp.json servers asks
+ * for that first.
+ */
+async function trustForApproval(app: App): Promise<boolean> {
+    if (trustedByUser(app.cwd)) return true;
+    const header = [
+        theme.warning("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened."),
+        theme.muted(app.cwd),
+        "",
+        theme.muted("Its settings, hooks and memory files already apply this session. Trusting it is saved, and lets you approve its .mcp.json servers."),
+    ];
+    if (!(await confirm(app, "Trust this folder first?", header, "Trust this folder", "Cancel"))) return false;
+    try {
+        trustFolder(app.cwd);
+    } catch (e) {
+        app.notice(redact((e as Error).message), "warn");
+    }
+    return trustedByUser(app.cwd);
+}
+
+/** Shown the card, and approved if the user says yes; false if they didn't (or it changed meanwhile). */
+async function approveMcp(app: App, name: string): Promise<boolean> {
+    for (;;) {
+        if (!(await trustForApproval(app))) return false;
+        const info = app.mcp.describe(name);
+        if (!info?.fingerprint) return false;
+        if (!(await confirm(app, `Allow ${info.label} to run?`, mcpCardLines(app, info)))) return false;
+        try {
+            const st = await app.mcp.approve(name, info.fingerprint);
+            await withProgress(app, [theme.permission(bold(`Connecting ${info.label}…`))], () => app.mcp.start(st));
+            return true;
+        } catch (e) {
+            if (!(e instanceof McpApprovalError)) throw e;
+            app.notice(e.message, "warn");
+            // Changed while the card was open (or trust was taken back): look again.
+            if (e.code !== "changed" && e.code !== "needs_trust") return false;
+        }
+    }
+}
+
 async function mcpCommand(app: App, args: string) {
     const [sub, name] = args.split(/\s+/);
+    const guarded = async (fn: () => Promise<unknown>) => {
+        try {
+            await fn();
+        } catch (e) {
+            if (!(e instanceof McpApprovalError)) throw e;
+            app.notice(e.message, "warn");
+        }
+    };
     if (sub === "reconnect" && name) {
-        await app.mcp.restart(name);
+        await guarded(async () => {
+            const st = await app.mcp.reconnect(name);
+            if (st.status === "needs-approval") app.notice(`${name} needs approval${st.approval?.reason === "changed" ? " again: what it runs changed" : ""}. Run /mcp to review it.`, "warn");
+        });
         return;
     }
+    // What the GUI (or an edit to .mcp.json) changed since.
+    await app.mcp.sync();
     for (;;) {
         const servers = [...app.mcp.servers.values()];
         if (!servers.length) {
@@ -1240,12 +1347,14 @@ async function mcpCommand(app: App, args: string) {
                 case "connected":
                     return theme.success(`✔ connected · ${s.tools.length} tools${s.era ? ` · ${s.era}` : ""}`);
                 case "failed":
-                    return theme.error(`✘ failed: ${truncate((s.error ?? "").split("\n")[0]!, 60)}`);
+                    return theme.error(`✘ failed: ${truncate(visible((s.error ?? "").split("\n")[0]!).text, 60)}`);
                 case "needs-approval":
-                    return theme.warning("needs approval");
+                    return theme.warning(s.approval?.reason === "changed" ? "needs approval again (changed)" : s.approval?.reason === "legacy" ? "needs approval once more" : "needs approval");
                 case "connecting":
                 case "pending":
                     return theme.muted("connecting…");
+                case "disabled":
+                    return theme.muted(s.approval?.state === "rejected" ? "rejected" : "disabled");
                 default:
                     return theme.muted(s.status);
             }
@@ -1253,52 +1362,52 @@ async function mcpCommand(app: App, args: string) {
         const pick = (await app.showDialog(
             new SelectDialog<string>({
                 title: "MCP servers",
-                items: servers.map((s) => ({ label: bold(s.name), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : "settings" })),
+                items: servers.map((s) => ({ label: bold(visible(s.name).text), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : "settings" })),
                 numbers: true,
             }),
         )) as string | undefined;
         if (!pick) return;
         const st = app.mcp.servers.get(pick);
-        if (!st) continue;
-        type A = "approve" | "reject" | "reconnect" | "tools" | "error" | "disable" | "enable";
+        const info = app.mcp.describe(pick);
+        if (!st || !info) continue;
+        type A = "approve" | "reject" | "revoke" | "reconnect" | "tools" | "error" | "disable" | "enable";
         const actions: SelectItem<A>[] = [];
-        const cfgLine = st.config.url ? `${st.config.url}` : `${st.config.command ?? ""} ${(st.config.args ?? []).join(" ")}`;
-        if (st.status === "needs-approval") actions.push({ label: "Approve and connect", value: "approve", description: "saved to this project's local settings" }, { label: "Reject", value: "reject" });
+        const project = st.source === "project";
+        const approval = st.approval?.state;
+        const offInFile = st.config.disabled === true;
+        if (project && !offInFile && (approval === "needs-approval" || approval === "rejected")) actions.push({ label: approval === "rejected" ? "Enable (review and approve)…" : "Review and approve…", value: "approve", description: "saved to this folder's local settings" });
+        if (project && (approval === "needs-approval" || approval === "approved")) actions.push({ label: "Reject", value: "reject", description: "keeps it off until you approve it again" });
         if (st.status === "connected") actions.push({ label: "Show tools", value: "tools" }, { label: "Reconnect", value: "reconnect" }, { label: "Disable for this session", value: "disable" });
         if (st.status === "failed") actions.push({ label: "Show error", value: "error" }, { label: "Reconnect", value: "reconnect" });
-        if (st.status === "disabled") actions.push({ label: "Enable", value: "enable" });
-        const a = (await app.showDialog(new SelectDialog<A>({ title: st.name, header: [theme.muted(truncate(cfgLine, 200)), theme.muted(`source: ${st.source === "project" ? ".mcp.json (project)" : "settings"}`)], items: actions, numbers: true }))) as A | undefined;
+        // A rejected project server is enabled through the card above, never straight away.
+        if (st.status === "disabled" && (!project || mayStart(st))) actions.push({ label: "Enable", value: "enable", description: "for this session" });
+        if (project && approval === "approved" && !st.approval?.viaAll) actions.push({ label: "Revoke approval", value: "revoke", description: "stops it; it asks again" });
+        const header = project
+            ? mcpCardLines(app, info)
+            : [theme.muted(info.transport === "http" ? (info.url ?? "") : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted("source: settings")];
+        if (project && offInFile) header.unshift(theme.muted('Turned off in .mcp.json ("disabled": true).'));
+        if (approval === "rejected") header.unshift(theme.muted("You rejected this server."));
+        const a = (await app.showDialog(new SelectDialog<A>({ title: info.label, header, items: actions, numbers: true }))) as A | undefined;
         if (!a) continue;
-        if (a === "approve" || a === "enable") {
-            if (st.source === "project") {
-                if (a === "approve" && !(await confirm(app, `Allow ${st.name} to run?`, [theme.warning("MCP servers run with your user permissions. Only approve servers you trust."), theme.muted(truncate(cfgLine, 200))]))) continue;
-                updateSettings("local", app.cwd, (s) => {
-                    s.enabledMcpjsonServers = [...new Set([...(s.enabledMcpjsonServers ?? []), st.name])];
-                    s.disabledMcpjsonServers = (s.disabledMcpjsonServers ?? []).filter((n) => n !== st.name);
-                });
-                app.reloadSettings();
-                app.mcp.load();
-            } else st.status = "pending";
-            const s2 = app.mcp.servers.get(st.name);
-            if (s2) await app.mcp.start(s2);
+        if (a === "approve") {
+            await approveMcp(app, st.name);
+        } else if (a === "enable") {
+            await app.mcp.enable(st.name);
         } else if (a === "reject") {
-            updateSettings("local", app.cwd, (s) => {
-                s.disabledMcpjsonServers = [...new Set([...(s.disabledMcpjsonServers ?? []), st.name])];
-                s.enabledMcpjsonServers = (s.enabledMcpjsonServers ?? []).filter((n) => n !== st.name);
-            });
-            app.reloadSettings();
-            app.mcp.load();
+            await guarded(() => app.mcp.reject(st.name));
+        } else if (a === "revoke") {
+            await guarded(() => app.mcp.revoke(st.name));
         } else if (a === "reconnect") {
-            await withProgress(app, [theme.permission(bold(`Reconnecting ${st.name}…`))], () => app.mcp.restart(st.name));
+            await guarded(() => withProgress(app, [theme.permission(bold(`Reconnecting ${info.label}…`))], () => app.mcp.reconnect(st.name)));
         } else if (a === "disable") {
             await st.client?.close();
             st.client = undefined;
             st.status = "disabled";
         } else if (a === "tools") {
-            app.print(["", heading(`${st.name} tools`), ...st.tools.map((t) => `  ${bold(t.name)}${t.annotations?.readOnlyHint ? theme.muted(" (read-only)") : ""} ${theme.muted(truncate((t.description ?? "").split("\n")[0]!, termCols() - t.name.length - 20))}`)]);
+            app.print(["", heading(`${info.label} tools`), ...st.tools.map((t) => `  ${bold(visible(t.name).text)}${t.annotations?.readOnlyHint ? theme.muted(" (read-only)") : ""} ${theme.muted(truncate(visible(maskConfigValues((t.description ?? "").split("\n")[0]!, st.config)).text, termCols() - t.name.length - 20))}`)]);
             return;
         } else if (a === "error") {
-            app.print(["", heading(`${st.name} error`), ...(st.error ?? "").split("\n").map((l) => theme.error("  " + l))]);
+            app.print(["", heading(`${info.label} error`), ...(info.error ?? "").split("\n").map((l) => theme.error("  " + l))]);
             return;
         }
     }
@@ -1565,6 +1674,7 @@ const BUILTIN: Command[] = [
             app.print((cols) => ["", heading("Todos"), ...renderTodos(todos, cols)]);
         } },
     { name: "bashes", description: "List and stop background shells", run: bashesCommand },
+    { name: "secrets", description: "List the secrets this session holds (names only), or forget one", args: "[forget NAME]", whileBusy: true, run: secretsCommand },
     { name: "add-dir", description: "Allow working in another directory", args: "<path>", run: addDirCommand },
     { name: "doctor", description: "Check the installation and providers", run: doctorCommand },
     { name: "exit", aliases: ["quit", "q"], description: "Exit", whileBusy: true, noEcho: true, run: (app) => app.exit(0) },

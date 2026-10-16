@@ -27,6 +27,8 @@ describe("analyzeCommand", () => {
     test("respects single quotes, double quotes and escapes", () => {
         expect(argvs("echo 'a;b' \"c && d\" e\\;f")).toEqual([["echo", "a;b", "c && d", "e;f"]]);
         expect(argvs('echo "say \\"hi\\""')).toEqual([["echo", 'say "hi"']]);
+        // In double quotes a backslash escapes only $ ` " \ and a newline; before anything else the shell keeps it.
+        expect(argvs('echo "a\\nb" "\\u0025d" "c\\\\d" "e\\$f" "g\\\nh"')).toEqual([["echo", "a\\nb", "\\u0025d", "c\\d", "e$f", "gh"]]);
     });
 
     test("fd duplication (2>&1, >&2) is not a command separator", () => {
@@ -126,6 +128,18 @@ describe("isReadOnlyCommand: allowed", () => {
         "git show HEAD:package.json",
         "git branch",
         "git branch -a",
+        // List mode: the filters take a commit, and --list takes patterns.
+        "git branch -a --no-merged main",
+        "git branch --merged main",
+        "git branch --merged=main 'feat*'",
+        "git branch -r --contains abc123",
+        "git branch --no-contains HEAD~3 -v",
+        "git branch --points-at HEAD",
+        "git branch --list 'feat*'",
+        "git branch -al 'fix/*'",
+        "git branch --sort=-committerdate --format '%(refname:short)' --merged main",
+        "git branch -vv",
+        "git branch --merged",
         "git remote -v",
         "git stash list",
         "git tag -l",
@@ -212,6 +226,21 @@ describe("isReadOnlyCommand: not read-only", () => {
         "git stash",
         "git branch -D x",
         "git branch newbranch",
+        // Outside list mode a name is a branch to create (git does, with -v or --sort too).
+        "git branch -v newbranch",
+        "git branch --sort=refname newbranch",
+        "git branch --format '%(refname)' newbranch",
+        "git branch -- newbranch",
+        "git branch -m old new",
+        "git branch -d merged",
+        "git branch --merged -d x",
+        "git branch -c a b",
+        "git branch -f x HEAD",
+        "git branch -u origin/main",
+        "git branch --set-upstream-to=origin/main",
+        "git branch --unset-upstream",
+        "git branch --track x origin/x",
+        "git branch --edit-description",
         "git tag v1",
         "git tag -d v1",
         "git remote add o https://example.com/r.git",

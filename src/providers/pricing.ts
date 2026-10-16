@@ -52,6 +52,16 @@ export function formatUsd(n: number): string {
     return `$${n.toFixed(2)}`;
 }
 
+/**
+ * A cost where some usage may have had no known price (Vertex, a model not
+ * in the catalog): "—" when none of it was priced, "$X+" when part was. Not
+ * "$0", which would read as free.
+ */
+export function formatCost(usd: number, unknown: boolean | undefined): string {
+    if (!unknown) return formatUsd(usd);
+    return usd > 0 ? `${formatUsd(usd)}+` : "—";
+}
+
 export function formatTokens(n: number): string {
     if (n < 1000) return String(n);
     if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;

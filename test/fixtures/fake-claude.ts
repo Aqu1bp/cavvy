@@ -20,7 +20,7 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
+// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
@@ -33,7 +33,13 @@
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
-// FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error, like a CLI without it
+// FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
+// FAKE_LOG_ENV=1     logs its whole environment at start
+// FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
+//                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
+//                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
+//                    Claude Code sends one per request)
+// FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -45,6 +51,7 @@ const log = (o: unknown) => {
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
 log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY) });
+if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
 
 if (argv[0] === "auth" && argv[1] === "status") {
     const on = process.env.FAKE_LOGGED_IN !== "0";
@@ -62,7 +69,8 @@ const flag = (name: string) => {
 };
 const resume = flag("--resume");
 const firstScenario = process.env.FAKE_SCENARIO ?? "write";
-if (resume?.startsWith("gone")) {
+// FAKE_GONE_ID: a session id (a real-looking UUID) that no longer exists.
+if (resume?.startsWith("gone") || (resume && resume === process.env.FAKE_GONE_ID)) {
     out({ type: "result", subtype: "error_during_execution", is_error: true, errors: [`No conversation found with session ID: ${resume}`], usage: {}, session_id: resume });
     process.exit(1);
 }
@@ -164,7 +172,7 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
         ...(old ? {} : answering ? { user_message_uuid: answering, user_message_uuids: [answering] } : { user_message_uuid: null, origin: { kind: "task-notification" } }),
         ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: process.env.FAKE_FAST_MODE_END } : {}),
         usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
-        modelUsage: { "claude-test-1": { contextWindow: 200000 } },
+        modelUsage: { [process.env.FAKE_RESOLVED_MODEL ?? "claude-test-1"]: { contextWindow: 200000 } },
         ...extra,
     });
 }
@@ -418,11 +426,24 @@ async function turn(content: any[], uuid?: string) {
     }
     answering = uuid;
     const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario;
-    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+    // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill).
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"] });
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
+    }
+    const rateLimit = () => {
+        for (let i = 0; process.env.FAKE_RATE_LIMIT && i < Number(process.env.FAKE_RATE_LIMIT_REPEAT ?? 1); i++) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT, "utf-8")), session_id: sessionId });
+        // Some requests repeat the rejection without its window or reset time.
+        if (process.env.FAKE_RATE_LIMIT_SPARSE === "1") out({ type: "rate_limit_event", rate_limit_info: { status: "rejected" }, session_id: sessionId });
+        if (process.env.FAKE_RATE_LIMIT_FOLLOWUP) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT_FOLLOWUP, "utf-8")), session_id: sessionId });
+    };
+    if (process.env.FAKE_RATE_LIMIT_LATE !== "1") rateLimit();
+    if (scenario === "rate-limit") {
+        out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "You've hit your limit" }] }, error: "rate_limit", parent_tool_use_id: null, session_id: sessionId });
+        if (process.env.FAKE_RATE_LIMIT_LATE === "1") rateLimit();
+        return result("success", { is_error: true, result: "You've hit your limit" });
     }
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
@@ -486,6 +507,12 @@ async function turn(content: any[], uuid?: string) {
         toolUse("toolu_h", "Bash", { command: "sleep 1000" });
         await new Promise<void>((r) => (wake = r));
         if (interrupted) return result("error_during_execution", { errors: ["Request interrupted by user"] });
+    } else if (scenario === "write-hang") {
+        // Something done, then a command that runs until it's stopped.
+        if (!(await use("toolu_wh", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" }))) return;
+        toolUse("toolu_wh2", "Bash", { command: "sleep 1000" });
+        await new Promise<void>((r) => (wake = r));
+        if (interrupted) return result("error_during_execution", { errors: ["Request interrupted by user"] });
     }
     if (!go) return;
     text("All done.");
@@ -524,11 +551,14 @@ for await (const chunk of Bun.stdin.stream()) {
                     },
                 });
             } else if (sub === "mcp_set_servers") {
+                if (process.env.FAKE_MCP_REFUSE === "hang") continue;
+                if (process.env.FAKE_MCP_REFUSE === "exit") process.exit(3);
                 if (process.env.FAKE_MCP_REFUSE === "1") {
                     out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "Unsupported control request subtype: mcp_set_servers" } });
                     continue;
                 }
-                // Like the CLI: connect to each, then answer.
+                // Like the CLI: replace the dynamic delegation set, connect, then answer.
+                mcpServers.clear();
                 const errors: Record<string, string> = {};
                 for (const [name, cfg] of Object.entries<any>(m.request.servers ?? {})) {
                     if (cfg.type !== "http") continue;

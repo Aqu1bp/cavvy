@@ -1,5 +1,7 @@
 // Minimal Server-Sent Events parser for fetch() response bodies.
 
+import { ProviderError } from "./types";
+
 export interface SseEvent {
     event?: string;
     data: string;
@@ -46,6 +48,13 @@ export function stallTimer(parent: AbortSignal | undefined, holdsReply = false) 
         limit: () => limit,
         stop: () => clearTimeout(timer),
     };
+}
+
+/** The error for a stalled request: retryable, and marked so the agent gives up after a few. */
+export function stallError(provider: string, ms = stall.ms): ProviderError {
+    const e = new ProviderError(stallMessage(provider, ms), undefined, true);
+    e.stalled = true;
+    return e;
 }
 
 export function stallMessage(provider: string, ms = stall.ms): string {
