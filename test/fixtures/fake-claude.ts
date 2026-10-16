@@ -37,7 +37,6 @@
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { McpClient } from "../../src/mcp/client";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
 
 const log = (o: unknown) => {
@@ -136,7 +135,6 @@ function selfApproved(tool: string, input: any): boolean {
 
 const sessionId = resume ?? `sess-${Math.random().toString(36).slice(2, 10)}`;
 /** Servers added with mcp_set_servers, and the tools each lets run without asking. */
-const stdioServers = new Map<string, McpClient>();
 const mcpServers = new Map<string, McpServerRef & { allowed: Set<string> }>();
 const pending = new Map<string, (r: any) => void>();
 let interrupted = false;
@@ -538,22 +536,10 @@ for await (const chunk of Bun.stdin.stream()) {
                     out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "Unsupported control request subtype: mcp_set_servers" } });
                     continue;
                 }
-                // Like the CLI: replace the dynamic set, connect to each, then answer.
-                await Promise.all([...stdioServers.values()].map((s) => s.close()));
-                stdioServers.clear();
+                // Like the CLI: replace the dynamic delegation set, connect, then answer.
                 mcpServers.clear();
                 const errors: Record<string, string> = {};
                 for (const [name, cfg] of Object.entries<any>(m.request.servers ?? {})) {
-                    if (cfg.type === "stdio") {
-                        const client = new McpClient(name, cfg, cwd);
-                        stdioServers.set(name, client);
-                        try {
-                            await client.connect();
-                            const tools = await client.listTools();
-                            log({ mcpConnected: name, tools: tools.map((t) => t.name) });
-                        } catch (e) { errors[name] = (e as Error).message; }
-                        continue;
-                    }
                     if (cfg.type !== "http") continue;
                     const s = { url: cfg.url, headers: cfg.headers ?? {}, allowed: new Set<string>((cfg.tools ?? []).filter((t: any) => t.permission_policy === "always_allow").map((t: any) => t.name)) };
                     try {
@@ -583,5 +569,3 @@ for await (const chunk of Bun.stdin.stream()) {
 }
 // stdin closed: like the real CLI, exit once nothing's left to do (unless it's stuck).
 if (process.env.FAKE_IGNORE_STOP === "1") await new Promise(() => {});
-
-await Promise.all([...stdioServers.values()].map((s) => s.close()));

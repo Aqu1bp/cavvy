@@ -24,7 +24,8 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
-import type { McpServerConfig, Settings } from "../config/settings";
+import type { Settings } from "../config/settings";
+import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
@@ -149,7 +150,7 @@ export interface AgentOptions {
     client: ProviderClient;
     settings: () => Settings;
     /** Read the current manager at each turn (including after approval changes). */
-    approvedMcpServers?: () => Record<string, McpServerConfig>;
+    approvedMcpServers?: () => ApprovedMcpServers;
     checker: PermissionChecker;
     classifier?: AutoClassifier;
     /** Fixed list, or a getter (MCP tools appear once their servers connect). */
@@ -828,11 +829,11 @@ export class Agent {
     private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
         const s = this.o.settings();
         let trusted = false;
-        let approvedMcpServers: Record<string, McpServerConfig> = {};
+        let approvedMcpServers: ApprovedMcpServers | undefined;
         try {
             // Implicit session trust does not authorize CLI project configuration.
             trusted = trustedByUser(this.state.cwd);
-            approvedMcpServers = this.o.approvedMcpServers?.() ?? {};
+            approvedMcpServers = this.o.approvedMcpServers?.();
         } catch {
             trusted = false;
             host.emit({ type: "notice", level: "warn", message: "Could not check folder trust or approved MCP servers; this turn runs without project configuration or MCP servers." });

@@ -28,6 +28,12 @@ export interface ServerState {
     collidesWith?: string;
 }
 
+/** Approval provenance for backends; definitions remain exactly as load() read them. */
+export interface ApprovedMcpServers {
+    cwd: string;
+    servers: Record<string, Pick<ServerState, "config" | "source">>;
+}
+
 const MAX_OUTPUT = 40_000;
 
 const clean = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -136,11 +142,13 @@ export class McpManager {
     }
 
     /** The configured servers load() permits starting, including ones still connecting or temporarily failed. */
-    approvedServers(): Record<string, McpServerConfig> {
-        return Object.fromEntries([...this.servers.values()]
-            .filter((s) => !s.config.disabled && s.collidesWith === undefined && ["pending", "connecting", "connected", "failed"].includes(s.status))
-            // Preserve the launch directory when a backend turn has changed cwd since this manager was created.
-            .map((s) => [s.name, s.config.url ? { ...s.config } : { ...s.config, cwd: s.config.cwd ?? this.cwd }]));
+    approvedServers(): ApprovedMcpServers {
+        return {
+            cwd: this.cwd,
+            servers: Object.fromEntries([...this.servers.values()]
+                .filter((s) => !s.config.disabled && s.collidesWith === undefined && ["pending", "connecting", "connected", "failed"].includes(s.status))
+                .map((s) => [s.name, { config: structuredClone(s.config), source: s.source }])),
+        };
     }
 
     async startAll(signal?: AbortSignal) {

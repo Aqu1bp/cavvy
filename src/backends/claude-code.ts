@@ -36,7 +36,7 @@ import { parseRule, pathPattern } from "../permissions/rules";
 import { paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
-import { claudeMcpServers } from "./claude-mcp";
+import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
@@ -299,7 +299,7 @@ class ClaudeTurn {
 
     private args(): string[] {
         const t = this.t;
-        const a = [...extraArgs(this.def.id), ...STREAM_ARGS, "--include-partial-messages", "--strict-mcp-config", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
+        const a = [...extraArgs(this.def.id), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
         if (t.model.id !== "default") a.push("--model", t.model.id);
         if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
         if (t.resumeId) a.push("--resume", t.resumeId);
@@ -312,8 +312,11 @@ class ClaudeTurn {
         const permissions = claudePermissions(t.rules);
         // Always override external preferences: an unsupported model must not silently switch to Opus.
         const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
+        const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
+        if (mcp.strict) a.push("--strict-mcp-config");
+        if (mcp.warning) this.host.emit({ type: "notice", level: "warn", message: mcp.warning });
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
@@ -443,29 +446,21 @@ class ClaudeTurn {
         void this.proc.stop(this.aborted ? 1000 : 3000).then(() => this.proc.kill());
     }
 
-    /**
-     * One dynamic set: mcp_set_servers replaces the previous set. It supports stdio
-     * as well as HTTP (verified with 2.1.301), keeping secrets out of argv and disk.
-     */
+    /** Keep delegation credentials on stdin; native project/user/plugin MCP servers load through Claude Code. */
     private async attach() {
-        const warn = (message: string) => this.host.emit({ type: "notice", level: "warn", message });
-        let servers: Record<string, unknown> = {};
-        try {
-            // Native MCP tools bypass Harness's read-only permission checks.
-            if (!this.t.readOnly) servers = claudeMcpServers(this.t.approvedMcpServers ?? {}, this.t.cwd, warn);
-        } catch {
-            warn("Could not translate approved MCP servers; Claude Code runs without them.");
-        }
         const o = this.t.orchestrator;
-        if (o) servers[o.name] = {
-            type: "http",
-            url: o.url,
-            headers: { Authorization: o.authorization },
-            timeout: o.toolTimeoutSec * 1000,
-            alwaysLoad: true,
-            tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
+        if (!o || this.t.readOnly) return;
+        const warn = (message: string) => this.host.emit({ type: "notice", level: "warn", message });
+        const servers = {
+            [o.name]: {
+                type: "http",
+                url: o.url,
+                headers: { Authorization: o.authorization },
+                timeout: o.toolTimeoutSec * 1000,
+                alwaysLoad: true,
+                tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
+            },
         };
-        if (!Object.keys(servers).length) return;
         const id = requestId();
         const answered = new Promise<Record<string, any>>((resolve) => this.controls.set(id, resolve));
         this.proc.send({ type: "control_request", request_id: id, request: { subtype: "mcp_set_servers", servers } });
