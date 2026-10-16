@@ -10,7 +10,6 @@
 // reviewer answers them instead). The harness never reads Codex's
 // credentials (~/.codex/auth.json) and never signs in on its behalf.
 
-import { codexMcpOverrides } from "./codex-mcp";
 import { existsSync, readFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
@@ -24,6 +23,7 @@ import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
 import { canonical } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
+import { codexMcpOverrides } from "./codex-mcp";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 
@@ -444,7 +444,7 @@ class CodexTurn {
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
-            const overrides = await this.mcpServersOff(t.cwd, Boolean(t.readOnly), o?.name);
+            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), o?.name);
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
             const off = overrides.config;
             if (overrides.reservedCollision) {
@@ -990,8 +990,8 @@ class CodexTurn {
         this.host.emit(e);
     }
 
-    /** Read the CLI's effective config and provenance before thread/start or resume can launch servers. */
-    private async mcpServersOff(cwd: string, readOnly: boolean, reservedName?: string) {
+    /** Build MCP overrides for every turn from CLI config/provenance, or return an error if unsafe to start. */
+    private async mcpOverrides(cwd: string, readOnly: boolean, reservedName?: string) {
         try {
             const r = codexMcpOverrides(await this.rpc.request("config/read", { cwd, includeLayers: true }), readOnly, reservedName);
             if (r.missingProvenance) this.host.emit({ type: "notice", level: "warn", message: "Codex did not identify its config layers; all configured MCP servers are disabled for this turn." });

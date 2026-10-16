@@ -25,7 +25,6 @@
 // through those credentials. The harness's own provider keys are removed from
 // the CLI's environment (childEnv), so it can't be pointed at one of those.
 
-import { claudeMcpServers } from "./claude-mcp";
 import { homedir } from "os";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
@@ -37,6 +36,7 @@ import { parseRule, pathPattern } from "../permissions/rules";
 import { paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
+import { claudeMcpServers } from "./claude-mcp";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
