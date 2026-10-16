@@ -8,7 +8,7 @@ const prevHarnessHome = process.env.HARNESS_HOME;
 const HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-test-"));
 process.env.HARNESS_HOME = HARNESS_HOME;
 
-const { analyzeCommand, effectiveArgv, isReadOnlyCommand, dangerousReason, sensitiveTarget, suggestBashRules } = await import("../src/permissions/bash-safety");
+const { analyzeCommand, commandsWithDirs, effectiveArgv, isReadOnlyCommand, dangerousReason, sensitiveTarget, suggestBashRules } = await import("../src/permissions/bash-safety");
 const { bashRuleMatches } = await import("../src/permissions/rules");
 
 afterAll(() => {
@@ -547,4 +547,15 @@ describe("suggestBashRules", () => {
         const [rule] = suggestBashRules(cmd);
         expect(bashRuleMatches(rule!.slice("Bash(".length, -1), cmd, "allow")).toBe(true);
     });
+});
+
+
+test("cwd tracking accepts cd and pushd option terminators and cd physical/logical flags", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "harness-test-cd-"));
+    try {
+        for (const prefix of ["cd --", "pushd --", "cd -P", "cd -L", "cd -P --"]) {
+            expect(commandsWithDirs(`${prefix} nested && cat file`, cwd)[0]?.dir).toBe(join(cwd, "nested"));
+        }
+        expect(commandsWithDirs("cd - && cat file", cwd)[0]?.dir).toBeNull();
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

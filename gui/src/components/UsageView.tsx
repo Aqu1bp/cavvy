@@ -34,6 +34,7 @@ function PlanLimitsGroup() {
                             <div>
                                 <div class="usage-plan-name">
                                     {name(l.provider)?.agentCli?.plan ?? name(l.provider)?.name ?? l.provider}
+                                    {" · "}{name(l.provider)?.agentCli?.accounts?.find((a) => a.id === (l.accountId ?? "default"))?.name ?? l.accountId ?? "Default"}
                                     <Show when={m!.asOf}>
                                         <span class="plan-asof"> · {m!.asOf}</span>
                                     </Show>
