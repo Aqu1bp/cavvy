@@ -717,9 +717,14 @@ export class Engine {
         const done: Promise<void> = work
             .catch(() => undefined)
             .finally(() => {
-                if (this.closing.get(id) === done) this.closing.delete(id);
+                if (this.closing.get(id) === done) {
+                    this.closing.delete(id);
+                    this.closingIn.delete(id);
+                }
             });
         this.closing.set(id, done);
+        // As for one being unloaded: its SessionEnd hooks may run in its folder meanwhile.
+        if (rt) this.closingIn.set(id, rt.ws.cwd);
         try {
             await work;
         } catch (e) {
