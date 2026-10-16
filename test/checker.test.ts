@@ -727,6 +727,37 @@ describe("Bash", () => {
         expect(check(T("Bash"), bash("cp x stra\u00DFe.txt")).behavior).toBe("allow");
         for (const cmd of ["cat .env.example", "cat .ENV.Sample", "cat README.md", "cat ~/.a\u0175s/x"]) expect(check(T("Bash"), bash(cmd)).behavior).toBe("allow");
     });
+
+    test("a .env with any suffix asks, and only a whole template name is exempt, as for Read", () => {
+        for (const cmd of ["cat .env.\uFF45xample", "cat .env.prod\u00FCction", "cat .env.example.local", "cat .env.example*"]) {
+            expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "ask"]);
+        }
+        for (const cmd of ["cat .env.example", "cat .env.dist", "cat x.env.example"]) expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "allow"]);
+    });
+
+    test("an allowed program can't write the agent CLIs' config either, but can work in a Claude Code worktree", async () => {
+        settings.permissions!.allow = ["Bash(cp:*)", "Bash(bun test:*)"];
+        for (const cmd of [
+            "cp x .claude/settings.json",
+            "cp x .codex/config.toml",
+            "cp x ~/.claude/settings.json",
+            "cp x .claude/worktrees/feature/.claude/settings.json",
+            "cp x .claude/worktrees/feature/../../settings.json",
+            "cp x .claude/worktrees/../settings.json",
+            "cp x .claude/worktrees/.harness/settings.json",
+            "cp x .claude/worktrees/*/settings.json",
+            `cp x ".claude/worktrees/feature/"'..'"/settings.json"`,
+        ]) {
+            const d = check(T("Bash"), bash(cmd));
+            expect([cmd, d.behavior]).toEqual([cmd, "ask"]);
+            expect(d.reason).toMatch(/harness or git configuration/);
+        }
+        for (const cmd of ["bun test .claude/worktrees/feature/test", `bun test ${join(W, ".claude", "worktrees", "fix-x")}`, "cp x .claude/worktrees/feature/src/a.ts"]) {
+            expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "allow"]);
+        }
+        const { configTarget } = await import("../src/permissions/bash-safety");
+        expect(configTarget("cd .claude/worktrees/feature && bun test")).toBeUndefined();
+    });
 });
 
 describe("network, MCP and other tools", () => {
@@ -860,6 +891,16 @@ describe("rules in other spellings", () => {
         expect(check(T("Write"), write(join(W, "LIB", "a.ts"))).behavior).toBe("ask");
     });
 
+    test("a character that folds to a glob operator or a slash stays literal", async () => {
+        const { deniedWithin } = await import("../src/permissions/rules");
+        settings.permissions!.deny = ["Read(docs/\uFF1F.md)", "Read(a/**)"]; // fullwidth ？
+        expect(check(T("Read"), { file_path: join(W, "docs", "x.md") }).behavior).toBe("allow");
+        expect(check(T("Read"), { file_path: join(W, "docs", "\uFF1F.md") }).behavior).toBe("deny");
+        expect(check(T("Read"), { file_path: join(W, "a\uFF0Fb") }).behavior).toBe("allow"); // one name with a fullwidth ／ in it
+        expect(deniedWithin(["Read(docs/\uFF0A.md)"], join(W, "docs", "readme.md"), W, "read")).toBeUndefined();
+        expect(deniedWithin(["Read(docs/\uFF0A.md)"], join(W, "docs"), W, "read")).toBe("Read(docs/\uFF0A.md)");
+    });
+
     (caseInsensitiveFs ? test : test.skip)("a folder grant is refused when a deny rule covers it in another spelling", async () => {
         const { deniedWithin } = await import("../src/permissions/rules");
         expect(deniedWithin(["Read(secrets/**)"], join(W, "\u017Fecrets"), W, "read")).toBe("Read(secrets/**)");
@@ -885,6 +926,13 @@ describe("caselessFold", () => {
         expect(caselessFold(".har\u200Bness\uFEFF\u00AD")).toBe(".harness");
         expect(caselessFold(".g\u0131t")).toBe(".git");
         expect(caselessFold("caf\u00E9")).toBe(caselessFold("cafe\u0301")); // NFC and NFD
+        expect(caselessFold("\u039F\u0394\u039F\u03A3")).toBe(caselessFold("\u03BF\u03B4\u03BF\u03C3x").slice(0, -1)); // final sigma: σ wherever it is
+    });
+
+    test("never adds a path separator: a name stays one segment", () => {
+        for (const s of ["a\uFF0Fb", "\u2100", "\u2101", "x/\uFF0F/y"]) {
+            expect(caselessFold(s).split("/").length).toBe(s.split("/").length);
+        }
     });
 
     test("ASCII is only lower-cased, and folding again changes nothing", () => {

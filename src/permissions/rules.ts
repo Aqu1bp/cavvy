@@ -51,10 +51,24 @@ export function toolPath(toolName: string, input: unknown): string | undefined {
     return typeof v === "string" ? v : undefined;
 }
 
-function globToRegex(glob: string): RegExp {
+/**
+ * The glob as a regex. `fold` (see CASE_FOLDS) applies to its literal text
+ * only, so a character that folds to `*` or `?` (fullwidth ＊) stays literal.
+ */
+function globToRegex(glob: string, fold: (s: string) => string = (s) => s): RegExp {
     let re = "";
+    let literal = "";
+    const flush = () => {
+        re += fold(literal).replace(/[\\^$+.()|{}[\]*?]/g, "\\$&");
+        literal = "";
+    };
     for (let i = 0; i < glob.length; i++) {
         const c = glob[i]!;
+        if (c !== "*" && c !== "?") {
+            literal += c;
+            continue;
+        }
+        flush();
         if (c === "*") {
             if (glob[i + 1] === "*") {
                 // ** matches across directories; **/ also matches zero dirs
@@ -66,10 +80,9 @@ function globToRegex(glob: string): RegExp {
                     i++;
                 }
             } else re += "[^/]*";
-        } else if (c === "?") re += "[^/]";
-        else if ("\\^$+.()|{}[]".includes(c)) re += "\\" + c;
-        else re += c;
+        } else re += "[^/]";
     }
+    flush();
     return new RegExp(`^${re}$`);
 }
 
@@ -105,15 +118,14 @@ export function matchPath(spec: string, absPath: string, root: string, generous 
     const raw = pathPattern(spec, root);
     const pats = generous ? [...new Set([raw, resolvedPattern(raw)])] : [raw];
     const folds: readonly ((s: string) => string)[] = generous ? CASE_FOLDS : [(s) => s];
-    return pats.some((p) =>
+    return pats.some((pat) =>
         folds.some((fold) => {
-            const pat = fold(p);
             const target = fold(absPath);
-            if (globToRegex(pat).test(target)) return true;
+            if (globToRegex(pat, fold).test(target)) return true;
             // "dir/" or "dir" should cover everything under it (at any depth for a bare name).
             if (/[*?]/.test(spec)) return false;
             const dir = pat.replace(/\/+$/, "");
-            return globToRegex(dir).test(target) || globToRegex(dir + "/**").test(target);
+            return globToRegex(dir, fold).test(target) || globToRegex(dir + "/**", fold).test(target);
         }),
     );
 }
@@ -226,15 +238,15 @@ export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode:
  * segment: once the folder's segments run out, whatever is left of the
  * pattern can still name something inside it.
  */
-function couldMatchWithin(pattern: string[], dir: string[]): boolean {
+function couldMatchWithin(pattern: string[], dir: string[], fold: (s: string) => string): boolean {
     if (!dir.length) return true;
     if (!pattern.length) return false;
     const [p, ...restP] = pattern;
-    if (p === "**") return couldMatchWithin(restP, dir) || couldMatchWithin(pattern, dir.slice(1));
+    if (p === "**") return couldMatchWithin(restP, dir, fold) || couldMatchWithin(pattern, dir.slice(1), fold);
     // ** inside a name (src/**.pem) spans folders too: past a folder that matches its start, it can reach anything.
     const span = p!.indexOf("**");
-    if (span >= 0) return globToRegex(p!.slice(0, span) + "*").test(dir[0]!);
-    return globToRegex(p!).test(dir[0]!) && couldMatchWithin(restP, dir.slice(1));
+    if (span >= 0) return globToRegex(p!.slice(0, span) + "*", fold).test(dir[0]!);
+    return globToRegex(p!, fold).test(dir[0]!) && couldMatchWithin(restP, dir.slice(1), fold);
 }
 
 /**
@@ -245,8 +257,8 @@ function couldMatchWithin(pattern: string[], dir: string[]): boolean {
  * it. Rules for other tools don't count.
  */
 export function deniedWithin(rules: string[], dir: string, root: string, access: "read" | "write"): string | undefined {
-    // "/a/b" -> ["", "a", "b"]; the root itself is just [""]. In every spelling, as matchPath has it.
-    const segments = (p: string, fold: (s: string) => string) => fold(p.replace(/\/+$/, "")).split("/");
+    // "/a/b" -> ["", "a", "b"]; the root itself is just [""].
+    const segments = (p: string) => p.replace(/\/+$/, "").split("/");
     const dirs = [...new Set([dir, canonical(dir)])];
     for (const raw of rules) {
         const r = parseRule(raw);
@@ -256,7 +268,8 @@ export function deniedWithin(rules: string[], dir: string, root: string, access:
         const pat = pathPattern(r.spec, root);
         // A plain path also covers everything under it, as matchPath has it.
         const pats = [pat, resolvedPattern(pat)].flatMap((x) => (/[*?]/.test(r.spec!) ? [x] : [x, `${x.replace(/\/+$/, "")}/**`]));
-        if (CASE_FOLDS.some((f) => pats.some((x) => dirs.some((d) => couldMatchWithin(segments(x, f), segments(d, f)))))) return raw;
+        // In every spelling, as matchPath has it.
+        if (CASE_FOLDS.some((f) => pats.some((x) => dirs.some((d) => couldMatchWithin(segments(x), segments(f(d)), f))))) return raw;
     }
     return undefined;
 }

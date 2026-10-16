@@ -45,13 +45,19 @@ const INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;
  * ß and ẞ into "ss", ſ into "s", ﬅ into "st", the Kelvin sign into "k"),
  * NFKC (fullwidth ｈ is h), and invisible characters dropped. That is wider
  * than any one volume (APFS keeps fullwidth letters apart): right for
- * finding protected names, wrong for exempting a name.
+ * finding protected names, wrong for exempting a name. Folding never adds a
+ * `/` (fullwidth ／ becomes ∕), so a name stays one path segment.
  */
 export function caselessFold(s: string): string {
+    return s.split("/").map(foldName).join("/");
+}
+
+function foldName(s: string): string {
     let out = s.replace(INVISIBLE, "");
     // Twice: case mapping can leave text that normalizes further, and back.
     for (let i = 0; i < 2; i++) out = out.normalize("NFKC").toLowerCase().toUpperCase().toLowerCase();
-    return out.normalize("NFKC").replace(INVISIBLE, "");
+    // Lower-casing picks σ or ς by position in the word; folding has only σ.
+    return out.normalize("NFKC").replace(INVISIBLE, "").replace(/ς/g, "σ").replace(/\//g, "∕");
 }
 
 /**

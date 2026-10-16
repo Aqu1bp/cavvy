@@ -569,7 +569,8 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
 export const ENV_FILE = "a .env file";
 
 const SENSITIVE = ([
-    [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)\b)([.*?[][\w.*?[\]-]*)?(?=$|[\s'";|&)>])/, ENV_FILE],
+    // Any suffix (.env.prodüction too); a template only when that's the whole name, as for Read.
+    [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)(?=$|[\s'";|&)>]))([.*?[][^\s'";|&)>/]*)?(?=$|[\s'";|&)>])/, ENV_FILE],
     [/(^|[\s'"=:/~])\.(ssh|aws|gnupg|azure)(\/|\b)|\.kube\/config|\.docker\/config\.json|\.config\/gcloud/, "a credentials directory"],
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
@@ -658,10 +659,23 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     return undefined;
 }
 
-// Paths whose contents configure the harness or git: permissions, hooks, MCP
-// servers, git hooks/fsmonitor. A shell command that isn't read-only and
-// names one asks, like an Edit of the same file would.
-const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+// Paths whose contents configure the harness, the agent CLIs it runs, or git:
+// permissions, hooks, MCP servers, skills, git hooks/fsmonitor. A shell command
+// that isn't read-only and names one asks, like an Edit of the same file would.
+const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.claude|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+
+/**
+ * The command with each `.claude/worktrees/<name>` put aside: Claude Code keeps
+ * git checkouts there, projects of their own (see withoutWorktrees in
+ * checker.ts), and `cd .claude/worktrees/x && bun test` isn't about .claude
+ * config. Not a name like the config's or one with shell patterns or
+ * expansions in it, and not a path that climbs back out with `..`.
+ */
+function withoutWorktreePaths(text: string): string {
+    return text.replace(/\.claude\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)((?:\/[^\s'";|&)>]*)?)/gi, (whole, name: string, rest: string) =>
+        name === "." || name === ".." || spellings(name).some((n) => /^\.(harness|claude|codex|git|mcp\.json)$/.test(n)) || /\/\.\.(\/|$)/.test(rest) ? whole : `<worktree>${rest}`,
+    );
+}
 // `git config` keys that make later read-only git commands run programs.
 const GIT_EXEC_CONFIG = /\bgit\b[^|;&\n]*\bconfig\b[^|;&\n]*\b(core\.(fsmonitor|pager|editor|sshcommand|hookspath|askpass)|diff\.[^\s=]*(external|textconv|command)|filter\.|alias\.|credential\.|gpg\.|sequence\.editor|uploadpack\.|merge\.[^\s=]*driver|include\.|includeif\.)/i;
 
@@ -792,7 +806,7 @@ export function configTarget(cmd: string, harnessHome?: string): string | undefi
     // In every spelling: on a case-insensitive volume `.harneſſ/` is `.harness/`.
     const homes = harnessHome ? spellings(harnessHome) : [];
     for (const text of [cmd, unquoted].flatMap(spellings)) {
-        if (CONFIG_PATH.test(text)) return "harness or git configuration";
+        if (CONFIG_PATH.test(withoutWorktreePaths(text))) return "harness or git configuration";
         if (GIT_EXEC_CONFIG.test(text)) return "git settings that run programs";
         if (homes.some((h) => text.includes(h))) return "harness configuration";
     }
