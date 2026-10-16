@@ -299,6 +299,97 @@
     flex: none;
 }
 
+.wt-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.wt-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.wt-label {
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+}
+
+.wt-hint {
+    font-size: 0.786rem;
+    color: var(--fg-subtle);
+}
+
+.wt-error {
+    font-size: 0.786rem;
+    color: var(--danger);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.wt-form .input[aria-invalid="true"] {
+    border-color: var(--danger);
+}
+
+.wt-location {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* The folder it goes in, cut from the left so the end stays visible. */
+.wt-dir {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.wt-sep {
+    margin-left: -6px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.wt-location .input {
+    flex: 1 0 140px;
+}
+
+.wt-path {
+    font-size: 0.786rem;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+}
+
+.wt-ignored {
+    align-items: flex-start;
+}
+
+.wt-ignored svg {
+    margin-top: 2px;
+}
+
+.wt-ignored ul {
+    margin: 6px 0 2px;
+    padding-left: 18px;
+    max-height: 160px;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+}
+
+.wt-confirm {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
 .fp-bar {
     display: flex;
     gap: 6px;

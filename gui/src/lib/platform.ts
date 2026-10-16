@@ -80,10 +80,10 @@ export function forgetToken() {
 }
 
 /** A native folder picker; undefined when there's none (the browser), so the GUI shows its own. */
-export async function pickFolder(defaultPath?: string): Promise<string | null | undefined> {
+export async function pickFolder(defaultPath?: string, title = "Open a project folder"): Promise<string | null | undefined> {
     if (!isTauri) return undefined;
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const r = await open({ directory: true, multiple: false, defaultPath, title: "Open a project folder" });
+    const r = await open({ directory: true, multiple: false, defaultPath, title });
     return typeof r === "string" ? r : null;
 }
 

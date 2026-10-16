@@ -17,17 +17,18 @@ export function FolderPicker() {
     );
     createEffect(
         on(folderPickerOpen, (o) => {
-            if (o) setPath(app.homeCwd ? app.homeCwd.replace(/\/[^/]+\/?$/, "") || "~" : "~");
+            if (o) setPath(o.start ?? (app.homeCwd ? app.homeCwd.replace(/\/[^/]+\/?$/, "") || "~" : "~"));
         }),
     );
     createEffect(on(listing, (l) => l && setTyped(l.path)));
-    const close = () => setFolderPickerOpen(undefined);
-    const choose = (p: string) => {
-        folderPickerOpen()?.then(p);
-        close();
+    const choose = (p: string | undefined) => {
+        const request = folderPickerOpen();
+        setFolderPickerOpen(undefined);
+        request?.then(p);
     };
+    const close = () => choose(undefined);
     return (
-        <Dialog open={Boolean(folderPickerOpen())} onClose={close} title="Open a project folder" width={560}>
+        <Dialog open={Boolean(folderPickerOpen())} onClose={close} title={folderPickerOpen()?.title ?? "Open a project folder"} width={560}>
             <div class="fp-bar">
                 <button class="icon-btn" title="Home" onClick={() => setPath("~")}>
                     <HomeIcon size={15} />
@@ -56,7 +57,7 @@ export function FolderPicker() {
                     Cancel
                 </button>
                 <button class="btn primary" disabled={!listing()} onClick={() => choose(listing()!.path)}>
-                    Open this folder
+                    {folderPickerOpen()?.action ?? "Open this folder"}
                 </button>
             </div>
         </Dialog>
