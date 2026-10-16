@@ -1598,7 +1598,7 @@ describe("Claude Code MCP approval boundary", () => {
         manager.load();
         await run("again");
         expect(payloads()[1].pending).toEqual({ type: "stdio", ...cfg });
-    });
+    }, 15_000); // Two CLI runs start and stop seven stdio fixtures, including their shutdown grace periods.
 
     test("a throwing manager or translator fails closed without echoing its error", async () => {
         for (const approvedMcpServers of [() => { throw new Error(sentinel); }, () => ({ broken: { command: 42 } as any })]) {
