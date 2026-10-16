@@ -997,7 +997,7 @@ function tasksCommand(app: App, args: string) {
         const r = t.result;
         const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
         const spend = r ? theme.muted(` · ${formatTokens(r.tokens)} tokens${r.cost ? ` · ${formatUsd(r.cost)}` : ""} · ${formatDuration(r.durationMs)}`) : "";
-        lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}`)}  ${state}${spend}`);
+        lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}`)}  ${state}${spend}`);
     }
     if (tasks.some((t) => t.status === "running")) lines.push(theme.subtle("  /tasks stop stops them all; /tasks stop <id> stops one."));
     app.print(lines);

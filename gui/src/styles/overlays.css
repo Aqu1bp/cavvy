@@ -223,6 +223,72 @@
     gap: 10px;
 }
 
+/* ---- Commit ------------------------------------------------------- */
+
+.commit-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.commit-dialog p {
+    margin: 0;
+}
+
+.commit-files {
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 6px;
+}
+
+.commit-file {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px;
+    overflow-wrap: anywhere;
+}
+
+.commit-file input {
+    flex: none;
+}
+
+.commit-message-label {
+    font-weight: 600;
+}
+
+.commit-dialog textarea {
+    width: 100%;
+    min-height: 140px;
+    resize: vertical;
+}
+
+.commit-generate {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.commit-warning {
+    color: var(--warning);
+}
+
+.commit-error {
+    margin: 0;
+    padding: 10px;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 0.857rem;
+}
+
 /* ---- Rewind, folder picker, trust ----------------------------------- */
 
 .rw-list {
