@@ -96,11 +96,11 @@ describe("deny rules reach hidden and qualified commands", () => {
 });
 
 describe("read-only classification", () => {
-    for (const cmd of ["git -c core.pager=x log", "git -p log", "git --exec-path=/tmp status", "git grep -Oevil foo", "git reflog expire --all", "git remote update", "env", "man -P ./x ls", "less f", "go env -w GOFLAGS=x", "go vet -vettool=./x ./...", "hostname evil", "/tmp/bin/ls"]) {
+    for (const cmd of ["git -c core.pager=x log", "git -p log", "git --exec-path=/tmp status", "git grep -Oevil foo", "git grep --open=sh -l . -- x.sh", "git grep --op=evil foo", "git reflog expire --all", "git remote update", "env", "man -P ./x ls", "less f", "go env -w GOFLAGS=x", "go vet -vettool=./x ./...", "hostname evil", "/tmp/bin/ls"]) {
         if (cmd === "env") test(`"env" alone is read-only`, () => expect(isReadOnlyCommand(cmd)).toBe(true));
         else test(`${JSON.stringify(cmd)} is not read-only`, () => expect(isReadOnlyCommand(cmd)).toBe(false));
     }
-    for (const cmd of ["/bin/ls -la", "/usr/bin/git status", "git -C sub log -1", "git --no-pager diff", "git remote -v", "git config --get user.name", "rg --version", "echo hi >&2", "ls 2>&-", "sed -n '/start/,/end/p' f", "sed -n 's/a/b/gp' f"]) {
+    for (const cmd of ["/bin/ls -la", "/usr/bin/git status", "git -C sub log -1", "git --no-pager diff", "git grep --or -e a -e b", "git remote -v", "git config --get user.name", "rg --version", "echo hi >&2", "ls 2>&-", "sed -n '/start/,/end/p' f", "sed -n 's/a/b/gp' f"]) {
         test(`${JSON.stringify(cmd)} is read-only`, () => expect(isReadOnlyCommand(cmd)).toBe(true));
     }
 });

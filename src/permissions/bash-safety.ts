@@ -378,6 +378,13 @@ function sedReadOnly(args: string[]): boolean {
 // `--exec-path`, `-p` (pager) and friends can all execute commands.
 const GIT_SAFE_GLOBAL = new Set(["--no-pager", "-P", "--no-optional-locks", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs"]);
 
+/** `--name` or `--name=value` where name is at least `min` letters of `option` (getopt and git take unambiguous abbreviations). */
+function longPrefixOf(arg: string, option: string, min: number): boolean {
+    if (!arg.startsWith("--")) return false;
+    const name = arg.slice(2).split("=")[0]!;
+    return name.length >= min && option.startsWith(name);
+}
+
 /** `git branch` options that only filter or format the listing. */
 const BRANCH_DISPLAY = new Set(["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current", "-i", "--ignore-case", "--no-color", "--no-column", "--no-abbrev", "--omit-empty"]);
 /** Filters that put `git branch` in list mode, with the commit they take (`--merged` and friends default to HEAD). */
@@ -439,8 +446,9 @@ function gitReadOnly(args: string[]): boolean {
     const sub = args[i];
     if (!sub) return false;
     const subArgs = args.slice(i + 1);
-    // Options that write files or run programs even on read-only subcommands.
-    if (subArgs.some((a) => /^--(output|ext-diff|open-files-in-pager)(=|$)/.test(a) || (sub === "grep" && /^-[a-zA-Z]*O/.test(a)))) return false;
+    // Options that write files or run programs even on read-only subcommands. git grep takes any
+    // unambiguous start of a long option (`--open=sh` is --open-files-in-pager=sh).
+    if (subArgs.some((a) => /^--(output|ext-diff|open-files-in-pager)(=|$)/.test(a) || (sub === "grep" && (/^-[a-zA-Z]*O/.test(a) || longPrefixOf(a, "open-files-in-pager", 2))))) return false;
     if (sub === "reflog") return !["expire", "delete", "drop"].includes(subArgs[0] ?? "");
     if (GIT_READ_ONLY.has(sub)) return true;
     if (sub === "branch") return gitBranchListsOnly(subArgs);
@@ -561,7 +569,7 @@ export function finalSearch(cmd: string): { name: string; piped: boolean } | und
     if (raw.length - raw.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) !== argv.length) return undefined;
     // ggrep is GNU grep.
     if (!isReadOnlySimple(name === "ggrep" ? [argv[0]!.replace(/[^/]*$/, "grep"), ...argv.slice(1)] : argv)) return undefined;
-    if (argv.slice(1).some((w) => /^-[a-zA-Z]*[vL]/.test(w) || /^--(invert-match|files-without-match)$/.test(w))) return undefined;
+    if (argv.slice(1).some((w) => /^-[a-zA-Z]*[vL]/.test(w) || longPrefixOf(w, "invert-match", 3) || longPrefixOf(w, "files-without-match", 3))) return undefined;
     for (const [i, c] of a.commands.entries()) {
         if (!onlySafeAssignments(c.argv)) return undefined;
         if (i === last) continue;
