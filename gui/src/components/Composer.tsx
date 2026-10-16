@@ -13,9 +13,9 @@ import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { Popover } from "./ui/Popover";
 import { Ring } from "./ui/bits";
+import { PlanMeter } from "./PlanMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
-import { PlanMeter } from "./PlanMeter";
 import { contextView } from "../lib/context";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
@@ -509,7 +509,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="hb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
-                    <PlanMeter provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
+                    <PlanMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show when={p.sessionId}>
                         <ContextRing sessionId={p.sessionId!} />
                     </Show>
