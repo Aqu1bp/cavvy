@@ -3,6 +3,7 @@
 import { createSignal } from "solid-js";
 import type { CliSessionInfo, EditorInfo, EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
+import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
 import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
@@ -270,6 +271,16 @@ export async function pin(id: string, pinned: boolean) {
 /** Set aside (or back in play). Sending to it puts it back too. */
 export async function settle(id: string, settled: boolean) {
     await rpc.call("session.settle", { id, settled }).catch(reportError);
+}
+
+/** After the confirm dialog. The server moves its files to the trash; Undo puts them back. */
+export async function deleteSession(id: string) {
+    try {
+        await rpc.call("session.delete", { id });
+    } catch (e) {
+        return reportError(e);
+    }
+    toast("Session deleted", "info", { label: "Undo", run: () => void rpc.call("session.restore", { id }).catch(reportError) }, UNDO_DELETE_MS);
 }
 
 export async function archive(id: string, archived: boolean) {

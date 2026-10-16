@@ -59,6 +59,10 @@
     gap: 0;
 }
 
+.delete-dialog p {
+    margin: 0 0 8px;
+}
+
 .dialog-actions {
     display: flex;
     align-items: center;

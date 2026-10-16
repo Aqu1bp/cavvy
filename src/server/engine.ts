@@ -35,6 +35,7 @@ import { cleanTitle, modelSummary, Runtime } from "./runtime";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
+import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import type {
     CliSessionInfo,
     CliSessionsList,
@@ -96,6 +97,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
 const UNLOAD_AFTER_MS = 30_000;
+/** Deleted sessions older than a week are purged at start and this often. */
+const PURGE_EVERY_MS = 60 * 60 * 1000;
 
 export interface EngineClient {
     send(ev: ServerEvent): void;
@@ -115,18 +118,22 @@ interface GuiStore {
 }
 
 const storeFile = () => join(harnessHome(), "gui.json");
+/** The store's lists of session ids. */
+const STORE_FLAGS = ["pinned", "archived", "settled"] as const;
 
 function readStore(): GuiStore {
     return readJson<GuiStore>(storeFile()) ?? {};
 }
 
-function updateStore(fn: (s: GuiStore) => void) {
+/** Best effort: false when it couldn't be saved. */
+function updateStore(fn: (s: GuiStore) => void): boolean {
     const s = readStore();
     fn(s);
     try {
         writeJson(storeFile(), s, 0o600);
+        return true;
     } catch {
-        // best effort
+        return false;
     }
 }
 
@@ -201,6 +208,7 @@ export class Engine {
     private removing = new Set<string>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
+    private purgeTimer?: ReturnType<typeof setInterval>;
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -212,11 +220,15 @@ export class Engine {
 
     async start() {
         void this.firstListings();
+        purgeTrash();
+        this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
+        this.purgeTimer.unref?.();
     }
 
     async stop() {
         this.stopping = true;
         this.terminals.stop();
+        clearInterval(this.purgeTimer);
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
@@ -563,7 +575,7 @@ export class Engine {
         if (sortCliSession(links, source, entry.id, entry.originator) === "hidden") throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
         const existing = links.held.get(linkKey(source, entry.id));
         if (existing) {
-            await this.afterClosing(existing);
+            while (this.closing.has(existing)) await this.afterClosing(existing);
             const rt = this.openSession(existing);
             await rt.ready.catch(() => undefined);
             return rt;
@@ -658,10 +670,79 @@ export class Engine {
         if (!this.clients.has(client)) this.unloadLater(id);
     }
 
-    /** Before opening a session that's being unloaded: once that's done, if the server isn't stopping meanwhile. */
+    /**
+     * Before opening a session that's being unloaded or deleted: once that's
+     * done, if the server isn't stopping meanwhile. Callers loop on `closing`
+     * (`while (this.closing.has(id)) await ...`) so they act in the same turn
+     * they found nothing closing: returning from here leaves a gap in which a
+     * delete can start.
+     */
     private async afterClosing(id: string) {
         await this.closing.get(id);
         if (this.stopping) throw new RpcError("The harness server is stopping.", "stopping");
+    }
+
+    /**
+     * Delete a session: its files go to the trash (session-delete.ts). One
+     * that's working is left alone; one open here but idle is closed first.
+     * Meanwhile opening or renaming it waits, as for one being unloaded, and
+     * then finds nothing.
+     */
+    private async deleteSession(id: string) {
+        // A model still being set up (as it opens) isn't work to refuse over: wait for it, a while.
+        const until = Date.now() + 10_000;
+        for (;;) {
+            while (this.closing.has(id)) await this.afterClosing(id);
+            const setup = this.runtimes.get(id)?.modelSetup;
+            if (!setup || Date.now() >= until) break;
+            await Promise.race([setup.catch(() => undefined), new Promise((r) => setTimeout(r, until - Date.now()).unref?.())]);
+        }
+        const rt = this.runtimes.get(id);
+        if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
+        const store = readStore();
+        const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
+        // Held from before its runtime closes until it's in the trash, so a terminal can't take it in between.
+        const release = claimForDelete(locateSession(id).file);
+        const work = (async () => {
+            try {
+                if (rt) {
+                    this.runtimes.delete(id);
+                    clearTimeout(this.unloadTimers.get(id));
+                    this.unloadTimers.delete(id);
+                    await rt.close().catch(() => undefined);
+                }
+                trashSession(id, flags);
+            } finally {
+                release();
+            }
+        })();
+        const done: Promise<void> = work
+            .catch(() => undefined)
+            .finally(() => {
+                if (this.closing.get(id) === done) {
+                    this.closing.delete(id);
+                    this.closingIn.delete(id);
+                }
+            });
+        this.closing.set(id, done);
+        // As for one being unloaded: its SessionEnd hooks may run in its folder meanwhile.
+        if (rt) this.closingIn.set(id, rt.ws.cwd);
+        try {
+            await work;
+        } catch (e) {
+            if (rt) {
+                // Closed, but not deleted: windows that had it open it again, as it now is on disk.
+                for (const c of this.clients) if (c.subs.delete(id)) c.send({ type: "session.reload", sessionId: id });
+                const summary = this.listSessions(1000, flags.archived).find((s) => s.id === id);
+                if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
+            }
+            throw e;
+        }
+        for (const c of this.clients) c.subs.delete(id);
+        updateStore((s) => {
+            for (const key of STORE_FLAGS) if (s[key]) s[key] = s[key]!.filter((x) => x !== id);
+        });
+        this.broadcast({ type: "sessions.remove", id });
     }
 
     private runtime(id: unknown): Runtime {
@@ -985,7 +1066,7 @@ export class Engine {
             }
             case "session.open": {
                 const id = str(p.id, "id");
-                await this.afterClosing(id);
+                while (this.closing.has(id)) await this.afterClosing(id);
                 const rt = this.openSession(id);
                 this.watch(client, rt.id);
                 return rt.snapshot();
@@ -1044,7 +1125,7 @@ export class Engine {
             case "session.rename": {
                 const id = str(p.id, "id");
                 const title = cleanTitle(str(p.title, "title"));
-                await this.afterClosing(id);
+                while (this.closing.has(id)) await this.afterClosing(id);
                 const rt = this.runtimes.get(id);
                 if (rt) rt.rename(title);
                 else if (title) {
@@ -1101,6 +1182,22 @@ export class Engine {
                 const rt = this.runtimes.get(id);
                 const summary = rt ? this.summaryOf(rt) : this.listSessions(1000, method === "session.archive" ? !on : false).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
                 if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
+                return null;
+            }
+            case "session.delete":
+                await this.deleteSession(checkId(p.id));
+                return null;
+            case "session.restore": {
+                const id = checkId(p.id);
+                while (this.closing.has(id)) await this.afterClosing(id);
+                const flags = restoreSession(id);
+                const saved = updateStore((s) => {
+                    for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
+                });
+                // In whichever list it's in: without its flags saved, it's back as an active one.
+                const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
+                if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
+                if (!saved && STORE_FLAGS.some((key) => flags[key])) client.send({ type: "toast", level: "warn", message: `The session is back, but its pin and archived state couldn't be saved to ${storeFile()}.` });
                 return null;
             }
             case "session.killShell":

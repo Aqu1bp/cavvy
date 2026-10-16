@@ -343,6 +343,11 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Model
 
+    /** The model being set up (as it opens, or switched), if it is. */
+    get modelSetup(): Promise<unknown> | undefined {
+        return this.switching;
+    }
+
     private track<T>(p: Promise<T>): Promise<T> {
         const t = p.finally(() => {
             if (this.switching === t) this.switching = undefined;

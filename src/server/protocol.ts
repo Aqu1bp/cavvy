@@ -618,6 +618,8 @@ export type ServerEvent =
     | { type: "session.ops"; sessionId: string; seq: number; ops: SessionOp[] }
     | { type: "sessions.upsert"; session: SessionSummary }
     | { type: "sessions.remove"; id: string }
+    /** Its runtime was closed under the window (a delete that failed): open it again for a fresh snapshot, keeping the draft and view. */
+    | { type: "session.reload"; sessionId: string }
     | { type: "notify"; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
@@ -681,6 +683,9 @@ export interface Methods {
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };
     "session.settle": { params: { id: string; settled: boolean }; result: null };
+    /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
+    "session.delete": { params: { id: string }; result: null };
+    "session.restore": { params: { id: string }; result: null };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
     /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };

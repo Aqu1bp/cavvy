@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
-import { Archive, ArrowRight, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun } from "lucide-solid";
+import { Archive, ArrowRight, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2 } from "lucide-solid";
 import { MODE_LABELS } from "@shared/protocol";
-import { activate, app, reportError, rpc } from "../state/app";
+import { activate, app, handleFor, reportError, rpc } from "../state/app";
 import { archive, chooseProject, exportSession, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs, THEMES } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
@@ -9,6 +9,7 @@ import { ago, tildify } from "../lib/format";
 import { mod, terminalShortcut } from "../lib/platform";
 import { ModeIcon, MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
+import { askDelete } from "./Header";
 
 interface Entry {
     id: string;
@@ -69,6 +70,7 @@ export function CommandPalette() {
                 { id: "compact", section: "Session", label: "Compact conversation", icon: <Shrink size={15} />, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },
                 { id: "export", section: "Session", label: "Copy conversation as Markdown", icon: <Share size={15} />, run: () => void exportSession(id()!) },
                 { id: "archive", section: "Session", label: "Archive session", icon: <Archive size={15} />, run: () => void archive(id()!, true) },
+                { id: "delete", section: "Session", label: "Delete session…", icon: <Trash2 size={15} />, run: () => askDelete(handleFor(id())) },
             );
             for (const m of MODES) out.push({ id: `mode-${m}`, section: "Permission mode", label: `Mode: ${MODE_LABELS[m].label}`, hint: MODE_LABELS[m].description, icon: <ModeIcon mode={m} size={15} />, run: () => void setMode(m) });
         }
