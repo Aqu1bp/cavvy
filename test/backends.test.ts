@@ -27,6 +27,7 @@ const { stopTiming } = await import("../src/backends/cli");
 const { backendActionsNote } = await import("../src/agent/agent");
 const { withoutActionsNote } = await import("../src/server/history");
 const { backgroundTiming } = await import("../src/backends/claude-code");
+const { forkSession, forkCut } = await import("../src/agent/fork");
 const { framedText, pdfPlaceholder } = await import("../src/providers/files");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
@@ -998,6 +999,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(usageOf(session).inputTokens).toBe(200 + 400);
     });
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP tool call Codex asks about goes to the harness's rules and the user, not declined unasked", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         const yes = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
@@ -1043,6 +1045,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
     }, 20_000);
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP server's form goes to the question dialog, its answers typed as the form asks; with nobody to ask it's declined", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         process.env.FAKE_ELICIT = "form";
@@ -1587,6 +1590,221 @@ describe("fast mode backend wiring", () => {
     }
 });
 
+// A forked session and its original never go on with the same backend
+// session: whichever goes on with a shared one first forks it (natively), and
+// one that saw past the fork point isn't shared at all.
+describe("forked sessions", () => {
+    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
+        const { addAccount, removeAccount } = await import("../src/providers/accounts");
+        const selected = addAccount(provider, { id: "fork-work", name: "Fork work" });
+        const other = addAccount(provider, { id: "fork-other", name: "Fork other" });
+        const source = Session.create(cwd);
+        source.setAccount(provider, selected.id);
+        const settings = { delegation: false, permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider, session: source, settings, ask: () => ({ allow: true }) });
+        let fork: Awaited<ReturnType<typeof makeAgent>> | undefined;
+        let replacement = selected;
+        try {
+            await orig.run("first on work");
+            const shared = source.backends.get(provider)!.id;
+            if (change === "folder") {
+                // A catalog change before forking must not relabel the source thread's owner.
+                removeAccount(provider, selected.id, selected.folder);
+                replacement = addAccount(provider, { id: selected.id, name: selected.name, folder: join(bin, `${provider}-replacement`) });
+            }
+            const session = forkSession(source, { cut: source.messages.length });
+            expect(session.accountId(provider)).toBe(selected.id);
+            expect(session.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            if (change === "selection") session.setAccount(provider, other.id);
+            session.release();
+            fork = await makeAgent({ provider, session: Session.load(session.path), settings, ask: () => ({ allow: true }) });
+            rmSync(LOG, { force: true });
+            expect(await fork.run("in the fork")).toBe("done");
+            const folder = change === "selection" ? other.folder : replacement.folder;
+            expect(starts()[0][provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(folder);
+            if (provider === "claude-code") {
+                expect(resumes()).toEqual([change === "none" ? `${shared} (fork)` : "new"]);
+                if (change !== "none") expect(userTexts().at(-1)).toContain("User: first on work");
+            } else {
+                const threads = received().filter((m) => m.method?.startsWith("thread/"));
+                expect(threads.map((m) => m.method)).toEqual([change === "none" ? "thread/fork" : "thread/start"]);
+                if (change === "none") expect(threads[0].params.threadId).toBe(shared);
+                else expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first on work");
+            }
+            expect(fork.session.backendSession(provider, folder)?.fork).toBeUndefined();
+            expect(source.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+        } finally {
+            await fork?.agent.dispose();
+            fork?.session.release();
+            await orig.agent.dispose();
+            source.release();
+            removeAccount(provider, replacement.id, replacement.folder);
+            removeAccount(provider, other.id, other.folder);
+        }
+    });
+
+    /** Each Claude Code start: the session it resumed, and whether as a fork. */
+    const resumes = () => starts().map((s) => {
+        const a = s.argv as string[];
+        const i = a.indexOf("--resume");
+        return i < 0 ? "new" : `${a[i + 1]}${a.includes("--fork-session") ? " (fork)" : ""}`;
+    });
+
+    test("Claude Code: the fork's first turn forks the shared session (--resume … --fork-session), and so does the original's next one", async () => {
+        const orig = await makeAgent({ provider: "claude-code", session: Session.create(cwd), ask: () => ({ allow: true }) });
+        await orig.run("first");
+        const shared = orig.session.backends.get("claude-code")!.id;
+        const fork = await makeAgent({ provider: "claude-code", session: forkSession(orig.session, { cut: orig.session.messages.length }), ask: () => ({ allow: true }) });
+        rmSync(LOG, { force: true });
+
+        expect(await fork.run("in the fork")).toBe("done");
+        const forkId = fork.session.backends.get("claude-code")!;
+        expect(resumes()).toEqual([`${shared} (fork)`]);
+        expect(forkId.id).toMatch(/^fork-/);
+        expect(forkId.fork).toBeUndefined();
+        // It had everything already: no conversation handed over.
+        expect(userTexts().at(-1)).toBe("in the fork");
+
+        await orig.run("in the original");
+        const origId = orig.session.backends.get("claude-code")!.id;
+        expect(origId).toMatch(/^fork-/);
+        expect(origId).not.toBe(forkId.id);
+        await orig.run("again");
+        await fork.run("again in the fork");
+        // From then on each goes on with its own; the shared one is never continued in place.
+        expect(resumes()).toEqual([`${shared} (fork)`, `${shared} (fork)`, origId, forkId.id]);
+        expect(resumes()).not.toContain(shared);
+    });
+
+    test("Claude Code: a compaction of a shared session compacts a copy of it", async () => {
+        const orig = await makeAgent({ provider: "claude-code", session: Session.create(cwd), ask: () => ({ allow: true }) });
+        await orig.run("first");
+        const shared = orig.session.backends.get("claude-code")!.id;
+        forkSession(orig.session, { cut: orig.session.messages.length }).release();
+        rmSync(LOG, { force: true });
+        expect(await orig.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(resumes()).toEqual([`${shared} (fork)`]);
+        expect(orig.session.backends.get("claude-code")!.id).not.toBe(shared);
+    });
+
+    test("Claude Code: a fork from before the backend's last turn starts a new session with the conversation up to the fork", async () => {
+        const orig = await makeAgent({ provider: "claude-code", session: Session.create(cwd), ask: () => ({ allow: true }) });
+        await orig.run("first");
+        await orig.run("second");
+        const shared = orig.session.backends.get("claude-code")!;
+        const session = forkSession(orig.session, { cut: forkCut(orig.session.messages, 0) });
+        expect(session.backends.size).toBe(0);
+        const fork = await makeAgent({ provider: "claude-code", session, ask: () => ({ allow: true }) });
+        rmSync(LOG, { force: true });
+        await fork.run("in the fork");
+        expect(resumes()).toEqual(["new"]);
+        const prompt = userTexts().at(-1)!;
+        expect(prompt).toContain("<conversation-so-far>");
+        expect(prompt).toContain("User: first");
+        expect(prompt).not.toContain("second");
+        // The original's own goes on as before: it saw nothing of the fork.
+        expect(orig.session.backends.get("claude-code")).toEqual(shared);
+        await orig.run("third");
+        expect(resumes().at(-1)).toBe(shared.id);
+    });
+
+    test("Codex: the fork's first turn forks the shared thread (thread/fork), and so does the original's next one", async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings });
+        await orig.run("one");
+        expect(orig.session.backends.get("codex")?.id).toBe("thr-new");
+        const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: orig.session.messages.length }), settings });
+        rmSync(LOG, { force: true });
+        await fork.run("in the fork");
+        const threads = () => received().filter((m) => m.method?.startsWith("thread/")).map((m) => `${m.method} ${m.params.threadId ?? ""}`.trim());
+        expect(threads()).toEqual(["thread/fork thr-new"]);
+        const forkThread = fork.session.backends.get("codex")!.id;
+        expect(forkThread).toMatch(/^thr-fork-/);
+        expect(received().find((m) => m.method === "turn/start")?.params.threadId).toBe(forkThread);
+        // The forked thread's total includes the original's spend; only the fork's own turn is counted here.
+        const tokensOf = (s: typeof orig.session) => [...s.usageByModel.values()].reduce((n, x) => n + x.usage.inputTokens + x.usage.outputTokens + (x.usage.cacheReadTokens ?? 0), 0);
+        expect(tokensOf(fork.session)).toBeGreaterThan(0);
+        expect(tokensOf(fork.session)).toBe(tokensOf(orig.session));
+
+        await orig.run("in the original");
+        const origThread = orig.session.backends.get("codex")!.id;
+        expect(origThread).toMatch(/^thr-fork-/);
+        expect(origThread).not.toBe(forkThread);
+        await orig.run("again");
+        expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new", `thread/resume ${origThread}`]);
+    });
+
+    test("Codex: a compaction of a shared thread compacts its own copy", async () => {
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings: { permissions: { allow: ["Bash(touch:*)"] } } });
+        await orig.run("first");
+        const shared = orig.session.backends.get("codex")!.id;
+        forkSession(orig.session, { cut: orig.session.messages.length }).release();
+        rmSync(LOG, { force: true });
+        expect(await orig.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        const own = orig.session.backends.get("codex")!.id;
+        expect(own).not.toBe(shared);
+        expect(received().find((m) => m.method === "thread/fork")?.params.threadId).toBe(shared);
+        expect(received().find((m) => m.method === "thread/compact/start")?.params.threadId).toBe(own);
+    });
+
+    test("an interrupted native fork leaves its shared source's synced position unchanged", async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings });
+        await orig.run("first");
+        const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: orig.session.messages.length }), settings });
+        const shared = { ...fork.session.backends.get("codex")! };
+        process.env.FAKE_HANG_INIT = "1";
+        const ac = new AbortController();
+        try {
+            const done = fork.run("the interrupted prompt", ac.signal);
+            await Bun.sleep(300);
+            ac.abort();
+            expect(await done).toBe("aborted");
+        } finally {
+            delete process.env.FAKE_HANG_INIT;
+        }
+        expect(fork.session.backends.get("codex")).toEqual(shared);
+        rmSync(LOG, { force: true });
+        expect(await fork.run("try again")).toBe("done");
+        expect(received().find((m) => m.method === "thread/fork")?.params.threadId).toBe(shared.id);
+        expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("the interrupted prompt");
+    });
+
+    for (const provider of ["claude-code", "codex"] as const) test(`${provider}: a missing native fork source falls back to fresh context`, async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider, session: Session.create(cwd), settings, ask: () => ({ allow: true }) });
+        await orig.run("first");
+        orig.session.setBackendSession(provider, "gone-source", orig.session.messages.length);
+        const fork = await makeAgent({ provider, session: forkSession(orig.session, { cut: orig.session.messages.length }), settings, ask: () => ({ allow: true }) });
+        rmSync(LOG, { force: true });
+        expect(await fork.run("in the fork")).toBe("done");
+        if (provider === "claude-code") {
+            expect(resumes()).toEqual(["gone-source (fork)", "new"]);
+            expect(userTexts().at(-1)).toContain("User: first");
+        } else {
+            expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/fork", "thread/start"]);
+            expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first");
+        }
+        expect(fork.session.backends.get(provider)?.fork).toBeUndefined();
+        expect(orig.session.backends.get(provider)).toEqual({ id: "gone-source", synced: orig.session.messages.length, fork: true });
+    });
+
+    test("Codex: a fork from before the thread's last turn starts a new thread with the conversation as context", async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings });
+        await orig.run("one");
+        await orig.run("two");
+        const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: forkCut(orig.session.messages, 0) }), settings });
+        rmSync(LOG, { force: true });
+        await fork.run("in the fork");
+        expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/start"]);
+        const input = JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input);
+        expect(input).toContain("conversation-so-far");
+        expect(input).toContain("User: one");
+        expect(input).not.toContain("User: two");
+        expect(orig.session.backends.get("codex")?.fork).toBeUndefined();
+    });
+});
 
 describe("Claude Code project MCP settings", () => {
     test("trusted turns retain native user MCP while passing project approval names only", async () => {

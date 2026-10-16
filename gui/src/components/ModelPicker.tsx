@@ -1,8 +1,8 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Brain, ChevronDown, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import type { EffortLevel, ModelSummary } from "@shared/protocol";
-import { app, refreshModels } from "../state/app";
-import { setEffort, setModel, setFastMode } from "../state/actions";
+import { app, handleFor, refreshModels } from "../state/app";
+import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setSettingsTab } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
@@ -62,6 +62,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const currentRef = () => p.current?.ref ?? p.currentRef;
     const currentModel = createMemo(() => resolve(p.current, currentRef()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
+
+    const accountInfo = (provider = currentProvider()) => app.providers.find((p) => p.id === provider)?.agentCli;
+    const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
+    const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
+    const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
+    const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
+    const accountName = () => accountChoices().find((a) => a.id === selectedAccount())?.name ?? "Removed account";
 
     // Providers with something to pick, or an error worth seeing.
     const groups = createMemo(() =>
@@ -162,9 +169,16 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
                 {/* What an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */}
                 <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
+                <Show when={showAccounts()}><span> · {accountName() ?? "Default"}</span></Show>
                 <ChevronDown size={14} class="chv" />
             </button>
             <Menu label="Choose a model" kind="dialog" initialFocus={() => input} onKeyDown={onKey} open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
+                <Show when={showAccounts(rail())}>
+                    <label class="small">{providerName(rail())} · Account <select aria-label="Session account" value={selectedAccount(rail())} onChange={(e) => void setAccount(rail(), e.currentTarget.value)}>
+                        <Show when={missingAccount(rail())}><option value={selectedAccount(rail())} disabled>Removed account — choose another</option></Show>
+                        <For each={accountChoices(rail())}>{(a) => <option value={a.id}>{a.name}</option>}</For>
+                    </select></label>
+                </Show>
                 <div class="mp-wrap">
                     <div class="mp-rail" role="tablist" aria-label="Providers">
                         <button class={`rb ${rail() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={rail() === FAVORITES} title="Favorites" aria-label="Favorites" onClick={() => (setQ(""), setRail(FAVORITES))}>

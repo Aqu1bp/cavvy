@@ -1,7 +1,7 @@
 // A stand-in for the `claude` CLI, speaking the parts of its stream-json
 // protocol the harness uses: `auth status --json`, and `-p` with stream-json
 // in and out (initialize, a turn with one tool call, interrupt,
-// set_permission_mode, --resume). It makes no network requests.
+// set_permission_mode, --resume, --fork-session). It makes no network requests.
 //
 // It decides like the real CLI (checked against Claude Code 2.1.300) what it
 // does without asking: deny rules from --settings or the project's
@@ -50,14 +50,15 @@ const log = (o: unknown) => {
 };
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
-log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY) });
+log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
 
 if (argv[0] === "auth" && argv[1] === "status") {
     const on = process.env.FAKE_LOGGED_IN !== "0";
-    console.log(JSON.stringify(on ? { loggedIn: true, authMethod: "oauth_token", apiProvider: "firstParty", subscriptionType: "max" } : { loggedIn: false, authMethod: "none", apiProvider: "firstParty" }));
+    console.log(JSON.stringify(on ? { loggedIn: true, authMethod: "oauth_token", apiProvider: "firstParty", subscriptionType: process.env.FAKE_PLAN ?? "max", ...(process.env.FAKE_EMAIL ? { email: process.env.FAKE_EMAIL } : {}) } : { loggedIn: false, authMethod: "none", apiProvider: "firstParty" }));
     process.exit(on ? 0 : 1);
 }
+if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
 if (process.env.FAKE_IGNORE_STOP === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
 // Something it starts that holds its output open after it exits (a command left running with its stdout).
 if (process.env.FAKE_HOLD_STDOUT === "1") Bun.spawn(["sleep", "8"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }).unref();
@@ -140,7 +141,8 @@ function selfApproved(tool: string, input: any): boolean {
     return false;
 }
 
-const sessionId = resume ?? `sess-${Math.random().toString(36).slice(2, 10)}`;
+// --fork-session (with --resume): a copy of the session goes on, under a new id.
+const sessionId = resume && !argv.includes("--fork-session") ? resume : `${resume ? "fork" : "sess"}-${Math.random().toString(36).slice(2, 10)}`;
 /** Servers added with mcp_set_servers, and the tools each lets run without asking. */
 const mcpServers = new Map<string, McpServerRef & { allowed: Set<string> }>();
 const pending = new Map<string, (r: any) => void>();
@@ -431,6 +433,11 @@ async function turn(content: any[], uuid?: string) {
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
+    }
+    if (process.env.FAKE_CLAUDE_LIMIT_INFO) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_LIMIT_INFO) });
+    if (process.env.FAKE_LIMIT_ERROR === "1") {
+        out({ type: "assistant", error: "rate_limit", message: { role: "assistant", content: [] } });
+        return result("error_during_execution", { is_error: true, result: "Limit reached" });
     }
     const rateLimit = () => {
         for (let i = 0; process.env.FAKE_RATE_LIMIT && i < Number(process.env.FAKE_RATE_LIMIT_REPEAT ?? 1); i++) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT, "utf-8")), session_id: sessionId });
