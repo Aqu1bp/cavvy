@@ -15,6 +15,7 @@ import { paths } from "./filelinks";
 import { repeatedToast, ToastLifetime, toastMs, type Toast, type ToastAction } from "../lib/toasts";
 export type { Toast } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
+import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
 import { composerDrafts } from "../lib/composer-draft";
 
 export const rpc = new Rpc(credentials);
@@ -240,7 +241,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     // Ops missed while it wasn't open (or the connection was down) may have created files.
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
-    deleted.delete(id);
+    sessionPresent(id);
     const existing = handles.get(id);
     if (existing) {
         existing.seq = snap.seq;
@@ -318,23 +319,28 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
-/** Show a session in the main view. */
-export async function activate(id: string | undefined) {
+/** Show a session in the main view. `cwd` is its project, for one not in the lists (an old one found by search). */
+export async function activate(id: string | undefined, cwd?: string) {
+    // A jump waiting for another session doesn't wait any more.
+    if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (!id) {
         setApp("activeId", undefined);
         return;
     }
     try {
         const h = await openSession(id);
+        if (id !== app.activeId) setFindOpen(false);
         setApp("activeId", id);
         if (h.view.state.cwd) setApp("homeCwd", h.view.state.cwd);
         markSeen(id);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            const s = app.sessions.find((x) => x.id === id);
-            if (s) requestTrust(s.cwd, () => void activate(id));
+            const where = (app.sessions.find((x) => x.id === id) ?? app.archived.find((x) => x.id === id))?.cwd ?? cwd;
+            if (where) requestTrust(where, () => void activate(id, cwd));
             return;
         }
+        if (e instanceof RpcError && e.code === "not_found") forgetSession(id);
+        if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
         reportError(e);
     }
 }
@@ -350,7 +356,14 @@ export function requestTrust(path: string, then: () => void, purpose?: "mcp-appr
 // Lists
 
 export async function refreshSessions() {
-    const [list, archived] = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]);
+    const markers = new Map(deleted);
+    const lists = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]);
+    // A list confirms a missed restore, but cannot undo a deletion that happened
+    // while either request was in flight (including a second deletion after Undo).
+    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id))) as typeof lists;
+    batch(() => {
+        for (const s of [...list, ...archived]) sessionPresent(s.id);
+    });
     // First run: nothing counts as unread yet.
     if (!Object.keys(app.seen).length) {
         const seen: Record<string, number> = {};
@@ -405,14 +418,22 @@ export async function refreshSettings() {
 /** Unsent text and images per session (the input box keeps them here), so switching sessions doesn't lose them. */
 export { composerDrafts } from "../lib/composer-draft";
 /** Deleted sessions (until they're brought back): an input box going away doesn't keep their draft. */
-const deleted = new Set<string>();
-export const wasDeleted = (id: string) => deleted.has(id);
+const deleted = new Map<string, symbol>();
+/** Invalidate search answers when a deletion or its restoration is observed. */
+const [sessionPresenceVersion, setSessionPresenceVersion] = createSignal(0);
+export { sessionPresenceVersion };
+export const wasDeleted = (id: string) => { sessionPresenceVersion(); return deleted.has(id); };
+function sessionPresent(id: string) {
+    if (deleted.delete(id)) setSessionPresenceVersion((v) => v + 1);
+}
 /** What this window had seen of deleted sessions, in case they're brought back (Undo). */
 const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 function forgetSession(id: string) {
-    deleted.add(id);
+    deleted.set(id, Symbol());
+    setSessionPresenceVersion((v) => v + 1);
+    if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
     setApp("archived", (l) => l.filter((s) => s.id !== id));
@@ -433,7 +454,7 @@ function reopenFailed(id: string, e: unknown) {
 }
 
 function upsertSession(s: SessionSummary) {
-    deleted.delete(s.id);
+    sessionPresent(s.id);
     const seen = seenBeforeDelete.get(s.id);
     if (seen !== undefined) {
         seenBeforeDelete.delete(s.id);

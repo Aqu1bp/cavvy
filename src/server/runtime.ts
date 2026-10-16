@@ -1133,7 +1133,9 @@ export class Runtime {
         }
         if (current) this.addBlock({ t: "compact", id: this.newId(), summary: redact(summary), auto: true });
         else {
-            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false }], status: "done", startedAt: Date.now() };
+            // A backend-only marker has no place in the unchanged transcript;
+            // giving it this segment's position would intercept earlier search hits.
+            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false }], status: "done", startedAt: Date.now(), ...(!this.backendModel() ? { pos: { seg: this.segment, index: -1 } } : {}) };
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });
@@ -1537,7 +1539,7 @@ export class Runtime {
             this.syncTurnAll(prev);
             this.stepsLogged.delete(prev);
         }
-        const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now() };
+        const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now(), pos: { seg: this.segment, index: this.session.messages.length } };
         this.op({ op: "turn", turn });
         if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
         this.turnId = turn.id;
@@ -1623,6 +1625,7 @@ export class Runtime {
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
+            pos: { seg: this.segment, index },
         };
         this.op({ op: "turn", turn });
         this.turnId = turn.id;

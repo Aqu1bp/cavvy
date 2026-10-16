@@ -12,7 +12,7 @@ const { findSessionAnywhere } = await import("../src/agent/session");
 const { purgeTrash, trashDir } = await import("../src/server/session-delete");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { ServerEvent, SessionSnapshot, SessionSummary } from "../src/server/protocol";
+import type { ServerEvent, SessionSearchResult, SessionSnapshot, SessionSummary } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
 mkdirSync(iso.home, { recursive: true });
@@ -80,6 +80,28 @@ async function unload(engine: InstanceType<typeof Engine>, c: { subs: Set<string
 }
 
 describe("session.delete", () => {
+    test("cached message hits disappear after deletion, fail to open, and return on Undo", async () => {
+        const { engine, c, id } = await setup();
+        try {
+            const search = async () => (await engine.handle(c, "sessions.search", { query: "first prompt" })) as SessionSearchResult;
+            const before = await search();
+            const hit = before.hits.find((h) => h.id === id)!;
+            expect(hit).toMatchObject({ id, role: "user", seg: 0, index: 0 });
+            expect((await search()).hits).toContainEqual(hit); // warm cache
+            await engine.handle(c, "session.delete", { id });
+            const after = await search();
+            expect(after.partial).toBe(false);
+            expect(after.hits.some((h) => h.id === id)).toBe(false);
+            expect((await fails(engine.handle(c, "session.open", { id: hit.id }))).code).toBe("not_found");
+            await engine.handle(c, "session.restore", { id });
+            expect((await search()).hits).toContainEqual(hit);
+            const opened = await engine.handle(c, "session.open", { id: hit.id }) as SessionSnapshot;
+            expect(opened.turns[0]).toMatchObject({ pos: { seg: hit.seg, index: hit.index }, prompt: { text: "first prompt" } });
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
+
     test("moves the session's files out of projects/ and Undo brings back the same bytes, pin and archived state", async () => {
         const cwd = createDemoProject(tempDir("harness-del-git-"));
         const { engine, c, events, id, f } = await setup(cwd);
