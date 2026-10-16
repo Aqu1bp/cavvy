@@ -2037,13 +2037,14 @@ export class Runtime {
             if (turn && !(await Promise.race([turn.then(() => true), Bun.sleep(closeTiming.turnMs).then(() => false)]))) {
                 // Still stopping (the server's own exit doesn't wait long enough for a CLI backend's): noted for it,
                 // and the file let go now, so what it writes when it does stop isn't recorded after that.
-                this.agent?.noteStopped();
+                await this.agent?.noteStopped();
                 // Its log too (noting the stop ended the turn there): another process may have the session next.
                 this.ui.close();
                 this.session.release();
             }
             await ending;
         } finally {
+            await this.agent?.turnSnapshots?.stop();
             this.ui.close();
             this.session.release();
         }

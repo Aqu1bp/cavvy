@@ -121,6 +121,54 @@ test("tool-result steering gets a snapshot id while edit copies stay with the or
     session.release();
 });
 
+for (const cutoff of [false, true]) test(`${cutoff ? "cutoff" : "Esc"} during a steering snapshot preserves the interrupt without duplicate tool results`, async () => {
+    let requests = 0, entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const capture = new Promise<void>((resolve) => { release = resolve; });
+    const client = { stream: async () => {
+        requests++;
+        return { ...answer(), content: [{ type: "tool_call" as const, id: "probe", name: "Probe", input: {} }], stopReason: "tool_use" as const };
+    }, listModels: async () => [] };
+    const probe = { name: "Probe", description: "test", parameters: { type: "object", properties: {} }, category: "read", readOnly: true, title: () => "probe", run: async () => ({ content: "ok" }) };
+    const { agent, session } = setup(client, { queue: [["during tools"]], tools: [probe] });
+    agent.turnSnapshots!.begin = async (_id, prompt) => {
+        if (prompt === "during tools") { entered(); await capture; }
+    };
+    const ac = new AbortController();
+    const done = agent.run([{ type: "text", text: "first" }], { signal: ac.signal });
+    try {
+        await waiting;
+        ac.abort();
+        if (cutoff) await agent.noteStopped();
+        // Deliberately keep the Session writable: correctness cannot depend on release/microtask order.
+        release();
+        expect(await done).toBe("aborted");
+        expect(requests).toBe(1);
+        const results = session.messages.filter((m) => m.role === "user" && m.meta?.kind === "tool_results");
+        expect(results).toHaveLength(1);
+        expect(results[0]!.content.filter((p) => p.type === "tool_result")).toHaveLength(1);
+        expect(results[0]!.content).toContainEqual({ type: "text", text: "[Request interrupted by user for tool use]" });
+        if (!cutoff) expect(results[0]!.content).toContainEqual({ type: "text", text: "The user sent this message while you were working:\nduring tools" });
+    } finally { release(); await done; session.release(); }
+});
+
+test("cutoff while the initial snapshot waits cannot append a late prompt", async () => {
+    let requests = 0, entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const capture = new Promise<void>((resolve) => { release = resolve; });
+    const { agent, session, run } = setup({ stream: async () => { requests++; return answer(); }, listModels: async () => [] });
+    agent.turnSnapshots!.begin = async () => { entered(); await capture; };
+    const done = run();
+    try {
+        await waiting;
+        await agent.noteStopped();
+        release();
+        expect(await done).toBe("aborted");
+        expect(requests).toBe(0);
+        expect(session.messages).toEqual([]);
+    } finally { release(); await done; session.release(); }
+});
+
 test("untrusted agents do not begin snapshots and subagents do not own them", async () => {
     const client = { stream: async () => answer(), listModels: async () => [] };
     const events: string[] = [];

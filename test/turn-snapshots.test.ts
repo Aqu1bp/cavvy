@@ -76,6 +76,66 @@ function expectPrivate(root: string) {
 }
 
 describe("per-turn snapshots", () => {
+    test("reopening a cut-off steering turn keeps its start without inventing an end", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        await snapshots.begin(101, "first prompt");
+        write(cwd, "a.txt", "first turn\n");
+        await snapshots.begin(102, "steered prompt");
+        write(cwd, "a.txt", "cut off here\n");
+        const journal = readFileSync(join(dir, "turn-snapshots.jsonl"), "utf8");
+        const reopened = new TurnSnapshots(dir, cwd);
+        expect(reopened.list()[0]!.end?.tree).toBe(reopened.list()[1]!.start.tree);
+        expect(reopened.list()[1]!.start.tree).toBeDefined();
+        expect(reopened.list()[1]!.end).toBeUndefined();
+        for (const scope of ["last-turn", "turn"] as const) {
+            const changes = await reopened.changes({ scope, turnId: 102 });
+            expect(changes).toMatchObject({ turnId: 102, snapshotAvailable: false, incomplete: true, files: [] });
+            expect(changes.notes?.join(" ")).toContain("without a closing snapshot");
+        }
+        expect(readFileSync(join(dir, "turn-snapshots.jsonl"), "utf8")).toBe(journal);
+        await reopened.begin(103, "resume work");
+        write(cwd, "a.txt", "resumed turn\n");
+        await reopened.end();
+        expect(reopened.list()[1]!.end).toBeUndefined();
+        const changes = await reopened.changes({ scope: "last-turn" });
+        expect(changes).toMatchObject({ turnId: 103, incomplete: false, snapshotAvailable: true });
+        expect(changes.files[0]?.hunks.flatMap((h) => h.lines).map((l) => l.text).join("\n")).toContain("cut off here");
+    });
+
+    for (const phase of ["begin", "end", "compare", "steering-compare"] as const) test(`retiring during ${phase} drains private writes and never appends a late end`, async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        await snapshots.begin(1, "interrupted prompt");
+        write(cwd, "a.txt", "late change\n");
+        const journal = readFileSync(join(dir, "turn-snapshots.jsonl"), "utf8");
+        let entered!: () => void, release!: () => void;
+        const waiting = new Promise<void>((r) => { entered = r; });
+        const gate = new Promise<void>((r) => { release = r; });
+        const method = phase.includes("compare") ? "compare" : "capture";
+        const original = (snapshots as any)[method].bind(snapshots);
+        (snapshots as any)[method] = async (...args: unknown[]) => {
+            const value = await original(...args);
+            entered();
+            await gate;
+            return value;
+        };
+        const pending = phase === "begin" || phase === "steering-compare" ? snapshots.begin(2, "pending steering") : snapshots.end();
+        await waiting;
+        let retired = false;
+        const stopping = snapshots.stop().then(() => { retired = true; });
+        await Bun.sleep(10);
+        expect(retired).toBe(false);
+        release();
+        await Promise.all([pending, stopping]);
+        await snapshots.begin(3, "too late");
+        await snapshots.end();
+        expect(readFileSync(join(dir, "turn-snapshots.jsonl"), "utf8")).toBe(journal);
+        expect(snapshots.list()[0]!.end).toBeUndefined();
+        const reopened = new TurnSnapshots(dir, cwd);
+        await reopened.begin(4, "new owner");
+        await reopened.end();
+        expect(reopened.list().map((t) => [t.id, !!t.end])).toEqual([[1, false], [4, true]]);
+    });
+
     test("records shell and external writes, and reopening preserves each turn's diff", async () => {
         const { cwd, dir, snapshots } = setup({ "shell.txt": "before shell\n", "backend.txt": "before backend\n" });
         await snapshots.begin(1, "Change both files");

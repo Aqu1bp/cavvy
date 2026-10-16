@@ -41,7 +41,7 @@ export interface SnapshotTurn {
     changed?: string[];
 }
 
-const instances = new WeakMap<FileHistory, TurnSnapshots>();
+const instances = new WeakMap<FileHistory, WeakMap<Session, TurnSnapshots>>();
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const POLICY = "Ignored files are not captured. Concurrent sessions in this repository see each other's changes. Submodule and nested repository contents are not captured.";
 const safePath = (p: string) => p.length > 0 && !isAbsolute(p) && !p.split("/").some((part) => part === ".." || part.toLowerCase() === ".git");
@@ -93,6 +93,8 @@ export class TurnSnapshots {
     private hardened = new Set<string>();
     private inflight = new Map<string, Slot<GitChangesInfo>>();
     private saved = false;
+    private stopped = false;
+    private pending = new Set<Promise<void>>();
     private failure?: string;
     private readonly storage: string;
     private readonly journal: string;
@@ -118,8 +120,12 @@ export class TurnSnapshots {
     static for(session: Session, cwd: string): TurnSnapshots | undefined {
         const history = FileHistory.for(session);
         if (!history) return undefined;
-        let snapshots = instances.get(history);
-        if (!snapshots) instances.set(history, (snapshots = new TurnSnapshots(history.dir, cwd)));
+        // A reopened Session is a new owner. A late read from the released
+        // owner must neither revive its recorder nor populate the new owner's cache.
+        let sessions = instances.get(history);
+        if (!sessions) instances.set(history, (sessions = new WeakMap()));
+        let snapshots = sessions.get(session);
+        if (!snapshots) sessions.set(session, (snapshots = new TurnSnapshots(history.dir, cwd)));
         return snapshots;
     }
 
@@ -165,25 +171,43 @@ export class TurnSnapshots {
     }
 
     /** A steering boundary is both the preceding turn's end and the next one's start. */
-    async begin(id: number, prompt: string): Promise<void> {
-        const captured = await this.capture();
-        if (!captured) return; // Not a repository: retain FileHistory behaviour.
-        if (this.active) await this.finish(structuredClone(captured));
-        this.active = { version: 1, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
-        this.persist(this.active);
+    begin(id: number, prompt: string): Promise<void> {
+        return this.record(async () => {
+            if (this.stopped) return;
+            const captured = await this.capture();
+            if (!captured || this.stopped) return; // Not a repository, or this session was let go.
+            if (this.active) await this.finish(structuredClone(captured));
+            if (this.stopped) return;
+            this.active = { version: 1, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
+            this.persist(this.active);
+        });
     }
 
-    async end(): Promise<void> {
-        if (!this.active) return;
-        const captured = await this.capture();
-        await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: {}, durationMs: 0 });
+    end(): Promise<void> {
+        return this.record(async () => {
+            if (!this.active || this.stopped) return;
+            const captured = await this.capture();
+            if (this.stopped) return;
+            await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: {}, durationMs: 0 });
+        });
+    }
+
+    /** Retire before releasing the session lock: no late end, or index writes alongside a reopened session. */
+    async stop(): Promise<void> {
+        this.stopped = true;
+        this.active = undefined;
+        await Promise.allSettled([...this.pending]);
+    }
+
+    private record(work: () => Promise<void>): Promise<void> {
+        const pending = work();
+        this.pending.add(pending);
+        return pending.finally(() => { this.pending.delete(pending); });
     }
 
     private async finish(captured: TurnCapture) {
-        const turn = this.active!;
+        const turn: SnapshotTurn = { ...this.active!, end: captured, endedAt: Date.now() };
         this.active = undefined;
-        turn.end = captured;
-        turn.endedAt = Date.now();
         try {
             const changes = await this.compare(turn, Date.now() + 2000);
             turn.changed = changes.map((c) => join(turn.start.root ?? this.cwd, c.path));
@@ -191,7 +215,7 @@ export class TurnSnapshots {
             captured.incomplete = true;
             captured.notes.push("The snapshot comparison is unavailable; some objects may be missing.");
         }
-        this.persist(turn);
+        if (!this.stopped) this.persist(turn);
     }
 
     private async store(buf: Buffer): Promise<string> {
@@ -232,7 +256,10 @@ export class TurnSnapshots {
         const deadline = started + (this.options.budgetMs ?? 2000);
         const result: TurnCapture = { incomplete: false, notes: [], skipped: {}, durationMs: 0 };
         let plannedTrees = new Set<string>();
-        const inTime = () => { if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default)."); };
+        const inTime = () => {
+            if (this.stopped) throw new Error("The snapshot session was closed.");
+            if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+        };
         try {
             inTime();
             const metadataEnv = { GIT_NO_REPLACE_OBJECTS: "1" };

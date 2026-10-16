@@ -273,6 +273,31 @@ describe("replay", () => {
         expect(turns.find((t) => t.snapshotId === 102)?.prompt?.index).toBeUndefined();
     });
 
+    test("a cut-off steering turn keeps its snapshot id and main's interrupted status on replay", () => {
+        const first = user("first", "prompt", { meta: { kind: "prompt", checkpoint: 101 } } as Partial<Message>);
+        const calling: Message = { role: "assistant", content: [{ type: "tool_call", id: "read", name: "Read", input: { file_path: "a.txt" } }] };
+        const steered: Message = { role: "user", content: [
+            { type: "tool_result", toolCallId: "read", toolName: "Read", content: "read it" },
+            { type: "text", text: "The user sent this message while you were working:\nsecond" },
+        ], meta: { kind: "tool_results", checkpoint: 102 } };
+        const messages = [first, calling, steered];
+        const ui = new UiLog(join(tempDir(), "steering-cutoff.jsonl"), "steering-cutoff", false);
+        ui.write({ t: "turn", seg: 0, index: 0, at: 10 });
+        ui.write({ t: "turn", seg: 0, index: 0, at: 10, end: 20, status: "done" });
+        ui.write({ t: "turn", seg: 0, index: 2, at: 20 });
+        ui.write({ t: "turn", seg: 0, index: 2, at: 20, prompt: promptKey(steered) });
+        expect(cutOffPrompt(ui, 0, messages)).toBe(2);
+        messages.push(user("[Request interrupted by user]", "interrupt"));
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui, meta: (c) => ({ title: c.name }), newId: () => `cut${++n}` });
+        expect(turns.map((t) => [t.prompt?.text, t.snapshotId, t.status, t.startedAt, t.endedAt])).toEqual([
+            ["first", 101, "done", 10, 20],
+            ["second", 102, "aborted", 20, undefined],
+        ]);
+        expect(cutOffPrompt(ui, 0, messages)).toBeUndefined();
+        ui.close();
+    });
+
     test("a backend's note of what it did stays in history but not in the transcript", () => {
         const note = "[Claude Code used: Bash(bun test), Edit(src/a.ts)]";
         const segs = [

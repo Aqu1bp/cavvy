@@ -316,6 +316,8 @@ export class Agent {
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
     private running = false;
+    /** The session is being let go; awaited checkpoints must not append another prompt or tool result. */
+    private cutOff = false;
     /** This turn's prompt is in the session. */
     private prompted = false;
     /** Prompt tokens of the most recent request (context usage). */
@@ -463,6 +465,7 @@ export class Agent {
         const settings = this.o.settings();
         const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
         const checkpoint = await this.checkpoint(opts.display ?? promptText);
+        if (this.cutOff) return "aborted";
 
         if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -581,7 +584,9 @@ export class Agent {
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
-                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: await this.checkpoint(queued.join("\n")) } });
+                    const checkpoint = await this.checkpoint(queued.join("\n"));
+                    if (this.cutOff) return "aborted";
+                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
                     continue;
                 }
 
@@ -605,14 +610,15 @@ export class Agent {
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
             let steeringCheckpoint: number | undefined;
-            if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
-            else {
+            if (!signal.aborted) {
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
                     steeringCheckpoint = await this.checkpoint(queued.join("\n"), true);
                     extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
                 }
             }
+            if (this.cutOff) return "aborted";
+            if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
             this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(steeringCheckpoint !== undefined ? { checkpoint: steeringCheckpoint } : {}) } });
             if (signal.aborted) {
                 this.emit({ type: "turn_end", reason: "aborted" });
@@ -679,13 +685,18 @@ export class Agent {
      * the file go right after, so what the turn still writes is dropped, not
      * recorded after this.
      */
-    noteStopped(): void {
+    noteStopped(): Promise<void> {
+        this.cutOff = true;
+        const stopping = this.turnSnapshots?.stop() ?? Promise.resolve();
         // Not running, or its prompt isn't in yet (then nothing of the turn is).
-        if (!this.running || !this.prompted) return;
+        if (!this.running || !this.prompted) return stopping;
         const last = this.session.messages.at(-1);
-        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return;
+        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return stopping;
         const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
-        if (!calls.length) return void this.interrupted(false);
+        if (!calls.length) {
+            this.interrupted(false);
+            return stopping;
+        }
         // Tools still running: their calls get results, or the next request is refused.
         this.session.push({
             role: "user",
@@ -693,6 +704,7 @@ export class Agent {
             meta: { kind: "tool_results" },
         });
         this.emit({ type: "turn_end", reason: "aborted" });
+        return stopping;
     }
 
     /**
@@ -1074,9 +1086,12 @@ export class Agent {
             context: (tokens) => this.recordBackendContext(tokens),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
             drainQueued: async () => {
+                if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (!queued.length) return [];
-                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: await this.checkpoint(queued.join("\n")) } });
+                const checkpoint = await this.checkpoint(queued.join("\n"));
+                if (this.cutOff) return [];
+                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
                 return [textOf(m)];
             },
         };

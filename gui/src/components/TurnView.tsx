@@ -265,14 +265,16 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
         <Show when={files().length || (captured() && recorded()?.incomplete)}>
             <div class="files-card">
                 <div class="files-head">
-                    <span class="files-title">{plural(files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), "changed file")}</span>
-                    <span class="stat">
-                        <span class="add">+{total().added}</span>
-                        <span class="del">−{total().removed}</span>
-                    </span>
+                    <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), "changed file")}</span>
+                    <Show when={files().length}>
+                        <span class="stat">
+                            <span class="add">+{total().added}</span>
+                            <span class="del">−{total().removed}</span>
+                        </span>
+                    </Show>
                     <span class="grow" />
                     {/* Keep recorded changes tied to this turn, even after later edits. */}
-                    <button class="ghost-btn" onClick={() => reviewChanges(files()[0]?.path)}>
+                    <button class="ghost-btn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path)}>
                         <FileDiff size={14} /> Review changes
                     </button>
                 </div>
