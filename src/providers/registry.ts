@@ -300,6 +300,16 @@ export interface AgentCliConfig {
     path?: string;
     /** Extra arguments, placed before the harness's own. */
     args?: string[];
+    accounts?: CliAccount[];
+    defaultAccount?: string;
+}
+
+/** Metadata only; sign-in data belongs exclusively to the CLI. */
+export interface CliAccount {
+    id: string;
+    name: string;
+    folder: string;
+    managed: boolean;
 }
 
 interface ProvidersFile {
@@ -361,6 +371,8 @@ export function readAgentConfig(id: string): AgentCliConfig | undefined {
     const out: AgentCliConfig = {};
     if (typeof a.path === "string" && a.path.trim()) out.path = a.path.trim();
     if (Array.isArray(a.args)) out.args = a.args.filter((x): x is string => typeof x === "string");
+    if (Array.isArray(a.accounts)) out.accounts = a.accounts.filter((x) => x && typeof x.id === "string" && typeof x.name === "string" && typeof x.folder === "string");
+    if (typeof a.defaultAccount === "string") out.defaultAccount = a.defaultAccount;
     return out;
 }
 

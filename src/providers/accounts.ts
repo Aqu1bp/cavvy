@@ -1,0 +1,142 @@
+// Account metadata and folder ownership. Never open files inside a CLI home.
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync } from "fs";
+import { dirname, isAbsolute, join, resolve, sep } from "path";
+import { homedir } from "os";
+import { paths } from "../config/paths";
+import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount } from "./registry";
+import { RpcError } from "../server/rpc-error";
+
+export const ACCOUNT_PROVIDERS = ["claude-code", "codex"] as const;
+export function accountProvider(provider: string): asserts provider is typeof ACCOUNT_PROVIDERS[number] {
+    if (!ACCOUNT_PROVIDERS.includes(provider as any)) throw new RpcError("Invalid account provider", "invalid");
+}
+export function validAccountId(id: unknown): id is string {
+    return typeof id === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$/.test(id);
+}
+export function validAccountName(name: unknown): name is string {
+    return typeof name === "string" && /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/.test(name) && name === name.trim() && !name.includes("..");
+}
+const inside = (path: string, root: string) => path === root || path.startsWith(root + sep);
+/** Resolve existing ancestors too, so a not-yet-created path cannot hide behind a symlink. */
+export function accountRealPath(path: string): string {
+    try { return realpathSync(path); } catch (e: any) {
+        if (e.code !== "ENOENT") throw new RpcError("Cannot resolve account folder", "invalid");
+        const parent = dirname(path);
+        if (parent === path) throw new RpcError("Cannot resolve account folder", "invalid");
+        return join(accountRealPath(parent), path.slice(parent.length + (parent === sep ? 0 : 1)));
+    }
+}
+function normalFolder(provider: string): string {
+    return join(homedir(), provider === "codex" ? ".codex" : ".claude");
+}
+function selector(provider: string): string { return provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"; }
+function defaultFolder(provider: string): string { return process.env[selector(provider)] || normalFolder(provider); }
+export function listAccounts(provider: string): CliAccount[] {
+    accountProvider(provider);
+    return [{ id: "default", name: "Default", folder: defaultFolder(provider), managed: false }, ...(readAgentConfig(provider)?.accounts ?? [])];
+}
+export function account(provider: string, id = "default"): CliAccount {
+    accountProvider(provider);
+    if (!validAccountId(id)) throw new RpcError("Invalid account id", "invalid");
+    const found = listAccounts(provider).find((a) => a.id === id);
+    if (!found) throw new RpcError("Account no longer exists; choose another account", "not_found");
+    return found;
+}
+export function defaultAccount(provider: string): string {
+    const id = readAgentConfig(provider)?.defaultAccount ?? "default";
+    return listAccounts(provider).some((a) => a.id === id) ? id : "default";
+}
+/** Only the matching CLI gets an inherited selector. Generic children never get either. */
+export function accountEnv(provider: string, id = "default"): Record<string, string> {
+    const a = account(provider, id);
+    const key = selector(provider);
+    const value = id === "default" ? process.env[key] : a.folder;
+    return value ? { [key]: value } : {};
+}
+/** Read afresh: accounts added during a session must immediately be protected. */
+export function accountFolders(): string[] {
+    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).map((a) => a.folder))])];
+}
+function projectFolder(folder: string, roots: string[]): boolean {
+    if (roots.some((root) => inside(folder, accountRealPath(resolve(root))))) return true;
+    for (let d = folder; ; d = dirname(d)) {
+        if (existsSync(join(d, ".git"))) return true;
+        if (dirname(d) === d) return false;
+    }
+}
+function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }): string {
+    if (typeof folder !== "string" || folder.length > 1024 || !isAbsolute(folder) || !/^[a-zA-Z0-9 /_.-]+$/.test(folder) || folder.split(/[\\/]/).includes("..")) throw new RpcError("Use an absolute account folder with plain characters and no '..'", "invalid");
+    const real = accountRealPath(resolve(folder));
+    if (real === sep || real === accountRealPath(homedir())) throw new RpcError("Choose a dedicated account folder", "invalid");
+    for (const p of ACCOUNT_PROVIDERS) {
+        for (const base of [normalFolder(p), defaultFolder(p)]) {
+            const reserved = accountRealPath(resolve(base));
+            if (inside(real, reserved) || inside(reserved, real)) throw new RpcError("The default CLI folder cannot be an account folder", "invalid");
+        }
+        for (const a of readAgentConfig(p)?.accounts ?? []) {
+            if (p === exclude?.provider && a.id === exclude.id) continue;
+            const other = accountRealPath(a.folder);
+            if (inside(real, other) || inside(other, real)) throw new RpcError("Accounts must have separate, non-overlapping folders", "invalid");
+        }
+    }
+    if (projectFolder(real, roots)) throw new RpcError("Account folders must be outside projects", "invalid");
+    if (existsSync(real) && !statSync(real).isDirectory()) throw new RpcError("Account folder is not a directory", "invalid");
+    return real;
+}
+export function addAccount(provider: string, input: { id: string; name: string; folder?: string }, projectRoots: string[] = []): CliAccount {
+    accountProvider(provider);
+    if (!input || !validAccountId(input.id) || input.id === "default") throw new RpcError("Invalid account id", "invalid");
+    if (!validAccountName(input.name)) throw new RpcError("Use a name of 1–64 plain characters", "invalid");
+    const pf = readProvidersFileForUpdate();
+    const cfg = (pf.agents ??= {})[provider] ??= {};
+    const all = cfg.accounts ??= [];
+    if (all.length >= 20) throw new RpcError("At most 20 accounts per CLI", "limit");
+    if (all.some((a) => a.id === input.id)) throw new RpcError("Account id already exists", "invalid");
+    const managed = input.folder === undefined;
+    const expected = join(accountRealPath(paths.home()), "accounts", provider, input.id);
+    const requested = input.folder ?? expected;
+    const folder = validateFolder(requested, projectRoots);
+    // Ownership is never adopted for a pre-existing directory, even at our expected path.
+    if (managed && (existsSync(expected) || folder !== resolve(expected))) throw new RpcError("Managed account folder already exists or crosses a symlink", "invalid");
+    try { mkdirSync(folder, { recursive: true, mode: 0o700 }); }
+    catch { throw new RpcError("Cannot create account folder", "invalid"); }
+    const a = { id: input.id, name: input.name, folder, managed };
+    all.push(a);
+    writeProvidersFile(pf);
+    return a;
+}
+export function renameAccount(provider: string, id: string, name: string): void {
+    account(provider, id);
+    if (id === "default" || !validAccountName(name)) throw new RpcError("Invalid account name", "invalid");
+    const pf = readProvidersFileForUpdate();
+    pf.agents![provider]!.accounts!.find((a) => a.id === id)!.name = name;
+    writeProvidersFile(pf);
+}
+export function setDefaultAccount(provider: string, id: string): void {
+    account(provider, id);
+    const pf = readProvidersFileForUpdate();
+    ((pf.agents ??= {})[provider] ??= {}).defaultAccount = id;
+    writeProvidersFile(pf);
+}
+export function removeAccount(provider: string, id: string, confirmedFolder: string, projectRoots: string[] = []): void {
+    const a = account(provider, id);
+    if (id === "default") throw new RpcError("The Default account cannot be removed", "invalid");
+    if (confirmedFolder !== a.folder) throw new RpcError("Confirm the exact account folder before removing it", "invalid");
+    const pf = readProvidersFileForUpdate();
+    if (a.managed) {
+        const expected = join(accountRealPath(paths.home()), "accounts", provider, id);
+        // Every component below our home must remain in place; rm never follows child symlinks.
+        const home = accountRealPath(paths.home());
+        const canonicalExpected = join(home, "accounts", provider, id);
+        if (a.folder !== expected || accountRealPath(expected) !== canonicalExpected) throw new RpcError("Account folder moved or is a symlink; refusing deletion", "invalid");
+        for (const d of [join(paths.home(), "accounts"), dirname(expected), expected]) {
+            if (existsSync(d) && lstatSync(d).isSymbolicLink()) throw new RpcError("Refusing to delete a symlinked account folder", "invalid");
+        }
+        validateFolder(expected, projectRoots, { provider, id });
+        rmSync(expected, { recursive: true, force: true });
+    }
+    const cfg = pf.agents![provider]!;
+    cfg.accounts = cfg.accounts!.filter((v) => v.id !== id);
+    if (cfg.defaultAccount === id) delete cfg.defaultAccount;
+    writeProvidersFile(pf);
+}
