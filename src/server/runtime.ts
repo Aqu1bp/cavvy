@@ -38,6 +38,7 @@ import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { TurnSnapshots } from "../agent/turn-snapshots";
 import type {
     AgentRun,
     Block,
@@ -533,7 +534,7 @@ export class Runtime {
 
     private filesChanged(): number {
         try {
-            return FileHistory.for(this.session)?.originals().length ?? 0;
+            return new Set([...(FileHistory.for(this.session)?.originals().map((f) => f.path) ?? []), ...(TurnSnapshots.for(this.session, this.ws.cwd)?.changedPaths() ?? [])]).size;
         } catch {
             return 0;
         }
@@ -775,6 +776,7 @@ export class Runtime {
         void this.agent?.dispose();
         this.agent = new Agent({
             session: this.session,
+            trusted: () => this.ws.trusted,
             model: this.model,
             client: this.client,
             settings: () => this.settings(),
@@ -1307,6 +1309,21 @@ export class Runtime {
         return this.agent.stopDelegated(a.taskId);
     }
 
+    private turnSnapshotFloor?: number;
+
+    private latestCheckpoint(): number | undefined {
+        for (let i = this.session.messages.length - 1; i >= 0; i--) {
+            const m = this.session.messages[i]!;
+            if (m.role === "user" && m.meta?.checkpoint !== undefined) return m.meta.checkpoint;
+        }
+        return undefined;
+    }
+
+    private snapshotId(): number | undefined {
+        const id = this.latestCheckpoint();
+        return id !== this.turnSnapshotFloor ? id : undefined;
+    }
+
     private endTurn(reason: TurnEndReason) {
         const turnId = this.turnId;
         if (!turnId) return;
@@ -1319,7 +1336,7 @@ export class Runtime {
         }
         const status: TurnStatus = reason;
         const end = Date.now();
-        this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end } });
+        this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end, snapshotId: this.snapshotId() } });
         // What it did, then that it ended.
         this.syncTurnAll(turnId);
         this.stepsLogged.delete(turnId);
@@ -1534,11 +1551,12 @@ export class Runtime {
         const prev = this.turnId;
         if (prev) {
             const end = Date.now();
-            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: end } });
+            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: end, snapshotId: this.snapshotId() } });
             if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status: "done" });
             this.syncTurnAll(prev);
             this.stepsLogged.delete(prev);
         }
+        this.turnSnapshotFloor = this.latestCheckpoint();
         const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now(), pos: { seg: this.segment, index: this.session.messages.length } };
         this.op({ op: "turn", turn });
         if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
@@ -1619,6 +1637,7 @@ export class Runtime {
         this.turnStartedAt = Date.now();
         const display = opts.display ?? text;
         const index = this.session.messages.length;
+        this.turnSnapshotFloor = this.latestCheckpoint();
         const turn: Turn = {
             id: this.newId(),
             prompt: { text: display, ...attachedPrompt(opts.attachments), ...(opts.kind === "command" ? { command: true } : {}), index },
@@ -1672,7 +1691,7 @@ export class Runtime {
             this.cancelInteractions({ keepDelegated: true });
             this.closeOpen();
             this.turnId = undefined;
-            this.setState({ busy: false, activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
+            this.setState({ busy: false, filesChanged: this.filesChanged(), activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
             this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             this.flush();
             this.engine.sessionChanged(this);
@@ -1962,8 +1981,8 @@ export class Runtime {
     }
 
     /** What git says changed in the session's folder, whoever changed it. */
-    gitChanges(req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
-        return gitChanges(this.ws.cwd, req);
+    gitChanges(req: { scope: GitScope; base?: string; path?: string; turnId?: number }): Promise<GitChangesInfo> {
+        return gitChanges(this.ws.cwd, req, TurnSnapshots.for(this.session, this.ws.cwd));
     }
 
     private checkCommitting() {
@@ -2141,13 +2160,14 @@ export class Runtime {
             if (turn && !(await Promise.race([turn.then(() => true), Bun.sleep(closeTiming.turnMs).then(() => false)]))) {
                 // Still stopping (the server's own exit doesn't wait long enough for a CLI backend's): noted for it,
                 // and the file let go now, so what it writes when it does stop isn't recorded after that.
-                this.agent?.noteStopped();
+                await this.agent?.noteStopped();
                 // Its log too (noting the stop ended the turn there): another process may have the session next.
                 this.ui.close();
                 this.session.release();
             }
             await ending;
         } finally {
+            await this.agent?.turnSnapshots?.stop();
             await commit;
             this.ui.close();
             this.session.release();

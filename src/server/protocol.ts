@@ -237,6 +237,8 @@ export interface TurnPrompt {
 
 export interface Turn {
     id: string;
+    /** Stable file-history checkpoint whose raw snapshots describe this turn. */
+    snapshotId?: number;
     prompt?: TurnPrompt;
     blocks: Block[];
     status: TurnStatus;
@@ -716,7 +718,7 @@ export interface ChangesInfo {
 }
 
 /** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. */
-export type GitScope = "uncommitted" | "branch";
+export type GitScope = "uncommitted" | "branch" | "last-turn" | "turn";
 
 export interface GitFileDiff extends FileDiff {
     /** What git would call it. Renames are exact ones (the same content under a new name). */
@@ -738,6 +740,12 @@ export interface GitChangesInfo extends ChangesInfo {
     repo: boolean;
     reason?: string;
     scope: GitScope;
+    turns?: { id: number; prompt: string; startedAt: number; endedAt?: number }[];
+    turnId?: number;
+    /** Both snapshot trees were available for comparison; an empty diff is authoritative. */
+    snapshotAvailable?: boolean;
+    incomplete?: boolean;
+    notes?: string[];
     head?: { branch?: string; sha?: string };
     /** Branch scope: the base branch and the commit this branch left it at. */
     base?: { ref: string; sha: string };
@@ -895,7 +903,7 @@ export interface Methods {
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "session.changes": { params: { id: string }; result: ChangesInfo };
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string }; result: GitChangesInfo };
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number }; result: GitChangesInfo };
     "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
     "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };

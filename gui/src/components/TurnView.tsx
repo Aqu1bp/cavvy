@@ -1,10 +1,11 @@
-import { createEffect, createMemo, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { formatSize } from "../lib/attachments";
 import { prefs } from "../state/prefs";
+import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
 import { findReveal } from "../state/ui";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
@@ -247,29 +248,47 @@ export function SplitPath(p: { path: string; cwd?: string }) {
 
 const FILES_SHOWN = 6;
 
-function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string }) {
-    const files = createMemo(() => turnChanges(p.turn));
+function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: boolean }) {
+    // Load after the closing snapshot is saved. Once ready, a completed turn's
+    // key stays stable while later turns run, so its immutable diff is not fetched again.
+    const snapshotKey = createMemo<string | undefined>((previous) => {
+        if (p.turn.snapshotId === undefined) return undefined;
+        const key = JSON.stringify([p.sessionId, p.turn.snapshotId]);
+        return !p.busy || previous === key ? key : undefined;
+    });
+    const [snapshot] = createResource(snapshotKey, async (key) => {
+        const [id, turnId] = JSON.parse(key) as [string, number];
+        return { id, turnId, view: await fetchGitChanges(id, "turn", undefined, undefined, turnId) };
+    });
+    const recorded = () => snapshot()?.id === p.sessionId && snapshot()?.turnId === p.turn.snapshotId ? snapshot()?.view : undefined;
+    const captured = () => recorded()?.repo && recorded()?.turnId === p.turn.snapshotId && !recorded()?.error;
+    const snapshotDiff = () => captured() && recorded()?.snapshotAvailable;
+    const files = createMemo<Changed[]>(() => snapshotDiff() ? recorded()!.files.map((f) => ({ ...f, line: firstChangedLine(f) })) : turnChanges(p.turn));
+    const reviewChanges = (path?: string) => openReview(path, snapshotDiff() ? "turn" : "uncommitted", snapshotDiff() ? p.turn.snapshotId : undefined);
     const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
     const [all, setAll] = createSignal(false);
     return (
-        <Show when={files().length}>
+        <Show when={files().length || (captured() && recorded()?.incomplete)}>
             <div class="files-card" data-find-skip>
                 <div class="files-head">
-                    <span class="files-title">{plural(files().length, "changed file")}</span>
-                    <span class="stat">
-                        <span class="add">+{total().added}</span>
-                        <span class="del">−{total().removed}</span>
-                    </span>
+                    <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), "changed file")}</span>
+                    <Show when={files().length}>
+                        <span class="stat">
+                            <span class="add">+{total().added}</span>
+                            <span class="del">−{total().removed}</span>
+                        </span>
+                    </Show>
                     <span class="grow" />
-                    {/* Git's uncommitted view lists these too, whoever made them. */}
-                    <button class="ghost-btn" onClick={() => openReview(files()[0]?.path, "uncommitted")}>
+                    {/* Keep recorded changes tied to this turn, even after later edits. */}
+                    <button class="ghost-btn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path)}>
                         <FileDiff size={14} /> Review changes
                     </button>
                 </div>
+                <Show when={captured() && recorded()?.incomplete}><div class="review-note">{"This turn’s snapshot is incomplete. " + (recorded()?.notes?.join(" ") ?? "")}</div></Show>
                 <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                     {(f) => (
                         <div class="frow-line">
-                            <button class="frow" onClick={() => openReview(f.path, "uncommitted")}>
+                            <button class="frow" onClick={() => reviewChanges(f.path)}>
                                 <SplitPath path={f.path} cwd={p.cwd} />
                                 <Show when={f.status === "added"}>
                                     <span class="frow-tag">new</span>
@@ -424,7 +443,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                         )}
                     </Index>
                     <Show when={!running() && !p.turn.archived && !p.turn.imported}>
-                        <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} />
+                        <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} />
                     </Show>
                     <Show when={!running() && p.turn.prompt}>
                         <div class="turn-foot">
