@@ -3,7 +3,7 @@ import { dirname, join } from "path";
 import { isDeepStrictEqual } from "util";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import { MCP_SERVER_NAME } from "../agent/delegation";
-import { serverCwd } from "../mcp/approval";
+import { mcpFingerprint, serverCwd } from "../mcp/approval";
 
 interface ClaudeMcpPolicy {
     strict: boolean;
@@ -26,7 +26,8 @@ const expands = (v: unknown): boolean => typeof v === "string" ? v.includes("${"
 /** One transport, as Claude Code will read it: `type` isn't fingerprinted, so it may not pick between a command and a URL. */
 function oneTransport(config: Record<string, unknown>): boolean {
     const command = config.command !== undefined, url = config.url !== undefined;
-    if (config.type === undefined) return command !== url;
+    // Without a type Claude Code reads a stdio server, and skips one that has only a URL.
+    if (config.type === undefined) return command && !url;
     if (config.type === "stdio") return command && !url;
     if (config.type === "http" || config.type === "sse") return url && !command;
     return false;
@@ -68,6 +69,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
         const disabled = new Set([MCP_SERVER_NAME]);
         let incompatibleCwd = false;
         let unboundField = false;
+        let stale = false;
         const file = join(cwd, ".mcp.json");
         if (exists(file)) {
             // Claude rereads this file after our check: a race requires a concurrent
@@ -84,8 +86,13 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
                 const covered = bound(config);
                 if (!covered && entry?.source === "project") unboundField = true;
                 if (name !== MCP_SERVER_NAME && entry?.source === "project" && covered && isDeepStrictEqual(config, entry.config)) {
+                    // What it resolves to now (a symlinked cwd may point elsewhere since load()) must still be what was approved.
+                    if (!entry.fingerprint || mcpFingerprint(entry.config, approved.cwd) !== entry.fingerprint) {
+                        disabled.add(name);
+                        stale = true;
+                    }
                     // Claude ignores server cwd; compare the directory Harness would actually use (a relative one is the project's).
-                    if (serverCwd(entry.config, approved.cwd) === real) enabled.push(name);
+                    else if (serverCwd(entry.config, approved.cwd) === real) enabled.push(name);
                     else {
                         disabled.add(name);
                         incompatibleCwd = true;
@@ -98,8 +105,9 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
         return {
             strict: false,
             settings: { enabledMcpjsonServers: enabled.sort(), disabledMcpjsonServers: [...disabled].sort() },
-            ...(incompatibleCwd || unboundField ? { warning: [
+            ...(incompatibleCwd || unboundField || stale ? { warning: [
                 incompatibleCwd && "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd.",
+                stale && "Claude Code skipped approved project MCP servers whose definitions no longer resolve to what was approved (a symlinked working directory may point elsewhere now); reopen /mcp to review them.",
                 unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Harness approved: fields an approval doesn't cover (such as headersHelper or oauth), ${VAR} expansion, or a type that doesn't match a single command or URL.",
             ].filter(Boolean).join(" ") } : {}),
         };

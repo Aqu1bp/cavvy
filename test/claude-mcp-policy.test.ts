@@ -29,7 +29,7 @@ const config = (): McpServerConfig => ({ command: "node", args: ["./server.js"],
 const write = (servers: Record<string, unknown>, dir = cwd) => writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: servers }));
 const snapshot = (servers: Record<string, McpServerConfig>): ApprovedMcpServers => ({
     cwd,
-    servers: Object.fromEntries(Object.entries(servers).map(([name, config]) => [name, { source: "project", config }])),
+    servers: Object.fromEntries(Object.entries(servers).map(([name, config]) => [name, { source: "project", config, fingerprint: mcpFingerprint(config, cwd) }])),
 });
 const expectStrict = (result: ReturnType<typeof claudeMcpPolicy>) => {
     expect(result.strict).toBe(true);
@@ -69,7 +69,7 @@ describe("Claude native project MCP policy", () => {
         for (const st of manager.servers.values()) st.status = "failed";
         expect(manager.servers.get("legacy")!.approval?.reason).toBe("legacy");
         const approved = manager.approvedServers();
-        expect(approved.servers.approved).toEqual({ source: "project", config: cfg });
+        expect(approved.servers.approved).toEqual({ source: "project", config: cfg, fingerprint: mcpFingerprint(cfg, cwd) });
         expect(approved.servers.approved!.config).not.toHaveProperty("cwd");
         expect(claudeMcpPolicy(cwd, approved).settings).toEqual({
             enabledMcpjsonServers: ["approved"],
@@ -119,6 +119,28 @@ describe("Claude native project MCP policy", () => {
         const policy = claudeMcpPolicy(cwd, snapshot({ expanding: cfg as McpServerConfig }));
         expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["expanding", "harness"] });
         expect(policy.warning).toContain("${VAR} expansion");
+    });
+
+    test("a symlinked cwd retargeted after approval stays disabled until it's approved again", () => {
+        mkdirSync(join(root, "safe"));
+        symlinkSync(join(root, "safe"), join(cwd, "run"));
+        const cfg = { ...config(), cwd: "./run" };
+        write({ linked: cfg });
+        saveApproval(cwd, "linked", mcpFingerprint(cfg, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        // Point it at the project folder itself, where Claude Code (which ignores cwd) would run it.
+        rmSync(join(cwd, "run"));
+        symlinkSync(cwd, join(cwd, "run"));
+        const policy = claudeMcpPolicy(cwd, manager.approvedServers());
+        expect(policy.settings?.enabledMcpjsonServers).toEqual([]);
+        expect(policy.warning).toContain("no longer resolve to what was approved");
+    });
+
+    test("a URL-only definition without a type isn't passed on: Claude Code reads it as stdio", () => {
+        const urlOnly = { url: "https://example.invalid/mcp" };
+        write({ urlOnly });
+        expect(claudeMcpPolicy(cwd, snapshot({ urlOnly })).settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness", "urlOnly"] });
     });
 
     test("a relative server cwd is the project's, not the process's", () => {

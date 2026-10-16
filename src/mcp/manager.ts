@@ -51,7 +51,8 @@ function startError(st: ServerState): string | undefined {
 /** Servers allowed by mayStart(); definitions remain exactly as load() read and checked them for approval. */
 export interface ApprovedMcpServers {
     cwd: string;
-    servers: Record<string, Pick<ServerState, "config" | "source">>;
+    /** `fingerprint`: what load() approved, so a consumer can check that the definition still resolves to it. */
+    servers: Record<string, Pick<ServerState, "config" | "source"> & { fingerprint?: string }>;
 }
 
 const MAX_OUTPUT = 40_000;
@@ -223,7 +224,7 @@ export class McpManager {
             cwd: this.cwd,
             servers: Object.fromEntries([...this.servers.values()]
                 .filter((s) => mayStart(s) && s.status !== "disabled")
-                .map((s) => [s.name, { config: structuredClone(s.config), source: s.source }])),
+                .map((s) => [s.name, { config: structuredClone(s.config), source: s.source, ...(s.approval ? { fingerprint: s.approval.fingerprint } : {}) }])),
         };
     }
 

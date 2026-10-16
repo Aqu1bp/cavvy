@@ -550,7 +550,7 @@ describe("McpManager.load and project .mcp.json approval", () => {
         expect(m.approvedServers()).toEqual({ cwd: proj, servers: {
             fromSettings: { config: cfg("s"), source: "settings" },
             dup: { config: cfg("from-settings"), source: "settings" },
-            approved: { config: cfg("approved"), source: "project" },
+            approved: { config: cfg("approved"), source: "project", fingerprint: m.servers.get("approved")!.approval!.fingerprint },
             "same name": { config: cfg("first"), source: "settings" },
         } });
     });
