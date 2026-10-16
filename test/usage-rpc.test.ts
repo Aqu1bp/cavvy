@@ -88,6 +88,11 @@ class Client {
         return new Promise((resolve, reject) => this.waiting.set(id, { resolve, reject }));
     }
 
+    async sessionIds(): Promise<string[]> {
+        // Unloading changes summary fields and ordering, but doesn't create a session.
+        return (await this.call<{ id: string }[]>("sessions.list")).map((s) => s.id).sort();
+    }
+
     async create(cwd: string): Promise<string> {
         const snap = await this.call<SessionSnapshot>("session.create", { cwd });
         this.views.set(snap.state.id, { state: snap.state, turns: snap.turns, agents: snap.agents, seq: snap.seq });
@@ -236,9 +241,9 @@ describe("slash commands the server doesn't know", () => {
     test("a Home typo is refused before any session is created", async () => {
         const c = await client();
         const cwd = project();
-        const before = await c.call("sessions.list");
+        const before = await c.sessionIds();
         await expect(c.call("commands.list", { cwd, command: "nonsense" })).rejects.toMatchObject({ code: "unknown_command", message: "Unknown command /nonsense" });
-        expect(await c.call("sessions.list")).toEqual(before);
+        expect(await c.sessionIds()).toEqual(before);
         c.close();
     });
 
@@ -280,9 +285,9 @@ describe("Claude Code's own commands", () => {
             writeFileSync(join(override, ".harness", "settings.json"), JSON.stringify({ model: "claude-code:default" }));
             // The global default is Mock. Home must use the trusted project's Claude Code override.
             await c.call("projects.trust", { path: override, trust: true });
-            const before = await c.call("sessions.list");
+            const before = await c.sessionIds();
             await expect(c.call("commands.list", { cwd: override, command: "project-skill" })).resolves.toBeArray();
-            expect(await c.call("sessions.list")).toEqual(before);
+            expect(await c.sessionIds()).toEqual(before);
             await expect(c.call("commands.list", { cwd: override, provider: "mock", command: "project-skill" })).rejects.toMatchObject({ code: "unknown_command" });
             const listings = modelListings;
             try {
@@ -302,12 +307,12 @@ describe("Claude Code's own commands", () => {
                     mkdirSync(join(fallback, ".harness"));
                     writeFileSync(join(fallback, ".harness", "settings.json"), JSON.stringify({ model }));
                     await c.call("projects.trust", { path: fallback, trust: true });
-                    const before = await c.call("sessions.list");
+                    const before = await c.sessionIds();
                     // A usable API provider stays selected even when the listing offers only Claude Code.
                     const unknown = { code: "unknown_command", message: "Unknown command /project-skill" };
                     if (hasKey) await expect(c.call("commands.list", { cwd: fallback, command: "project-skill" })).rejects.toMatchObject(unknown);
                     else expect(await c.call("commands.list", { cwd: fallback, command: "project-skill" })).toBeArray();
-                    expect(await c.call("sessions.list")).toEqual(before);
+                    expect(await c.sessionIds()).toEqual(before);
                     const id = await c.create(fallback);
                     expect(c.view(id).state.model?.provider).toBe(hasKey ? "anthropic" : "claude-code");
                     if (hasKey) await expect(c.call("session.send", { id, text: "/project-skill" })).rejects.toMatchObject(unknown);

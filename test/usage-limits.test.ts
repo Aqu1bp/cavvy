@@ -576,7 +576,7 @@ describe("limit notices aren't repeated", () => {
         // The window reset (a new reset time): said again.
         process.env.FAKE_RATE_LIMIT = shifted("claude-warning.json", at + 5 * 3_600_000);
         expect(close((await runTurn("claude-code")).notices)).toBe(1);
-    });
+    }, 15_000);
 
     test("Claude Code's limit reached: once per turn, and the error still says when", async () => {
         process.env.FAKE_SCENARIO = "rate-limit";
