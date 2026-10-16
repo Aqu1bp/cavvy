@@ -12,9 +12,10 @@ export interface SimpleCommand {
     /** The operator before it: ";", "\n", "&&", "||", "|" or "&" (none for the first). */
     after?: string;
     /**
-     * A redirection on it opens a file (`< f`, `> f`, `2>> f`) or copies a
+     * A redirection on it opens a file (`< f`, `> f`, `2>> f`), copies a
      * descriptor past stderr (`<&9`, `>&3`, closed unless something opened
-     * it): the shell can fail on that before it runs.
+     * it), or closes one and copies one (`2>&- 1>&2`): the shell can fail on
+     * that before it runs.
      */
     opensFile?: true;
 }
@@ -100,6 +101,9 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     /** The operator after the last command pushed (`a &&` then a blank line: still &&). */
     let lastOp: string | undefined;
     let opensFile = false;
+    /** It closes a descriptor (`2>&-`) and copies one (`1>&2`): after the close, the copy fails. */
+    let closesFd = false;
+    let copiesFd = false;
 
     const endWord = () => {
         if (wordStarted) argv.push(word);
@@ -110,12 +114,12 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     const endCommand = (op?: string) => {
         endWord();
         if (argv.length) {
-            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(opensFile ? { opensFile: true as const } : {}) });
+            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(opensFile || (closesFd && copiesFd) ? { opensFile: true as const } : {}) });
             lastOp = op;
         }
         argv = [];
         text = "";
-        opensFile = false;
+        opensFile = closesFd = copiesFd = false;
     };
 
     for (let i = 0; i < cmd.length; i++) {
@@ -216,6 +220,10 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             endWord();
             // `< f` and `<> f` open a file, `<&9` needs fd 9 open; `<<`, `<<<`, `<&0` and `<&-` can't fail.
             if (c === "<" && n !== "<" && cmd[i - 1] !== "<" && n !== "(" && !(n === "&" && /^&([012]|-)(?![0-9])/.test(cmd.slice(i + 1)))) opensFile = true;
+            if (c === "<" && n === "&") {
+                if (cmd[i + 2] === "-") closesFd = true;
+                else copiesFd = true;
+            }
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
             if (c === ">") {
@@ -227,6 +235,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                     // >&2 / >&- style: fd duplication or close, harmless; past stderr (>&3) only if it's open
                     end = j + fd[0].length;
                     if (!/^([012]|-)$/.test(fd[1]!)) opensFile = true;
+                    if (fd[1] === "-") closesFd = true;
+                    else copiesFd = true;
                 } else {
                     if (cmd[j] === "&") j++; // `>&file` sends stdout and stderr to a file
                     while (cmd[j] === " " || cmd[j] === "\t") j++;

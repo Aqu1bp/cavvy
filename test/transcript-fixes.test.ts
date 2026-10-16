@@ -365,6 +365,9 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["grep x f 2>&1", "grep"],
         ["grep x <&0", "grep"],
         ["grep x f 2>&-", "grep"],
+        // Closed, then copied: the copy fails.
+        ["grep x /dev/null 2>&- 1>&2", undefined],
+        ["grep x /dev/null <&- 0<&1", undefined],
         // Negated: 1 is a match.
         ["! cat package.json | grep -q name", undefined],
         ["time ! cat f | grep x", undefined],
@@ -417,7 +420,7 @@ describe("a last grep that finds nothing isn't an error", () => {
 
     test("a 1 that isn't grep's stays an error", async () => {
         // grep never ran: the shell couldn't open its input, or output file.
-        for (const cmd of ["grep x < /no/such/file", "grep x 2>/dev/null < /no/such/file", "grep x /dev/null > /no/such/dir/out", "grep x 2>/dev/null <&9"]) {
+        for (const cmd of ["grep x < /no/such/file", "grep x 2>/dev/null < /no/such/file", "grep x /dev/null > /no/such/dir/out", "grep x 2>/dev/null <&9", "grep x /dev/null 2>&- 1>&2"]) {
             const r = await bash(cmd);
             expect(r.isError).toBe(true);
             expect(r.content).toContain("Exit code: 1");
@@ -435,6 +438,18 @@ describe("a last grep that finds nothing isn't an error", () => {
         const midLine = await bash("printf 'Checking... ' >&2; grep x *.nomatchglob");
         expect(midLine.isError).toBe(true);
         expect(midLine.content).not.toContain("found no matches");
+    });
+
+    test("in bash too: a descriptor closed, then copied", async () => {
+        const saved = process.env.SHELL;
+        process.env.SHELL = "/bin/bash";
+        try {
+            const r = await bash("grep x /dev/null 2>&- 1>&2");
+            expect(r.isError).toBe(true);
+            expect(r.content).not.toContain("found no matches");
+        } finally {
+            process.env.SHELL = saved;
+        }
     });
 
     test("a piped grep's 1 says what came before it may have failed", async () => {
