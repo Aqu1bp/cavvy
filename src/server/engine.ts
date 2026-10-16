@@ -7,14 +7,14 @@ import { Terminals } from "./terminals";
 import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { RpcError } from "./rpc-error";
 export { RpcError };
-import { readdirSync, statSync } from "fs";
+import { readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, harnessHome } from "../config/paths";
 import { loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
-import { findSessionAnywhere, listAllSessions, Session, SessionInUseError } from "../agent/session";
+import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError } from "../agent/session";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
@@ -26,7 +26,8 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitSnapshot } from "../util/git";
-import { listWorktrees } from "./worktrees";
+import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
+import { isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
 import type {
@@ -39,6 +40,7 @@ import type {
     Methods,
     PermissionModeId,
     ProjectInfo,
+    RemoveWorktreeResult,
     ProviderInfo,
     ProviderModels,
     ServerEvent,
@@ -60,6 +62,8 @@ export interface EngineOptions {
     listModels?: typeof listAllModels;
     /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
     unloadAfterMs?: number;
+    /** The server's log (stderr), for details the GUI isn't shown. */
+    log?: (message: string) => void;
 }
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
@@ -163,6 +167,10 @@ export class Engine {
     private unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
     /** Sessions being unloaded (their SessionEnd hooks running): opened again once that's done. */
     private closing = new Map<string, Promise<void>>();
+    /** Their folders, meanwhile: hooks may still be running there. */
+    private closingIn = new Map<string, string>();
+    /** Worktrees being removed (real paths): no session opens in them meanwhile. */
+    private removing = new Set<string>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
 
@@ -316,6 +324,7 @@ export class Engine {
 
     workspaceFor(cwd: string): Workspace {
         const p = resolve(cwd);
+        if ([...this.removing].some((dir) => within(dir)(p))) throw new RpcError(`${p} is being removed.`, "busy");
         const existing = this.workspaces.get(p);
         if (existing) return existing;
         let trusted = isTrusted(p);
@@ -331,6 +340,36 @@ export class Engine {
         const ws = new Workspace(this, p, trusted);
         this.workspaces.set(p, ws);
         return ws;
+    }
+
+    /**
+     * Refused while a session is open inside it: one here (or still closing),
+     * or one in another process (a terminal) once it has sent a message and
+     * so holds its lock. From the check until Git is done no session can
+     * open there from this server, nor can another removal of it start; its
+     * idle workspaces (picked while their paths still resolve) close after.
+     */
+    private async removeWorktree(path: string, worktree: string, deleteIgnored?: string): Promise<RemoveWorktreeResult> {
+        const held = heldSessionFolders();
+        const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...held];
+        const plan = planRemoval({ path, worktree, inUse: (dir) => open().some(within(dir)) });
+        const reserved = realPath(plan.path);
+        if ([...this.removing].some((dir) => within(dir)(reserved) || within(reserved)(dir))) throw new RpcError(`${plan.path} is already being removed.`, "busy");
+        this.removing.add(reserved);
+        const idle = [...this.workspaces].filter(([cwd]) => within(plan.path)(cwd));
+        let result: RemoveWorktreeResult;
+        try {
+            result = await runRemoval(plan, { deleteIgnored }, this.o.log);
+        } finally {
+            this.removing.delete(reserved);
+        }
+        if (!result.removed) return result;
+        for (const [cwd, ws] of idle) {
+            if (this.workspaces.get(cwd) !== ws || [...this.runtimes.values()].some((rt) => rt.ws === ws)) continue;
+            this.workspaces.delete(cwd);
+            void ws.mcp.closeAll().catch(() => undefined);
+        }
+        return result;
     }
 
     private recentProjects(): ProjectInfo[] {
@@ -454,9 +493,13 @@ export class Engine {
             .close()
             .catch(() => undefined)
             .finally(() => {
-                if (this.closing.get(id) === done) this.closing.delete(id);
+                if (this.closing.get(id) === done) {
+                    this.closing.delete(id);
+                    this.closingIn.delete(id);
+                }
             });
         this.closing.set(id, done);
+        this.closingIn.set(id, rt.ws.cwd);
     }
 
     private unloadLater(id: string) {
@@ -881,6 +924,19 @@ export class Engine {
                 return this.inspectProject(str(p.path, "path"));
             case "projects.worktrees":
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
+            case "projects.createWorktree":
+                return createWorktree(
+                    {
+                        path: resolve(expandHome(text(p.path, "path", 4096))),
+                        branch: text(p.branch, "branch", 200),
+                        base: optText(p.base, "base", 200),
+                        folder: optText(p.folder, "folder", 255),
+                        location: optText(p.location, "location", 4096),
+                    },
+                    this.o.log,
+                );
+            case "projects.removeWorktree":
+                return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));
             case "projects.trust":
                 return this.trustProject(str(p.path, "path"), Boolean(p.trust));
             case "projects.forget": {
@@ -946,6 +1002,31 @@ function validImage(i: { mediaType: unknown; data: unknown }): boolean {
 function str(v: unknown, name: string): string {
     if (typeof v !== "string") throw new RpcError(`${name} must be a string`);
     return v;
+}
+
+/** A bounded string without NUL, which no argument or path can carry. */
+function text(v: unknown, name: string, max: number): string {
+    const s = str(v, name);
+    if (s.length > max) throw new RpcError(`${name} is too long`, "invalid");
+    if (s.includes("\0")) throw new RpcError(`${name} can't contain NUL`, "invalid");
+    return s;
+}
+
+function optText(v: unknown, name: string, max: number): string | undefined {
+    return v === undefined || v === null || v === "" ? undefined : text(v, name, max);
+}
+
+/** `cwd` is `dir` or inside it, as written or with symlinks resolved. */
+function within(dir: string): (cwd: string) => boolean {
+    return (cwd) => isInside(resolve(cwd), resolve(dir)) || isInside(realPath(cwd), realPath(dir));
+}
+
+function realPath(p: string): string {
+    try {
+        return realpathSync(p);
+    } catch {
+        return resolve(p);
+    }
 }
 
 function optStr(v: unknown): string | undefined {

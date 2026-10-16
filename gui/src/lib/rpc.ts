@@ -16,6 +16,8 @@ export class RpcError extends Error {
     constructor(
         message: string,
         readonly code?: string,
+        /** With "needs_trust": the folder to trust. */
+        readonly folder?: string,
     ) {
         super(message);
     }
@@ -124,7 +126,7 @@ export class Rpc {
         const p = this.pending.get(msg.id);
         if (!p) return;
         this.pending.delete(msg.id);
-        if ("error" in msg) p.reject(new RpcError(msg.error.message, msg.error.code));
+        if ("error" in msg) p.reject(new RpcError(msg.error.message, msg.error.code, msg.error.folder));
         else p.resolve(msg.result);
     }
 

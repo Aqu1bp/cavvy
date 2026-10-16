@@ -704,6 +704,38 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
     return out.slice(0, limit);
 }
 
+/** The folders of sessions another running process has open: all of them, however old (a session takes its lock with its first message). */
+export function heldSessionFolders(): string[] {
+    const root = paths.projectsDir();
+    const out: string[] = [];
+    let dirs: string[] = [];
+    try {
+        dirs = readdirSync(root);
+    } catch {
+        return out;
+    }
+    for (const d of dirs) {
+        let names: string[];
+        try {
+            names = readdirSync(join(root, d));
+        } catch {
+            continue;
+        }
+        for (const f of names) {
+            if (!f.endsWith(".jsonl.lock")) continue;
+            const file = join(root, d, f.slice(0, -".lock".length));
+            if (sessionHolder(file) === undefined) continue;
+            try {
+                const cwd = sessionHead(file).cwd;
+                if (cwd) out.push(cwd);
+            } catch {
+                // vanished or unreadable
+            }
+        }
+    }
+    return out;
+}
+
 /**
  * Sessions from every project, newest first (the GUI's sidebar). Each
  * session records its own folder, so the lossy folder names under

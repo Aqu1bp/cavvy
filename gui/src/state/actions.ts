@@ -21,12 +21,17 @@ export function newSession(cwd?: string) {
     requestComposerFocus();
 }
 
-/** Choose a project folder: the native picker in the desktop app, ours in the browser. */
-export async function chooseProject(): Promise<string | undefined> {
-    const native = await pickFolder(app.homeCwd).catch(() => undefined);
+/** Choose a folder: the native picker in the desktop app, ours in the browser. */
+export async function chooseFolder(o: { title?: string; action?: string; start?: string } = {}): Promise<string | undefined> {
+    const native = await pickFolder(o.start ?? app.homeCwd, o.title).catch(() => undefined);
     if (native === null) return undefined;
     if (native) return native;
-    return new Promise((resolve) => setFolderPickerOpen({ then: resolve }));
+    return new Promise((resolve) => setFolderPickerOpen({ then: resolve, ...o }));
+}
+
+/** Choose a project folder. */
+export function chooseProject(): Promise<string | undefined> {
+    return chooseFolder();
 }
 
 export async function openProject(path: string) {

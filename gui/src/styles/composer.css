@@ -924,6 +924,31 @@
     color: color-mix(in srgb, var(--fg-muted) 70%, var(--fg));
 }
 
+/* A worktree row with its remove button beside it (a button can't hold another). */
+.wt-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.wt-row .menu-item {
+    flex: 1;
+}
+
+.wt-remove {
+    margin-top: 4px;
+    opacity: 0;
+}
+
+.wt-row:hover .wt-remove,
+.wt-remove:focus-visible {
+    opacity: 1;
+}
+
+.wt-remove:hover:not(:disabled) {
+    color: var(--danger);
+}
+
 /* Effort and mode: one line each, so they fit under Home's composer. The full text is the item's tooltip. */
 .effort-menu .menu-item,
 .mode-menu .menu-item {
