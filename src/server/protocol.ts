@@ -941,6 +941,43 @@ export interface GitChangesInfo extends ChangesInfo {
     moreAtLeast?: boolean;
 }
 
+/** A confirmation snapshot; the server rechecks the destination and HEAD before publishing. */
+export interface GitPublishInfo {
+    fingerprint: string;
+    branch: string;
+    remote: string;
+    target: string;
+    destination: string;
+    ahead?: number;
+    behind?: number;
+    hasUpstream: boolean;
+    base?: string;
+    protected: boolean;
+    defaultUnknown: boolean;
+    gh: boolean;
+    prError?: string;
+    title: string;
+    body: string;
+    compareUrl?: string;
+    pr?: GitPrInfo;
+}
+export interface GitPublishRequest {
+    fingerprint: string;
+    action: "push" | "pr";
+    confirmProtected?: boolean;
+    base?: string;
+    title?: string;
+    body?: string;
+    draft?: boolean;
+}
+export interface GitPrInfo {
+    number: number;
+    url: string;
+    title: string;
+    state: "open" | "draft" | "merged" | "closed";
+    checks: number;
+}
+
 export interface GitCommitHead {
     branch?: string;
     detached: boolean;
@@ -1139,6 +1176,9 @@ export interface Methods {
     "session.fork": { params: { id: string; index: number; text: string; turn: string }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number }; result: GitChangesInfo };
+    "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
+    "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
+    "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
     "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
     "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
