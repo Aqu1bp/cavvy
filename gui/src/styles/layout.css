@@ -484,7 +484,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
     flex: none;
 }
 
@@ -864,7 +864,7 @@ a.prow:hover,
     height: 8px;
     border-radius: 50%;
     box-shadow: 0 0 0 2px var(--bg-card);
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
 }
 
 .nd.st-running {
@@ -884,7 +884,7 @@ a.prow:hover,
 }
 
 .nd.st-stopped {
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
 }
 
 .lt {

@@ -1,4 +1,4 @@
-import { createResource, Show } from "solid-js";
+import { createResource, createUniqueId, Show } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
 import { reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
 import { trustAndContinue } from "../state/actions";
@@ -10,6 +10,7 @@ export function TrustDialog() {
         () => trustRequest()?.path,
         (path) => rpc.call("projects.inspect", { path }),
     );
+    const titleId = createUniqueId();
     const decide = async (trust: boolean) => {
         const req = trustRequest();
         if (!req) return;
@@ -22,10 +23,10 @@ export function TrustDialog() {
         }
     };
     return (
-        <Dialog open={Boolean(trustRequest())} onClose={() => setTrustRequest(undefined)} bare width={500}>
+        <Dialog open={Boolean(trustRequest())} onClose={() => setTrustRequest(undefined)} bare labelledBy={titleId} width={500}>
             <div class="trust-dialog">
                 <ShieldAlert size={28} class="tone-warn" />
-                <h2>Do you trust the files in this folder?</h2>
+                <h2 id={titleId}>Do you trust the files in this folder?</h2>
                 <div class="mono small trust-path">{trustRequest()?.path}</div>
                 <Show when={info()}>
                     <p class="muted">

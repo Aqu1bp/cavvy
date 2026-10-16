@@ -9,7 +9,7 @@ import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc
 import { connectCli } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
-import { mod, openExternal } from "../lib/platform";
+import { mod, openExternal, terminalShortcut } from "../lib/platform";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { MODES } from "./ModePicker";
 import { CrumbSep, TitleBar } from "./Header";
@@ -496,6 +496,7 @@ const SHORTCUTS: [string, string][] = [
     [`${mod}+,`, "Settings"],
     [`${mod}+B`, "Toggle the sidebar"],
     [`${mod}+.`, "Toggle the side panel"],
+    [terminalShortcut, "Toggle the terminal panel"],
     [`${mod}+/`, "Switch model"],
     [`${mod}+1…9`, "Pick a model (model picker open)"],
     [`${mod}+[  ${mod}+]`, "Previous / next session"],

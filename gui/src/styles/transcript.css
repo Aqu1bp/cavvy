@@ -1157,7 +1157,7 @@ button.wrow:hover {
 .todo-list li.completed {
     color: var(--fg-subtle);
     text-decoration: line-through;
-    text-decoration-color: color-mix(in srgb, var(--fg-subtle) 60%, transparent);
+    text-decoration-color: color-mix(in srgb, var(--fg-faint) 60%, transparent);
 }
 
 .todo-list li.completed .todo-box {

@@ -328,12 +328,14 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
     );
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""}`} data-turn={p.turn.id}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""}`} data-turn={p.turn.id} aria-busy={running()}>
             <Show when={p.turn.prompt}>
+                <h2 class="sr-only">You said</h2>
                 <UserPrompt turn={p.turn} onRewind={p.onRewind} />
             </Show>
             <Show when={hasOutput()}>
                 <div class="reply">
+                    <h2 class="sr-only">{running() ? "Harness is working" : "Harness replied"}</h2>
                     <Show when={running() && p.last}>
                         <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
                     </Show>

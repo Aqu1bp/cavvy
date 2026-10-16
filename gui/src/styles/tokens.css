@@ -71,18 +71,19 @@
     --border: rgba(0, 0, 0, 0.08);
     --border-strong: rgba(0, 0, 0, 0.14);
     --fg: #1d1d1f;
-    --fg-muted: #6e6e73;
-    --fg-subtle: #a1a1a6;
+    --fg-muted: #5c5c60;
+    --fg-subtle: #6f6f74;
+    --fg-faint: #a1a1a6; /* Dots, bars and strike lines only: too faint for text. */
     --fg-inverse: #ffffff;
     --bg-inverse: #2a2a2c;
-    --accent: #2f6bff;
+    --accent: #235df0;
     --accent-fg: #ffffff;
-    --success: #12a26b;
-    --warning: #c27c0e;
-    --danger: #d83b3b;
+    --success: #037a4f;
+    --warning: #965e03;
+    --danger: #ca2c30;
     --info: #2563eb;
     --plan: #7c4dff;
-    --auto: #b8620b;
+    --auto: #a65601;
     --add-fg: #1a7f37;
     --add-bg: #e9f7ed;
     --add-bg-strong: #c7ebd2;
@@ -140,18 +141,19 @@
     --border: #e8e0d2;
     --border-strong: #d9cfbd;
     --fg: #2b2520;
-    --fg-muted: #76695c;
-    --fg-subtle: #a69886;
+    --fg-muted: #5f5346;
+    --fg-subtle: #736655;
+    --fg-faint: #a69886;
     --fg-inverse: #fffdf9;
     --bg-inverse: #2b2520;
-    --accent: #c4572a;
+    --accent: #ad420f;
     --accent-fg: #ffffff;
-    --success: #3f7d3a;
-    --warning: #b7791f;
-    --danger: #b83a2e;
-    --info: #3b6ea8;
+    --success: #32702e;
+    --warning: #8c5802;
+    --danger: #b4362a;
+    --info: #32659e;
     --plan: #7b5ea7;
-    --auto: #a35b12;
+    --auto: #985203;
     --add-fg: #3f6f2a;
     --add-bg: #edf3e1;
     --add-bg-strong: #d3e5bb;
@@ -202,11 +204,14 @@
     --border-strong: rgba(255, 255, 255, 0.12);
     --fg: #f2f2f3;
     --fg-prose: rgba(242, 242, 243, 0.8);
-    --fg-muted: #86868b;
-    --fg-subtle: #5d5d62;
+    --fg-muted: #95959a;
+    --fg-subtle: #808085;
+    --fg-faint: #5d5d62;
     --fg-inverse: #0b0b0c;
     --bg-inverse: #f2f2f3;
-    --accent: #3b72f6;
+    --accent: #376df0;
+    /* White on the accent and the accent as text need opposite moves here, so links get their own. */
+    --accent-text: color-mix(in srgb, var(--accent) 85%, var(--fg));
     --accent-fg: #ffffff;
     --link: #6ea2ff;
     --success: #2fd49a;
@@ -263,7 +268,8 @@
     --border-strong: #2a3552;
     --fg: #e3e9f6;
     --fg-muted: #98a5c4;
-    --fg-subtle: #5f6b8a;
+    --fg-subtle: #7885a5;
+    --fg-faint: #5f6b8a;
     --fg-inverse: #0a0e18;
     --bg-inverse: #e3e9f6;
     --accent: #7c9dff;
@@ -319,7 +325,8 @@
     --border-strong: #3b3452;
     --fg: #e9e4f4;
     --fg-muted: #aaa2c0;
-    --fg-subtle: #736b8d;
+    --fg-subtle: #8d85a8;
+    --fg-faint: #736b8d;
     --fg-inverse: #15121d;
     --bg-inverse: #e9e4f4;
     --accent: #c4a7e7;
@@ -376,6 +383,7 @@
     --fg: #ffffff;
     --fg-muted: #dadada;
     --fg-subtle: #b0b0b0;
+    --fg-faint: #b0b0b0;
     --fg-inverse: #000000;
     --bg-inverse: #ffffff;
     --accent: #5cb2ff;
@@ -438,6 +446,7 @@
 :where(:root) {
     --fg-prose: color-mix(in srgb, var(--fg) 84%, transparent);
     --link: var(--info);
+    --accent-text: var(--accent);
     --glass: color-mix(in srgb, var(--bg-card) 88%, transparent);
     --pop: color-mix(in srgb, var(--bg-elev) 96%, transparent);
     --hairline: var(--border);
