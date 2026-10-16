@@ -2015,6 +2015,8 @@ export class Runtime {
     }
 
     async gitPublishInfo() {
+        // ws.trusted may be implicit. git-publish audits transport config and
+        // requires trustedByUser before any repository-controlled network helper.
         this.checkGitCommit("publishing");
         return gitPublishInfo(this.ws.cwd);
     }

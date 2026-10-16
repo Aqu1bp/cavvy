@@ -1,5 +1,5 @@
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { renameSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
@@ -95,7 +95,7 @@ test("fake gh creates editable draft PR after local push, redacts prefill and ou
     const create = calls(state).find((args) => args[1] === "create")!;
     expect(create).toContain("--draft"); expect(create.join(" ")).not.toContain(secret); expect(create).toContain("Body [REDACTED github-token]\n$(touch nope)");
     expect(await gitPrState(cwd)).toEqual(result.pr);
-    writeFileSync(state, JSON.stringify({ number: 7, url: result.pr!.url, title: "Merged", state: "MERGED", isDraft: true }));
+    writeFileSync(state, JSON.stringify({ number: 7, url: result.pr!.url, title: "Merged", state: "MERGED", isDraft: true, headRefName: "feature", headRepository: { name: "project" }, headRepositoryOwner: { login: "example" }, updatedAt: "2026-10-17T00:00:00Z" }));
     expect((await gitPrState(cwd))?.state).toBe("merged");
 });
 
@@ -197,4 +197,166 @@ test("compare links never expose a secret-shaped branch name", async () => {
     const preview = await gitPublishInfo(cwd);
     expect(preview.compareUrl).toBeUndefined();
     expect(JSON.stringify(preview)).not.toContain(secret);
+});
+
+
+test("repository transport config is audited across local, worktree and nested includes", async () => {
+    const { gitNetworkSkipReason } = await import("../src/util/git");
+    const { cwd, state } = repo();
+    for (const key of ["core.sshCommand", "core.gitProxy", "core.askPass", "core.alternateRefsCommand", "credential.helper", "credential.https://example.invalid.helper", "remote.origin.uploadpack", "remote.origin.receivepack", "remote.origin.proxy", "remote.origin.vcs", "http.proxy", "http.https://example.invalid.proxy", "gpg.program", "gpg.openpgp.program", "gpg.ssh.program", "gpg.ssh.defaultKeyCommand", "push.gpgSign", "url.ext::payload.insteadOf", "url./tmp/transport.pushInsteadOf"]) {
+        git(cwd, "config", key, "payload");
+        expect(gitNetworkSkipReason(cwd)).toContain("explicit user trust");
+        git(cwd, "config", "--unset-all", key);
+    }
+    expect(gitNetworkSkipReason(cwd)).toBeUndefined();
+    expect(calls(state, ".git-calls")).toHaveLength(0);
+    for (const kind of ["include", "worktree", "worktree-include", "conditional-worktree", "inactive-worktree"]) {
+        const project = repo();
+        const nested = join(project.cwd, ".git", "nested-config");
+        git(project.cwd, "config", "--file", nested, "credential.helper", "!sh ./payload.sh");
+        const included = join(project.cwd, ".git", "included-config");
+        git(project.cwd, "config", "--file", included, "include.path", nested);
+        if (kind === "include") git(project.cwd, "config", "include.path", included);
+        else {
+            if (kind !== "inactive-worktree") git(project.cwd, "config", "extensions.worktreeConfig", "true");
+            const file = join(project.cwd, ".git", "config.worktree");
+            git(project.cwd, "config", "--file", file, kind === "worktree" ? "core.sshCommand" : kind === "conditional-worktree" ? "includeIf.onbranch:feature.path" : "include.path", kind === "worktree" ? "sh ./payload.sh" : included);
+        }
+        await expect(gitPublishInfo(project.cwd)).rejects.toMatchObject({ code: "needs_trust" });
+        expect(calls(project.state, ".git-calls")).toHaveLength(0);
+        expect(calls(project.state)).toHaveLength(0);
+    }
+});
+
+test("an SSH payload proven executable stays blocked before explicit trust, including with redirected audit environment", async () => {
+    const { trustFolder, trustForSession } = await import("../src/config/trust");
+    const { cwd, state } = repo();
+    const preview = await gitPublishInfo(cwd);
+    const marker = join(cwd, "ssh-ran");
+    writeFileSync(join(cwd, "payload.sh"), ": > ssh-ran\nexit 1\n");
+    git(cwd, "config", "core.sshCommand", "sh ./payload.sh");
+    // The replacement SSH command exits locally: this proof never connects.
+    const proof = Bun.spawnSync([process.env.FAKE_PUBLISH_GIT!, "ls-remote", "ssh://git@example.invalid/repo.git"], { cwd, env: { ...process.env, GIT_ALLOW_PROTOCOL: "ssh", GIT_SSH_VARIANT: "ssh" }, stdout: "pipe", stderr: "pipe" });
+    expect(proof.exitCode).not.toBe(0); expect(existsSync(marker)).toBe(true); rmSync(marker);
+    trustForSession(cwd);
+    const before = calls(state, ".git-calls").length;
+    const benign = join(cwd, "benign-config"); writeFileSync(benign, "");
+    const savedConfig = process.env.GIT_CONFIG, savedDir = process.env.GIT_DIR;
+    const other = join(cwd, "other"); mkdirSync(other); git(other, "init", "-q");
+    process.env.GIT_CONFIG = benign; process.env.GIT_DIR = join(other, ".git");
+    try {
+        await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "needs_trust" });
+        await expect(gitPrState(cwd)).rejects.toMatchObject({ code: "needs_trust" });
+        await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toMatchObject({ code: "needs_trust" });
+    } finally {
+        if (savedConfig === undefined) delete process.env.GIT_CONFIG; else process.env.GIT_CONFIG = savedConfig;
+        if (savedDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = savedDir;
+    }
+    expect(existsSync(marker)).toBe(false); expect(calls(state, ".git-calls")).toHaveLength(before);
+    trustFolder(cwd);
+    expect((await gitPublishInfo(cwd)).branch).toBe("feature");
+    expect(existsSync(marker)).toBe(false);
+});
+
+test("ordinary user-global transport config and its includes remain allowed", async () => {
+    const { gitNetworkSkipReason } = await import("../src/util/git");
+    const { cwd } = repo();
+    const config = join(cwd, "user-global"), included = join(cwd, "user-global-included");
+    git(cwd, "config", "--file", included, "core.sshCommand", "ssh");
+    git(cwd, "config", "--file", included, "credential.helper", "fixture-unused");
+    git(cwd, "config", "--file", included, "http.proxy", "http://proxy.invalid");
+    git(cwd, "config", "--file", config, "include.path", included);
+    const saved = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = config;
+    try {
+        expect(gitNetworkSkipReason(cwd)).toBeUndefined();
+        expect((await gitPublishInfo(cwd)).branch).toBe("feature");
+    } finally { process.env.GIT_CONFIG_GLOBAL = saved; }
+});
+
+for (const scope of ["local", "global", "included-global"]) test(`${scope} chained URL rewrites cannot split discovery from the push destination`, async () => {
+    const { trustFolder } = await import("../src/config/trust");
+    const { cwd, remote, state } = repo();
+    trustFolder(cwd);
+    const saved = process.env.GIT_CONFIG_GLOBAL;
+    const config = join(cwd, "rewrite-config");
+    if (scope === "global") process.env.GIT_CONFIG_GLOBAL = config;
+    if (scope === "included-global") {
+        const outer = join(cwd, "global-outer"); git(cwd, "config", "--file", outer, "include.path", config);
+        process.env.GIT_CONFIG_GLOBAL = outer;
+    }
+    try {
+        for (const rule of ["insteadOf", "pushInsteadOf"]) {
+            const options = scope === "local" ? [] : ["--file", config];
+            git(cwd, "remote", "set-url", "origin", "publish:fixture");
+            git(cwd, "config", ...options, `url.${remote}.${rule}`, "publish:fixture");
+            git(cwd, "config", ...options, "url./tmp/other-destination.insteadOf", remote);
+            expect(git(cwd, "remote", "get-url", "--push", "origin")).toBe(remote);
+            await expect(gitPublishInfo(cwd)).rejects.toThrow("URL rewrite applies");
+            await expect(gitPublish(cwd, { fingerprint: "a".repeat(64), action: "push", confirmProtected: true })).rejects.toThrow("URL rewrite applies");
+            expect(calls(state, ".git-calls")).toHaveLength(0);
+            git(cwd, "config", ...options, "--remove-section", `url.${remote}`);
+            git(cwd, "config", ...options, "--remove-section", "url./tmp/other-destination");
+        }
+    } finally { process.env.GIT_CONFIG_GLOBAL = saved; }
+});
+
+test("push URLs are audited for rewrites; unrelated rewrites do not block publishing", async () => {
+    const { trustFolder } = await import("../src/config/trust");
+    const { cwd, remote, state } = repo(); trustFolder(cwd);
+    git(cwd, "config", "remote.origin.pushurl", "publish:fixture");
+    git(cwd, "config", `url.${remote}.insteadOf`, "publish:");
+    await expect(gitPublishInfo(cwd)).rejects.toThrow("URL rewrite applies");
+    expect(calls(state, ".git-calls")).toHaveLength(0);
+    git(cwd, "config", "--unset-all", "remote.origin.pushurl");
+    expect((await gitPublishInfo(cwd)).destination).toBe(remote);
+});
+
+test("moving the source branch after the last check can only push the confirmed SHA", async () => {
+    const { cwd, remote, state } = repo();
+    const confirmed = git(cwd, "rev-parse", "HEAD");
+    const preview = await gitPublishInfo(cwd);
+    const later = git(cwd, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "unconfirmed commit");
+    process.env.FAKE_PUBLISH_MOVE_HEAD = later;
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    expect(git(cwd, "rev-parse", "HEAD")).toBe(later);
+    expect(git(remote, "rev-parse", "feature")).toBe(confirmed);
+    expect(git(cwd, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/feature");
+    const push = calls(state, ".git-calls").find((args) => args.includes("push"))!;
+    expect(push).toContain(`${confirmed}:refs/heads/feature`);
+    expect(push).toContain("--no-force"); expect(push).not.toContain("-u");
+});
+
+test("numeric branches select the exact head in this repo, prefer open/draft, then newest history", async () => {
+    const { cwd, state } = repo(true); git(cwd, "checkout", "-b", "123");
+    const record = (number: number, headRefName: string, prState: string, updatedAt: string) => ({ number, url: `https://github.com/example/project/pull/${number}`, headRefName, state: prState, updatedAt, title: `PR ${number}`, isDraft: prState === "OPEN", headRepository: { name: "project" }, headRepositoryOwner: { login: "example" } });
+    const open = record(7, "123", "OPEN", "2025-01-01T00:00:00Z");
+    const recent = record(8, "123", "MERGED", "2026-10-17T00:00:00Z");
+    const wrong = record(123, "different-branch", "OPEN", "2026-10-18T00:00:00Z");
+    const fork = { ...record(999, "123", "OPEN", "2026-10-19T00:00:00Z"), headRepositoryOwner: { login: "someone-else" } };
+    const otherRepo = { ...record(1000, "123", "OPEN", "2026-10-20T00:00:00Z"), headRepository: { name: "another-project" } };
+    writeFileSync(state, JSON.stringify([wrong, fork, otherRepo, recent, open]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 7, state: "draft" });
+    const preview = await gitPublishInfo(cwd);
+    expect((await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Existing numeric branch" })).pr?.number).toBe(7);
+    expect(calls(state).some((args) => args[1] === "create" || args[1] === "view")).toBe(false);
+    expect(calls(state).filter((args) => args[1] === "list").every((args) => args[args.indexOf("--head") + 1] === "123")).toBe(true);
+    writeFileSync(state, JSON.stringify([wrong, fork, otherRepo, record(6, "123", "CLOSED", "2026-01-01T00:00:00Z"), recent]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 8, state: "merged" });
+    writeFileSync(state, JSON.stringify([wrong, fork, otherRepo]));
+    expect(await gitPrState(cwd)).toBeUndefined();
+    writeFileSync(state, JSON.stringify([open]));
+    git(cwd, "remote", "set-url", "origin", "https://github.com/EXAMPLE/Project.git");
+    expect((await gitPrState(cwd))?.number).toBe(7);
+});
+
+
+test("each network call reaudits config added after a preceding network read", async () => {
+    for (const read of [gitPrState, gitPublishInfo]) {
+        const { cwd, state } = repo(true);
+        process.env.FAKE_PUBLISH_MODE = "install-ssh-config";
+        await expect(read(cwd)).rejects.toMatchObject({ code: "needs_trust" });
+        expect(calls(state)).toHaveLength(1);
+        expect(calls(state)[0]!.slice(0, 2)).toEqual(["auth", "status"]);
+    }
 });

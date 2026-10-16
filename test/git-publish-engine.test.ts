@@ -8,7 +8,7 @@ const { Engine } = await import("../src/server/engine");
 setDefaultTimeout(180_000);
 afterAll(() => { fixture.cleanup(); iso.cleanup(); });
 
-async function session(github = false) {
+async function session(github = false, explicitlyTrust = true) {
     const project = repo(github);
     const engine = new Engine({ listModels: async () => [] });
     const client = { subs: new Set<string>(), send() {} }; engine.clients.add(client);
@@ -16,7 +16,7 @@ async function session(github = false) {
     const id = snap.state.id;
     const rt = engine.runtimes.get(id)!;
     await rt.ready;
-    await engine.handle(client, "projects.trust", { path: project.cwd, trust: true });
+    if (explicitlyTrust) await engine.handle(client, "projects.trust", { path: project.cwd, trust: true });
     return { ...project, engine, client, id, rt };
 }
 
@@ -74,5 +74,27 @@ test("engine unauthenticated PR request cannot push; missing upstream remote is 
         expect(calls(state, ".git-calls").filter((args) => args.includes("push"))).toHaveLength(0);
         git(cwd, "remote", "remove", "origin");
         await expect(engine.handle(client, "session.gitPublishInfo", { id })).rejects.toThrow("unambiguous");
+    } finally { await engine.stop(); }
+});
+
+
+test("implicit workspace trust never authorizes repository transport helpers", async () => {
+    const { engine, client, id, rt, cwd, state } = await session(true, false);
+    const { trustedByUser } = await import("../src/config/trust");
+    try {
+        expect(rt.ws.trusted).toBe(true);
+        expect(trustedByUser(cwd)).toBe(false);
+        const info = await engine.handle(client, "session.gitPublishInfo", { id });
+        git(cwd, "config", "core.sshCommand", "sh ./payload.sh");
+        const beforeGit = calls(state, ".git-calls").length, beforeGh = calls(state).length;
+        await expect(engine.handle(client, "session.gitPublishInfo", { id })).rejects.toMatchObject({ code: "needs_trust", message: expect.stringContaining("explicitly") });
+        await expect(engine.handle(client, "session.gitPrState", { id })).rejects.toMatchObject({ code: "needs_trust" });
+        await expect(engine.handle(client, "session.gitPublish", { id, action: "push", fingerprint: info.fingerprint })).rejects.toMatchObject({ code: "needs_trust" });
+        expect(calls(state, ".git-calls")).toHaveLength(beforeGit);
+        expect(calls(state)).toHaveLength(beforeGh);
+        await engine.handle(client, "projects.trust", { path: cwd, trust: true });
+        expect(trustedByUser(cwd)).toBe(true);
+        expect((await engine.handle(client, "session.gitPublishInfo", { id })).gh).toBe(true);
+        await engine.handle(client, "session.gitPublish", { id, action: "push", fingerprint: info.fingerprint });
     } finally { await engine.stop(); }
 });

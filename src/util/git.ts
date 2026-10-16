@@ -23,6 +23,8 @@ function untrustedGitEnv(): Record<string, string> {
     // A relative PATH entry ("." or empty) would let the repo supply the program a
     // bare driver name (git-lfs) or git itself resolves to; only absolute ones stay.
     const env = gitEnv();
+    // Audit and discovery must inspect cwd's repository, not an inherited one.
+    for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) delete env[key];
     if (env.PATH !== undefined) env.PATH = env.PATH.split(delimiter).filter((d) => isAbsolute(d)).join(delimiter);
     return { ...env, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "harness-none" };
 }
@@ -92,29 +94,55 @@ export function gitBranch(cwd: string): string | undefined {
 const STATUS_EXEC_CONFIG = [/^filter\./, /^core\.(fsmonitor|hookspath)$/, /^submodule\./, /^hook\./, /^diff\.external$/, /^diff\..*\.(command|textconv)$/];
 const USER_EXEC_CONFIG = [/^filter\..*\.(clean|smudge|process)$/, /^diff\..*\.(textconv|command)$/, /^diff\.external$/, /^core\.fsmonitor$/];
 
-function statusSkipReason(cwd: string): string | undefined {
-    const unreadable = "repository configuration could not be checked";
+/** Shared by status and transport audits; includes retain their owning scope. */
+function repositoryConfigKeys(cwd: string): string[] | undefined {
     // Repository-owned settings and includes require trust regardless of value.
     // Resolve conditional includes with all scopes present, then retain repo keys.
     const scoped = git(cwd, ["config", "--includes", "--show-scope", "--name-only", "--list", "-z"]);
-    if (scoped === undefined) return unreadable;
+    if (scoped === undefined) return undefined;
     const names = scoped.split("\0");
     const keys: string[] = [];
     for (let i = 0; i < names.length - 1; i += 2) {
         if (names[i] === "local" || names[i] === "worktree") keys.push(names[i + 1]!);
     }
     const file = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"]);
-    if (!file) return unreadable;
+    if (!file) return undefined;
     let worktree = "";
     try {
         lstatSync(file);
         const keys = git(cwd, ["config", "--file", file, "--includes", "--name-only", "--list", "-z"]);
-        if (keys === undefined) return unreadable;
+        if (keys === undefined) return undefined;
         worktree = keys;
     } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return unreadable;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
     }
     keys.push(...worktree.split("\0"));
+    return keys;
+}
+
+/** Network transports can execute helpers or redirect traffic before any push. */
+export function gitNetworkSkipReason(cwd: string): string | undefined {
+    try {
+        if (trustedByUser(cwd)) return undefined;
+        const keys = repositoryConfigKeys(cwd);
+        if (!keys) return "repository configuration could not be checked";
+        const key = keys.find((key) =>
+            /^core\.(sshcommand|gitproxy|askpass|alternaterefscommand)$/.test(key)
+            || /^(credential|http|https|ssh|protocol|url|gpg)\./.test(key)
+            || /^push\.gpgsign$/.test(key)
+            || /^remote\..*\.(uploadpack|receivepack|proxy|proxyauthmethod|vcs)$/.test(key)
+            || /^(include|includeif)\./.test(key));
+        // Subsections can contain URLs or credentials; never quote them here.
+        if (key) return `repository ${key.split(".")[0]} transport configuration requires explicit user trust`;
+    } catch {
+        return "folder trust or repository configuration could not be checked";
+    }
+}
+
+function statusSkipReason(cwd: string): string | undefined {
+    const unreadable = "repository configuration could not be checked";
+    const keys = repositoryConfigKeys(cwd);
+    if (!keys) return unreadable;
     let key = keys.find((key) => STATUS_EXEC_CONFIG.some((pattern) => pattern.test(key)))
         ?? keys.find((key) => /^(include|includeif)\./.test(key));
     if (!key) {

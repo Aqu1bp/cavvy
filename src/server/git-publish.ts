@@ -1,7 +1,7 @@
 // GUI-only publishing. Reads are local except explicit dialog discovery and PR refresh.
 import { createHash } from "crypto";
 import { isAbsolute, delimiter } from "path";
-import { gitArgv, gitEnv } from "../util/git";
+import { gitArgv, gitEnv, gitNetworkSkipReason } from "../util/git";
 import { redact } from "../util/redact";
 import type { GitPublishInfo, GitPublishRequest, GitPrInfo } from "./protocol";
 import { RpcError } from "./rpc-error";
@@ -13,9 +13,16 @@ const clean = (s: string, limit = 4000) => redact(s
 const fail = (message: string, code = "git") => new RpcError(clean(message), code);
 export const gitPublishTiming = { commandMs: 120_000, killGraceMs: 1000 };
 
+function checkNetworkTrust(cwd: string) {
+    const reason = gitNetworkSkipReason(cwd);
+    if (reason) throw new RpcError(`Trust this folder explicitly before publishing or reading remote state: ${reason}.`, "needs_trust", cwd);
+}
+
 async function run(cwd: string, args: string[], network = false, signal?: AbortSignal) {
     if (signal?.aborted) throw fail("Publishing cancelled; check the remote before retrying.", "git_cancelled");
+    if (network) checkNetworkTrust(cwd);
     const env = gitEnv();
+    delete env.GIT_CONFIG;
     for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) delete env[key];
     if (env.PATH) env.PATH = env.PATH.split(delimiter).filter(isAbsolute).join(delimiter);
     Object.assign(env, { GH_PROMPT_DISABLED: "1", GIT_NO_LAZY_FETCH: "1" });
@@ -61,8 +68,8 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
 }
 async function git(cwd: string, args: string[], signal?: AbortSignal, network = false, optional = false) {
     const result = await run(cwd, ["git", ...args], network, signal);
-    if (result.code && !optional) throw fail(result.err + result.out || "Git command failed.");
-    return result.out.trimEnd();
+    if (result.code && (!optional || (args[0] === "config" && result.code !== 1))) throw fail(result.err + result.out || "Git command failed.");
+    return result.code && optional ? "" : result.out.trimEnd();
 }
 async function branchName(cwd: string, name: string, signal?: AbortSignal) {
     if (!name || name.length > 400 || name.startsWith("-") || /[\x00-\x20\x7f]/.test(name)) throw fail("Invalid branch name.", "invalid");
@@ -79,6 +86,7 @@ export function githubRepo(url: string): string | undefined {
 }
 
 async function local(cwd: string, signal?: AbortSignal) {
+    checkNetworkTrust(cwd);
     const [branch, sha, remoteNames] = await Promise.all([
         git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal, false, true),
         git(cwd, ["rev-parse", "--verify", "HEAD"], signal),
@@ -95,12 +103,28 @@ async function local(cwd: string, signal?: AbortSignal) {
     const remote = hasUpstream ? upstreamRemote : remotes.length === 1 && remotes[0] === "origin" ? "origin" : "";
     if (!remote || !remotes.includes(remote) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("No unambiguous push remote. Configure an upstream, or a single origin remote, in a terminal.", "invalid");
     if (hasUpstream && !merge.startsWith("refs/heads/")) throw fail("The upstream is not a branch.", "invalid");
-    const [target, pushUrls, tracking] = await Promise.all([
+    const [target, configuredPushUrls, configuredUrls, rewrites, tracking] = await Promise.all([
         branchName(cwd, hasUpstream ? merge.slice(11) : branch, signal),
-        git(cwd, ["remote", "get-url", "--push", "--all", remote], signal),
+        git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.pushurl`], signal, false, true),
+        git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.url`], signal, false, true),
+        git(cwd, ["config", "--includes", "-z", "--get-regexp", "^url\\..*\\.(insteadof|pushinsteadof)$"], signal, false, true),
         git(cwd, ["rev-parse", "--symbolic-full-name", "@{upstream}"], signal, false, true),
     ]);
-    const urls = pushUrls.split("\n");
+    const configValues = (value: string) => value ? value.split("\0").slice(0, -1) : [];
+    const fetchUrls = configValues(configuredUrls);
+    const pushUrls = configValues(configuredPushUrls);
+    // Refuse applicable rewrites in *any* scope, even with explicit trust.
+    // Reusing get-url's expanded output would apply insteadOf a second time.
+    // Also inspect fetch URLs: pushInsteadOf operates on them when no pushurl exists.
+    for (const entry of rewrites.split("\0").filter(Boolean)) {
+        const newline = entry.indexOf("\n");
+        if (newline < 0) throw fail("Cannot verify Git URL rewrite configuration.", "invalid");
+        const prefix = entry.slice(newline + 1);
+        if ([...fetchUrls, ...pushUrls].some((url) => url.startsWith(prefix))) {
+            throw fail("A Git URL rewrite applies to this remote. Configure its literal destination URL without insteadOf/pushInsteadOf before publishing.", "invalid");
+        }
+    }
+    const urls = pushUrls.length ? pushUrls : fetchUrls;
     if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail("Use one ordinary push URL for this remote.", "invalid");
     const url = urls[0];
     let ahead: number | undefined, behind: number | undefined;
@@ -122,16 +146,25 @@ async function ghReady(cwd: string, signal?: AbortSignal): Promise<boolean> {
     catch (e) { if (e instanceof RpcError && e.code === "unavailable") return false; throw e; }
 }
 async function prView(cwd: string, repo: string, branch: string, signal?: AbortSignal): Promise<GitPrInfo | undefined> {
-    const result = await run(cwd, ["gh", "pr", "view", branch, "--repo", `https://github.com/${repo}`, "--json", "number,url,title,state,isDraft,statusCheckRollup"], true, signal);
-    if (result.code) {
-        if (/no pull requests? found/i.test(result.err + result.out)) return undefined;
-        throw fail(result.err + result.out || "Could not read pull request state.", "gh");
-    }
-    let value;
-    try { value = JSON.parse(result.out); } catch { throw fail("gh returned invalid pull request state.", "gh"); }
-    if (!value || typeof value !== "object") throw fail("gh returned invalid pull request state.", "gh");
+    // `pr view 123` means PR #123, not head branch "123". A list query
+    // keeps branch lookup unambiguous and lets us prefer open PRs over history.
+    const result = await run(cwd, ["gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "100", "--repo", `https://github.com/${repo}`, "--json", "number,url,title,state,isDraft,statusCheckRollup,headRefName,headRepository,headRepositoryOwner,updatedAt"], true, signal);
+    if (result.code) throw fail(result.err + result.out || "Could not read pull request state.", "gh");
+    let values;
+    try { values = JSON.parse(result.out); } catch { throw fail("gh returned invalid pull request state.", "gh"); }
+    if (!Array.isArray(values)) throw fail("gh returned invalid pull request state.", "gh");
+    const [owner, name] = repo.split("/");
+    const candidates = values.filter((value) => value && value.headRefName === branch
+        && typeof value.url === "string" && value.url.toLowerCase() === `https://github.com/${repo}/pull/${value.number}`.toLowerCase()
+        && typeof value.headRepositoryOwner?.login === "string" && value.headRepositoryOwner.login.toLowerCase() === owner!.toLowerCase()
+        && typeof value.headRepository?.name === "string" && value.headRepository.name.toLowerCase() === name!.toLowerCase()
+        && ["OPEN", "MERGED", "CLOSED"].includes(value.state));
+    candidates.sort((a, b) => Number(b.state === "OPEN") - Number(a.state === "OPEN")
+        || (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0) || b.number - a.number);
+    const value = candidates[0];
+    if (!value) return undefined;
     const url = `https://github.com/${repo}/pull/${value.number}`;
-    if (!Number.isSafeInteger(value.number) || value.number < 1 || value.url !== url || !["OPEN", "MERGED", "CLOSED"].includes(value.state) || typeof value.title !== "string" || typeof value.isDraft !== "boolean") throw fail("gh returned invalid pull request state.", "gh");
+    if (!Number.isSafeInteger(value.number) || value.number < 1 || value.url.toLowerCase() !== url.toLowerCase() || !["OPEN", "MERGED", "CLOSED"].includes(value.state) || typeof value.title !== "string" || typeof value.isDraft !== "boolean") throw fail("gh returned invalid pull request state.", "gh");
     return { number: value.number, url, title: clean(value.title, 500), state: value.state === "OPEN" && value.isDraft ? "draft" : value.state.toLowerCase(), checks: Array.isArray(value.statusCheckRollup) ? value.statusCheckRollup.length : 0 };
 }
 
@@ -150,7 +183,10 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
     let pr: GitPrInfo | undefined, prError: string | undefined;
     if (gh) {
         try { pr = await prView(cwd, repo!, info.target, signal); }
-        catch (e) { prError = clean(e instanceof Error ? e.message : String(e)); }
+        catch (e) {
+            if (e instanceof RpcError && e.code === "needs_trust") throw e;
+            prError = clean(e instanceof Error ? e.message : String(e));
+        }
     }
     const baseRef = base ? `refs/remotes/${info.remote}/${base}` : undefined;
     const baseSha = baseRef ? await git(cwd, ["rev-parse", "--verify", baseRef], signal, false, true) : "";
@@ -185,8 +221,18 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     const remoteRef = await git(cwd, ["ls-remote", "--", info.url, `refs/heads/${info.target}`], signal, true);
     if ((await local(cwd, signal)).fingerprint !== info.fingerprint) throw fail("The branch or destination changed. Reopen the dialog.", "stale");
     const needsPush = !info.hasUpstream || remoteRef.split("\t")[0] !== info.sha;
-    const result = needsPush ? await run(cwd, ["git", "-c", `remote.${info.remote}.mirror=false`, "-c", "push.followTags=false", "-c", "push.pushOption=", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "-u", "--", info.remote, `refs/heads/${info.branch}:refs/heads/${info.target}`], true, signal) : { code: 0, out: "", err: "" };
+    const result = needsPush ? await run(cwd, ["git", "-c", `remote.${info.remote}.mirror=false`, "-c", "push.followTags=false", "-c", "push.pushOption=", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", info.remote, `${info.sha}:refs/heads/${info.target}`], true, signal) : { code: 0, out: "", err: "" };
     if (result.code) throw fail(`Push failed. ${/non-fast-forward|fetch first|rejected/i.test(result.out + result.err) ? "The remote rejected the update; fetch and reconcile the branch in a terminal. No force push was attempted.\n" : ""}${result.err}${result.out}`);
+    if (!info.hasUpstream) {
+        // A SHA source cannot set upstream via push -u. Name the reviewed local
+        // branch explicitly, even if another client checked out/moved HEAD.
+        try {
+            await git(cwd, ["config", "--local", "--replace-all", `branch.${info.branch}.remote`, info.remote], signal);
+            await git(cwd, ["config", "--local", "--replace-all", `branch.${info.branch}.merge`, `refs/heads/${info.target}`], signal);
+        } catch (e) {
+            throw fail(`Branch pushed, but its upstream could not be set. Configure the upstream in a terminal. ${e instanceof Error ? e.message : String(e)}`);
+        }
+    }
     if (request.action === "push") return { pr: await gitPrState(cwd, signal).catch(() => undefined) };
     if (existing?.state === "open" || existing?.state === "draft") return { pr: await prView(cwd, repo!, info.target, signal).catch(() => existing) };
     const created = await run(cwd, ["gh", "pr", "create", "--repo", `https://github.com/${repo}`, "--head", info.target, "--base", request.base!, "--title", clean(request.title!, 250), "--body", clean(request.body ?? "", 16000), ...(request.draft ? ["--draft"] : [])], true, signal);
