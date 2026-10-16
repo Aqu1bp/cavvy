@@ -351,6 +351,8 @@ export function start() {
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, () => handles.delete(h.id));
                 connectedOnce = true;
+                // Path lookups that failed while it was down are asked again.
+                paths.retryFailed();
             } catch (e) {
                 reportError(e);
             }

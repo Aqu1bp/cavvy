@@ -30,7 +30,7 @@ function onLinkKey(e: KeyboardEvent) {
 export function Markdown(p: { text: string; streaming?: boolean; class?: string; sessionId?: string }) {
     const r = new MarkdownRenderer();
     // Same objects for unchanged blocks, so <For> keeps their DOM. Only a reply
-    // with paths still unlinked looks again when answers arrive.
+    // with paths in it looks again when what's known changes.
     const segments = createMemo(() => {
         const segs = r.segments(p.text, Boolean(p.streaming), p.sessionId ? paths.lookup(p.sessionId) : undefined);
         if (r.watching) linksVersion();

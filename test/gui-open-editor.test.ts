@@ -185,6 +185,27 @@ describe("project files", () => {
         ]);
     });
 
+    test("a symlink is judged by the file it points to, in fs.exists as in fs.open", async () => {
+        symlinkSync(join(cwd, "App.sln"), join(cwd, "alias.txt"));
+        writeFileSync(join(cwd, "notes.txt"), "plain");
+        symlinkSync(join(cwd, "notes.txt"), join(cwd, "Fake.sln"));
+        const e = withRider();
+        e.clients.add(c);
+        const sid = ((await e.handle(c, "session.create" as never, { cwd } as never)) as SessionSnapshot).state.id;
+        await e.handle(c, "settings.update" as never, { patch: { editor: "rider" } } as never);
+        try {
+            // alias.txt is a solution: not linked, and refused on click. Fake.sln is text: linked (by the name it was written with), and opened.
+            expect(await e.handle(c, "fs.exists" as never, { sessionId: sid, paths: ["alias.txt", "Fake.sln"] } as never)).toEqual([null, join(cwd, "Fake.sln")]);
+            launched.length = 0;
+            await rejects(e.handle(c, "fs.open" as never, { sessionId: sid, path: "alias.txt" } as never), "refused", /as a project/);
+            await e.handle(c, "fs.open" as never, { sessionId: sid, path: "Fake.sln" } as never);
+            expect(launched).toEqual([[join(riderBin, "rider"), join(cwd, "notes.txt")]]);
+        } finally {
+            await e.handle(c, "settings.update" as never, { patch: { editor: "vscode" } } as never);
+            await e.stop();
+        }
+    });
+
     test("not linked when the chosen editor would open them as projects", async () => {
         const e = withRider();
         e.clients.add(c);

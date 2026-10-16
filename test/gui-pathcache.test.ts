@@ -17,9 +17,24 @@ class World {
     queue: (() => Promise<void>)[] = [];
     asked: string[][] = [];
     files = new Map<string, string>();
+    /** The connection is down (or the session gone): every request fails. */
+    down = false;
+    /** Paths the chosen editor would open as a project: answered null, as fs.exists does. */
+    projects = new Set<string>();
+    /** Holds answers back until release() (a request in flight). */
+    gate?: Promise<void>;
     cache: Cache;
     constructor(max?: number) {
-        this.cache = new PathCache({ max, ask: async (_id, paths) => (this.asked.push(paths), paths.map((p) => this.files.get(p) ?? null)) });
+        this.cache = new PathCache({
+            max,
+            ask: async (_id, paths) => {
+                this.asked.push(paths);
+                if (this.down) throw new Error("Disconnected");
+                await this.gate;
+                if (this.down) throw new Error("Disconnected");
+                return paths.map((p) => (this.projects.has(p) ? null : (this.files.get(p) ?? null)));
+            },
+        });
     }
     /** Runs queued requests until none are left; how many rounds that took (capped). */
     async settle(cap = 30): Promise<number> {
@@ -168,5 +183,103 @@ describe("a file named before it existed", () => {
         expect(mayCreateFiles([{ op: "agent.block.patch", patch: { diff: {} } }])).toBe(true);
         expect(mayCreateFiles([{ op: "block.patch", patch: { status: "ok", summary: "Read 3 lines" } }])).toBe(false);
         expect(mayCreateFiles([{ op: "append" }])).toBe(false);
+    });
+});
+
+describe("choosing another editor", () => {
+    test("drops every answer, so links follow the new editor both ways", async () => {
+        const w = new World();
+        w.files.set("App.sln", "/p/App.sln");
+        w.files.set("src/a.ts", "/p/src/a.ts");
+        // None chosen: a solution isn't linked (some editor would open it as a project).
+        w.projects.add("App.sln");
+        const m = new Mounted(w, "Open App.sln and src/a.ts.");
+        await w.settle();
+        expect(m.html).not.toContain(`data-file="/p/App.sln"`);
+        expect(m.html).toContain(`data-file="/p/src/a.ts"`);
+
+        // VS Code chosen: it reads a .sln as text.
+        w.projects.clear();
+        w.cache.forget();
+        await w.settle();
+        expect(m.html).toContain(`data-file="/p/App.sln"`);
+
+        // Rider chosen: the link that fs.open would now refuse goes away.
+        w.projects.add("App.sln");
+        w.cache.forget();
+        await w.settle();
+        expect(m.html).not.toContain(`data-file="/p/App.sln"`);
+        expect(m.html).toContain(`data-file="/p/src/a.ts"`);
+        expect(w.asked).toHaveLength(3);
+    });
+
+    test("an answer to a request made before the change isn't kept", async () => {
+        const w = new World();
+        w.files.set("App.sln", "/p/App.sln");
+        w.projects.add("App.sln");
+        let release!: () => void;
+        w.gate = new Promise((r) => (release = r));
+        const m = new Mounted(w, "App.sln");
+        const inFlight = w.settle();
+        await Promise.resolve();
+        // The editor changes while the old request is out.
+        w.projects.clear();
+        w.cache.forget();
+        w.gate = undefined;
+        release();
+        await inFlight;
+        await w.settle();
+        expect(m.html).toContain(`data-file="/p/App.sln"`);
+    });
+});
+
+describe("a failed request", () => {
+    test("isn't taken as missing: the paths wait and are asked again once the connection is back", async () => {
+        const w = new World();
+        w.files.set("src/a.ts", "/p/src/a.ts");
+        w.down = true;
+        const m = new Mounted(w, "See src/a.ts:4.");
+        await w.settle();
+        expect(w.asked).toHaveLength(1);
+        expect(w.cache.lookup("s1")("src/a.ts")).toBeUndefined();
+        expect(m.html).not.toContain("md-file");
+        // Renders while it's down don't ask again (the scheduled lookup finds nothing to ask).
+        m.render();
+        m.render();
+        expect(await w.settle()).toBeLessThan(30);
+        expect(w.asked).toHaveLength(1);
+
+        w.down = false;
+        w.cache.retryFailed();
+        await w.settle();
+        expect(w.asked).toHaveLength(2);
+        expect(m.html).toContain(`data-file="/p/src/a.ts" data-line="4"`);
+    });
+
+    test("a request that always fails (a session that's gone) is asked once per reconnect, never in a loop", async () => {
+        const w = new World();
+        w.down = true;
+        const m = new Mounted(w, "See src/a.ts and lib/b.ts.");
+        const other = new Mounted(w, "And docs/c.md.", "s2");
+        await w.settle();
+        const first = w.asked.length;
+        // Everything else that makes replies render again: answers for another session, files changing.
+        w.down = false;
+        w.files.set("docs/c.md", "/p/docs/c.md");
+        w.cache.forgetMissing("s2");
+        other.render();
+        await w.settle();
+        w.down = true;
+        w.cache.forgetMissing("s1");
+        m.render();
+        expect(await w.settle()).toBeLessThan(30);
+        expect(w.asked.filter((b) => b.includes("src/a.ts"))).toHaveLength(1);
+        // Each reconnect allows one more try, which fails again and stops.
+        w.cache.retryFailed();
+        expect(await w.settle()).toBeLessThan(30);
+        w.cache.retryFailed();
+        expect(await w.settle()).toBeLessThan(30);
+        expect(w.asked.filter((b) => b.includes("src/a.ts"))).toHaveLength(3);
+        expect(w.asked.length).toBeLessThanOrEqual(first + 4);
     });
 });

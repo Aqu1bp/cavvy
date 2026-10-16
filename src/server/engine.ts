@@ -759,7 +759,8 @@ export class Engine {
         return p.paths.map((raw: unknown) => {
             try {
                 const t = confinePath(checkPathInput(raw), cwd, roots);
-                return t.dir || opensAsProject(def, t.path) ? null : t.path;
+                // The real file decides, as in fs.open: a link named like a solution may be a text file, and the other way round.
+                return t.dir || opensAsProject(def, t.real) ? null : t.path;
             } catch {
                 return null;
             }

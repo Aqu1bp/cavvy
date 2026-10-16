@@ -9,6 +9,11 @@
 // - A "missing" answer is kept until something may have created files (a tool
 //   call's edit landed, or a turn ended: forgetMissing), not on a timer, so a
 //   path that never appears is asked about once per such event at most.
+// - A request that fails (the connection dropped, the session closed) answers
+//   nothing: its paths wait, unlinked, until the connection comes back
+//   (retryFailed), rather than being asked again on the next render.
+// Answers depend on the chosen editor (what it would open as a project isn't
+// linked), so choosing another drops them all (forget).
 // No Solid or RPC here, so it can be tested on its own (see state/filelinks.ts).
 
 export interface PathCacheOptions {
@@ -23,6 +28,9 @@ export interface PathCacheOptions {
 export class PathCache {
     private known = new Map<string, Map<string, string | null>>();
     private asking = new Map<string, Set<string>>();
+    private failed = new Map<string, Set<string>>();
+    /** Bumped by forget(): answers to requests made before it aren't kept. */
+    private generation = 0;
     private held = new Map<string, Map<string, number>>();
     private listeners = new Set<() => void>();
     private max: number;
@@ -75,27 +83,56 @@ export class PathCache {
         return this.known.get(sessionId)?.size ?? 0;
     }
 
+    private set(map: Map<string, Set<string>>, sessionId: string): Set<string> {
+        let s = map.get(sessionId);
+        if (!s) map.set(sessionId, (s = new Set()));
+        return s;
+    }
+
     async resolve(sessionId: string, paths: Iterable<string>): Promise<void> {
         const m = this.map(sessionId);
-        const busy = this.asking.get(sessionId) ?? new Set<string>();
-        this.asking.set(sessionId, busy);
-        const todo = [...new Set(paths)].filter((p) => !m.has(p) && !busy.has(p));
+        const busy = this.set(this.asking, sessionId);
+        const failed = this.set(this.failed, sessionId);
+        const todo = [...new Set(paths)].filter((p) => !m.has(p) && !busy.has(p) && !failed.has(p));
         if (!todo.length) return;
         for (const p of todo) busy.add(p);
+        const gen = this.generation;
         const batches: string[][] = [];
         for (let i = 0; i < todo.length; i += this.batch) batches.push(todo.slice(i, i + this.batch));
+        let answered = false;
         await Promise.all(
             batches.map(async (batch) => {
-                let found: (string | null)[] = [];
+                let found: (string | null)[] | undefined;
                 try {
                     found = await this.o.ask(sessionId, batch);
                 } catch {
-                    // the session closed, or the server is gone: not links, until files change
+                    // Not an answer: wait for the connection to come back (retryFailed).
                 }
-                batch.forEach((p, i) => (m.set(p, found[i] ?? null), busy.delete(p)));
+                for (const p of batch) busy.delete(p);
+                // Asked before forget(): under the old editor, so the replies ask again.
+                if (gen !== this.generation) return void (answered = true);
+                if (!found) return void batch.forEach((p) => this.set(this.failed, sessionId).add(p));
+                batch.forEach((p, i) => m.set(p, found[i] ?? null));
+                answered = true;
             }),
         );
+        if (!answered) return;
         this.evict(sessionId);
+        this.changed();
+    }
+
+    /** The connection came back: paths whose requests failed are asked again by the replies showing them. */
+    retryFailed() {
+        const any = [...this.failed.values()].some((s) => s.size > 0);
+        this.failed.clear();
+        if (any) this.changed();
+    }
+
+    /** Another editor was chosen: every answer may differ, so all are dropped and replies on screen ask again. */
+    forget() {
+        this.generation++;
+        this.known.clear();
+        this.failed.clear();
         this.changed();
     }
 

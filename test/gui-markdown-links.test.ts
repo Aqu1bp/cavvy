@@ -156,18 +156,26 @@ describe("re-rendering as answers arrive", () => {
         const text = "First lib/x.ts here.\n\nSecond paragraph, no paths.";
         const a = r.segments(text, false, l);
         expect([...r.pending]).toEqual(["lib/x.ts"]);
-        expect(a[0]!.kind === "html" && a[0]!.pending).toBe(true);
-        // Nothing new known: same objects, so the DOM isn't replaced.
+        expect(a[0]!.kind === "html" && a[0]!.answers).toEqual([["lib/x.ts", undefined]]);
+        // Nothing new known: same objects, so the DOM isn't replaced; still waiting on lib/x.ts.
         const b = r.segments(text, false, l);
         expect(b[0]).toBe(a[0]!);
         expect(b[1]).toBe(a[1]!);
+        expect([...r.pending]).toEqual(["lib/x.ts"]);
         known.set("lib/x.ts", "/p/lib/x.ts");
         const c = r.segments(text, false, l);
         expect(c[0]).not.toBe(a[0]!);
         expect(c[0]!.kind === "html" && c[0]!.html).toContain(`data-file="/p/lib/x.ts"`);
         expect(c[1]).toBe(a[1]!);
         expect([...r.pending]).toEqual([]);
-        expect(r.watching).toBe(false);
+        // A linked path is still watched: the answer can be dropped (another editor chosen).
+        expect(r.watching).toBe(true);
+        expect(r.segments(text, false, l)[0]).toBe(c[0]!);
+        known.delete("lib/x.ts");
+        const d = r.segments(text, false, l);
+        expect(d[0]).not.toBe(c[0]!);
+        expect((d[0] as { html: string }).html).not.toContain("md-file");
+        expect([...r.pending]).toEqual(["lib/x.ts"]);
     });
 
     test("a path found missing is looked at again once that answer is forgotten", () => {
