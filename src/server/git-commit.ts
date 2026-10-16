@@ -21,21 +21,34 @@ async function git(cwd: string, args: string[], opts: { index?: string; input?: 
     if (opts.index) env.GIT_INDEX_FILE = opts.index;
     Object.assign(env, opts.author);
     const proc = Bun.spawn(gitArgv([...(opts.literal ? ["--literal-pathspecs"] : []), ...args]), {
-        cwd, env, detached: true,
+        cwd,
+        env,
+        detached: true,
         stdin: opts.input === undefined ? "ignore" : new TextEncoder().encode(opts.input),
-        stdout: "pipe", stderr: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
     });
     const signalGroup = (signal: "SIGTERM" | "SIGKILL") => {
-        try { process.kill(-proc.pid, signal); }
-        catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
+        try {
+            process.kill(-proc.pid, signal);
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
+        }
     };
     let stopping: Promise<void> | undefined;
     const timeout = setTimeout(() => {
         // Kill descendants too: a hook can outlive git or retain its output pipes.
         signalGroup("SIGTERM");
-        stopping = new Promise((done) => setTimeout(() => { signalGroup("SIGKILL"); done(); }, gitCommitTiming.killGraceMs));
+        stopping = new Promise((done) =>
+            setTimeout(() => {
+                signalGroup("SIGKILL");
+                done();
+            }, gitCommitTiming.killGraceMs),
+        );
     }, gitCommitTiming.commandMs);
-    let out: string, err: string, code: number;
+    let out: string,
+        err: string,
+        code: number;
     try {
         [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
         // Even when git exits on TERM, finish cancelling its process group.
@@ -54,7 +67,9 @@ async function selection(cwd: string, paths: string[]): Promise<GitFileDiff[]> {
     if (!listed.repo) throw new RpcError(listed.reason ?? "This folder isn't a Git repository.", "invalid");
     const files: GitFileDiff[] = [];
     for (const path of new Set(paths)) {
-        const file = listed.files.find((f) => f.path === path) ?? (listed.more ? (await gitChanges(cwd, { scope: "uncommitted", path })).files.find((f) => f.path === path) : undefined);
+        const file =
+            listed.files.find((f) => f.path === path) ??
+            (listed.more ? (await gitChanges(cwd, { scope: "uncommitted", path })).files.find((f) => f.path === path) : undefined);
         if (!file) throw new RpcError(`Not a changed file: ${path}. Refresh the Review pane.`, "invalid");
         if (file.kind === "folder" || file.kind === "repo") throw new RpcError(`Choose individual files instead of the folder or nested repository: ${path}`, "invalid");
         files.push(file);
@@ -93,27 +108,40 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         const ident = (await git(root, ["var", "GIT_AUTHOR_IDENT"])).out.trimEnd();
         const authorMatch = /^(.*) <([^>]*)> (\d+) ([+-]\d{4})$/.exec(ident);
         if (!authorMatch) throw new RpcError("Git returned an invalid author identity.", "git");
-        const author = { GIT_AUTHOR_NAME: authorMatch[1]!, GIT_AUTHOR_EMAIL: authorMatch[2]!, GIT_AUTHOR_DATE: `@${authorMatch[3]} ${authorMatch[4]}`, GIT_EDITOR: ":" };
+        const author = {
+            GIT_AUTHOR_NAME: authorMatch[1]!,
+            GIT_AUTHOR_EMAIL: authorMatch[2]!,
+            GIT_AUTHOR_DATE: `@${authorMatch[3]} ${authorMatch[4]}`,
+            GIT_EDITOR: ":",
+        };
         const oldHead = await git(root, ["rev-parse", "--verify", "HEAD"], { allowFailure: true });
         const headRef = (await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true })).out.trimEnd();
         await git(root, oldHead.code ? ["read-tree", "--empty"] : ["read-tree", oldHead.out.trim()], { index: privateIndex });
         // The real index copy preserves every unselected entry, including index flags.
-        try { await copyFile(index, lock); }
-        catch (e) {
+        try {
+            await copyFile(index, lock);
+        } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
             const empty = join(dir, "empty");
             await git(root, ["read-tree", "--empty"], { index: empty });
             await copyFile(empty, lock);
         }
-        const selected = new Set(files.flatMap((f) => [f.path, ...(f.from ? [f.from] : [])]).map((p) => relative(root, resolve(cwd, p))));
+        const selected = new Set(
+            files.flatMap((f) => [f.path, ...(f.from ? [f.from] : [])]).map((p) => relative(root, resolve(cwd, p))),
+        );
         const oidLength = (await git(root, ["rev-parse", "--show-object-format"])).out.trim() === "sha256" ? 64 : 40;
         const zero = "0".repeat(oidLength);
         // NUL-delimited index-info removes/replaces only exact entries, even for
         // names containing tabs or newlines. Unselected index flags stay intact.
         const copyEntries = async (from: string, to: string) => {
-            const entries = (await git(root, ["ls-files", "--stage", "-z"], { index: from })).out.split("\0").filter((r) => selected.has(r.slice(r.indexOf("\t") + 1)));
+            const entries = (await git(root, ["ls-files", "--stage", "-z"], { index: from })).out
+                .split("\0")
+                .filter((r) => selected.has(r.slice(r.indexOf("\t") + 1)));
             const removes = [...selected].map((p) => `0 ${zero}\t${p}\0`).join("");
-            await git(root, ["update-index", "-z", "--index-info"], { index: to, input: removes + entries.map((r) => `${r}\0`).join("") });
+            await git(root, ["update-index", "-z", "--index-info"], {
+                index: to,
+                input: removes + entries.map((r) => `${r}\0`).join(""),
+            });
             return entries.map((r) => r.slice(r.indexOf("\t") + 1));
         };
         // git add's line-ending conversion and core.filemode=false behavior depend
@@ -129,14 +157,19 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
             }
         }
         const validateTree = async () => {
-            const diff = await git(root, ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", ...(oldHead.code ? [] : [oldHead.out.trim()]), "--"], { index: privateIndex });
+            const diff = await git(
+                root,
+                ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", ...(oldHead.code ? [] : [oldHead.out.trim()]), "--"],
+                { index: privateIndex },
+            );
             if (diff.out.split("\0").filter(Boolean).some((p) => !selected.has(p))) throw new RpcError("The selection or a repository hook also changes unchecked paths. Select the whole change and try again.", "invalid");
             return diff.out.length > 0;
         };
         await validateTree();
         const messageFile = join(dir, "COMMIT_EDITMSG");
         await writeFile(messageFile, message, { mode: 0o600 });
-        const hook = (name: string, args: string[] = [], allowFailure = false) => git(root, ["hook", "run", "--ignore-missing", name, "--", ...args], { index: privateIndex, author, allowFailure });
+        const hook = (name: string, args: string[] = [], allowFailure = false) =>
+            git(root, ["hook", "run", "--ignore-missing", name, "--", ...args], { index: privateIndex, author, allowFailure });
         // Run Git's normal -F hook sequence, without replacing its hook configuration.
         // Porcelain commit moves HEAD immediately after hooks, leaving no opportunity
         // to reject a hook that stages unchecked files. Plumbing lets us validate the
@@ -160,19 +193,33 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         if (sign.code > 1) throw new RpcError(sign.err + sign.out, "git");
         // commit-tree retains the message verbatim and honors Git's identity,
         // encoding and signing configuration. The object is not published yet.
-        const hash = (await git(root, ["commit-tree", tree, ...(oldHead.code ? [] : ["-p", oldHead.out.trim()]), ...(sign.out.trim() === "true" ? ["-S"] : []), "-F", messageFile], { index: privateIndex, author })).out.trim();
+        const hash = (
+            await git(
+                root,
+                ["commit-tree", tree, ...(oldHead.code ? [] : ["-p", oldHead.out.trim()]), ...(sign.out.trim() === "true" ? ["-S"] : []), "-F", messageFile],
+                { index: privateIndex, author },
+            )
+        ).out.trim();
         const subject = (await git(root, ["log", "-1", "--format=%s", hash])).out.trimEnd();
         if ((await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true })).out.trimEnd() !== headRef) throw new RpcError("The checked-out branch changed. Refresh the Review pane and try again.", "git");
         try {
-            await git(root, ["update-ref", "-m", `commit${oldHead.code ? " (initial)" : ""}: ${subject}`, "HEAD", hash, oldHead.code ? zero : oldHead.out.trim()], { index: privateIndex, author });
+            await git(
+                root,
+                ["update-ref", "-m", `commit${oldHead.code ? " (initial)" : ""}: ${subject}`, "HEAD", hash, oldHead.code ? zero : oldHead.out.trim()],
+                { index: privateIndex, author },
+            );
         } catch (e) {
             // A reference-transaction hook runs again AFTER publication. Its
             // timeout cannot undo the commit; finish reconciling the real index.
             const published = await git(root, ["rev-parse", "--verify", headRef || "HEAD"], { allowFailure: true });
             if (published.out.trim() !== hash) throw e;
         }
-        try { await rename(lock, index); ownsLock = false; }
-        catch (e) { throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but the index could not be updated: ${(e as Error).message}`, "git"); }
+        try {
+            await rename(lock, index);
+            ownsLock = false;
+        } catch (e) {
+            throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but the index could not be updated: ${(e as Error).message}`, "git");
+        }
         // Like git commit, a post-commit hook's exit status cannot undo the commit.
         await hook("post-commit", [], true).catch((e) => {
             if (!(e instanceof RpcError) || e.code !== "git_timeout") throw e;
