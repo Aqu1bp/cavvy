@@ -58,6 +58,21 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("internal reconciliation disables config-defined post-index-change hooks", async () => {
+        const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n" });
+        write(dir, "selected.txt", "new\n");
+        write(dir, "unchecked.txt", "working\n");
+        const before = untouched(dir, ["unchecked.txt"]);
+        hook(dir, "configured-index", `if (process.env.GIT_INDEX_FILE?.endsWith("index.lock")) {\n    const r = Bun.spawnSync(gitArgv(["-c", "hook.post-index-change.enabled=false", "add", "--", "unchecked.txt"]), { env: gitEnv() });\n    process.exit(r.exitCode);\n}`);
+        git(dir, "config", "hook.fixture.event", "post-index-change");
+        git(dir, "config", "hook.fixture.command", ".git/hooks/configured-index");
+
+        await gitCommit(dir, ["selected.txt"], "selected only");
+
+        expect(untouched(dir, ["unchecked.txt"])).toEqual(before);
+        expect(changed(dir)).toEqual(["selected.txt"]);
+    });
+
     test("reconciliation preserves detection of unchecked edits with racy index timestamps", async () => {
         const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n" });
         git(dir, "config", "core.trustctime", "false");

@@ -35,7 +35,8 @@ async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
     Object.assign(env, opts.author);
     // Only explicit commit hooks and reference transactions run repository hooks.
     // Internal index writes must not let post-index-change mutate the install copy.
-    const proc = Bun.spawn(gitArgv([...(opts.hooks ? [] : ["-c", "core.hooksPath=/dev/null"]), ...(opts.literal ? ["--literal-pathspecs"] : []), ...args]), {
+    const hookConfig = opts.hooks ? [] : ["-c", "core.hooksPath=/dev/null", "-c", "hook.post-index-change.enabled=false"];
+    const proc = Bun.spawn(gitArgv([...hookConfig, ...(opts.literal ? ["--literal-pathspecs"] : []), ...args]), {
         cwd,
         env,
         detached: true,
