@@ -903,6 +903,7 @@ export class Agent {
                 if (this.o.mode.get() !== m) this.o.mode.set(m);
             },
             usage: (u, o) => this.recordBackendUsage(u, o),
+            context: (tokens) => this.recordBackendContext(tokens),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
             drainQueued: () => {
                 const queued = this.o.host.drainQueued?.() ?? [];
@@ -1063,6 +1064,13 @@ export class Agent {
             }
         }
         this.emit(e);
+    }
+
+    /** The backend's context while it works: shown now, with nothing counted (its usage comes at the end of the turn). */
+    private recordBackendContext(tokens: number) {
+        if (!tokens || tokens === this.contextTokens) return;
+        this.contextTokens = tokens;
+        this.emit({ type: "usage", usage: { inputTokens: 0, outputTokens: 0 }, cost: { usd: 0, estimated: false, unknown: false }, contextTokens: tokens });
     }
 
     private recordBackendUsage(usage: Usage, o: { contextTokens?: number; contextWindow?: number }) {

@@ -493,6 +493,15 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(session.cost).toBe(1);
     });
 
+    test("with an API key, a resumed run's spend counts once: Claude Code's totals include the runs before it", async () => {
+        process.env.FAKE_API_KEY_SOURCE = "ANTHROPIC_API_KEY";
+        const { run, session } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        await run("second");
+        // 0.5, then a total of 1 for the session.
+        expect(session.cost).toBe(1);
+    });
+
     test("a resumed turn isn't ended by Claude Code's report on a sub-agent the last run left behind", async () => {
         const { run, events, session } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
         await run("first");

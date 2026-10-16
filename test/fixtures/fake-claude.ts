@@ -137,12 +137,17 @@ let seq = 0;
 let prompts = 0;
 /** The prompt the turn under way answers (its user message's uuid); none for a turn Claude Code starts itself. */
 let answering: string | undefined;
-/** What the run has spent so far: like Claude Code's, each result's total_cost_usd includes the earlier ones. */
-let spent = 0;
+/**
+ * What the session has spent so far: like Claude Code's, each result's
+ * total_cost_usd includes the earlier ones, those of the runs it resumes too.
+ */
+const spentFile = process.env.FAKE_LOG ? `${process.env.FAKE_LOG}.spent-${sessionId}` : undefined;
+let spent = spentFile && existsSync(spentFile) ? Number(readFileSync(spentFile, "utf-8")) : 0;
 
 function result(subtype: string, extra: Record<string, unknown> = {}) {
     const old = process.env.FAKE_OLD_RESULTS === "1";
     spent += 0.5;
+    if (spentFile) writeFileSync(spentFile, String(spent));
     out({
         type: "result",
         subtype,
