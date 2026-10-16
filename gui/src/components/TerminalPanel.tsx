@@ -4,25 +4,25 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles/terminal.css";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, refreshProviders, reportError, rpc, toast } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab } from "../state/ui";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, terminalInputChunks } from "../lib/terminal";
 import { copyText, isMod, isTerminalToggle, terminalShortcut } from "../lib/platform";
 
 /** `script`: the project script the tab was opened to run (once: restarting it gives a plain shell). */
-interface Tab { id: string; cwd: string; number: number; script?: { id: string; name: string } }
+interface Tab { id: string; cwd: string; number: number; login?: { provider: string; accountId: string; name: string }; script?: { id: string; name: string } }
 const MAX_TABS = 12;
 
 /** Mounted while hidden: each tab keeps its emulator and shell across chat navigation. */
 export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     const [tabs, setTabs] = createSignal<Tab[]>([]);
     const [selected, setSelected] = createSignal<string>();
-    const currentTabs = () => tabs().filter((t) => t.cwd === p.cwd);
+    const currentTabs = () => tabs().filter((t) => t.login || t.cwd === p.cwd);
     const active = () => currentTabs().find((t) => t.id === selected()) ?? currentTabs().at(-1);
-    const visible = () => terminalOpen() && !p.hidden && !!p.cwd;
+    const visible = () => terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
     let next = 1;
     const full = () => tabs().length >= MAX_TABS;
     const add = () => {
@@ -40,6 +40,16 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setSelected(tab.id);
         setTerminalOpen(true);
     };
+    const loginAccount = (provider: string, accountId: string, name: string) => {
+        if (app.conn !== "open" || full()) return toast("Connect and close a terminal before signing in", "warn");
+        const tab: Tab = { id: crypto.randomUUID(), cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name } };
+        setTabs((all) => [...all, tab]);
+        setSelected(tab.id);
+        setSettingsTab(undefined);
+        setTerminalOpen(true);
+    };
+    terminalActions.loginAccount = loginAccount;
+    onCleanup(() => { if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount; });
     terminalActions.runScript = runScript;
     onCleanup(() => { if (terminalActions.runScript === runScript) delete terminalActions.runScript; });
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
@@ -69,7 +79,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                 <SquareTerminal size={14} /><span class="terminal-label">Terminal</span>
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
                         <button class="hb sm" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
@@ -149,7 +159,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         try {
             const shell = { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) };
             if (run) await rpc.call("scripts.run", { ...shell, script: run.id });
-            else await rpc.call("terminal.open", shell);
+            else await rpc.call("terminal.open", { ...shell, login: p.tab.login });
             opened = true;
             const typed = early.take();
             if (disposed) { if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {}); return; }
@@ -199,7 +209,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
                     else acking ??= setTimeout(ack, 30);
                 });
             }
-            if (e.type === "terminal.exit" && e.id === id) { opened = false; setEnded(`Shell exited (${e.exitCode})`); }
+            if (e.type === "terminal.exit" && e.id === id) { opened = false; setEnded(`${p.tab.login ? "Login" : "Shell"} exited (${e.exitCode})`); if (p.tab.login) void rpc.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError); }
         });
         const stateOff = rpc.onState((state) => {
             if (state !== "open") { opened = false; setEnded("Disconnected. Start a new shell when the connection returns."); }

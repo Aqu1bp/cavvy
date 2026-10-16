@@ -29,16 +29,18 @@ import { homedir } from "os";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
+import type { PlanLimits } from "../server/protocol";
+import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { accountEnv, defaultAccount } from "../providers/accounts";
+import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
-import type { PlanLimits } from "../server/protocol";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
 import { paths } from "../config/paths";
 import { redact } from "../util/redact";
-import { limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { cliCommandNames } from "../commands/custom";
-import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
+import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
@@ -97,9 +99,9 @@ export interface ClaudeStatus {
 }
 
 /** `claude auth status --json`: Claude Code's own report of its sign-in. */
-export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal): Promise<ClaudeStatus> {
+export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<ClaudeStatus> {
     const bin = requireCli(providerId, CLAUDE_CLI);
-    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000 });
+    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: accountEnv(providerId, accountId) });
     let j: Record<string, unknown> | undefined;
     try {
         j = JSON.parse(r.stdout);
@@ -107,10 +109,11 @@ export async function claudeStatus(providerId = "claude-code", signal?: AbortSig
         // older versions print text
     }
     if (!j || typeof j !== "object") {
+        if (/not (logged|signed) in/i.test(r.stdout || r.stderr)) return { loggedIn: false };
         if (r.code !== 0) throw new ProviderError(`claude auth status failed: ${cliMessage(r.stderr || r.stdout) || `exit ${r.code}`}`);
         return { loggedIn: !/not (logged|signed) in/i.test(r.stdout) };
     }
-    const str = (k: string) => (typeof j![k] === "string" ? (j![k] as string) : undefined);
+    const str = (k: string) => cliStatusString(j![k]);
     return { loggedIn: j.loggedIn === true, authMethod: str("authMethod"), apiProvider: str("apiProvider"), email: str("email"), subscriptionType: str("subscriptionType") };
 }
 
@@ -160,7 +163,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         // No settings, MCP servers or session file: this only asks for the list.
-        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir() });
+        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
         const kill = () => void proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, 30_000);
@@ -190,7 +193,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined, this.limitSeen);
+        const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
+        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
         this.turns.add(turn);
         try {
             const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
@@ -198,7 +202,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
-            if (s) this.spent.set(s.sessionId, s.total);
+            if (s) this.spent.set(key(s.sessionId), s.total);
         }
     }
 
@@ -323,18 +327,21 @@ class ClaudeTurn {
         if (!t.trusted) a.push("--setting-sources", "user");
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
+        const sandbox = claudeAccountSandbox();
+        // Also check excluded commands, which the CLI may run outside its sandbox.
+        if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
         // Always override external preferences: an unsupported model must not silently switch to Opus.
         const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
         const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
         if (mcp.strict) a.push("--strict-mcp-config");
         if (mcp.warning) this.host.emit({ type: "notice", level: "warn", message: mcp.warning });
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
         a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
+        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false } };
         a.push("--settings", JSON.stringify(settings));
         return a;
     }
@@ -516,7 +523,12 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd });
+        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId) });
+        const stopAccountWatch = watchAccountFolders(() => {
+            this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
+            this.reason = "error";
+            void this.proc.kill();
+        });
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -545,6 +557,7 @@ class ClaudeTurn {
                 if (!this.busy && (await this.idle())) break;
             }
         } finally {
+            stopAccountWatch();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
@@ -572,7 +585,7 @@ class ClaudeTurn {
         const resumeFailed = Boolean(this.t.resumeId && !this.sessionId && /no conversation found|session.{0,40}(not found|doesn't exist|does not exist)/i.test(`${this.failure ?? ""}\n${err}`));
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
-            const why = (resumeFailed && this.failure) || cliMessage(err) || `claude exited with code ${code}`;
+            const why = this.failure || cliMessage(err) || `claude exited with code ${code}`;
             return { reason: "error", text, actions: this.actions, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
         }
         const reason = this.reason ?? "done";
@@ -775,6 +788,7 @@ class ClaudeTurn {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
+            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
             this.failure = this.limitFailure();
         }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
@@ -919,8 +933,17 @@ class ClaudeTurn {
         this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started });
     }
 
+    private noteLimits(limits: PlanLimits, partial: boolean) {
+        this.limits = mergeLimits(this.limits, limits, partial);
+        this.host.emit({ type: "limits", limits, partial });
+    }
+
+    private limitFailure(): string {
+        return `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")} Choose another account with /account or the plan meter, then send again.`;
+    }
+
     private onRateLimit(info: Record<string, any>) {
-        const parsed = parseClaudeRateLimit(info);
+        const parsed = parseClaudeRateLimit(info, Date.now(), this.t.accountId ?? "default");
         if (parsed) {
             // A sparse rejection must not forget another window that still blocks this turn.
             this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
@@ -928,7 +951,7 @@ class ClaudeTurn {
         }
         const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
         // Every status counts, so a warning after the window was fine again (or reset) is news again.
-        const news = typeof info.status === "string" && limitNews(this.limitSeen, String(info.rateLimitType ?? ""), info.status, w?.resetsAt);
+        const news = typeof info.status === "string" && limitNews(this.limitSeen, `${this.t.accountId ?? "default"}:${String(info.rateLimitType ?? "")}`, info.status, w?.resetsAt);
         if (info.status !== "rejected" && info.status !== "allowed_warning") return;
         const which = w ? `${w.label.charAt(0).toLowerCase()}${w.label.slice(1)} ` : "";
         if (info.status === "rejected") {
@@ -936,13 +959,8 @@ class ClaudeTurn {
             if (this.limitHit) this.failure = this.limitFailure();
             if (this.reachedNoted) return;
             this.reachedNoted = true;
-            this.host.emit({ type: "notice", level: "warn", message: `Your Claude ${which}usage limit has been reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
-        } else if (news) this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
-    }
-
-    /** A turn that failed on the plan's limit: when it resets, if Claude Code said. */
-    private limitFailure(): string {
-        return `Your Claude usage limit was reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")} Switch models with /model meanwhile.`;
+            this.host.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
+        } else if (news) this.host.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
@@ -1092,8 +1110,9 @@ export function claudeRule(raw: string, root: string): string[] {
 /** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
 export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
     const store = [paths.credentialsFile(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const accounts = accountProtectionFolders().flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
-    return { deny: [...map(r.deny), ...store], ask: map(r.ask) };
+    return { deny: [...map(r.deny), ...store, ...accounts], ask: map(r.ask) };
 }
 
 /** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */

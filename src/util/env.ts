@@ -9,14 +9,15 @@ import { secretEnvVarNames } from "../auth/credentials";
  */
 export function childEnv(extra?: Record<string, string>): Record<string, string> {
     const env: Record<string, string> = {};
-    const secretNames = new Set(secretEnvVarNames());
+    // Account selectors belong only to their CLI, never to tools or hooks.
+    const secretNames = new Set([...secretEnvVarNames(), "CLAUDE_CONFIG_DIR", "CODEX_HOME"]);
     const secretValues = new Set(knownSecrets());
     for (const [k, v] of Object.entries(process.env)) {
         if (v === undefined) continue;
         if (secretNames.has(k) || secretValues.has(v)) continue;
         env[k] = v;
     }
-    for (const [k, v] of Object.entries(extra ?? {})) if (!secretValues.has(v)) env[k] = v;
+    for (const [k, v] of Object.entries(extra ?? {})) if (!secretNames.has(k) && !secretValues.has(v)) env[k] = v;
     env.PAGER = "cat";
     env.GIT_PAGER = "cat";
     env.GIT_TERMINAL_PROMPT = "0";
