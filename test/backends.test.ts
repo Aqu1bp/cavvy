@@ -56,7 +56,7 @@ beforeEach(() => {
     symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -427,11 +427,25 @@ describe("Codex backend", () => {
         expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "on-request", approvalsReviewer: "auto_review" });
         expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
         expect(notices(a.events)).toContain("warn: Codex's reviewer blocked `touch x`: It sends the project to an unknown host.");
+        // Its verdict lines aren't shown (the no is above, once); other warnings about the reviewer are.
+        expect(notices(a.events).filter((n) => n.includes("(risk: "))).toEqual([]);
+        expect(notices(a.events).filter((n) => /blocked|denied/.test(n))).toHaveLength(1);
+        expect(notices(a.events)).toContain("warn: Codex's reviewer: Automatic approval review failed: the reviewer didn't answer");
         // The reviewer stays with the thread: manual mode says it's the user again, and the harness asks.
         a.setMode("default");
         expect(await a.run("make x again")).toBe("done");
         expect(turnStarts().at(-1)).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user" });
         expect(a.asked).toHaveLength(1);
+    });
+
+    test("auto mode: when Codex doesn't send the reviewer's finished event, its no still shows, from the verdict line", async () => {
+        process.env.FAKE_REVIEW_DENY = "1";
+        process.env.FAKE_REVIEW_NO_COMPLETED = "1";
+        const a = await makeAgent({ provider: "codex", mode: "auto", ask: () => ({ allow: true }) });
+        expect(await a.run("make x")).toBe("done");
+        expect(notices(a.events).filter((n) => /blocked|denied/.test(n))).toEqual(["warn: Codex's reviewer: Automatic approval review denied (risk: high, authorization: low): It sends the project to an unknown host."]);
+        // A yes is never shown.
+        expect(notices(a.events).some((n) => n.includes("approved (risk: "))).toBe(false);
     });
 
     test("headless: the command is declined with the reason, and the turn goes on", async () => {

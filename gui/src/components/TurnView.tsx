@@ -259,22 +259,23 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
     blocked: "Blocked by a hook",
 };
 
-type Seg = { kind: "work"; items: Item[] } | { kind: "item"; item: Item };
+type Seg = { kind: "work"; items: Item[] } | { kind: "item"; item: Item; interim: boolean };
 
-/** Work (tool runs, thinking, what was said along the way) vs what's left standing: the reply, notices. */
+/**
+ * Work (tool runs, thinking) vs what's said: the reply, notices. What the
+ * model said on its way (more work followed) is prose between the work, and
+ * folds away with it once the turn is done.
+ */
 function segments(items: Item[]): Seg[] {
-    let lastWork = -1;
-    items.forEach((it, i) => {
-        if (it.kind === "activity" || (it.kind === "block" && it.block.t === "thinking")) lastWork = i;
-    });
-    const isWork = (it: Item, i: number) => it.kind === "activity" || (it.kind === "block" && (it.block.t === "thinking" || (it.block.t === "text" && i < lastWork)));
+    const isWork = (it: Item) => it.kind === "activity" || (it.kind === "block" && it.block.t === "thinking");
+    const lastWork = items.findLastIndex(isWork);
     const out: Seg[] = [];
     items.forEach((it, i) => {
-        if (isWork(it, i)) {
+        if (isWork(it)) {
             const prev = out[out.length - 1];
             if (prev?.kind === "work") prev.items.push(it);
             else out.push({ kind: "work", items: [it] });
-        } else out.push({ kind: "item", item: it });
+        } else out.push({ kind: "item", item: it, interim: i < lastWork && it.kind === "block" && it.block.t === "text" });
     });
     return out;
 }
@@ -305,7 +306,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
     const worked = () => (p.turn.endedAt && p.turn.startedAt ? duration(p.turn.endedAt - p.turn.startedAt) : undefined);
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
-    const renderItem = (it: () => Item, inWork: boolean) => (
+    const renderItem = (it: () => Item) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
                 {(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} agents={p.agents} />}
@@ -314,7 +315,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => (inWork ? <Narration block={t()} /> : <Markdown text={t().text} streaming={running() && t().id === lastText()} />)}
+                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === lastBlockId()} />}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
@@ -351,10 +352,17 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                     </Show>
                     <Index each={segs()}>
                         {(seg) => (
-                            <Show when={seg().kind === "work"} fallback={renderItem(() => (seg() as { item: Item }).item, false)}>
+                            <Show
+                                when={seg().kind === "work"}
+                                fallback={
+                                    <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
+                                        {renderItem(() => (seg() as { item: Item }).item)}
+                                    </Show>
+                                }
+                            >
                                 <Show when={showWork()}>
                                     <div class="worklog">
-                                        <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it, true)}</Index>
+                                        <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
                                     </div>
                                 </Show>
                             </Show>
