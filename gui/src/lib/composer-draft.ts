@@ -17,12 +17,13 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         // Switching sessions keeps unsent work; deleting one must not bring its draft back.
         if (!wasDeleted(key) && (draft().text.trim() || draft().attachments.length)) composerDrafts.set(key, draft());
         else composerDrafts.delete(key);
-        composerStorage.setDraft(key, wasDeleted(key) ? "" : draft().text);
+        if (wasDeleted(key)) composerStorage.delete(key);
     };
     createEffect(on(key, (key, prev) => {
         if (prev !== undefined) keep(prev);
         // A replacement composer gets its own copy, safe from an old send's callback.
-        setDraft({ ...(composerDrafts.get(key) ?? { text: composerStorage.draft(key), attachments: [] }) });
+        composerStorage.refresh();
+        setDraft({ text: composerStorage.draft(key), attachments: composerDrafts.get(key)?.attachments ?? [] });
         keep(key);
     }));
     onCleanup(() => {
@@ -52,6 +53,7 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         if (disposed) return;
         setDraft((d) => ({ ...d, text: typeof value === "function" ? value(d.text) : value }));
         keep(key());
+        composerStorage.setDraft(key(), wasDeleted(key()) ? "" : draft().text);
     };
     const setAttachments = (value: Attachment[] | ((attachments: Attachment[]) => Attachment[])) => {
         if (disposed) return;
