@@ -159,7 +159,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         const validateTree = async () => {
             const diff = await git(
                 root,
-                ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", ...(oldHead.code ? [] : [oldHead.out.trim()]), "--"],
+                ["diff", "--cached", "--ignore-submodules=none", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", ...(oldHead.code ? [] : [oldHead.out.trim()]), "--"],
                 { index: privateIndex },
             );
             if (diff.out.split("\0").filter(Boolean).some((p) => !selected.has(p))) throw new RpcError("The selection or a repository hook also changes unchecked paths. Select the whole change and try again.", "invalid");

@@ -58,6 +58,24 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("submodule ignore config cannot hide an unchecked hook-staged gitlink", async () => {
+        const dir = repo({ "selected.txt": "old\n" });
+        const oldLink = git(dir, "rev-parse", "HEAD").trim();
+        git(dir, "update-index", "--add", "--cacheinfo", `160000,${oldLink},submodule`);
+        git(dir, "commit", "-qm", "add gitlink");
+        const newLink = git(dir, "rev-parse", "HEAD").trim();
+        git(dir, "config", "diff.ignoreSubmodules", "all");
+        write(dir, "selected.txt", "new\n");
+        hook(dir, "pre-commit", `const r = Bun.spawnSync(gitArgv(["update-index", "--cacheinfo", "160000,${newLink},submodule"]), { env: gitEnv() });\nprocess.exit(r.exitCode);`);
+        const before = index(dir);
+        const head = git(dir, "rev-parse", "HEAD");
+
+        await expect(gitCommit(dir, ["selected.txt"], "selected only")).rejects.toThrow("unchecked paths");
+
+        expect(index(dir)).toBe(before);
+        expect(git(dir, "rev-parse", "HEAD")).toBe(head);
+    });
+
     test("commits exactly selected current contents and preserves other staging and working files", async () => {
         const dir = repo({ "one.txt": "one\n", "two.txt": "two\n", "third.txt": "third\n", "unstaged.txt": "old\n" });
         write(dir, "one.txt", "staged selected\n");
