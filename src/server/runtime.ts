@@ -39,6 +39,7 @@ import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
+import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
@@ -50,6 +51,8 @@ import type {
     GitCommitHead,
     GitCommitInfo,
     GitCommitMessageInfo,
+    GitPublishRequest,
+    GitPrInfo,
     GitScope,
     EffortLevel,
     Interaction,
@@ -196,9 +199,9 @@ export class Runtime {
     private titleFrom?: string;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
-    /** Reserve this session while its reviewed files are being committed. */
+    /** Reserve this session while committing or publishing. */
     private committing = false;
-    private commitDone?: Promise<GitCommitInfo>;
+    private commitDone?: Promise<unknown>;
     private commitAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
@@ -2141,19 +2144,53 @@ export class Runtime {
         if (this.committing) throw new RpcError("Wait for the commit to finish before starting more work.", "busy");
     }
 
-    private checkGitCommit() {
-        if (!this.ws.trusted) throw new RpcError("Trust this folder before committing: Git commits run the repository's hooks.", "needs_trust", this.ws.cwd);
+    private checkGitCommit(action = "committing") {
+        if (!this.ws.trusted) throw new RpcError(action === "committing" ? "Trust this folder before committing: Git commits run the repository's hooks." : "Trust this folder before publishing: Git transports can run configured programs.", "needs_trust", this.ws.cwd);
         if (this.closed) throw new RpcError("This session was closed.", "busy");
-        if (!this.idle) throw new RpcError("This session is still working. Wait for its responses, questions, shells, and tasks to finish before committing.", "busy");
+        if (!this.idle) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
     }
 
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
         this.checkGitCommit();
         this.committing = true;
         this.commitAbort = new AbortController();
-        this.commitDone = gitCommit(this.ws.cwd, paths, message, { expectedHead, signal: this.commitAbort.signal });
+        const done = gitCommit(this.ws.cwd, paths, message, { expectedHead, signal: this.commitAbort.signal });
+        this.commitDone = done;
         try {
-            return await this.commitDone;
+            return await done;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            this.commitAbort = undefined;
+        }
+    }
+
+    async gitPublishInfo() {
+        // ws.trusted may be implicit. git-publish audits transport config and
+        // requires trustedByUser before any repository-controlled network helper.
+        this.checkGitCommit("publishing");
+        return gitPublishInfo(this.ws.cwd);
+    }
+
+    private prRead?: { at: number; promise: Promise<{ pr?: GitPrInfo }> };
+    gitPrState() {
+        if (!this.ws.trusted || this.closed) return Promise.resolve({});
+        if (!this.prRead || Date.now() - this.prRead.at >= 60_000) {
+            this.prRead = { at: Date.now(), promise: gitPrState(this.ws.cwd).then((pr) => ({ pr })) };
+        }
+        return this.prRead.promise;
+    }
+
+    async gitPublish(request: GitPublishRequest) {
+        this.checkGitCommit("publishing");
+        this.committing = true;
+        this.commitAbort = new AbortController();
+        const done = gitPublish(this.ws.cwd, request, this.commitAbort.signal);
+        this.commitDone = done;
+        try {
+            const result = await done;
+            this.prRead = { at: Date.now(), promise: Promise.resolve(result) };
+            return result;
         } finally {
             this.committing = false;
             this.commitDone = undefined;
