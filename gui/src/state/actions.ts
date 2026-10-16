@@ -8,12 +8,14 @@ import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { prefs, setPrefs } from "./prefs";
 import { requestComposerFocus, setAgentFocus, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
+import { forkAnchor } from "../lib/fork";
+export { forkAnchor } from "../lib/fork";
 
 export type { Attachment } from "../lib/attachments";
 
@@ -89,6 +91,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
         case "rewind":
             if (id) setRewindOpen(true);
             return true;
+        case "fork":
+            if (id) void fork(id);
+            return true;
         case "mcp":
             if (id) setMcpOpen({ focus: args.trim() || undefined });
             return true;
@@ -120,6 +125,21 @@ function clientCommand(id: string | undefined, text: string): boolean {
             openAgents();
             return true;
         }
+    }
+}
+
+/** A new session with the conversation up to a turn (by default the latest finished one); the original stays as it is. */
+export async function fork(id: string, at?: { index: number; text: string; turn: string }) {
+    const turns = handleFor(id)?.view.turns ?? [];
+    if (!at) {
+        for (let i = turns.length - 1; i >= 0 && !at; i--) if (turns[i]!.status !== "running" && turns[i]!.prompt) at = forkAnchor(turns, i);
+    }
+    if (!at) return toast("Nothing to fork yet: send a prompt first.", "warn");
+    try {
+        const h = await forkSession(id, at);
+        toast(`Forked into “${h.view.state.title ?? "a new session"}”`, "success");
+    } catch (e) {
+        reportError(e);
     }
 }
 
@@ -250,6 +270,14 @@ export async function setModel(ref: string) {
     } catch (e) {
         reportError(e);
     }
+}
+
+export async function setAccount(provider: string, accountId: string) {
+    try {
+        if (app.activeId) await rpc.call("session.setAccount", { id: app.activeId, provider, accountId });
+        else await rpc.call("accounts.setDefault", { provider, id: accountId });
+        await refreshProviders();
+    } catch (e) { reportError(e); }
 }
 
 export async function setMode(mode: PermissionModeId) {

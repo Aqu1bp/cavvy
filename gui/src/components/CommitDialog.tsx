@@ -121,7 +121,7 @@ export function CommitDialog() {
                         <Show when={warning()}>
                             <p class="commit-warning" role="status">{warning()}</p>
                         </Show>
-                        <div class="commit-files" aria-label="Files to commit">
+                        <div class="commit-files" role="group" aria-label="Files to commit">
                             <For each={files()}>
                                 {(f) => (
                                     <label class="commit-file">

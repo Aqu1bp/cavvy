@@ -1,8 +1,8 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { Archive, ArrowRight, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
+import { Archive, ArrowRight, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
 import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
-import { archive, chooseProject, exportSession, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs, THEMES } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
@@ -141,6 +141,7 @@ export function CommandPalette() {
             out.push(
                 { id: "changes", section: "Session", label: "Review changes", icon: <FileDiff size={15} />, run: () => openReview() },
                 { id: "rewind", section: "Session", label: "Rewind…", icon: <History size={15} />, run: () => setRewindOpen(true) },
+                { id: "fork", section: "Session", label: "Fork session", hint: "from the latest response", keywords: "branch copy duplicate", icon: <GitFork size={15} />, run: () => void fork(id()!) },
                 { id: "compact", section: "Session", label: "Compact conversation", icon: <Shrink size={15} />, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },
                 { id: "export", section: "Session", label: "Copy conversation as Markdown", icon: <Share size={15} />, run: () => void exportSession(id()!) },
                 { id: "archive", section: "Session", label: "Archive session", icon: <Archive size={15} />, run: () => void archive(id()!, true) },

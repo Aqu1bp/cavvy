@@ -1,6 +1,7 @@
 // Project scripts in the title line: a button that runs the project's last-used
 // (or first) script, and a menu of them all, to run, add, edit, reorder or delete.
-// A script runs only on a click here, in a terminal tab of this session's folder.
+// A script runs only on a click here, in a terminal tab of this session's folder,
+// except the one marked to run in each worktree created from the GUI (WorktreeDialogs).
 
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
@@ -132,7 +133,12 @@ export function ProjectScripts(p: { cwd: string }) {
                             <button class="menu-item compact script-run" title={`Run in a new terminal: ${s.command}`} disabled={offline()} onClick={() => run(s)}>
                                 <ScriptGlyph icon={s.icon} size={14} />
                                 <span class="menu-text">
-                                    <span class="menu-label truncate">{s.name}</span>
+                                    <span class="script-name">
+                                        <span class="menu-label truncate">{s.name}</span>
+                                        <Show when={s.runOnWorktreeCreate}>
+                                            <span class="dbadge script-badge" title="Runs in each worktree you create from Harness">Setup</span>
+                                        </Show>
+                                    </span>
                                     <span class="menu-desc mono truncate">{s.command}</span>
                                 </span>
                             </button>
@@ -171,15 +177,18 @@ export function ProjectScripts(p: { cwd: string }) {
                     </button>
                 </Show>
             </Popover>
-            <ScriptDialog cwd={p.cwd} editing={editing()} onClose={() => setEditing(undefined)} onSaved={() => void load()} />
+            <ScriptDialog cwd={p.cwd} scripts={scripts()} editing={editing()} onClose={() => setEditing(undefined)} onSaved={() => void load()} />
         </>
     );
 }
 
-function ScriptDialog(p: { cwd: string; editing?: { script?: ProjectScript }; onClose: () => void; onSaved: () => void }) {
+function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { script?: ProjectScript }; onClose: () => void; onSaved: () => void }) {
     const [name, setName] = createSignal("");
     const [command, setCommand] = createSignal("");
     const [icon, setIcon] = createSignal<ScriptIcon>();
+    const [setup, setSetup] = createSignal(false);
+    /** The project's setup script now, which this one would take over from. */
+    const replaced = () => p.scripts.find((s) => s.runOnWorktreeCreate && s.id !== p.editing?.script?.id);
     const [error, setError] = createSignal<string>();
     const [busy, setBusy] = createSignal(false);
     createEffect(on(() => p.editing, (e) => {
@@ -187,6 +196,7 @@ function ScriptDialog(p: { cwd: string; editing?: { script?: ProjectScript }; on
         setName(e.script?.name ?? "");
         setCommand(e.script?.command ?? "");
         setIcon(e.script?.icon);
+        setSetup(Boolean(e.script?.runOnWorktreeCreate));
         setError(undefined);
         setBusy(false);
     }));
@@ -196,7 +206,7 @@ function ScriptDialog(p: { cwd: string; editing?: { script?: ProjectScript }; on
         setBusy(true);
         setError(undefined);
         try {
-            await rpc.call("scripts.save", { cwd: p.cwd, id: p.editing?.script?.id, name: name(), command: command(), icon: icon() ?? null });
+            await rpc.call("scripts.save", { cwd: p.cwd, id: p.editing?.script?.id, name: name(), command: command(), icon: icon() ?? null, runOnWorktreeCreate: setup() });
             p.onSaved();
             p.onClose();
         } catch (e) {
@@ -215,7 +225,7 @@ function ScriptDialog(p: { cwd: string; editing?: { script?: ProjectScript }; on
             onClose={p.onClose}
             width={480}
             title={p.editing?.script ? "Edit script" : "Add script"}
-            subtitle="Runs in a terminal tab in the session's folder, only when you click it. Shared by this repository's worktrees; stored in your Harness home, not the repository."
+            subtitle="Runs in a terminal tab in the session's folder when you click it. Shared by this repository's worktrees; stored in your Harness home, not the repository."
         >
             <label class="script-field">
                 <span class="script-field-label">Name</span>
@@ -239,6 +249,18 @@ function ScriptDialog(p: { cwd: string; editing?: { script?: ProjectScript }; on
                         }}
                     </For>
                 </div>
+            </div>
+            <div class="script-field">
+                <label class="check-row">
+                    <input type="checkbox" checked={setup()} onChange={(e) => setSetup(e.currentTarget.checked)} />
+                    <span>Run when a worktree is created</span>
+                </label>
+                <span class="script-field-hint">
+                    It runs in a new terminal tab of each worktree you create from Harness, right after it's created; the New worktree dialog shows it first and lets you skip it. It runs only in projects you've trusted.
+                </span>
+                <Show when={setup() && replaced()}>
+                    {(r) => <span class="script-field-hint">A project has one setup script: this replaces “{r().name}”.</span>}
+                </Show>
             </div>
             <Show when={error()}>
                 <div class="script-field-error" role="alert">{error()}</div>
