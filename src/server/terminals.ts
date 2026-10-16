@@ -1,22 +1,62 @@
-// User-operated shells, isolated from agent sessions and owned by one GUI connection.
+// User-operated shells, isolated from agent sessions. Each belongs to the
+// window that opened it, and outlives that window's connection for a while
+// (GRACE): a reload, or a connection that drops and comes back, finds it
+// still running and attaches to it again, with its recent output.
 import { statSync } from "fs";
 import { basename, resolve, isAbsolute } from "path";
 import { userInfo } from "os";
 import { childEnv } from "../util/env";
 import { RpcError } from "./rpc-error";
-import type { ServerEvent } from "./protocol";
+import { isTerminalReply } from "./terminal-reply";
+export { isTerminalReply } from "./terminal-reply";
+import type { ServerEvent, TerminalInfo, TerminalLogin, TerminalScript } from "./protocol";
 
-interface Owner { send(event: ServerEvent): void }
+/** A window's connection: where output goes while it's attached. */
+export interface Owner {
+    send(event: ServerEvent): void;
+    /**
+     * The window's secret key (it keeps it across reloads). Its terminals belong
+     * to the key, not to this connection: they wait for a later connection with
+     * the key when this one goes. Without one, the connection is the window, and
+     * its terminals stop with it.
+     */
+    window?: string;
+}
 interface Shell {
-    owner: Owner;
+    /** The window it belongs to: its key, or the connection that opened it when that has none. */
+    window: string | Owner;
+    /** Where its output goes: the window's connection, while attached. */
+    sink?: Owner;
+    cwd: string;
+    /** The project script it was opened to run: the tab is named after it. */
+    script?: TerminalScript;
+    login?: TerminalLogin;
+    /** Login output is live-only: discard decoder fragments across attachments too. */
+    forgetOutput?: () => void;
     process: ReturnType<typeof Bun.spawn>;
     terminal: Bun.Terminal;
+    guard: ReturnType<typeof parentGuard>;
+    size: { cols: number; rows: number };
     timer?: ReturnType<typeof setTimeout>;
+    /** Recent output (SCROLLBACK), from a clean cut, for a window that attaches. */
+    out: string;
+    outState: EscapeState;
+    discard: boolean;
+    /** Characters of output so far: `out` ends there. */
+    total: number;
+    /** Where the output sent to the window ends. */
+    sent: number;
     /** Sent, and not yet drawn by the window (it acks what it has drawn). */
     unacked: number;
-    /** Output held back while the window catches up: the latest of it only. */
-    held: string;
-    skipped: number;
+    /** Output is held back until the window catches up. */
+    holding: boolean;
+    /** A full-screen program is showing (the alternate screen), and `tail` is where an escape for it may have begun. */
+    alt: boolean;
+    tail: string;
+    /** It exited; kept, with its output, until the window closes it (or, gone, doesn't come back in time). */
+    exitCode?: number;
+    /** While no window is attached: when it's stopped. */
+    expires?: ReturnType<typeof setTimeout>;
     /** Input given at open, until it's typed or cancelled. */
     typist?: Typist;
 }
@@ -30,6 +70,17 @@ interface Shell {
 const MAX_UNACKED = 1_000_000;
 const RESUME_BELOW = 250_000;
 const KEEP = 250_000;
+
+/**
+ * Output kept for a window that attaches (after a reload, say): about 12,000
+ * full 80-column lines. Trimmed a quarter at a time, so a terminal keeps at
+ * most 1.25 times this (plus one read), and there are 48 terminals at most.
+ */
+const SCROLLBACK = 1_000_000;
+/** How long a window that went away has to come back before its terminals are stopped. */
+const GRACE_MS = 10 * 60_000;
+/** Entering or leaving the alternate screen (vim, htop, less). */
+const ALT_SCREEN = /\x1b\[\?(?:1049|1047|47)([hl])/g;
 
 /**
  * Input given at open is typed once the shell is reading a command. Typed
@@ -108,26 +159,6 @@ export class Typist {
     }
 }
 
-/**
- * What xterm.js sends by itself, answering the shell or reporting focus:
- * device attributes (CSI ? … c, CSI > … c), status (CSI 0 n), cursor position
- * (CSI y;x R, CSI ? y;x R), mode reports (CSI … $ y), focus (CSI I, CSI O),
- * window reports (CSI 4|6|8 ; … t), OSC colour replies and DCS replies. Anything
- * else (keys, Escape, Alt+key, arrows, paste, mouse) is the user.
- */
-const REPLY = /\x1b(?:\[[?>][\d;]*c|\[0n|\[\??\d+;\d+R|\[\??\d+;\d+\$y|\[[IO]|\[[468];\d+;\d+t|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)/y;
-
-/** All of `data` is the terminal's own replies (one or several). */
-export function isTerminalReply(data: string): boolean {
-    let at = 0;
-    while (at < data.length) {
-        REPLY.lastIndex = at;
-        if (!REPLY.test(data)) return false;
-        at = REPLY.lastIndex;
-    }
-    return data.length > 0;
-}
-
 /** The terminal the shell was started from (an outer tmux, an editor's or another app's) isn't this one. */
 const OUTER_TERMINAL = /^(TMUX|TMUX_PANE|STY|TERM_PROGRAM|TERM_PROGRAM_VERSION|TERM_SESSION_ID|COLUMNS|LINES|WINDOWID|ITERM_.*|LC_TERMINAL|LC_TERMINAL_VERSION|VSCODE_.*|KITTY_.*|WEZTERM_.*|ALACRITTY_.*|GHOSTTY_.*|WT_SESSION|WT_PROFILE_ID|KONSOLE_.*|INSIDE_EMACS|ZED_TERM)$/;
 
@@ -151,14 +182,102 @@ export function terminalEnv(): Record<string, string> {
     return env;
 }
 
+/** Parser state at a buffer boundary; control strings can span reads and contain newlines. */
+type EscapeState = "ground" | "escape" | "csi" | "osc" | "string";
+function advanceEscape(state: EscapeState, char: string): EscapeState {
+    if (char === "\x18" || char === "\x1a" || char === "\x9c") return "ground";
+    // Like xterm, ESC ends a control string and starts an escape. A following
+    // backslash completes ST; any other character belongs to the new escape.
+    if (char === "\x1b") return "escape";
+    if (state === "osc") return char === "\x07" ? "ground" : "osc";
+    if (state === "string") return "string";
+    if (char === "\x9b") return "csi";
+    if (char === "\x9d") return "osc";
+    if ("\x90\x98\x9e\x9f".includes(char)) return "string";
+    if (state === "escape") {
+        if (char === "[") return "csi";
+        if (char === "]") return "osc";
+        if ("PX^_".includes(char)) return "string";
+        return char >= "0" && char <= "~" ? "ground" : "escape";
+    }
+    if (state === "csi") return char >= "@" && char <= "~" ? "ground" : "csi";
+    return "ground";
+}
+
+/** Prefer a line boundary, but never cut inside ANSI controls or a surrogate pair. */
+function cleanCut(text: string, from: number, state: EscapeState = "ground") {
+    if (from === 0 && state === "ground") return { at: 0, state };
+    const line = text.indexOf("\n", from);
+    // Continuing a discarded string only needs its end, not the next text line.
+    const target = from > 0 && line !== -1 && line - from < 4096 ? line + 1 : from;
+    for (let at = 0; at < text.length; at++) {
+        if (at >= target && state === "ground" && !/[\uDC00-\uDFFF]/.test(text[at]!)) return { at, state };
+        state = advanceEscape(state, text[at]!);
+    }
+    return { at: text.length, state };
+}
+
+/** Descendants, deepest first, from ps's numeric-only process table. */
+export function terminalDescendants(table: string, root: number): number[] {
+    const rows = table.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
+    const found = new Set([root]);
+    const descendants: number[] = [];
+    for (let at = 0; at <= descendants.length; at++) {
+        const parent = at === 0 ? root : descendants[at - 1]!;
+        for (const [pid, ppid] of rows) if (Number.isSafeInteger(pid) && pid! > 0 && ppid === parent && !found.has(pid!)) {
+            found.add(pid!);
+            descendants.push(pid!);
+        }
+    }
+    return descendants.reverse();
+}
+
+async function childProcesses(pid: number): Promise<number[]> {
+    try {
+        const ps = Bun.spawn(["/bin/ps", "-axo", "pid=,ppid="], { stdout: "pipe", stderr: "ignore", timeout: 500, killSignal: "SIGKILL" });
+        const table = await new Response(ps.stdout).text();
+        return await ps.exited === 0 ? terminalDescendants(table, pid) : [];
+    } catch { return []; } // Restricted sandboxes can deny process enumeration.
+}
+
+/** A private pipe closes even if the server is SIGKILLed; the interactive shell never inherits it. */
+function parentGuard(pid: number) {
+    return Bun.spawn(["/bin/sh", "-c", `
+        if IFS= read -r action && [ "$action" = done ]; then exit 0; fi
+        kill -HUP -- "-$1" 2>/dev/null
+        sleep 1
+        kill -KILL -- "-$1" 2>/dev/null
+        exit 0
+    `, "terminal-parent-guard", String(pid)], { stdin: "pipe", stdout: "ignore", stderr: "ignore", detached: true });
+}
+
+async function disarmGuard(guard: ReturnType<typeof parentGuard>) {
+    try { guard.stdin.write("done\n"); guard.stdin.end(); } catch {}
+    await guard.exited;
+}
+
+const notOpen = () => new RpcError("That terminal is not open in this window", "terminal_not_open");
+const windowOf = (owner: Owner): string | Owner => owner.window ?? owner;
+
 export class Terminals {
     private shells = new Map<string, Shell>();
+    private stopping = new Set<Promise<void>>();
 
-    /** `input` is typed into the new shell, as if by hand, once it's armed and reading a command (see Typist). */
-    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string; command?: { argv: string[]; env: Record<string, string> }; onExit?: () => void } = {}) {
+    /** `graceMs`: how long a window's terminals wait for it to come back (tests shorten it). */
+    constructor(private o: { graceMs?: number } = {}) {}
+
+    /**
+     * `owner` is the window's live connection (callers check), which drop()s it when it goes.
+     * `input` is typed into the new shell, as if by hand, once it's armed and reading a command (see Typist).
+     * `script` / `login` name the tab for a window that comes back to it.
+     * `command` is server-built login argv/env, used only at spawn; its output is live-only.
+     */
+    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string; script?: TerminalScript; login?: TerminalLogin; command?: { argv: string[]; env: Record<string, string> }; onExit?: () => void } = {}) {
         const size = terminalSize(cols, rows);
         if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.shells.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
-        if (this.shells.size >= 48 || [...this.shells.values()].filter((s) => s.owner === owner).length >= 12) throw new RpcError("Close a terminal before opening another (12 per window, across projects)", "limit");
+        // Detached ones, and ones that exited, count until they're closed or expire.
+        const window = windowOf(owner);
+        if (this.shells.size >= 48 || [...this.shells.values()].filter((s) => s.window === window).length >= 12) throw new RpcError("Close a terminal before opening another (12 per window, across projects)", "limit");
         cwd = resolve(cwd);
         let isDir = false;
         try { isDir = statSync(cwd).isDirectory(); } catch {}
@@ -166,24 +285,35 @@ export class Terminals {
         if (process.platform === "win32") throw new RpcError("The embedded terminal requires macOS or Linux with this Bun version", "unsupported");
         let shell = process.env.SHELL;
         if (!shell || !isAbsolute(shell)) shell = userInfo().shell || "/bin/sh";
-        const decoder = new TextDecoder();
+        let decoder = new TextDecoder();
         let pending = "";
         let entry: Shell | undefined;
         // Not into a shell that has since closed or exited.
         const typist = opts.input === undefined ? undefined : new Typist(opts.input, SAYS_WHEN_READING.has(basename(shell)), (text) => {
-            if (entry && this.shells.get(id) === entry) entry.terminal.write(text);
+            if (entry && this.shells.get(id) === entry && entry.exitCode === undefined) entry.terminal.write(text);
         });
         const flush = () => {
             if (!entry) return;
             if (entry.timer) clearTimeout(entry.timer);
             entry.timer = undefined;
             if (!pending) return;
-            if (entry.held || entry.unacked >= MAX_UNACKED) this.hold(entry, pending);
-            else this.send(id, entry, pending);
+            this.record(entry, pending);
             pending = "";
+            if (entry.unacked >= MAX_UNACKED) entry.holding = true;
+            if (!entry.holding) this.sendRest(id, entry);
         };
         const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
             const text = decoder.decode(bytes, { stream: true });
+            // Login URLs, codes and echoed input must never enter replay/flow-control history.
+            // Slow or absent viewers lose output; attaching never reruns the login command.
+            if (opts.command) {
+                if (entry) {
+                    entry.total += text.length;
+                    if (entry.sink && entry.unacked < MAX_UNACKED) this.send(id, entry, text);
+                    else entry.sent = entry.total;
+                }
+                return;
+            }
             pending += text;
             typist?.output(text);
             if (pending.length >= 32_768) flush();
@@ -196,55 +326,78 @@ export class Terminals {
             terminal.close();
             throw e;
         }
-        const shellEntry: Shell = { owner, process: proc, terminal, unacked: 0, held: "", skipped: 0, typist };
+        let guard: ReturnType<typeof parentGuard>;
+        try { guard = parentGuard(proc.pid); }
+        catch (e) { terminal.close(); proc.kill("SIGKILL"); throw e; }
+        const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, login: opts.login ? { ...opts.login } : undefined, forgetOutput: opts.command ? () => { decoder = new TextDecoder(); } : undefined, process: proc, terminal, guard, size, out: "", outState: "ground", discard: false, total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
         void proc.exited.then((exitCode) => {
             opts.onExit?.();
             if (this.shells.get(id) !== shellEntry) return;
-            pending += decoder.decode();
+            if (!opts.command) pending += decoder.decode();
             flush();
-            // Nothing follows: what was held back goes now.
-            this.release(id, shellEntry);
-            this.shells.delete(id);
+            typist?.cancel();
             terminal.close();
-            owner.send({ type: "terminal.exit", id, exitCode });
+            shellEntry.exitCode = exitCode;
+            const cleanup = disarmGuard(guard).finally(() => this.stopping.delete(cleanup));
+            this.stopping.add(cleanup);
+            // Nothing follows: what was held back goes now. With no window attached, it waits for one.
+            this.sendRest(id, shellEntry);
+            shellEntry.sink?.send({ type: "terminal.exit", id, exitCode });
         });
         return { id, cwd };
     }
 
-    private send(id: string, s: Shell, data: string) {
+    private record(s: Shell, text: string) {
+        const seen = s.tail + text;
+        let last: RegExpMatchArray | undefined;
+        for (last of seen.matchAll(ALT_SCREEN));
+        if (last) s.alt = last[1] === "h";
+        s.tail = seen.slice(-7);
+        s.out += text;
+        s.total += text.length;
+        // Once an oversized control string was cut, keep only its parser state
+        // until it ends. Do not accumulate (or repeatedly rescan) its payload.
+        if (s.outState !== "ground" || s.out.length > SCROLLBACK * 1.25) {
+            const cut = cleanCut(s.out, Math.max(0, s.out.length - SCROLLBACK), s.outState);
+            s.out = s.out.slice(cut.at);
+            s.outState = cut.state;
+        }
+    }
+
+    /** What the window hasn't been sent yet: its latest part only (KEEP), if it's fallen far behind. */
+    private sendRest(id: string, s: Shell) {
+        if (!s.sink || s.sent === s.total) return;
+        const start = s.total - s.out.length;
+        let from = s.sent;
+        let note = "";
+        const skipped = s.total - from > KEEP || (from < start && !s.discard);
+        if (skipped || s.discard) {
+            const cut = cleanCut(s.out, Math.max(0, (skipped ? s.out.length - KEEP : from - start)), s.outState);
+            from = start + cut.at;
+            s.discard = cut.state !== "ground";
+            if (skipped) note = `\r\n\x1b[0m[${(from - s.sent).toLocaleString("en-US")} characters of output skipped while the terminal caught up]\r\n`;
+        }
+        this.send(id, s, note + s.out.slice(from - start), skipped);
+    }
+
+    /** `pos`: where in the output the window now is, which it gives back when it attaches again. */
+    private send(id: string, s: Shell, data: string, reset = false) {
+        s.sent = s.total;
         s.unacked += data.length;
-        s.owner.send({ type: "terminal.data", id, data });
+        s.sink!.send({ type: "terminal.data", id, data, pos: s.total, ...(reset ? { reset: true } : {}) });
     }
 
-    private hold(s: Shell, data: string) {
-        s.held += data;
-        if (s.held.length <= KEEP) return;
-        let cut = s.held.length - KEEP;
-        // Not between the halves of a surrogate pair.
-        if (/[\uDC00-\uDFFF]/.test(s.held[cut]!)) cut++;
-        s.skipped += cut;
-        s.held = s.held.slice(cut);
-    }
-
-    private release(id: string, s: Shell) {
-        if (!s.held) return;
-        const note = s.skipped ? `\r\n\x1b[0m[${s.skipped.toLocaleString("en-US")} characters of output skipped while the terminal caught up]\r\n` : "";
-        const data = note + s.held;
-        s.held = "";
-        s.skipped = 0;
-        this.send(id, s, data);
-    }
-
-    private owned(owner: Owner, id: string) {
+    /** Attached to this connection, and running. */
+    private attached(owner: Owner, id: string) {
         const s = this.shells.get(id);
-        if (!s || s.owner !== owner) throw new RpcError("That terminal is not open in this window", "terminal_not_open");
+        if (!s || s.sink !== owner || s.window !== windowOf(owner) || s.exitCode !== undefined) throw notOpen();
         return s;
     }
 
     write(owner: Owner, id: string, data: string) {
-        const s = this.owned(owner, id);
+        const s = this.attached(owner, id);
         if (typeof data !== "string" || data.length > 65_536) throw new RpcError("Terminal input is too large", "invalid");
         // Ctrl+C, a key, a paste, before the shell is ready: the user has taken over, so the command isn't typed.
         // (Not on the terminal's own replies to the shell's queries.)
@@ -254,42 +407,150 @@ export class Terminals {
 
     /** The window has sent what was typed while the shell opened: input given at open may now be typed. */
     arm(owner: Owner, id: string) {
-        this.owned(owner, id).typist?.arm();
+        this.attached(owner, id).typist?.arm();
     }
 
     /** The window has drawn this much of a terminal's output. */
     ack(owner: Owner, id: string, chars: unknown) {
         if (!Number.isSafeInteger(chars) || Number(chars) < 0) throw new RpcError("Invalid terminal ack", "invalid");
         const s = this.shells.get(id);
-        // One that has just exited or closed: nothing more to send.
-        if (!s || s.owner !== owner) return;
+        // One that has just closed, or is now another connection's: nothing more to send here.
+        if (!s || s.sink !== owner) return;
         s.unacked = Math.max(0, s.unacked - Number(chars));
-        if (s.held && s.unacked < RESUME_BELOW) this.release(id, s);
+        if (s.holding && s.unacked < RESUME_BELOW) {
+            s.holding = false;
+            this.sendRest(id, s);
+        }
     }
 
     resize(owner: Owner, id: string, cols: unknown, rows: unknown) {
-        const s = this.owned(owner, id);
-        const size = terminalSize(cols, rows);
-        s.terminal.resize(size.cols, size.rows);
+        const s = this.attached(owner, id);
+        s.size = terminalSize(cols, rows);
+        s.terminal.resize(s.size.cols, s.size.rows);
     }
 
+    /** The window's terminals, attached or not, running or exited (and nobody else's). */
+    list(owner: Owner): TerminalInfo[] {
+        const window = windowOf(owner);
+        return [...this.shells].filter(([, s]) => s.window === window).map(([id, s]) => this.info(id, s));
+    }
+
+    /**
+     * The window takes one of its terminals (again), on this connection: after a
+     * reload, a reconnect, or from a copy of the window (which then loses it).
+     * It's sent the output it lacks first: what follows `have` (how much it has
+     * drawn), or, without that or if it's no longer kept, all that's kept, after
+     * a reset. Input given at open is never typed now: the window that would have
+     * armed it, holding back what was typed meanwhile, isn't this one.
+     */
+    attach(owner: Owner, id: string, have?: unknown): TerminalInfo {
+        if (have != null && (!Number.isSafeInteger(have) || Number(have) < 0)) throw new RpcError("Invalid terminal position", "invalid");
+        const s = this.shells.get(id);
+        if (!s || s.window !== windowOf(owner)) throw notOpen();
+        if (s.expires) clearTimeout(s.expires);
+        s.expires = undefined;
+        s.typist?.cancel();
+        if (s.sink && s.sink !== owner) s.sink.send({ type: "terminal.moved", id });
+        s.sink = owner;
+        s.unacked = 0;
+        s.holding = false;
+        if (s.forgetOutput) {
+            s.forgetOutput();
+            // Clear the client screen even on reconnect with a valid position. No old login output is replayed.
+            this.send(id, s, "", true);
+            return this.info(id, s);
+        }
+        const start = s.total - s.out.length;
+        // A prior reset may have discarded an unfinished control string: that
+        // offset describes a ground-state screen, not the original parser state.
+        const fits = !s.discard && have != null && Number(have) >= start && Number(have) <= s.total;
+        const cut = fits ? undefined : cleanCut(s.out, 0, s.outState);
+        s.discard = cut !== undefined && cut.state !== "ground";
+        s.sent = fits ? Number(have) : start + cut!.at;
+        if (s.sent < s.total || !fits) this.send(id, s, s.out.slice(s.sent - start), !fits);
+        // A full-screen program draws itself again only when the size changes: the same size again doesn't tell it.
+        if (s.exitCode === undefined && s.alt) {
+            s.terminal.resize(s.size.cols, s.size.rows > 1 ? s.size.rows - 1 : 2);
+            s.terminal.resize(s.size.cols, s.size.rows);
+        }
+        return this.info(id, s);
+    }
+
+    private info(id: string, s: Shell): TerminalInfo {
+        return { id, cwd: s.cwd, ...(s.script ? { script: { ...s.script } } : {}), ...(s.login ? { login: { ...s.login } } : {}), ...(s.exitCode !== undefined ? { exitCode: s.exitCode } : {}) };
+    }
+
+    /** Stops it; the connection attached to it, or its window's when none is (its tab closed while away). */
     close(owner: Owner, id: string) {
-        const s = this.owned(owner, id);
-        this.shells.delete(id);
-        if (s.timer) clearTimeout(s.timer);
-        // Closing the PTY hangs up the foreground job as well as its interactive shell.
-        s.terminal.close();
-        s.process.kill("SIGHUP");
-        const kill = setTimeout(() => { if (s.process.exitCode === null) s.process.kill("SIGKILL"); }, 1000);
-        kill.unref();
-        void s.process.exited.then(() => clearTimeout(kill));
+        const s = this.shells.get(id);
+        if (!s || s.window !== windowOf(owner) || (s.sink && s.sink !== owner)) throw notOpen();
+        this.kill(id, s);
     }
 
+    private kill(id: string, s: Shell) {
+        this.shells.delete(id);
+        s.sink = undefined;
+        if (s.timer) clearTimeout(s.timer);
+        if (s.expires) clearTimeout(s.expires);
+        s.typist?.cancel();
+        if (s.exitCode !== undefined) return;
+        const cleanup = this.terminate(s).finally(() => this.stopping.delete(cleanup));
+        this.stopping.add(cleanup);
+    }
+
+    private async terminate(s: Shell) {
+        const signalPid = (pid: number, sig: NodeJS.Signals) => { try { process.kill(pid, sig); } catch {} };
+        const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+        // Job-control shells use a different group for each job. Capture their
+        // descendants before the shell exits and reparents them, and keep the
+        // shell alive briefly to reap children that ignore the first signal.
+        const children = await childProcesses(s.process.pid);
+        for (const pid of children) signalPid(pid, "SIGHUP");
+        const survivors = new Set(children);
+        const deadline = Date.now() + 1000;
+        while (survivors.size) {
+            // Never signal a PID again once it has exited: it can be reused.
+            for (const pid of survivors) if (!alive(pid)) survivors.delete(pid);
+            if (!survivors.size || Date.now() >= deadline) break;
+            await Bun.sleep(20);
+        }
+        for (const pid of survivors) signalPid(pid, "SIGKILL");
+        if (children.length) await Bun.sleep(20);
+        // PTY hangup and the shell's group also work when ps is unavailable.
+        s.terminal.close();
+        signalPid(-s.process.pid, "SIGHUP");
+        await Promise.race([s.process.exited, Bun.sleep(1000)]);
+        if (s.process.exitCode === null) signalPid(-s.process.pid, "SIGKILL");
+        await s.process.exited;
+        await disarmGuard(s.guard);
+    }
+
+    /**
+     * A connection went away. Its window's terminals keep running (and keep
+     * their output) for GRACE, for the window to attach to again, and are
+     * stopped then. A connection without a window key was the window: nothing
+     * can come back for them, so they stop now.
+     */
     drop(owner: Owner) {
-        for (const [id, s] of this.shells) if (s.owner === owner) this.close(owner, id);
+        for (const [id, s] of this.shells) {
+            // Since attached to another connection (a reloaded window's, say): not this one's to let go of.
+            if (s.sink !== owner) continue;
+            if (!owner.window) {
+                this.kill(id, s);
+                continue;
+            }
+            s.sink = undefined;
+            s.forgetOutput?.();
+            s.unacked = 0;
+            s.holding = false;
+            s.typist?.cancel();
+            s.expires = setTimeout(() => { if (this.shells.get(id) === s) this.kill(id, s); }, this.o.graceMs ?? GRACE_MS);
+            s.expires.unref?.();
+        }
     }
 
     stop() {
-        for (const [id, s] of this.shells) this.close(s.owner, id);
+        for (const [id, s] of this.shells) this.kill(id, s);
+        return Promise.all([...this.stopping]).then(() => undefined);
     }
 }
