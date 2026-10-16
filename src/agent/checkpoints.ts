@@ -452,6 +452,11 @@ async function mtime(path: string): Promise<number> {
     }
 }
 
+/** Forget the history in `dir` (its session was deleted): a later one there starts afresh. */
+export function forgetFileHistory(dir: string) {
+    open.delete(dir);
+}
+
 /**
  * Delete the file history of sessions not touched in 30 days (the session
  * file and the history both count), in every project. Best effort.

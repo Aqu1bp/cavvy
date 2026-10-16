@@ -3,12 +3,12 @@
 // bottom; sending to one brings it back.
 
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Undo2 } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread } from "../state/app";
 import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { setPaletteOpen, setSettingsTab } from "../state/ui";
+import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
 import { ago, duration, monogram, since } from "../lib/format";
 import { now } from "../lib/clock";
 import { isTauri, mod, os } from "../lib/platform";
@@ -93,6 +93,9 @@ function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) =>
             <div class="menu-sep" />
             <button class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
                 {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
+            </button>
+            <button class="menu-item compact danger" onClick={() => (close(), setDeleteRequest({ id: p.s.id, title: p.s.title, projectName: p.s.projectName }))}>
+                <Trash2 size={14} /> Delete…
             </button>
         </Popover>
     );

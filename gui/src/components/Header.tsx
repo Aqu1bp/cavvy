@@ -2,12 +2,12 @@
 // the session's menu on its title, and the panel toggle.
 
 import { createSignal, For, Show, type JSX } from "solid-js";
-import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
 import { archive, editorName, exportSession, newSession, openInEditor, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen, setRewindOpen } from "../state/ui";
+import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest } from "../state/ui";
 import { copyText, isTauri, mod, os, terminalShortcut } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { Monogram } from "./Sidebar";
@@ -18,6 +18,13 @@ type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: 
 
 export function sessionTitle(h?: SessionHandle): string {
     return h?.view.state.title ?? h?.view.turns.find((t) => t.prompt)?.prompt?.text.slice(0, 80) ?? "New session";
+}
+
+/** Open the delete dialog for a session that's open (nothing to delete before its first prompt). */
+export function askDelete(h?: SessionHandle) {
+    if (!h?.view.turns.length) return;
+    const cwd = h.view.state.cwd;
+    setDeleteRequest({ id: h.id, title: sessionTitle(h), projectName: app.sessions.concat(app.archived).find((s) => s.id === h.id)?.projectName ?? (cwd.split("/").filter(Boolean).pop() || cwd) });
 }
 
 /** The frame every main view shares: room for the traffic lights when the sidebar is hidden, the sidebar toggle, then the crumbs. */
@@ -154,6 +161,9 @@ export function Header(p: { handle?: SessionHandle }) {
                             <div class="menu-sep" />
                             <button class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
                                 <Archive size={14} /> Archive
+                            </button>
+                            <button class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), askDelete(p.handle))}>
+                                <Trash2 size={14} /> Delete…
                             </button>
                         </Popover>
                     </>

@@ -12,6 +12,9 @@ import { prefs } from "./prefs";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
+import { toastMs } from "../lib/toasts";
+import { afterFailedReopen } from "../lib/reopen";
+import type { Attachment } from "./actions";
 
 export const rpc = new Rpc(credentials);
 rpc.retriesCredentials = isTauri;
@@ -29,10 +32,10 @@ export interface Toast {
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
 
-export function toast(message: string, level: Toast["level"] = "info", action?: Toast["action"]) {
+export function toast(message: string, level: Toast["level"] = "info", action?: Toast["action"], ms?: number) {
     const id = ++toastId;
     setToasts((t) => [...t.slice(-3), { id, level, message, action }]);
-    setTimeout(() => dismissToast(id), level === "error" ? 8000 : 4500);
+    setTimeout(() => dismissToast(id), toastMs(level, ms));
 }
 
 export function dismissToast(id: number) {
@@ -146,6 +149,8 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     const id = snap.state.id;
     // Ops missed while it wasn't open (or the connection was down) may have created files.
     paths.sawSnapshot(id);
+    // There after all (brought back while this window was away).
+    deleted.delete(id);
     const existing = handles.get(id);
     if (existing) {
         existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
@@ -297,7 +302,43 @@ export async function refreshSettings() {
     }
 }
 
+/** Unsent text and images per session (the input box keeps them here), so switching sessions doesn't lose them. */
+export const composerDrafts = new Map<string, { text: string; attachments: Attachment[] }>();
+/** Deleted sessions (until they're brought back): an input box going away doesn't keep their draft. */
+const deleted = new Set<string>();
+export const wasDeleted = (id: string) => deleted.has(id);
+/** What this window had seen of deleted sessions, in case they're brought back (Undo). */
+const seenBeforeDelete = new Map<string, number>();
+
+/** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
+function forgetSession(id: string) {
+    deleted.add(id);
+    composerDrafts.delete(id);
+    setApp("sessions", (l) => l.filter((s) => s.id !== id));
+    setApp("archived", (l) => l.filter((s) => s.id !== id));
+    if (handles.delete(id)) setHandleVersion((v) => v + 1);
+    if (app.seen[id] !== undefined) {
+        seenBeforeDelete.set(id, app.seen[id]!);
+        setApp("seen", id, undefined!);
+        saveSeen();
+    }
+    if (app.activeId === id) setApp("activeId", undefined);
+}
+
+/** Opening it again failed: deleted meanwhile, kept while disconnected (the reconnect reopens it), or dropped. */
+function reopenFailed(id: string, e: unknown) {
+    const next = afterFailedReopen(e instanceof RpcError ? e.code : undefined);
+    if (next === "forget") forgetSession(id);
+    else if (next === "drop" && handles.delete(id)) setHandleVersion((v) => v + 1);
+}
+
 function upsertSession(s: SessionSummary) {
+    deleted.delete(s.id);
+    const seen = seenBeforeDelete.get(s.id);
+    if (seen !== undefined) {
+        seenBeforeDelete.delete(s.id);
+        if (app.seen[s.id] === undefined) markSeen(s.id, seen);
+    }
     const key = s.archived ? "archived" : "sessions";
     const other = s.archived ? "sessions" : "archived";
     setApp(other, (list) => list.filter((x) => x.id !== s.id));
@@ -330,7 +371,11 @@ function onEvent(ev: ServerEvent) {
             upsertSession(ev.session);
             return;
         case "sessions.remove":
-            setApp("sessions", (l) => l.filter((s) => s.id !== ev.id));
+            forgetSession(ev.id);
+            return;
+        case "session.reload":
+            // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
+            if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
             handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images });
@@ -365,7 +410,7 @@ export function start() {
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
                 void refreshModels().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
-                if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, () => handles.delete(h.id));
+                if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 connectedOnce = true;
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();

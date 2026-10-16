@@ -624,6 +624,20 @@ export function takeOver(lock: string): boolean {
     }
 }
 
+/**
+ * Claim a session's file without reading it (deleting one): throws
+ * SessionInUseError while another process has it. Unlike opening one, it
+ * doesn't carry on without the lock.
+ */
+export function holdSession(file: string) {
+    hold(file);
+    if (!held.has(file)) throw new Error(`Couldn't take ${lockOf(file)}, so the session was left alone.`);
+}
+
+export function releaseSession(file: string) {
+    letGo(file);
+}
+
 function letGo(file: string) {
     const n = held.get(file);
     if (!n) return;
