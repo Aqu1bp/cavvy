@@ -24,7 +24,7 @@ export function CodeBlock(p: { code: string; lang?: string; streaming?: boolean;
     return (
         <div class={`code ${p.bare ? "bare" : ""}`}>
             <Show when={!p.bare}>
-                <div class="code-head">
+                <div class="code-head" data-find-skip>
                     <span class="code-lang">{label() || "Code"}</span>
                     <CopyButton text={() => p.code} label="Copy code" />
                 </div>

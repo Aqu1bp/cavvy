@@ -248,6 +248,12 @@ export interface Turn {
     archived?: boolean;
     /** From a Claude Code or Codex session started elsewhere: shown, can't be rewound to. */
     imported?: boolean;
+    /**
+     * Where the message that started it sits in the session file: its segment
+     * (compactions before it) and position there. Kept after a compaction, unlike
+     * prompt.index; a search hit finds its turn by it.
+     */
+    pos?: { seg: number; index: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +491,52 @@ export interface CliSessionsList {
     sources: CliSourceInfo[];
     /** Both sources, newest first; ones already in Harness have `harnessId` (and don't count toward the limit). */
     sessions: CliSessionInfo[];
+}
+
+/** A message that matched a search of every session's text. */
+export interface SessionSearchHit {
+    id: string;
+    title: string;
+    cwd: string;
+    projectName: string;
+    archived: boolean;
+    /** The segment (compactions before it) and position of the matched message, as Turn.pos has them. */
+    seg: number;
+    index: number;
+    role: "user" | "assistant";
+    /** A short stretch of the message around the match, redacted. */
+    snippet: string;
+    /** Where the match is in the snippet (absent when redaction swallowed it). */
+    match?: [number, number];
+    /** When the matched message's turn started, or the session's last change when that isn't known. */
+    at: number;
+}
+
+/**
+ * Lower case that keeps every position where it was ("İ" stays as it is
+ * rather than turning into two characters) and doesn't depend on the letters
+ * around it, so where a match is found in the folded text is where it is in
+ * the original. Server search and the GUI's find bar both match with it.
+ */
+export function foldCase(s: string): string {
+    let l = s.toLowerCase();
+    if (l.length !== s.length) {
+        l = "";
+        for (const ch of s) {
+            const x = ch.toLowerCase();
+            l += x.length === ch.length ? x : ch;
+        }
+    }
+    // Σ lowers to ς at the end of a word and σ elsewhere: "ΟΣ" in "ΟΣΑ" must still match.
+    return l.includes("ς") ? l.replace(/ς/g, "σ") : l;
+}
+
+export interface SessionSearchResult {
+    hits: SessionSearchHit[];
+    /** The time or size budget ran out before every session was read. */
+    partial: boolean;
+    /** A newer search from the same window replaced this one; its hits are dropped. */
+    stale?: boolean;
 }
 
 export interface ProjectInfo {
@@ -831,6 +883,8 @@ export interface Methods {
     /** Opens terminal `id` in `cwd`; the stored script's command is typed into it once the window arms it (terminal.arm) and the shell is reading. */
     "scripts.run": { params: { id: string; cwd: string; script: string; cols: number; rows: number }; result: { id: string; cwd: string; script: ProjectScript } };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
+    /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
+    "sessions.search": { params: { query: string; limit?: number; archived?: boolean }; result: SessionSearchResult };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };

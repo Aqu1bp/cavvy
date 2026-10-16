@@ -13,7 +13,7 @@ const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
-import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 import type { AgentEvent } from "../src/agent/agent";
 import type { SnapshotTurn } from "../src/agent/turn-snapshots";
 
@@ -992,6 +992,30 @@ describe("connecting", () => {
 });
 
 describe("sessions", () => {
+    test("sessions.search finds a prompt and a reply, at the turn the session draws", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "explain the layout of the walrus module" });
+        await c.until(id, done);
+        const t = lastTurn(c.view(id));
+        const r = await c.call("sessions.search", { query: "LAYOUT OF THE WALRUS" });
+        expect(r.partial).toBe(false);
+        expect(r.hits).toHaveLength(1);
+        const hit = r.hits[0];
+        expect(hit).toMatchObject({ id, role: "user", archived: false, seg: 0 });
+        expect(hit.snippet.slice(hit.match[0], hit.match[1])).toBe("layout of the walrus");
+        expect(t.pos).toEqual({ seg: 0, index: hit.index });
+        expect(Math.abs(hit.at - t.startedAt!)).toBeLessThan(5000);
+        // The reply: in this session's turn too (other sessions said the same).
+        const replies = await c.call("sessions.search", { query: "a quick overview", limit: 200 });
+        const mine = replies.hits.find((h: { id: string }) => h.id === id);
+        expect(mine).toMatchObject({ role: "assistant", seg: 0 });
+        expect(mine.index).toBeGreaterThan(hit.index);
+        expect((await c.call("sessions.search", { query: "w" })).hits).toEqual([]);
+        await expect(c.call("sessions.search", { query: "w".repeat(201) })).rejects.toThrow(/200 characters/);
+        c.close();
+    });
+
     test("a prompt streams into the timeline, and the session gets a title", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });
@@ -1509,6 +1533,20 @@ describe("continuing a Claude Code session", () => {
             expect(v.turns[0]!.blocks[0]).toMatchObject({ t: "imported", source: "Claude Code" });
             expect(v.turns[1]).toMatchObject({ imported: true, prompt: { text: "map the auth module" } });
             expect(v.turns[1]!.prompt!.index).toBeUndefined();
+            // The palette can find an imported reply, including after archive,
+            // then open it at its turn rather than the unpositioned import banner.
+            await c.call("session.archive", { id: sid, archived: true });
+            const found = await c.call("sessions.search", { query: "Here's the map." });
+            const hit = found.hits.find((h: { id: string }) => h.id === sid);
+            expect(hit).toMatchObject({ id: sid, archived: true, role: "assistant", seg: 0, index: 1 });
+            await c.open("session.open", { id: hit.id, cwd: hit.cwd });
+            const opened = c.view(sid).turns;
+            expect(opened[0]!.pos).toBeUndefined();
+            const target = opened.filter((t) => t.pos && (t.pos.seg < hit.seg || (t.pos.seg === hit.seg && t.pos.index <= hit.index))).at(-1)!;
+            expect(target).toMatchObject({ imported: true, pos: { seg: 0, index: 0 }, prompt: { text: "map the auth module" } });
+            expect(texts(target)).toContain("Here's the map.");
+            expect(target.prompt!.index).toBeUndefined();
+            await c.call("session.archive", { id: sid, archived: false });
             await expect(c.call("cliSessions.import", { cwd, source: "claude-code", id: "../etc" })).rejects.toThrow(/session id/);
             const again = await c.call<CliSessionsList>("cliSessions.list", { cwd });
             expect(again.sessions[0]!.harnessId).toBe(sid);
@@ -2050,12 +2088,26 @@ describe("reopening a Claude Code session", () => {
     test("after Claude Code compacts its own context, later turns still come back (the transcript itself wasn't compacted)", async () => {
         try {
             const { c, id } = await claudeCodeSession("write", "acceptEdits");
+            const hitFor = async (query: string) => (await c.call<SessionSearchResult>("sessions.search", { query, limit: 200 })).hits.find((h) => h.id === id)!;
+            const target = (turns: Turn[], h: { seg: number; index: number }) => turns.filter((t) => t.pos && (t.pos.seg < h.seg || (t.pos.seg === h.seg && t.pos.index <= h.index))).at(-1)!;
+            const before = await hitFor("map the auth module");
+            expect(target(c.view(id).turns, before).prompt?.text).toBe("map the auth module");
             await c.call("session.compact", { id });
+            await c.until(id, (v) => v.turns.some((t) => t.blocks.some((b) => b.t === "compact")));
+            const after = await hitFor("map the auth module");
+            expect(after).toMatchObject({ seg: 0, index: 0, at: before.at });
+            const first = target(c.view(id).turns, after);
+            expect(first.prompt?.text).toBe("map the auth module");
+            expect(first.startedAt).toBe(after.at);
+            expect(c.view(id).turns.find((t) => !t.prompt && t.blocks.some((b) => b.t === "compact"))!.pos).toBeUndefined();
             // (Calls of their own: the fake's ids are the same each turn.)
             process.env.FAKE_SCENARIO = "agent";
             await c.call("session.send", { id, text: "and the tests?" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
             const live = structuredClone(c.view(id));
+            const next = await hitFor("and the tests?");
+            expect(next).toMatchObject({ seg: 0, index: 2 });
+            expect(target(live.turns, next)).toMatchObject({ prompt: { text: "and the tests?" }, startedAt: next.at });
             // Its history is all still there: nothing is out of reach of rewind.
             expect(live.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.prompt!.index, Boolean(t.archived)])).toEqual([
                 ["map the auth module", 0, false],
@@ -2063,8 +2115,10 @@ describe("reopening a Claude Code session", () => {
             ]);
             expect((await c.call<any[]>("session.rewindTargets", { id })).map((t) => t.index)).toEqual([2, 0]);
             const snap = await reopened(id);
-            const prompted = (v: { turns: Turn[] }) => v.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.endedAt, t.blocks.filter((b) => b.t !== "notice").map(step)]);
+            const prompted = (v: { turns: Turn[] }) => v.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.pos, t.startedAt, t.endedAt, t.blocks.filter((b) => b.t !== "notice").map(step)]);
             expect(prompted(snap)).toEqual(prompted(live));
+            expect(target(snap.turns, after).prompt?.text).toBe("map the auth module");
+            expect(target(snap.turns, next).prompt?.text).toBe("and the tests?");
             expect(tools(snap.turns.find((t) => t.prompt?.text === "and the tests?")!).map((b) => `${b.name}:${b.status}`)).toEqual(["Task:ok"]);
             expect(snap.agents.map((a) => [a.description, a.status, a.blocks.length > 0])).toEqual([["Map auth", "done", true]]);
             c.close();

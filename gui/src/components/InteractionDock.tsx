@@ -12,7 +12,8 @@ import { Markdown } from "./blocks/Markdown";
 
 function typing(): boolean {
     const el = document.activeElement as HTMLElement | null;
-    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable));
+    // The find bar's buttons too: its Esc closes it, and it has no use for the number keys.
+    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar")));
 }
 
 /** A key pressed this soon after a card appears was meant for something else. */

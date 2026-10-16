@@ -1,4 +1,4 @@
-import { createMemo, createResource, createSignal, For, Index, Match, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
@@ -7,6 +7,7 @@ import { formatSize } from "../lib/attachments";
 import { prefs } from "../state/prefs";
 import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
+import { findReveal } from "../state/ui";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -16,6 +17,7 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
     const text = () => p.turn.prompt?.text ?? "";
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
+    createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
     return (
         <div class="user-row">
             <div class="user-actions">
@@ -26,14 +28,14 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
                     </button>
                 </Show>
             </div>
-            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""}`}>
+            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""}`} data-find="prompt">
                 <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
                     <span class="user-text mono">
                         <SquareTerminal size={13} /> {text().slice(1)}
                     </span>
                 </Show>
                 <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
-                    <span class="prompt-attachments">
+                    <span class="prompt-attachments" data-find-skip>
                         <Show when={p.turn.prompt?.images}>
                             <span class="chip tiny">{p.turn.prompt!.images} image{p.turn.prompt!.images === 1 ? "" : "s"}</span>
                         </Show>
@@ -85,13 +87,16 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
 export function Narration(p: { block: TextBlock }) {
     const [open, setOpen] = createSignal(false);
     const line = () => p.block.text.replace(/```[\s\S]*?```/g, " ").replace(/[*_`>#]/g, "").replace(/\s+/g, " ").trim();
+    createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
-        <div class={`wgroup ${open() ? "open" : ""}`}>
+        <div class={`wgroup ${open() ? "open" : ""}`} data-find={p.block.id}>
             <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
                 <span class="slot">
                     <MessageSquareText size={16} />
                 </span>
-                <span class="wtext truncate">“{line()}”</span>
+                <span class="wtext truncate" data-find-skip>
+                    “{line()}”
+                </span>
                 <span class="end">
                     <ChevronRight size={14} class="chev" />
                 </span>
@@ -107,7 +112,7 @@ export function Narration(p: { block: TextBlock }) {
 
 export function Notice(p: { block: NoticeBlock }) {
     return (
-        <div class={`notice ${p.block.level}`}>
+        <div class={`notice ${p.block.level}`} data-find={p.block.id}>
             <Switch fallback={<Info size={14} />}>
                 <Match when={p.block.level === "error"}>
                     <AlertCircle size={14} />
@@ -141,9 +146,10 @@ function Imported(p: { block: ImportedBlock }) {
 
 function Compacted(p: { block: CompactBlock }) {
     const [open, setOpen] = createSignal(false);
+    createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
-        <div class="compacted">
-            <div class="compacted-rule">
+        <div class="compacted" data-find={p.block.id}>
+            <div class="compacted-rule" data-find-skip>
                 <span />
                 <button class="link-btn" onClick={() => setOpen(!open())}>
                     Conversation compacted · {open() ? "hide summary" : "view summary"}
@@ -161,11 +167,11 @@ function Compacted(p: { block: CompactBlock }) {
 
 function Shell(p: { block: ShellBlock }) {
     return (
-        <div class="shell-block">
+        <div class={`shell-block ${findReveal()?.part === p.block.id ? "found" : ""}`} data-find={p.block.id}>
             <div class="shell-head">
                 <SquareTerminal size={13} />
                 <code class="truncate">{p.block.command}</code>
-                <Show when={p.block.running} fallback={<span class={`chip tiny ${p.block.exitCode ? "err" : "ok"}`}>exit {p.block.exitCode ?? "?"}</span>}>
+                <Show when={p.block.running} fallback={<span class={`chip tiny ${p.block.exitCode ? "err" : "ok"}`} data-find-skip>exit {p.block.exitCode ?? "?"}</span>}>
                     <Spinner size={12} />
                 </Show>
             </div>
@@ -263,7 +269,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const [all, setAll] = createSignal(false);
     return (
         <Show when={files().length || (captured() && recorded()?.incomplete)}>
-            <div class="files-card">
+            <div class="files-card" data-find-skip>
                 <div class="files-head">
                     <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), "changed file")}</span>
                     <Show when={files().length}>
@@ -346,6 +352,14 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
     const hasWork = () => segs().some((s) => s.kind === "work");
     const [unfolded, setUnfolded] = createSignal(false);
     const showWork = () => running() || unfolded();
+    // A match in the work log (or in what was said on the way) opens it.
+    createEffect(
+        on(findReveal, (r) => {
+            if (r?.turnId !== p.turn.id || r.part === "prompt") return;
+            const has = (it: Item) => (it.kind === "block" ? it.block.id === r.part : it.steps.some((b) => b.id === r.part));
+            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) setUnfolded(true);
+        }),
+    );
     const hasOutput = () => p.turn.blocks.length > 0 || running();
     const lastText = () => {
         for (let i = p.turn.blocks.length - 1; i >= 0; i--) {
@@ -374,7 +388,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} sessionId={p.state.id} />}
+                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} sessionId={p.state.id} find={t().id} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === lastBlockId()} />}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
