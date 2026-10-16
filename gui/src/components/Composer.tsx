@@ -322,7 +322,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         try {
             const r = await rpc.call("session.dequeue", { id: p.sessionId, queueId, edit });
             if (!r.removed) toast("That message has already been sent", "info");
-            else if (edit) handle.setDraft({ text: r.text ?? "", images: r.images });
+            else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images });
         } catch (e) {
             reportError(e);
         }
