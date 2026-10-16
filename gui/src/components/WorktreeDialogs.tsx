@@ -1,15 +1,18 @@
 // Creating and removing a Git worktree from the new-chat worktree picker. The
 // server checks everything again; these only collect the choice and show its
-// answer next to the field it's about.
+// answer next to the field it's about. A new worktree may get the project's
+// setup script, typed into a terminal tab there: shown here first, skippable,
+// and only in a repository the user trusted (the server holds the gate).
 
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
-import type { WorktreeInfo } from "@shared/protocol";
+import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
-import { app, rpc, toast } from "../state/app";
+import { asksForSetup, setupNote, setupTabLabel } from "../lib/setup";
+import { app, reportError, rpc, toast, trustRequest } from "../state/app";
 import { chooseFolder, openProject } from "../state/actions";
-import { requestComposerFocus } from "../state/ui";
+import { requestComposerFocus, setupObscured, terminalActions } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -61,6 +64,52 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     let open = true;
     onCleanup(() => (open = false));
 
+    const [setupInfo, setSetupInfo] = createSignal<SetupInfo>();
+    const [setupError, setSetupError] = createSignal<string>();
+    const [skipSetup, setSkipSetup] = createSignal(false);
+    const [trusting, setTrusting] = createSignal(false);
+    const note = () => setupNote(setupInfo(), setupError());
+    const runs = () => { const n = note(); return n.kind === "runs" ? n : undefined; };
+    const untrusted = () => { const n = note(); return n.kind === "untrusted" ? n : undefined; };
+    const unreadable = () => { const n = note(); return n.kind === "error" ? n : undefined; };
+    let setupLoad = 0;
+    const loadSetup = async () => {
+        const request = ++setupLoad;
+        setSetupInfo(undefined);
+        setSetupError(undefined);
+        try {
+            const info = await rpc.call("scripts.setupInfo", { cwd: r.main });
+            if (open && request === setupLoad) setSetupInfo(info);
+        } catch (e) {
+            if (open && request === setupLoad) setSetupError(e instanceof Error ? e.message : String(e));
+        }
+    };
+    void loadSetup();
+    const offEvent = rpc.onEvent((e) => { if (e.type === "scripts.changed") void loadSetup(); });
+    onCleanup(offEvent);
+    /** Only on the user's click: trusting also turns on the repository's own Harness configuration. */
+    const trustRepository = async (main: string) => {
+        setTrusting(true);
+        try {
+            await rpc.call("projects.trust", { path: main, trust: true });
+            await loadSetup();
+        } catch (e) {
+            reportError(e);
+        } finally {
+            setTrusting(false);
+        }
+    };
+
+    /** In the new worktree, now open: a tab of its own, with the command typed once its shell is reading. */
+    const startSetup = (made: CreateWorktreeResult, setup: NonNullable<CreateWorktreeResult["setup"]>) => {
+        const didnt = (why: string) => toast(`The worktree was created, but its setup script “${setup.script.name}” didn't run: ${why} You can run it from the project scripts menu.`, "warn");
+        // A tab outside the project on screen would run where nobody sees it.
+        if (app.homeCwd !== made.path) return didnt("the new worktree couldn't be opened.");
+        if (setupObscured() || trustRequest()) return didnt("Settings or another dialog is covering the new worktree.");
+        if (!terminalActions.runScript) return didnt("the terminal isn't available here.");
+        terminalActions.runScript(made.path, setup.script, { ticket: setup.ticket, label: setupTabLabel(made.path), command: setup.script.command });
+    };
+
     const choose = async () => {
         const chosen = await chooseFolder({ title: "Choose where to create the worktree", action: "Create it here", start: r.main });
         if (chosen) setParent(chosen);
@@ -72,7 +121,10 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
      * own Git config can run commands on checkout), trusted first.
      */
     const create = async (trust?: string) => {
-        if (busy()) return;
+        if (busy() || trusting() || note().kind === "loading") return;
+        // Only request the setup already shown before the user clicked Create.
+        const preview = note();
+        const setup = asksForSetup(preview, skipSetup()) && preview.kind === "runs" ? { id: preview.script.id, command: preview.script.command } : undefined;
         const b = branch().trim();
         if (!b) return setError({ field: "branch", message: "Enter a branch name." });
         setError(undefined);
@@ -80,12 +132,14 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
         try {
             if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
             if (!open) return;
-            const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }) });
+            const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }), ...(setup ? { setup: true, setupScript: setup } : {}) });
             setBusy(false);
             p.onClose();
-            toast(`Created worktree ${made.branch}`, "success");
+            if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} You can run it from the project scripts menu.`, "warn");
+            else toast(`Created worktree ${made.branch}`, "success");
             await openProject(made.path);
             requestComposerFocus();
+            if (made.setup) startSetup(made, made.setup);
         } catch (e) {
             setError(errorOf(e));
         } finally {
@@ -156,6 +210,46 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                         </div>
                     )}
                 </Show>
+                <Show when={note().kind === "loading"}>
+                    <span class="wt-hint">Checking the project's setup script…</span>
+                </Show>
+                <Show when={runs()}>
+                    {(n) => (
+                        <div class="wt-setup">
+                            <span>
+                                Once it's created, the setup script <strong>{n().script.name}</strong> runs in a new terminal tab there:
+                            </span>
+                            <pre class="wt-setup-command mono">{n().script.command}</pre>
+                            <label class="check-row">
+                                <input type="checkbox" checked={skipSetup()} disabled={busy()} onChange={(e) => setSkipSetup(e.currentTarget.checked)} />
+                                <span>Don't run it this time</span>
+                            </label>
+                        </div>
+                    )}
+                </Show>
+                <Show when={untrusted()}>
+                    {(n) => (
+                        <div class="wt-setup">
+                            <span>
+                                The setup script <strong>{n().script.name}</strong> won't run: you haven't trusted this repository.
+                            </span>
+                            <pre class="wt-setup-command mono">{n().script.command}</pre>
+                            <span class="wt-hint">Trusting it also turns on the repository's own Harness configuration (its .harness settings, hooks and MCP servers).</span>
+                            <div>
+                                <button type="button" class="btn secondary sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
+                                    {trusting() ? <Spinner size={12} /> : "Trust this repository"}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </Show>
+                <Show when={unreadable()}>
+                    {(n) => (
+                        <div class="wt-setup">
+                            <span>The project scripts couldn't be read, so no setup script will run. {n().message}</span>
+                        </div>
+                    )}
+                </Show>
                 <div class="dialog-actions">
                     <Show when={busy()}>
                         <span class="muted small">Checking out files; a big repository takes a while…</span>
@@ -164,7 +258,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                     <button type="button" class="btn ghost" disabled={busy()} onClick={close}>
                         Cancel
                     </button>
-                    <button type="submit" class="btn primary" disabled={busy() || !branch().trim() || !name()}>
+                    <button type="submit" class="btn primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
                         {busy() ? <Spinner size={12} /> : "Create"}
                     </button>
                 </div>

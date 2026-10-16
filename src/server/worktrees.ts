@@ -109,6 +109,11 @@ function repoOf(cwd: string): Repo {
     return { main: canonical(first.path), records };
 }
 
+/** The main worktree's root (symlinks resolved) of the repository `cwd` is in; read-only. */
+export function mainCheckoutOf(cwd: string): string {
+    return repoOf(cwd).main;
+}
+
 const CONTROL = /[\x00-\x1f\x7f]/;
 
 /** Git decides (check-ref-format); the hints only say why in words. */
