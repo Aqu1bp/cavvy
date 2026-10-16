@@ -176,26 +176,32 @@ function Mcp(p: { handle: SessionHandle }) {
     );
 }
 
-function AgentRow(p: { handle: SessionHandle; a: AgentRun }) {
+function AgentRow(p: { handle: SessionHandle; a: AgentRun; depth?: number }) {
     const waiting = () => p.a.status === "waiting";
     const stoppable = () => live(p.a) && Boolean(p.a.taskId);
+    // Its own sub-agents (a delegated Codex task's) are under it, a step in.
+    const own = () => ((p.depth ?? 0) < 8 ? p.handle.view.agents.filter((x) => x.parentId === p.a.id) : []);
+    const depth = () => p.depth ?? 0;
     return (
-        <div class={`prow ${stoppable() ? "swap" : ""} agent-row`}>
-            <button class="agent-hit" onClick={() => openAgents(p.a.id)} title={waiting() ? "It's asking you something in the composer" : p.a.description} aria-label={p.a.description || "Sub-agent"} />
-            <span class="lic">
-                <Bot size={16} />
-                <span class={`nd st-${p.a.status}`} />
-            </span>
-            <span class="lt truncate grow">{p.a.description || "Sub-agent"}</span>
-            <span class={`meta ${waiting() ? "tone-warn" : p.a.status === "failed" ? "tone-err" : ""}`}>{waiting() ? "Needs you" : p.a.status === "failed" ? "Failed" : p.a.status === "stopped" ? "Stopped" : ran(p.a)}</span>
-            <Show when={stoppable()}>
-                <button class="act hb sm stop" title="Stop sub-agent" aria-label="Stop sub-agent" onClick={() => void stopAgent(p.handle.id, p.a.id)}>
-                    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-                        <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
-                    </svg>
-                </button>
-            </Show>
-        </div>
+        <>
+            <div class={`prow ${stoppable() ? "swap" : ""} agent-row`} style={depth() ? { "padding-left": `${10 + Math.min(depth(), 4) * 16}px` } : undefined}>
+                <button class="agent-hit" onClick={() => openAgents(p.a.id)} title={waiting() ? "It's asking you something in the composer" : p.a.description} aria-label={p.a.description || "Sub-agent"} />
+                <span class="lic">
+                    <Bot size={16} />
+                    <span class={`nd st-${p.a.status}`} />
+                </span>
+                <span class="lt truncate grow">{p.a.description || "Sub-agent"}</span>
+                <span class={`meta ${waiting() ? "tone-warn" : p.a.status === "failed" ? "tone-err" : ""}`}>{waiting() ? "Needs you" : p.a.status === "failed" ? "Failed" : p.a.status === "stopped" ? "Stopped" : ran(p.a)}</span>
+                <Show when={stoppable()}>
+                    <button class="act hb sm stop" title="Stop sub-agent" aria-label="Stop sub-agent" onClick={() => void stopAgent(p.handle.id, p.a.id)}>
+                        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                            <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
+                        </svg>
+                    </button>
+                </Show>
+            </div>
+            <For each={own()}>{(x) => <AgentRow handle={p.handle} a={x} depth={depth() + 1} />}</For>
+        </>
     );
 }
 
@@ -203,16 +209,21 @@ function AgentRow(p: { handle: SessionHandle; a: AgentRun }) {
 function Lineage(p: { handle: SessionHandle }) {
     const [showPrev, setShowPrev] = createSignal(false);
     const agents = () => p.handle.view.agents;
-    const current = createMemo(() => agents().filter(live));
-    const previous = createMemo(() => agents().filter((a) => !live(a)).reverse());
-    const failed = () => previous().filter((a) => a.status === "failed").length;
-    const waiting = () => current().filter((a) => a.status === "waiting").length;
+    // A sub-agent's own are listed under it; the counts take in every one.
+    const top = createMemo(() => agents().filter((a) => !a.parentId || !agents().some((x) => x.id === a.parentId)));
+    const current = createMemo(() => top().filter(live));
+    const previous = createMemo(() => top().filter((a) => !live(a)).reverse());
+    /** It and the ones under it. */
+    const withOwn = (a: AgentRun, depth = 0): AgentRun[] => [a, ...(depth < 8 ? agents().filter((x) => x.parentId === a.id).flatMap((x) => withOwn(x, depth + 1)) : [])];
+    const failed = () => previous().flatMap((a) => withOwn(a)).filter((a) => a.status === "failed").length;
+    const running = () => agents().filter(live).length;
+    const waiting = () => agents().filter((a) => a.status === "waiting").length;
     return (
         <Show when={agents().length}>
             <div class="sec">
                 <div class="sh">
                     Lineage
-                    <Show when={current().length}>· {waiting() ? `${waiting()} needs you` : `${current().length} running`}</Show>
+                    <Show when={running()}>· {waiting() ? `${waiting()} needs you` : `${running()} running`}</Show>
                 </div>
                 <For each={current()}>{(a) => <AgentRow handle={p.handle} a={a} />}</For>
                 <Show when={previous().length}>

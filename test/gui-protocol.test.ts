@@ -203,6 +203,92 @@ describe("timeline ops", () => {
             { op: "append", turnId: "t", blockId: "b", field: "text", text: "c" },
         ]);
     });
+
+    type SessionOp = Parameters<typeof coalesce>[0][number];
+
+    test("patches to one block in a batch go out as one: a tool's input as it streams, a delegate's row as its sub-agent works", () => {
+        const receiving = Array.from({ length: 40 }, (_, i) => ({ op: "block.patch" as const, turnId: "t", blockId: "w", patch: { receiving: (i + 1) * 30 } }));
+        expect(coalesce(receiving)).toEqual([{ op: "block.patch", turnId: "t", blockId: "w", patch: { receiving: 1200 } }]);
+        const sub = (n: number) => ({ label: "Review", tools: [], toolCount: n, tokens: 0, startedAt: 1 });
+        expect(
+            coalesce([
+                { op: "agent.block", id: "d", block: { t: "tool", id: "x1", name: "Bash", title: "Bash(ls)", status: "running" } },
+                { op: "block.patch", turnId: "t", blockId: "d", patch: { sub: sub(1) } },
+                { op: "agent.block.patch", id: "d", blockId: "x1", patch: { status: "ok" } },
+                { op: "state", patch: { busy: true } },
+                { op: "block.patch", turnId: "t", blockId: "w", patch: { receiving: 3 } },
+                { op: "block.patch", turnId: "t", blockId: "d", patch: { sub: sub(2), status: "running" } },
+            ]),
+        ).toEqual([
+            { op: "agent.block", id: "d", block: { t: "tool", id: "x1", name: "Bash", title: "Bash(ls)", status: "running" } },
+            { op: "block.patch", turnId: "t", blockId: "d", patch: { sub: sub(2), status: "running" } },
+            { op: "agent.block.patch", id: "d", blockId: "x1", patch: { status: "ok" } },
+            { op: "state", patch: { busy: true } },
+            { op: "block.patch", turnId: "t", blockId: "w", patch: { receiving: 3 } },
+        ]);
+        // Not across what changes the block, or might: its text, its removal, a new turn, another turn's block of the same id.
+        for (const between of [
+            { op: "append", turnId: "t", blockId: "w", field: "output", text: "x" },
+            { op: "block.remove", turnId: "t", blockId: "w" },
+            { op: "block", turnId: "t", block: { t: "tool", id: "w", name: "Bash", title: "Bash", status: "running" } },
+            { op: "turn", turn: { id: "t2", blocks: [], status: "running" } },
+            { op: "reset", turns: [] },
+        ] as SessionOp[]) {
+            const ops: SessionOp[] = [{ op: "block.patch", turnId: "t", blockId: "w", patch: { output: "a" } }, between, { op: "block.patch", turnId: "t", blockId: "w", patch: { output: "b" } }];
+            expect(coalesce(ops)).toEqual(ops);
+        }
+    });
+
+    test("coalescing never changes what a batch builds", () => {
+        // Seeded: the same sequences every run.
+        let seed = 7;
+        const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+        const ids = ["a", "b", "c"];
+        const turns = ["t1", "t2"];
+        const pick = <T,>(xs: T[]) => xs[rnd(xs.length)]!;
+        const randomOp = (): SessionOp => {
+            switch (rnd(12)) {
+                case 0:
+                    return { op: "block", turnId: pick(turns), block: { t: "tool", id: pick(ids), name: "Bash", title: "Bash", status: "running" } };
+                case 1:
+                    return { op: "block.remove", turnId: pick(turns), blockId: pick(ids) };
+                case 2:
+                    return { op: "append", turnId: pick(turns), blockId: pick(ids), field: pick(["output", "progress"] as const), text: String(rnd(10)) };
+                case 3:
+                    return { op: "turn.patch", turnId: pick(turns), patch: { status: "done" } };
+                case 4:
+                    return { op: "state", patch: { contextTokens: rnd(100) } };
+                case 5:
+                    return { op: "agent.patch", id: "s", patch: { toolCount: rnd(9) } };
+                case 6:
+                    return { op: "agent.block", id: "s", block: { t: "tool", id: pick(ids), name: "Read", title: "Read", status: "running" } };
+                default: {
+                    const patch = pick([{ receiving: rnd(500) }, { status: "ok" as const }, { output: String(rnd(10)), summary: undefined }, { receiving: undefined, status: "running" as const }]);
+                    return { op: "block.patch", turnId: pick(turns), blockId: pick(ids), patch };
+                }
+            }
+        };
+        const start = (): Parameters<typeof applyOp>[0] => ({
+            state: { id: "s", cwd: "/", projectName: "p", createdAt: 0, persisted: false, trusted: true, mode: "default", bypassAllowed: false, effort: "high", fastMode: false, status: "idle", busy: false, contextTokens: 0, cost: 0, tokensIn: 0, tokensOut: 0, todos: [], queued: [], queueIds: [], interactions: [], mcp: [], filesChanged: 0, shells: [] },
+            turns: turns.map((id) => ({ id, status: "running" as const, blocks: ids.map((b) => ({ t: "tool" as const, id: b, name: "Bash", title: "Bash", status: "running" as const })) })),
+            agents: [{ id: "s", turnId: "t1", description: "sub", agentType: "general-purpose", status: "running", startedAt: 0, toolCount: 0, tokens: 0, blocks: [] }],
+        });
+        let merged = 0;
+        for (let run = 0; run < 400; run++) {
+            const ops = Array.from({ length: 2 + rnd(30) }, randomOp);
+            const plain = start();
+            const batched = start();
+            // As sent: JSON on the wire (undefined becomes null, which clears).
+            for (const op of ops) applyOp(plain, JSON.parse(JSON.stringify(op, wireReplacer)));
+            const out = coalesce(structuredClone(ops));
+            const patches = (xs: SessionOp[]) => xs.filter((o) => o.op === "block.patch").length;
+            merged += patches(ops) - patches(out);
+            for (const op of out) applyOp(batched, JSON.parse(JSON.stringify(op, wireReplacer)));
+            expect(batched).toEqual(plain);
+        }
+        // And it does merge patches (not only leave them as they were).
+        expect(merged).toBeGreaterThan(300);
+    });
 });
 
 describe("diffs", () => {

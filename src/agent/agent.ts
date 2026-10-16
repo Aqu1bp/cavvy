@@ -1768,10 +1768,12 @@ export class Agent {
             host: {
                 emit: (e) => {
                     if (e.type === "notice" && e.level === "error") lastError = e.message;
-                    parentHost.emit({ type: "subagent", parentId: callId, label, event: e });
+                    // What its own sub-agents do (Codex's, say) is named as theirs, under this one, as they ask.
+                    parentHost.emit({ type: "subagent", parentId: callId, label, event: e.type === "subagent" ? { ...e, label: nestedAgentLabel(label, e.label) } : e });
                 },
                 // A stopped sub-agent's prompt is withdrawn (declined), so it can stop rather than wait for an answer.
-                askPermission: parentHost.askPermission ? (p) => untilAborted(parentHost.askPermission!({ ...p, agentLabel: label, signal }), signal, { allow: false }) : undefined,
+                // A backend's own sub-agent (one of Codex's) asks as itself, under this one.
+                askPermission: parentHost.askPermission ? (p) => untilAborted(parentHost.askPermission!({ ...p, agentLabel: backend && p.agentLabel ? nestedAgentLabel(label, p.agentLabel) : label, signal }), signal, { allow: false }) : undefined,
                 saveRules: parentHost.saveRules,
                 ui: {},
             },
@@ -1872,4 +1874,9 @@ function redactBackendEvent(e: AgentEvent): AgentEvent {
     if (e.type === "tool_end") return { ...e, result: redactResult(e.result) };
     if (e.type === "subagent") return { ...e, event: e.event.type === "text" ? { ...e.event, text: redact(e.event.text) } : redactBackendEvent(e.event) };
     return e;
+}
+
+/** How a sub-agent's own sub-agent is named (in its permission prompts, and in the GUI): under the one whose it is. */
+function nestedAgentLabel(parent: string, label: string): string {
+    return `${parent} › ${label}`;
 }

@@ -139,6 +139,7 @@ export interface ToolBlock {
     /** Who approved it without asking: "sandboxed", "hook", or the auto-mode reviewer's reason. */
     approval?: string;
     sandboxed?: boolean;
+    /** No longer sent: what a sub-agent does is its AgentRun's, which the call's row opens. */
     sub?: SubagentInfo;
     /** It runs a sub-agent: a Task call, or a task Claude Code or Codex delegated to another model. */
     agent?: boolean;
@@ -155,6 +156,8 @@ export interface AgentRun {
     turnId: string;
     /** A delegated task's id (task-1): what stops it. Task sub-agents stop with the turn. */
     taskId?: string;
+    /** A sub-agent's own sub-agent (a delegated Codex task's, say): the agent whose activity has the call that started it. */
+    parentId?: string;
     description: string;
     /** "general-purpose", "explore", or a custom agent type. */
     agentType: string;
