@@ -58,6 +58,7 @@ import { expandCommand, type CustomCommand } from "./custom";
 import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
+import { clockTime, limitLines } from "../backends/limits";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
@@ -971,6 +972,12 @@ function costCommand(app: App) {
     lines.push(kv("Total", bold(formatCost(s.cost, s.costUnknown)), 10), kv("Wall time", formatDuration(Date.now() - s.meta.createdAt), 10));
     if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
+    for (const l of app.planLimits.values()) {
+        const name = getProvider(l.provider)?.name ?? l.provider;
+        lines.push("", heading(`${name} plan limits`));
+        for (const line of limitLines(l)) lines.push(`  ${line}`);
+        lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(l.at)}.`));
+    }
     app.print(lines);
 }
 

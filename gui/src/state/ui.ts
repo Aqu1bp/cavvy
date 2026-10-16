@@ -3,7 +3,7 @@
 import { createSignal } from "solid-js";
 import type { ReviewScope } from "./changes";
 
-export type SettingsTab = "general" | "appearance" | "providers" | "shortcuts" | "about";
+export type SettingsTab = "general" | "appearance" | "providers" | "usage" | "shortcuts" | "about";
 
 export const [paletteOpen, setPaletteOpen] = createSignal(false);
 export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>();
@@ -19,6 +19,8 @@ export const [mcpOpen, setMcpOpen] = createSignal<{ focus?: string } | undefined
 /** Opened from the keyboard or a slash command; the composer's pickers watch these. */
 export const [modelPickerOpen, setModelPickerOpen] = createSignal(false);
 export const [modePickerOpen, setModePickerOpen] = createSignal(false);
+/** The composer's context card (/context opens it). */
+export const [contextCardOpen, setContextCardOpen] = createSignal(false);
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */
 export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */

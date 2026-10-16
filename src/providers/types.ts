@@ -94,6 +94,10 @@ export interface Usage {
     cost?: number;
     /** Backend total includes both paid and plan-covered requests; billed share is estimated. */
     costEstimated?: boolean;
+    /** The concrete provider:model served by an agent CLI, rather than its requested alias. */
+    resolvedModel?: string;
+    /** How this spend was covered; retained when sub-agent usage is folded into its parent. */
+    billing?: "plan" | "api";
 }
 
 export interface ToolSchema {

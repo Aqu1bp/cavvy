@@ -4,7 +4,7 @@
 
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
-import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import type { GuiSettings, HelloResult, PermissionModeId, PlanLimits, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri } from "../lib/platform";
@@ -15,7 +15,7 @@ import { paths } from "./filelinks";
 import { repeatedToast, ToastLifetime, toastMs, type Toast, type ToastAction } from "../lib/toasts";
 export type { Toast } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
-import type { Attachment } from "./actions";
+import { composerDrafts } from "../lib/composer-draft";
 
 export const rpc = new Rpc(credentials);
 rpc.retriesCredentials = isTauri;
@@ -151,6 +151,8 @@ export interface AppState {
     /** The mode picked on the home screen, which new sessions start in; the saved default until then. */
     homeMode?: PermissionModeId;
     seen: Record<string, number>;
+    /** The agent CLIs' plan limits, by provider (claude-code, codex): the account's, shared by its sessions. */
+    limits: Record<string, PlanLimits>;
 }
 
 const SEEN_KEY = "harness.seen";
@@ -175,6 +177,7 @@ export const [app, setApp] = createStore<AppState>({
     projects: [],
     settings: {},
     seen: loadSeen(),
+    limits: {},
 });
 
 function saveSeen() {
@@ -384,6 +387,11 @@ export async function refreshProjects() {
 
 let watchingEditor = false;
 
+export async function refreshLimits() {
+    const all = await rpc.call("limits.get", {});
+    setApp("limits", reconcile(Object.fromEntries(all.map((l) => [l.provider, l]))));
+}
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
@@ -395,7 +403,7 @@ export async function refreshSettings() {
 }
 
 /** Unsent text and images per session (the input box keeps them here), so switching sessions doesn't lose them. */
-export const composerDrafts = new Map<string, { text: string; attachments: Attachment[] }>();
+export { composerDrafts } from "../lib/composer-draft";
 /** Deleted sessions (until they're brought back): an input box going away doesn't keep their draft. */
 const deleted = new Set<string>();
 export const wasDeleted = (id: string) => deleted.has(id);
@@ -475,6 +483,9 @@ function onEvent(ev: ServerEvent) {
         case "toast":
             toast(ev.message, ev.level);
             return;
+        case "limits":
+            setApp("limits", ev.limits.provider, reconcile(ev.limits));
+            return;
         case "models.changed":
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
@@ -506,6 +517,7 @@ export function start() {
                 setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
                 void refreshModels().catch(() => undefined);
+                void refreshLimits().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 // Path lookups that failed while it was down are asked again.
