@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { isolate, tempDir } from "./helpers/isolate";
+import { FAKE, isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { startServer } = await import("../src/server/server");
@@ -13,6 +13,9 @@ const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { getProvider, saveAgentConfig } = await import("../src/providers/registry");
+const { getKey, removeKey, setKey } = await import("../src/auth/credentials");
+const { clientFor } = await import("../src/providers/models");
+import type { ProviderListing } from "../src/providers/models";
 import type { PlanLimits, ServerEvent, SessionSnapshot, SessionState, Turn, UsageSummary } from "../src/server/protocol";
 
 const TOKEN = "test-token-usage-0123456789";
@@ -24,8 +27,12 @@ writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:moc
 writeFileSync(join(iso.home, "commands", "hello.md"), "---\ndescription: Say hello\n---\nSay hello to $ARGUMENTS.");
 
 let srv: Awaited<ReturnType<typeof startServer>>;
+let modelListings: ProviderListing[];
 beforeAll(async () => {
-    srv = await startServer({ token: TOKEN, unloadAfterMs: 300 });
+    // Real discovery can outlive startup and overwrite the fallback fixture (or query machine providers).
+    modelListings = [{ provider: getProvider("mock")!, status: "ok", models: await (await clientFor("mock")).listModels() }];
+    srv = await startServer({ token: TOKEN, unloadAfterMs: 300, listModels: async () => modelListings });
+    await srv.engine.refreshListings();
 });
 afterAll(async () => {
     await srv.stop();
@@ -277,21 +284,38 @@ describe("Claude Code's own commands", () => {
             await expect(c.call("commands.list", { cwd: override, command: "project-skill" })).resolves.toBeArray();
             expect(await c.call("sessions.list")).toEqual(before);
             await expect(c.call("commands.list", { cwd: override, provider: "mock", command: "project-skill" })).rejects.toMatchObject({ code: "unknown_command" });
-            const listings = srv.engine.listings;
+            const listings = modelListings;
             try {
-                srv.engine.listings = [{ provider: getProvider("claude-code")!, status: "ok", models: [{ provider: "claude-code", id: "default" }] }];
-                for (const model of ["removed-provider:old-model", "anthropic:claude-sonnet-5-5"]) {
+                modelListings = [{ provider: getProvider("claude-code")!, status: "ok", models: [{ provider: "claude-code", id: "default" }] }];
+                await srv.engine.refreshListings();
+                for (const [model, hasKey] of [
+                    ["removed-provider:old-model", false],
+                    ["anthropic:claude-sonnet-5-5", false],
+                    ["anthropic:claude-sonnet-5-5", true],
+                    ["anthropic:claude-sonnet-5-5", false],
+                ] as const) {
+                    // isolate() clears env and disk state, but other files can leave a cached key.
+                    if (hasKey) await setKey("anthropic", FAKE.anthropic);
+                    else await removeKey("anthropic");
+                    expect((await getKey("anthropic"))?.value).toBe(hasKey ? FAKE.anthropic : undefined);
                     const fallback = project();
                     mkdirSync(join(fallback, ".harness"));
                     writeFileSync(join(fallback, ".harness", "settings.json"), JSON.stringify({ model }));
                     await c.call("projects.trust", { path: fallback, trust: true });
-                    // Both an unknown provider and one without credentials fall back to Claude Code.
-                    await expect(c.call("commands.list", { cwd: fallback, command: "project-skill" })).resolves.toBeArray();
+                    const before = await c.call("sessions.list");
+                    // A usable API provider stays selected even when the listing offers only Claude Code.
+                    const unknown = { code: "unknown_command", message: "Unknown command /project-skill" };
+                    if (hasKey) await expect(c.call("commands.list", { cwd: fallback, command: "project-skill" })).rejects.toMatchObject(unknown);
+                    else expect(await c.call("commands.list", { cwd: fallback, command: "project-skill" })).toBeArray();
+                    expect(await c.call("sessions.list")).toEqual(before);
                     const id = await c.create(fallback);
-                    expect(c.view(id).state.model?.provider).toBe("claude-code");
+                    expect(c.view(id).state.model?.provider).toBe(hasKey ? "anthropic" : "claude-code");
+                    if (hasKey) await expect(c.call("session.send", { id, text: "/project-skill" })).rejects.toMatchObject(unknown);
                 }
             } finally {
-                srv.engine.listings = listings;
+                await removeKey("anthropic");
+                modelListings = listings;
+                await srv.engine.refreshListings();
             }
             const claude = async (dir = cwd) => {
                 const id = await c.create(dir);
