@@ -62,6 +62,8 @@ export async function checkPaletteDelete(root: HTMLElement) {
         if (method === "hello" || method === "settings.get") return {};
         if (["projects.recent", "providers.list", "models.list"].includes(method)) return [];
         if (method === "session.open") {
+            // The selected session is restored after bootstrap (#74); keep it selected, unopened.
+            if (params.id === "palette-current") return new Promise(() => {});
             calls.push(params.id);
             throw new RpcError(`No session ${params.id}`, "not_found");
         }

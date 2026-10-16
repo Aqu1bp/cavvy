@@ -185,13 +185,13 @@ function Shell(p: { block: ShellBlock }) {
 /** Labels that say more than "Working": the turn is in a special state. */
 const SPECIAL = /^(Retrying|Compacting|Interrupting|Connecting)/;
 
-/** At the top of the turn while it runs: "Working for 48s", Esc to interrupt. */
-export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean }) {
+/** One live head: above streaming output, or compactly at the tail during pauses. */
+export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean; tail?: boolean }) {
     const elapsed = () => duration(Math.max(0, now() - (p.since ?? p.state.activity?.since ?? now()))).replace(/^(\d+)ms$/, "0s");
-    const special = () => (p.state.activity && SPECIAL.test(p.state.activity.label) ? p.state.activity : undefined);
+    const activity = () => (p.state.activity && (p.tail || SPECIAL.test(p.state.activity.label)) ? p.state.activity : undefined);
     return (
         <>
-            <div class="live-head">
+            <div class={`live-head${p.tail ? " live-tail" : ""}`} data-find-skip>
                 <Show
                     when={!p.waiting}
                     fallback={
@@ -200,7 +200,7 @@ export function LiveHead(p: { state: SessionState; since?: number; waiting?: boo
                         </span>
                     }
                 >
-                    <Show when={special()} fallback={<span class="shimmer num live-label">Working for {elapsed()}</span>}>
+                    <Show when={activity()} fallback={<span class="shimmer num live-label">Working for {elapsed()}</span>}>
                         {(a) => (
                             <span class="live-label" title={a().detail}>
                                 <span class="shimmer">{a().label}</span>
@@ -209,12 +209,14 @@ export function LiveHead(p: { state: SessionState; since?: number; waiting?: boo
                         )}
                     </Show>
                 </Show>
-                <span class="grow" />
-                <span class="live-hint">
-                    <kbd>Esc</kbd> to interrupt
-                </span>
+                <Show when={!p.tail}>
+                    <span class="grow" />
+                    <span class="live-hint">
+                        <kbd>Esc</kbd> to interrupt
+                    </span>
+                </Show>
             </div>
-            <div class="rule" />
+            <Show when={!p.tail}><div class="rule" /></Show>
         </>
     );
 }
@@ -349,6 +351,20 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
     const items = createMemo(() => groupBlocks(p.turn.blocks));
     const segs = createMemo(() => segments(items()));
     const running = () => p.turn.status === "running";
+    const live = () => running() && p.last && p.state.busy;
+    const writing = () => live() && p.state.activity?.label === "Writing";
+    const thinking = (b: ThinkingBlock) => live() && b.durationMs === undefined && p.state.activity?.label === "Thinking";
+    // Inspect the last rendered item: a grouped tool can still be live even
+    // when a later call in that same group has finished.
+    const streamingTail = () => {
+        const item = items().at(-1);
+        if (!item) return false;
+        if (item.kind === "activity") return item.tools.some((t) => t.status === "running" || t.status === "streaming" || t.status === "awaiting");
+        const b = item.block;
+        if (b.t === "text") return writing();
+        if (b.t === "thinking") return thinking(b);
+        return b.t === "shell" && b.running;
+    };
     const hasWork = () => segs().some((s) => s.kind === "work");
     const [unfolded, setUnfolded] = createSignal(false);
     const showWork = () => running() || unfolded();
@@ -388,9 +404,9 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => <Markdown text={t().text} streaming={running() && t().id === lastText()} sessionId={p.state.id} find={t().id} />}
+                            {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} />}
                         </Match>
-                        <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === lastBlockId()} />}</Match>
+                        <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={thinking(t()) && t().id === lastBlockId()} />}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
@@ -410,7 +426,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
             <Show when={hasOutput()}>
                 <div class="reply">
                     <h2 class="sr-only" data-find-skip>{running() ? "Harness is working" : "Harness replied"}</h2>
-                    <Show when={running() && p.last}>
+                    <Show when={live() && streamingTail()}>
                         <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
                     </Show>
                     <Show when={!running() && hasWork()}>
@@ -461,6 +477,9 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                                 </button>
                             </Show>
                         </div>
+                    </Show>
+                    <Show when={live() && !streamingTail()}>
+                        <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} tail />
                     </Show>
                 </div>
             </Show>
