@@ -22,12 +22,13 @@ interface GitOptions {
     hooks?: boolean;
     author?: Record<string, string>;
     signal?: AbortSignal;
-    timeoutMs?: number;
+    /** After publication, allow reconciliation a short grace period on shutdown. */
+    recovery?: boolean;
 }
 const cancelled = () => new RpcError("Git commit cancelled because the session is closing.", "git_cancelled");
 
 async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
-    if (opts.signal?.aborted) throw cancelled();
+    if (opts.signal?.aborted && !opts.recovery) throw cancelled();
     const env = gitEnv();
     for (const key of REPO_VARS) delete env[key];
     for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) delete env[key];
@@ -63,9 +64,16 @@ async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
             }, gitCommitTiming.killGraceMs),
         );
     };
-    const timeout = setTimeout(stop, opts.timeoutMs ?? gitCommitTiming.commandMs);
-    opts.signal?.addEventListener("abort", stop, { once: true });
-    if (opts.signal?.aborted) stop();
+    const timeout = setTimeout(stop, gitCommitTiming.commandMs);
+    let shutdownTimeout: ReturnType<typeof setTimeout> | undefined;
+    const abort = () => {
+        // Normal reconciliation gets the regular budget. Only shutdown shortens
+        // it, including when cancellation arrives while the read is in flight.
+        if (opts.recovery) shutdownTimeout = setTimeout(stop, 1000);
+        else stop();
+    };
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    if (opts.signal?.aborted) abort();
     let out: string,
         err: string,
         code: number;
@@ -75,7 +83,8 @@ async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
         await stopping;
     } finally {
         clearTimeout(timeout);
-        opts.signal?.removeEventListener("abort", stop);
+        clearTimeout(shutdownTimeout);
+        opts.signal?.removeEventListener("abort", abort);
     }
     if (stopping && opts.signal?.aborted) throw cancelled();
     if (stopping) throw new RpcError(`${err}${out}${err || out ? "\n" : ""}Git ${args[0]} timed out; its process group was stopped.`, "git_timeout");
@@ -205,7 +214,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         );
         const originalEntries = await unselectedEntries(root, lock, selected, { signal: options.signal });
         const validateUnselected = async (recovering = false) => {
-            const opts = recovering ? { timeoutMs: 1000 } : { signal: options.signal };
+            const opts = { signal: options.signal, recovery: recovering };
             if (await unselectedEntries(root, lock, selected, opts) !== originalEntries) {
                 throw new RpcError("Unchecked index entries or flags changed while preparing the commit. Reopen the dialog.", "git");
             }
@@ -303,7 +312,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         } catch (e) {
             // A reference-transaction hook runs again AFTER publication. Its
             // timeout cannot undo the commit; finish reconciling the real index.
-            const published = await git(root, ["rev-parse", "--verify", headRef || "HEAD"], { allowFailure: true, signal: undefined, timeoutMs: 1000 });
+            const published = await git(root, ["rev-parse", "--verify", headRef || "HEAD"], { allowFailure: true, recovery: true });
             if (published.out.trim() !== hash) throw e;
         }
         try {

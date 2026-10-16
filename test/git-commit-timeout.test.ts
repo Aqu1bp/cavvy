@@ -114,3 +114,37 @@ test("a hung post-commit hook cannot turn a successful commit into a failure", (
     expect(git(cwd, "rev-parse", "HEAD").trim()).toBe(result.hash);
     expect(git(cwd, "status", "--porcelain")).toBe("");
 }));
+
+test("normal final index validation is not limited to the shutdown recovery deadline", async () => {
+    const cwd = repo();
+    const hook = join(cwd, ".git", "hooks", "reference-transaction");
+    writeFileSync(hook, '#!/bin/sh\n[ "$1" != committed ] || touch .git/commit-published\n');
+    chmodSync(hook, 0o755);
+    const realGit = Bun.which("git")!;
+    const bin = join(cwd, ".git", "slow-git");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh
+case " $* " in
+    *" ls-files --stage --debug -z "*)
+        if [ -e .git/commit-published ]; then
+            echo delayed >> .git/slow-final-reads
+            sleep 1.1
+        fi
+        ;;
+esac
+exec '${realGit.replace(/'/g, "'\\''")}' "$@"
+`);
+    chmodSync(join(bin, "git"), 0o755);
+    const path = process.env.PATH;
+    try {
+        process.env.PATH = `${bin}:${path}`;
+        const result = await gitCommit(cwd, ["selected.txt"], "slow final index validation");
+        expect(result.subject).toBe("slow final index validation");
+        expect(readFileSync(join(cwd, ".git", "slow-final-reads"), "utf8")).toContain("delayed\n");
+        expect(git(cwd, "rev-parse", "HEAD").trim()).toBe(result.hash);
+        expect(git(cwd, "status", "--porcelain")).toBe("");
+        expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+    } finally {
+        process.env.PATH = path;
+    }
+}, 10_000);
