@@ -1546,10 +1546,9 @@ export class Runtime {
         const r = await this.interact({ kind: "plan", id, toolId, plan: stored.text });
         if (toolId) this.patchBlock(toolId, { status: "running" });
         if (this.handoffs.delete(id)) {
-            // Native tools otherwise ask the model for another response after ExitPlanMode. Stop
-            // that loop deterministically; the tool result still records where the plan went.
-            // Claude Code handles its own handoff with an interrupting permission denial.
-            if (!this.backendModel()) this.abort?.abort();
+            // Stop the source turn for every backend, and return queued input to the
+            // composer instead of dispatching it in the original working directory.
+            this.abort?.abort();
             return { approved: false, feedback: r?.kind === "plan" ? r.feedback : undefined, handoff: true };
         }
         if (r?.kind !== "plan") return { approved: false };

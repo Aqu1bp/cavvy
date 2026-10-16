@@ -40,6 +40,51 @@ test("native handoff answers the plan and aborts the turn before another model r
     expect(rt.pending.size).toBe(0);
 });
 
+for (const provider of ["test", "claude-code"]) {
+    test(`${provider} handoff returns queued shell input and attachments without executing in the source folder`, async () => {
+        const cwd = join(realpathSync(iso.home), `queued-${provider}`);
+        mkdirSync(cwd);
+        const engine = new Engine({ listModels: async () => [] });
+        const drafts: any[] = [];
+        engine.draft = (_rt, text, attachments) => { drafts.push({ text, attachments }); };
+        try {
+            const rt = await engine.createSession(cwd, { mode: "plan" });
+            await rt.ready;
+            rt.session.meta.system = "Test";
+            rt.session.setTitle("Plan handoff regression");
+            const attachment = { type: "image" as const, mediaType: "image/png", data: "aGVsbG8=" };
+            let runs = 0;
+            let turnSignal: AbortSignal | undefined;
+            Object.assign(rt, {
+                model: { provider, id: "test" },
+                agent: {
+                    model: { provider, id: "test" },
+                    async run(_parts: unknown, { signal }: { signal: AbortSignal }) {
+                        runs++;
+                        if (runs > 1) return "done";
+                        turnSignal = signal;
+                        const answer = (rt as any).approvePlan("# Implement in a worktree");
+                        const interaction = rt.snapshot().state.interactions.find((i) => i.kind === "plan")!;
+                        expect(await rt.send("!touch queued-command-ran")).toEqual({ queued: true });
+                        expect(await rt.send("Follow up", [attachment])).toEqual({ queued: true });
+                        expect(rt.handOffPlan(interaction.id, "Moved to a worktree")).toBe(true);
+                        expect(await answer).toMatchObject({ approved: false, handoff: true });
+                        return "aborted";
+                    },
+                },
+            });
+            await rt.startTurn("Make a plan");
+            expect(rt.idle).toBe(true);
+            expect(rt.mode).toBe("plan");
+            expect(turnSignal?.aborted).toBe(true);
+            expect(runs).toBe(1);
+            expect(existsSync(join(cwd, "queued-command-ran"))).toBe(false);
+            expect(drafts).toEqual([{ text: "!touch queued-command-ran\n\nFollow up", attachments: [attachment] }]);
+            expect(rt.snapshot().state.queued).toEqual([]);
+        } finally { await engine.stop(); }
+    });
+}
+
 test("ordinary plan rejection keeps planning without aborting", async () => {
     const rt = planningRuntime();
     const answer = rt.approvePlan("# Refine a plan");

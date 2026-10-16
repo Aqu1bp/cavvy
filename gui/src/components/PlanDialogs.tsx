@@ -47,7 +47,7 @@ function PlanDialog(p: { sessionId: string; planId?: string; kind: "view" | "sav
     const close = () => !busy() && setPlanDialog(undefined);
     return (
         <Show
-            when={info()}
+            when={!info.error && info()}
             fallback={
                 <Dialog open onClose={close} title="Plan" width={480}>
                     <Show when={info.error} fallback={<Spinner size={16} />}>
@@ -226,7 +226,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
             if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
             if (!open) return;
             const before = made();
-            const r = await rpc.call("session.implementPlan", { id: p.sessionId, toolId: p.info.id, branch: before?.branch ?? b, base: before ? undefined : base().trim() || undefined, mode: mode(), resume: before?.path });
+            const r = await rpc.call("session.implementPlan", { id: p.sessionId, toolId: p.info.id, branch: before?.branch ?? b, base: base().trim() || undefined, mode: mode(), resume: before?.path });
             if (r.failed || !r.sessionId) {
                 setMade(r);
                 return;

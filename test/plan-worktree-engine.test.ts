@@ -10,7 +10,14 @@ const { Engine } = await import("../src/server/engine");
 const { Session } = await import("../src/agent/session");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 const { trustFolder } = await import("../src/config/trust");
+const { isInside } = await import("../src/util/files");
 afterAll(() => iso.cleanup());
+
+test("containment accepts dot-prefixed directory names while rejecting parent and sibling escapes", () => {
+    const parent = join(iso.home, "repo");
+    for (const sub of ["", "..app", "..app/src", "nested/..app"]) expect(isInside(join(parent, sub), parent)).toBe(true);
+    for (const sub of ["..", "../outside", "../repo-sibling", "..app/../../outside"]) expect(isInside(join(parent, sub), parent)).toBe(false);
+});
 
 function git(cwd: string, ...args: string[]) {
     const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe", timeout: 5000 });
@@ -155,25 +162,29 @@ describe("archive worktree RPCs without sockets", () => {
     });
 });
 
-test("operator fix: implementing from a subfolder cannot follow a checked-out symlink outside the new worktree", async () => {
-    const main = repo("symlink-plan");
+for (const sub of ["src", "..app", "nested/..app"]) test(`implementing from ${sub} preserves real subfolders but cannot follow a checked-out symlink outside the new worktree`, async () => {
+    const main = repo(`subfolder-plan-${sub.replaceAll("/", "-")}`);
     const outside = join(realpathSync(iso.home), "external-folder");
-    mkdirSync(outside);
-    symlinkSync(outside, join(main, "src"));
-    git(main, "add", "src");
-    git(main, "commit", "-qm", "symlink base");
-    const base = git(main, "rev-parse", "HEAD");
+    mkdirSync(outside, { recursive: true });
+    let base: string | undefined;
+    if (sub === "src") {
+        symlinkSync(outside, join(main, sub));
+        git(main, "add", sub);
+        git(main, "commit", "-qm", "symlink base");
+        base = git(main, "rev-parse", "HEAD");
+        git(main, "rm", sub);
+    }
     // The planning branch's src is now a real folder; the requested base still has the symlink.
-    git(main, "rm", "src");
-    mkdirSync(join(main, "src"));
-    writeFileSync(join(main, "src", "file.ts"), "source\n");
+    mkdirSync(join(main, sub), { recursive: true });
+    writeFileSync(join(main, sub, "file.ts"), "source\n");
     git(main, "add", ".");
     git(main, "commit", "-qm", "real source");
+    base ??= git(main, "rev-parse", "HEAD");
     const engine = new Engine({ listModels: async () => [] });
     const client = { subs: new Set<string>(), send: () => {} };
     engine.clients.add(client);
     try {
-        const rt = await engine.createSession(join(main, "src"), { mode: "plan" });
+        const rt = await engine.createSession(join(main, sub), { mode: "plan" });
         rt.session.push({ role: "user", content: [{ type: "text", text: "plan" }] });
         rt.session.addPlan("plan-id", "# Build feature\nImplement it");
         rt.session.model = "test:model";
@@ -200,7 +211,7 @@ test("operator fix: implementing from a subfolder cannot follow a checked-out sy
         const result = await engine.handle(client, "session.implementPlan", { id: rt.id, branch: "implementation", base, mode: "acceptEdits" }) as ImplementPlanResult;
         expect(result.failed).toBeUndefined();
         const next = engine.runtimes.get(result.sessionId!)!;
-        expect(next.ws.cwd).toBe(result.path);
+        expect(next.ws.cwd).toBe(sub === "src" ? result.path : join(result.path, sub));
         expect(next.mode).toBe("acceptEdits");
         expect(next.settings().effort).toBe("high");
         expect(next.fastModeEnabled()).toBe(true);
@@ -209,6 +220,46 @@ test("operator fix: implementing from a subfolder cannot follow a checked-out sy
         expect(prompt).toContain(base);
         expect(next.session.planLinks[0]).toMatchObject({ role: "from", session: rt.id });
         expect(rt.session.planLinks[0]).toMatchObject({ role: "to", session: next.id });
-        expect(readFileSync(join(main, "src", "file.ts"), "utf8")).toBe("source\n");
+        expect(readFileSync(join(main, sub, "file.ts"), "utf8")).toBe("source\n");
+    } finally { await engine.stop(); }
+});
+
+test("a trust retry retains the selected base in both session links and the implementation prompt", async () => {
+    const main = repo("retry-base");
+    const source = join(main, "src");
+    mkdirSync(join(source, ".harness"), { recursive: true });
+    writeFileSync(join(source, ".harness", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] } }));
+    git(main, "add", ".");
+    git(main, "commit", "-qm", "project config");
+    git(main, "branch", "release-v2");
+    trustFolder(source);
+    const engine = new Engine({ listModels: async () => [] });
+    const client = { subs: new Set<string>(), send() {} };
+    engine.clients.add(client);
+    try {
+        const rt = await engine.createSession(source, { mode: "plan" });
+        rt.session.addPlan("plan-id", "# Implement the release");
+        rt.session.model = "test:model";
+        const create = engine.createSession.bind(engine);
+        let prompt = "";
+        engine.createSession = async (...args) => {
+            const next = await create(...args);
+            next.setModel = async () => true;
+            next.send = async (text) => { prompt = text; return { queued: false }; };
+            return next;
+        };
+        const params = { id: rt.id, branch: "implementation", base: "release-v2", mode: "default" };
+        const first = await engine.handle(client, "session.implementPlan", params) as ImplementPlanResult;
+        expect(first.failed).toMatchObject({ code: "needs_trust", folder: join(first.path, "src") });
+        expect(first.sessionId).toBeUndefined();
+        await engine.handle(client, "projects.trust", { path: first.failed!.folder, trust: true });
+        const retry = await engine.handle(client, "session.implementPlan", { ...params, resume: first.path }) as ImplementPlanResult;
+        expect(retry.failed).toBeUndefined();
+        expect(retry.path).toBe(first.path);
+        const next = engine.runtimes.get(retry.sessionId!)!;
+        expect(rt.session.planLinks).toMatchObject([{ role: "to", base: "release-v2" }]);
+        expect(next.session.planLinks).toMatchObject([{ role: "from", base: "release-v2" }]);
+        expect(prompt).toContain("release-v2");
+        expect(git(retry.path, "rev-parse", "HEAD")).toBe(git(main, "rev-parse", "release-v2"));
     } finally { await engine.stop(); }
 });

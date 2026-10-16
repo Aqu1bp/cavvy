@@ -16,7 +16,7 @@ function component(source: string, name: string, dependencies: Record<string, an
         createTextNode: (text: string) => ({ text }),
         insertNode() {},
         setProp: (node: any, key: string, value: any) => { node.props[key] = value; },
-        insert: (_node: any, value: any) => solid.createRenderEffect(() => resolve(value)),
+        insert: (node: any, value: any) => solid.createRenderEffect(() => { node.children = resolve(value); }),
     };
     const compiled = transformSync(source, {
         filename: `${name}.tsx`,
@@ -73,6 +73,68 @@ function archiveDialog(removable: boolean, call: (method: string, params: any) =
 }
 
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
+
+test("a rejected planInfo resource renders its inline error without throwing to an error boundary", async () => {
+    const pending = Promise.withResolvers<any>();
+    const errors: unknown[] = [];
+    const c = component(planSource.slice(planSource.indexOf("function PlanDialog("), planSource.indexOf("function ViewPlan(")), "PlanDialog", {
+        rpc: { call: () => pending.promise },
+        ViewPlan() {}, ImplementPlan() {}, SavePlan() {},
+        Dialog: (p: any) => p.children, Spinner() {}, AlertTriangle() {}, setPlanDialog() {},
+    });
+    let dispose!: () => void;
+    solid.createRoot((d: () => void) => {
+        dispose = d;
+        solid.createComponent(solid.ErrorBoundary, {
+            fallback: (error: unknown) => { errors.push(error); return undefined; },
+            get children() { return c.render({ sessionId: "session", kind: "worktree" }); },
+        });
+    });
+    try {
+        pending.reject(new Error("The plan could not be loaded"));
+        await settle();
+        expect(errors).toEqual([]);
+        expect(c.nodes.some((n) => n.tag === "span" && n.children === "The plan could not be loaded")).toBe(true);
+    } finally { dispose(); }
+});
+
+test("Trust and continue preserves the selected base when resuming the created worktree", async () => {
+    const calls: any[] = [];
+    const path = "/repo/.claude/worktrees/implementation";
+    const c = component(planSource.slice(planSource.indexOf("function ImplementPlan(")), "ImplementPlan", {
+        rpc: { call: async (method: string, params: any) => {
+            calls.push({ method, params });
+            if (method === "projects.trust") return null;
+            return calls.length === 1
+                ? { path, branch: "implementation", failed: { code: "needs_trust", folder: path, message: "Trust this folder" } }
+                : { path, branch: "implementation", sessionId: "destination" };
+        } },
+        IMPLEMENT_MODES: ["default"], MODE_CHOICES: { default: { label: "Ask for edits", hint: "Ask" } },
+        home: (path: string) => path, errorOf: (error: Error) => ({ field: "general", message: error.message }),
+        Dialog: (p: any) => p.children, Spinner() {}, AlertTriangle() {}, toast() {}, activate() {},
+    });
+    let dispose!: () => void;
+    solid.createRoot((d: () => void) => {
+        dispose = d;
+        const [busy, setBusy] = solid.createSignal(false);
+        c.render({ sessionId: "source", info: { id: "plan", git: { main: "/repo", branch: "implementation", base: "main" }, mode: "default" }, get busy() { return busy(); }, setBusy, onClose() {} });
+    });
+    try {
+        const base = c.nodes.find((n) => n.tag === "input" && n.props.placeholder === "HEAD");
+        base.props.onInput({ currentTarget: { value: "release-v2" } });
+        const form = c.nodes.find((n) => n.tag === "form");
+        form.props.onSubmit({ preventDefault() {} });
+        await settle();
+        expect(base.props.disabled).toBe(true);
+        form.props.onSubmit({ preventDefault() {} });
+        await settle();
+        expect(calls).toEqual([
+            { method: "session.implementPlan", params: { id: "source", toolId: "plan", branch: "implementation", base: "release-v2", mode: "default", resume: undefined } },
+            { method: "projects.trust", params: { path, trust: true } },
+            { method: "session.implementPlan", params: { id: "source", toolId: "plan", branch: "implementation", base: "release-v2", mode: "default", resume: path } },
+        ]);
+    } finally { dispose(); }
+});
 
 test("Archive only is focused by default, and an ineligible worktree has no removal button", async () => {
     const calls: any[] = [];

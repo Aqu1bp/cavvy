@@ -8,7 +8,7 @@ import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveSc
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { readdirSync, realpathSync, statSync } from "fs";
-import { basename, dirname, join, relative, resolve } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, harnessHome, paths } from "../config/paths";
 import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
@@ -980,7 +980,7 @@ export class Engine {
             const top = gitRoot(from);
             const sub = top ? relative(realPath(top), realPath(from)) : "";
             // Only a real folder inside the worktree: a checked-out symlink could lead anywhere.
-            const candidate = sub && !sub.startsWith("..") ? join(made.path, sub) : "";
+            const candidate = sub && sub !== ".." && !sub.startsWith(`..${sep}`) && !isAbsolute(sub) ? join(made.path, sub) : "";
             const there = candidate && isDir(candidate) && isInside(realPath(candidate), realPath(made.path)) ? candidate : made.path;
             const failed = (e: unknown, sessionId?: string): ImplementPlanResult => {
                 const code = e instanceof RpcError ? e.code : undefined;
