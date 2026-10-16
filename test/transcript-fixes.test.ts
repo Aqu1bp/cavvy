@@ -388,3 +388,26 @@ describe("titles come from a prompt that says something", () => {
         expect(titleWorthy(prompt as string)).toBe(want as boolean);
     });
 });
+
+describe("stopped while compacting", () => {
+    test("is an interrupt, saved as one, not an unexpected error", async () => {
+        const ac = new AbortController();
+        const session = Session.create(realpathSync(tempDir()), { system: "SYSTEM" });
+        for (let i = 0; i < 3; i++) {
+            session.push({ role: "user", content: [{ type: "text", text: `q${i} ${"x".repeat(40_000)}` }] });
+            session.push({ role: "assistant", provider: "test", model: "test", stopReason: "end_turn", content: [{ type: "text", text: "a" }] } as any);
+        }
+        const a = scripted(async (req) => {
+            // The compaction request: stopped while it runs.
+            ac.abort();
+            throw new ProviderError("aborted");
+        }, { session, model: { provider: "test", id: "test", contextWindow: 8_000, maxOutput: 1_000 } });
+        (a.agent.options.settings as any)().autoCompact = true;
+        expect(await a.run("next", ac.signal)).toBe("aborted");
+        // The one request was the compaction's.
+        expect(a.requests).toHaveLength(1);
+        expect(JSON.stringify(a.requests[0]!.messages.at(-1))).toContain("summary");
+        expect(a.session.messages.at(-1)?.meta?.kind).toBe("interrupt");
+        expect(a.session.notices).toEqual([]);
+    });
+});

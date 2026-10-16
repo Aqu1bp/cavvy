@@ -479,11 +479,14 @@ export class Agent {
             }
 
             if (this.shouldAutoCompact()) {
-                const ok = await this.compact({ auto: true, signal, continuing: true }).catch((e) => {
-                    if (isAbort(e, signal)) throw e;
+                let ok = false;
+                try {
+                    ok = await this.compact({ auto: true, signal, continuing: true });
+                } catch (e) {
+                    // Stopped while compacting: an interrupt like any other, not an unexpected error.
+                    if (isAbort(e, signal)) return this.interrupted(false);
                     this.emit({ type: "notice", level: "warn", message: `Auto-compact failed: ${(e as Error).message}` });
-                    return false;
-                });
+                }
                 if (ok) overflowCompacted = true;
             }
 
