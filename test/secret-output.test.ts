@@ -168,3 +168,40 @@ test("carriage-return progress is published while the command is still running",
     expect(early).toContain("step");
     expect(out.content).toBe("done");
 });
+
+test("an omitted foreground line cannot certify a final search's exit status", async () => {
+    const { ctx, dir } = setup();
+    const command = script(dir, `await write('a'.repeat(600001) + token + '\\n');`) + "; grep nomatch /dev/null";
+    const out = await BashTool.run({ command }, ctx);
+    expect(out.content).toContain("[Output line omitted");
+    expect(out.isError).toBe(true);
+    expect(out.content).not.toContain("found no matches");
+    noFragments(JSON.stringify(out));
+});
+
+test("redaction cannot hide the raw output cap from a final search", async () => {
+    const value = VALUE.repeat(32);
+    const { ctx, dir } = setup(value);
+    const command = script(dir, `await write((token + '\\n').repeat(1300));`) + "; grep nomatch /dev/null";
+    const out = await BashTool.run({ command }, ctx);
+    expect(out.isError).toBe(true);
+    expect(out.content).not.toContain("found no matches");
+    noFragments(JSON.stringify(out), VALUE);
+});
+
+test("a redacted shell diagnostic still prevents a no-match success", async () => {
+    const value = "(eval):1: " + VALUE;
+    const { ctx } = setup(value);
+    const out = await BashTool.run({ command: 'printf "%s\\n" "$OUTPUT_TOKEN" >&2; grep nomatch /dev/null' }, ctx);
+    expect(out.isError).toBe(true);
+    expect(out.content).not.toContain("found no matches");
+    noFragments(JSON.stringify(out), value);
+});
+
+test("a final search can still report no match after ordinary redacted output", async () => {
+    const { ctx } = setup();
+    const out = await BashTool.run({ command: 'printf "%s\\n" "$OUTPUT_TOKEN"; grep nomatch /dev/null' }, ctx);
+    expect(out.isError).toBe(false);
+    expect(out.content).toContain("found no matches");
+    noFragments(JSON.stringify(out));
+});

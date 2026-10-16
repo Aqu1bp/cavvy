@@ -339,6 +339,10 @@ describe("asking for a secret in a GUI session", () => {
         await a.call("session.send", { id, text: "use a secret" });
         const ask = await a.secretAsk(id);
         await respond(a, id, ask.id, { kind: "secret", value: "test-secret-unload-1" });
+        // Let the command finish through its permission card before checking idle unload.
+        await a.until(id, (v) => v.state.interactions.some((i) => i.kind === "permission"));
+        const permission = a.view(id).state.interactions.find((i) => i.kind === "permission")!;
+        await respond(a, id, permission.id, { kind: "permission", choice: "yes" });
         await a.until(id, (v) => done(v) && v.state.secrets.length === 1);
         await a.call("session.close", { id });
         await Bun.sleep(100);

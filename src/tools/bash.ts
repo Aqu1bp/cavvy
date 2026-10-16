@@ -21,9 +21,9 @@ const MAX_KEPT = MAX_OUTPUT * 20;
  * missing command), anywhere: after output with no newline it starts mid-line
  * (`Checking... zsh:1: no matches found`). Then status 1 may be the shell's.
  */
-function shellComplained(output: string, shell = pickShell()): boolean {
+function shellComplaintPattern(shell = pickShell()): RegExp {
     const name = (shell.split("/").pop() ?? "").replace(/[^\w.-]/g, "");
-    return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `).test(output);
+    return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `);
 }
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
@@ -32,7 +32,7 @@ const MAX_HOSTS = 30;
 const MAX_PARTIAL_LINE = 64 * 1024;
 
 /** Each pipe owns its decoder and pending line: stderr mustn't split a stdout secret (or vice versa). */
-function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0) {
+function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void) {
     let pending = "";
     let skipping = false;
     let order = 0;
@@ -52,6 +52,7 @@ function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, ord
                     pending = "";
                     skipping = true;
                 } else if (nl >= 0) {
+                    inspect?.(pending);
                     emit(redact(pending), order);
                     pending = "";
                 }
@@ -63,7 +64,10 @@ function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, ord
         }
     });
     stream.on("end", () => {
-        if (pending) emit(redact(pending), order);
+        if (pending) {
+            inspect?.(pending);
+            emit(redact(pending), order);
+        }
         pending = "";
     });
 }
@@ -111,6 +115,9 @@ interface RunOpts {
 
 interface RunResult {
     output: string;
+    /** Capture facts before redaction can shrink output or hide a shell diagnostic. */
+    outputTruncated: boolean;
+    shellError: boolean;
     exitCode: number | null;
     signal: string | null;
     timedOut: boolean;
@@ -131,6 +138,15 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
         });
         const parts: { order: number; text: string }[] = [];
         let retained = 0;
+        let rawLength = 0;
+        let outputTruncated = false;
+        let shellError = false;
+        const complaint = shellComplaintPattern();
+        const inspect = (text: string) => {
+            rawLength = Math.min(MAX_KEPT, rawLength + text.length);
+            if (rawLength >= MAX_KEPT) outputTruncated = true;
+            if (!shellError) shellError = complaint.test(stripAnsi(text));
+        };
         let sequence = 0;
         const nextOrder = () => sequence++;
         // Pending lines can finish out of order (notably stdout without a final newline).
@@ -160,14 +176,18 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
                 parts.push({ order, text });
                 retained += text.length;
                 capped = retained >= MAX_KEPT;
+                if (capped) outputTruncated = true;
             }
             opts.onData?.(s);
         };
         // An unfinished outer secret may contain a shorter match whose marker expands.
         // Dropping the whole oversized line avoids mixing raw and redacted cut positions.
-        const overflow = () => `[Output line omitted: exceeds ${MAX_OUTPUT * 20} characters]\n`;
-        if (child.stdout) readShellStream(child.stdout, onChunk, MAX_OUTPUT * 20, overflow, nextOrder);
-        if (child.stderr) readShellStream(child.stderr, onChunk, MAX_OUTPUT * 20, overflow, nextOrder);
+        const overflow = () => {
+            outputTruncated = true;
+            return `[Output line omitted: exceeds ${MAX_KEPT} characters]\n`;
+        };
+        if (child.stdout) readShellStream(child.stdout, onChunk, MAX_KEPT, overflow, nextOrder, inspect);
+        if (child.stderr) readShellStream(child.stderr, onChunk, MAX_KEPT, overflow, nextOrder, inspect);
         const timer = setTimeout(() => {
             timedOut = true;
             killTree();
@@ -189,11 +209,11 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             } catch {
                 // ignore
             }
-            resolvePromise({ output: output(), exitCode: code, signal: sig, timedOut, aborted, newCwd });
+            resolvePromise({ output: output(), outputTruncated, shellError, exitCode: code, signal: sig, timedOut, aborted, newCwd });
         });
         child.on("error", (err) => {
             clearTimeout(timer);
-            resolvePromise({ output: output() + `\n${err.message}`, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
+            resolvePromise({ output: output() + `\n${err.message}`, outputTruncated, shellError, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
         });
     });
 }
@@ -310,7 +330,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have,
         // or the shell stopped before the end of the script (errexit, a failed special builtin): then it's not
         // the last command's 1. The line after the command records the cwd, so a cwd means it got there.
-        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command, env) : undefined;
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && !res.outputTruncated && !res.shellError ? finalSearch(input.command, env) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
         else if (search) {
