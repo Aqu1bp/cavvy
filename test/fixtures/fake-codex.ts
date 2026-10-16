@@ -15,7 +15,9 @@
 // FAKE_ACCOUNT        chatgpt (default) | apikey | none
 // FAKE_DECLINE=1      offer "decline" among the command's availableDecisions
 // FAKE_REVIEW_DENY=1  with approvalsReviewer auto_review, the command leaves the sandbox and Codex's
-//                     reviewer turns it down (the client isn't asked)
+//                     reviewer turns it down (the client isn't asked); FAKE_REVIEW_NO_COMPLETED=1 leaves out
+//                     its item/autoApprovalReview/completed event; FAKE_REVIEW_MIXED=1 adds several more
+//                     verdicts, out of step
 // FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
 //                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
 //                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
@@ -139,7 +141,22 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         if (process.env.FAKE_REVIEW_DENY === "1" && policy.approvalsReviewer === "auto_review") {
             const review = { threadId, turnId, reviewId: `rev-${turnId}`, targetItemId: cmd.id, startedAtMs: 1, action: { type: "command", command: shown, cwd: cmd.cwd, source: "shell" } };
             notify("item/autoApprovalReview/started", { ...review, review: { status: "inProgress" } });
-            notify("item/autoApprovalReview/completed", { ...review, completedAtMs: 2, decisionSource: "agent", review: { status: "denied", riskLevel: "high", userAuthorization: "low", rationale: "It sends the project to an unknown host." } });
+            if (process.env.FAKE_REVIEW_NO_COMPLETED !== "1") notify("item/autoApprovalReview/completed", { ...review, completedAtMs: 2, decisionSource: "agent", review: { status: "denied", riskLevel: "high", userAuthorization: "low", rationale: "It sends the project to an unknown host." } });
+            // What Codex 0.163 also says about every verdict, and about the reviewer itself.
+            notify("guardianWarning", { threadId, message: "Automatic approval review approved (risk: low, authorization: high): The user asked for it." });
+            notify("guardianWarning", { threadId, message: "Automatic approval review denied (risk: high, authorization: low): It sends the project to an unknown host." });
+            notify("guardianWarning", { threadId, message: "Automatic approval review failed: the reviewer didn't answer" });
+            if (process.env.FAKE_REVIEW_MIXED === "1") {
+                // Several actions, out of step: B's no comes only as its verdict line, before A's; a timeout
+                // (no reason) and then C's no; the same reason as A's from a sub-agent's thread.
+                const denied = (why: string, thread = threadId) => notify("guardianWarning", { threadId: thread, message: `Automatic approval review denied (risk: high, authorization: low): ${why}` });
+                notify("item/autoApprovalReview/completed", { ...review, reviewId: "rev-a", completedAtMs: 3, decisionSource: "agent", review: { status: "denied", riskLevel: "high", userAuthorization: "low", rationale: "A: deletes the home folder." } });
+                denied("B: pushes to main.");
+                denied("A: deletes the home folder.");
+                notify("item/autoApprovalReview/completed", { ...review, reviewId: "rev-t", completedAtMs: 4, decisionSource: "agent", review: { status: "timedOut" } });
+                denied("C: posts the token.");
+                denied("A: deletes the home folder.", "thr-sub");
+            }
             decision = "decline";
         } else if (!runsItself) {
             const r = await serverRequest("item/commandExecution/requestApproval", {

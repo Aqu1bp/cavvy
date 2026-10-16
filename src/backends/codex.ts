@@ -312,6 +312,8 @@ class CodexTurn {
     private status?: string;
     private billedToPlan = false;
     private limitNoted = false;
+    /** Reviewer noes shown from item/autoApprovalReview/completed, by thread and reason, whose guardianWarning hasn't come yet. */
+    private noesShown = new Map<string, number>();
     /** What the user said when declining something, when it can't go into the running turn: it starts the next one. */
     private followUp?: string;
     private followUps = 0;
@@ -535,11 +537,27 @@ class CodexTurn {
                 const why = typeof p.review?.rationale === "string" ? p.review.rationale.trim() : "";
                 const verdict = status === "denied" ? "Codex's reviewer blocked" : "Codex's reviewer ran out of time on";
                 this.host.emit({ type: "notice", level: "warn", message: redact(`${verdict} ${what}${why ? `: ${why}` : "."}`) });
+                if (why) {
+                    const key = verdictKey(p.threadId, why);
+                    this.noesShown.set(key, (this.noesShown.get(key) ?? 0) + 1);
+                }
                 break;
             }
             case "guardianWarning": {
                 const msg = String(p.message ?? "").trim();
-                if (msg) this.host.emit({ type: "notice", level: "warn", message: redact(`Codex's reviewer: ${msg}`) });
+                // Its verdict on each action ("Automatic approval review approved (risk: low, …): why"): an
+                // approval is noise, and a no shown from item/autoApprovalReview/completed (same thread, same
+                // reason) isn't shown twice. Anything it can't match, a no that event didn't bring included, shows.
+                if (!msg || APPROVED_VERDICT.test(msg)) break;
+                const reason = msg.match(REVIEW_VERDICT)?.[1]?.trim();
+                const key = reason ? verdictKey(p.threadId, reason) : undefined;
+                const shown = key ? (this.noesShown.get(key) ?? 0) : 0;
+                if (key && shown > 0) {
+                    if (shown === 1) this.noesShown.delete(key);
+                    else this.noesShown.set(key, shown - 1);
+                    break;
+                }
+                this.host.emit({ type: "notice", level: "warn", message: redact(`Codex's reviewer: ${msg}`) });
                 break;
             }
             case "model/rerouted":
@@ -849,6 +867,11 @@ function fileChanges(item: any): FileChange[] {
 function writtenPaths(changes: FileChange[]): string[] {
     return [...new Set(changes.flatMap((c) => (c.movePath ? [c.path, c.movePath] : [c.path])))];
 }
+
+/** The guardianWarning Codex sends with each of its reviewer's verdicts (the reason last), and with a yes. */
+const REVIEW_VERDICT = /^Automatic approval review [\w ]+ \(risk: [^)]*\): ([\s\S]+)$/;
+const APPROVED_VERDICT = /^Automatic approval review approved \(risk: /;
+const verdictKey = (threadId: unknown, reason: string) => `${typeof threadId === "string" ? threadId : ""}\0${reason}`;
 
 /** What Codex's reviewer looked at, in a few words. */
 export function reviewedAction(a: any): string {
