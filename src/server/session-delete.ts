@@ -51,13 +51,19 @@ function pieces(dir: string, id: string): { live: string; trashed: string }[] {
     ];
 }
 
-/** There, as a file, folder or link (a link isn't followed). */
+/**
+ * There, as a file, folder or link (a link isn't followed). Only "no such
+ * file" means it isn't: a folder that can't be searched stops the delete
+ * rather than leave the session's files in it.
+ */
 function present(p: string): boolean {
     try {
         lstatSync(p);
         return true;
-    } catch {
-        return false;
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return false;
+        throw new RpcError(`Can't check ${p} (${code ?? (e as Error).message}), so nothing was changed.`);
     }
 }
 
@@ -162,6 +168,25 @@ export function trashSession(id: string, flags: SessionFlags) {
     forgetFileHistory(join(dir, "file-history", id));
 }
 
+/** A trash entry's record, read only from a regular file (not through a link). */
+function readEntry(entry: string): Partial<TrashEntry> {
+    if (!lstatSync(join(entry, "entry.json")).isFile()) throw new Error("not an entry");
+    return JSON.parse(readFileSync(join(entry, "entry.json"), "utf-8"));
+}
+
+function entryOf(id: string): TrashEntry {
+    const entry = join(trashDir(), id);
+    let meta: Partial<TrashEntry>;
+    try {
+        if (!lstatSync(entry).isDirectory()) throw new Error("not an entry");
+        meta = readEntry(entry);
+    } catch {
+        throw new RpcError("That session is no longer in the trash.", "not_found");
+    }
+    if (meta.id !== id || typeof meta.slug !== "string" || !SLUG.test(meta.slug)) throw new RpcError("That session's trash entry is damaged.", "invalid");
+    return meta as TrashEntry;
+}
+
 /**
  * Put a trashed session back where it was, with what the GUI store said
  * about it. Renames keep the files' modes (0600, folders 0700). The
@@ -169,7 +194,6 @@ export function trashSession(id: string, flags: SessionFlags) {
  */
 export function restoreSession(id: string): SessionFlags {
     const entry = join(trashDir(), checkId(id));
-    let meta: TrashEntry;
     // Only from a trash folder that's in the Harness home (not a link out of it).
     try {
         if (!lstatSync(trashDir()).isDirectory()) throw new Error("not a folder");
@@ -177,35 +201,44 @@ export function restoreSession(id: string): SessionFlags {
         throw new RpcError("That session is no longer in the trash.", "not_found");
     }
     mustBeInHome(entry);
-    try {
-        if (!lstatSync(entry).isDirectory() || !lstatSync(join(entry, "entry.json")).isFile()) throw new Error("not an entry");
-        meta = JSON.parse(readFileSync(join(entry, "entry.json"), "utf-8"));
-    } catch {
-        throw new RpcError("That session is no longer in the trash.", "not_found");
-    }
-    if (meta.id !== id || typeof meta.slug !== "string" || !SLUG.test(meta.slug)) throw new RpcError("That session's trash entry is damaged.", "invalid");
-    if (findSessionAnywhere(id)) throw new RpcError("A session with that id exists again, so this one can't be put back.", "exists");
-    const dir = join(paths.projectsDir(), meta.slug);
-    const moves = pieces(dir, id)
-        .map((m) => [join(entry, m.trashed), m.live] as [string, string])
-        .filter(([from]) => present(from))
-        .reverse();
-    if (moves.at(-1)?.[1] !== join(dir, `${id}.jsonl`)) throw new RpcError("That session's transcript isn't in the trash.", "not_found");
-    for (const [, to] of moves) if (present(to)) throw new RpcError(`${to} exists again, so the session can't be put back.`, "exists");
+    const exists = () => new RpcError("A session with that id exists again, so this one can't be put back.", "exists");
+    const first = entryOf(id);
+    if (findSessionAnywhere(id)) throw exists();
+    const dir = join(paths.projectsDir(), first.slug);
+    const file = join(dir, `${id}.jsonl`);
     // Each folder is checked before anything is made in it.
     mkdirSync(paths.projectsDir(), { recursive: true, mode: 0o700 });
-    for (const d of [dir, ...new Set(moves.map(([, to]) => dirname(to)).filter((d) => d !== dir))]) {
+    for (const d of [dir, join(dir, "ui"), join(dir, "file-history")]) {
         mustBeInHome(d);
         if (!present(d)) mkdirSync(d, { mode: 0o700 });
     }
-    for (const [, to] of moves) mustBeInHome(to);
-    moveAll(moves);
+    // Held from the checks through the cleanup: another server deleting it
+    // again meanwhile (into a new trash/<id>) waits for it, or is refused.
+    const release = claimForDelete(file);
     try {
-        removeTree(entry);
-    } catch {
-        // purged later
+        const meta = entryOf(id);
+        if (meta.slug !== first.slug || findSessionAnywhere(id)) throw exists();
+        const moves = pieces(dir, id)
+            .map((m) => [join(entry, m.trashed), m.live] as [string, string])
+            .filter(([from]) => present(from))
+            .reverse();
+        if (moves.at(-1)?.[1] !== file) throw new RpcError("That session's transcript isn't in the trash.", "not_found");
+        for (const [, to] of moves) {
+            if (present(to)) throw new RpcError(`${to} exists again, so the session can't be put back.`, "exists");
+            mustBeInHome(to);
+        }
+        moveAll(moves);
+        // Only what this emptied: anything else in it keeps the folder for the purge.
+        try {
+            unlinkSync(join(entry, "entry.json"));
+            rmdirSync(entry);
+        } catch {
+            // purged later
+        }
+        return { pinned: Boolean(meta.pinned), archived: Boolean(meta.archived), settled: Boolean(meta.settled) };
+    } finally {
+        release();
     }
-    return { pinned: Boolean(meta.pinned), archived: Boolean(meta.archived), settled: Boolean(meta.settled) };
 }
 
 /** Remove trash entries deleted more than a week ago. Best effort, a bounded number per run. */
@@ -228,7 +261,7 @@ export function purgeTrash(opts: { now?: number; maxAgeMs?: number } = {}): stri
             if (!st.isDirectory()) continue;
             let at = st.mtimeMs;
             try {
-                const meta = JSON.parse(readFileSync(join(entry, "entry.json"), "utf-8")) as Partial<TrashEntry>;
+                const meta = readEntry(entry);
                 if (typeof meta.deletedAt === "number") at = meta.deletedAt;
             } catch {
                 // the folder's time, then

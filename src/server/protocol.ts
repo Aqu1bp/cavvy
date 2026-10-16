@@ -583,6 +583,8 @@ export type ServerEvent =
     | { type: "session.ops"; sessionId: string; seq: number; ops: SessionOp[] }
     | { type: "sessions.upsert"; session: SessionSummary }
     | { type: "sessions.remove"; id: string }
+    /** Its runtime was closed under the window (a delete that failed): open it again for a fresh snapshot, keeping the draft and view. */
+    | { type: "session.reload"; sessionId: string }
     | { type: "notify"; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */

@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import { deleteSession } from "../state/actions";
+import { UNDO_DELETE_MS } from "../lib/toasts";
 import { deleteRequest, setDeleteRequest } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
 
@@ -31,7 +32,7 @@ export function DeleteSessionDialog() {
             width={480}
         >
             <div class="delete-dialog">
-                <p>Deletes the conversation, the file copies Harness saved for /rewind, and its pin and unread state. You can undo it for a few seconds afterwards.</p>
+                <p>Deletes the conversation, the file copies Harness saved for /rewind, and its pin and unread state. You can undo it for about {UNDO_DELETE_MS / 1000} seconds afterwards.</p>
                 <p class="muted">The project's files and git aren't touched. Claude Code and Codex keep their own copies of their conversations in their own stores, which Harness leaves alone.</p>
             </div>
             <div class="dialog-actions">

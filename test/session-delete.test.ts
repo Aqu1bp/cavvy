@@ -166,6 +166,33 @@ describe("session.delete", () => {
         }
     });
 
+    test("a cold open racing a delete (the session not loaded) ends deleted either way", async () => {
+        const { engine, c, id, f } = await setup();
+        try {
+            await unload(engine, c, id, f.lock);
+            expect(engine.runtimes.has(id)).toBe(false);
+            // Opened first: it loads, then the delete closes it.
+            const opening = engine.handle(c, "session.open", { id });
+            const deleting = engine.handle(c, "session.delete", { id });
+            await opening;
+            await deleting;
+            expect(engine.runtimes.has(id)).toBe(false);
+            for (const p of [f.file, f.lock, f.ui]) expect(gone(p)).toBe(true);
+
+            await engine.handle(c, "session.restore", { id });
+            expect(engine.runtimes.has(id)).toBe(false);
+            // Deleted first: the open waits, then finds nothing.
+            const deleting2 = engine.handle(c, "session.delete", { id });
+            const opening2 = fails(engine.handle(c, "session.open", { id }));
+            await deleting2;
+            expect((await opening2).code).toBe("not_found");
+            expect(engine.runtimes.has(id)).toBe(false);
+            for (const p of [f.file, f.lock, f.ui]) expect(gone(p)).toBe(true);
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("restore takes nothing from a trash folder that links out of the Harness home", async () => {
         const { engine, c, id, f } = await setup();
         try {
@@ -207,11 +234,16 @@ describe("session.delete", () => {
         }
     }, 30_000);
 
-    test("a delete that fails halfway puts everything back, and windows get the session back to open afresh", async () => {
-        const { engine, c, events, id, f } = await setup();
+    test("a delete that fails after closing it puts everything back, and the windows that had it open it again (not deleted)", async () => {
+        const { engine, c, events, id, rt, f } = await setup();
+        const elsewhere: ServerEvent[] = [];
+        engine.clients.add({ subs: new Set<string>(), send: (e: ServerEvent) => void elsewhere.push(e) });
         try {
             await engine.handle(c, "session.pin", { id, pinned: true });
             const bytes = readFileSync(f.file);
+            const turns = rt.snapshot().turns.length;
+            events.length = 0;
+            // The transcript moves, then the UI log can't: everything goes back.
             chmodSync(dirname(f.ui), 0o500);
             const err = await fails(engine.handle(c, "session.delete", { id }));
             chmodSync(dirname(f.ui), 0o700);
@@ -220,13 +252,85 @@ describe("session.delete", () => {
             expect(existsSync(f.ui)).toBe(true);
             expect(gone(join(trashDir(), id))).toBe(true);
             expect(store().pinned).toContain(id);
-            const removed = events.findIndex((e) => e.type === "sessions.remove" && e.id === id);
-            expect(removed).toBeGreaterThan(-1);
-            expect(events.slice(removed).some((e) => e.type === "sessions.upsert" && e.session.id === id && e.session.pinned)).toBe(true);
+
+            // Not a delete: no window drops it (its draft and view stay); the one that had it open reloads it.
+            expect(events.concat(elsewhere).some((e) => e.type === "sessions.remove")).toBe(false);
+            expect(events).toContainEqual({ type: "session.reload", sessionId: id });
+            expect(elsewhere.some((e) => e.type === "session.reload")).toBe(false);
+            expect(elsewhere.some((e) => e.type === "sessions.upsert" && e.session.id === id && e.session.pinned)).toBe(true);
+            expect(engine.runtimes.has(id)).toBe(false);
+            expect(c.subs.has(id)).toBe(false);
+
+            // What the window does on session.reload: open it again, and carry on in it.
             const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
-            expect(snap.turns.length).toBeGreaterThan(0);
+            expect(snap.turns.length).toBe(turns);
+            expect(c.subs.has(id)).toBe(true);
+            const again = engine.runtimes.get(id)!;
+            await engine.handle(c, "session.send", { id, text: "first prompt" });
+            for (let i = 0; i < 200 && !(again.idle && again.snapshot().turns.length > turns); i++) await Bun.sleep(25);
+            expect(again.snapshot().turns.length).toBe(turns + 1);
+            expect(((await engine.handle(c, "sessions.list", {})) as SessionSummary[]).find((s) => s.id === id)).toMatchObject({ pinned: true });
         } finally {
             chmodSync(dirname(f.ui), 0o700);
+            await engine.stop();
+        }
+    }, 30_000);
+
+    test("a folder that can't be searched stops the delete before anything moves or closes", async () => {
+        const { engine, c, events, id, rt, f } = await setup();
+        try {
+            chmodSync(dirname(f.ui), 0o000);
+            const err = await fails(engine.handle(c, "session.delete", { id }));
+            chmodSync(dirname(f.ui), 0o700);
+            expect(err.message).toMatch(/EACCES/);
+            expect(engine.runtimes.get(id)).toBe(rt);
+            expect(existsSync(f.file) && existsSync(f.ui)).toBe(true);
+            expect(gone(join(trashDir(), id))).toBe(true);
+            expect(events.some((e) => (e.type === "sessions.remove" && e.id === id) || (e.type === "session.reload" && e.sessionId === id))).toBe(false);
+        } finally {
+            chmodSync(dirname(f.ui), 0o700);
+            await engine.stop();
+        }
+    });
+
+    test("restore holds the session's lock: refused while another process has it, and the trash entry stays", async () => {
+        const { engine, c, id, f } = await setup();
+        const other = Bun.spawn(["sleep", "30"]);
+        try {
+            await engine.handle(c, "session.delete", { id });
+            const theirs = JSON.stringify({ pid: other.pid, at: Date.now() });
+            writeFileSync(f.lock, theirs);
+            expect((await fails(engine.handle(c, "session.restore", { id }))).code).toBe("in_use");
+            expect(gone(f.file)).toBe(true);
+            expect(existsSync(join(trashDir(), id, "transcript.jsonl"))).toBe(true);
+            expect(readFileSync(f.lock, "utf-8")).toBe(theirs);
+            other.kill();
+            await other.exited;
+            // Once it's gone, its lock is stale.
+            await engine.handle(c, "session.restore", { id });
+            expect(existsSync(f.file)).toBe(true);
+            expect(gone(f.lock)).toBe(true);
+        } finally {
+            other.kill();
+            await engine.stop();
+        }
+    });
+
+    test("restore removes only the trash entry it emptied", async () => {
+        const { engine, c, id, f } = await setup();
+        try {
+            await engine.handle(c, "session.delete", { id });
+            // As if another server had deleted it again into the same folder meanwhile.
+            writeFileSync(join(trashDir(), id, "theirs.txt"), "keep");
+            await engine.handle(c, "session.restore", { id });
+            expect(existsSync(f.file)).toBe(true);
+            expect(readFileSync(join(trashDir(), id, "theirs.txt"), "utf-8")).toBe("keep");
+            expect(gone(join(trashDir(), id, "entry.json"))).toBe(true);
+            // A later delete replaces what's left of it.
+            await engine.handle(c, "session.delete", { id });
+            expect(gone(join(trashDir(), id, "theirs.txt"))).toBe(true);
+            expect(existsSync(join(trashDir(), id, "transcript.jsonl"))).toBe(true);
+        } finally {
             await engine.stop();
         }
     });
@@ -280,7 +384,13 @@ test("purging removes only entries older than a week, and doesn't follow links",
     entry("old-1", Date.now() - 8 * DAY);
     entry("new-1", Date.now() - 1 * DAY);
     symlinkSync(outside, join(trashDir(), "stray-link"));
+    // An entry.json that's a link isn't read: the folder's own (recent) time counts.
+    writeFileSync(join(outside, "entry.json"), JSON.stringify({ deletedAt: Date.now() - 30 * DAY }));
+    mkdirSync(join(trashDir(), "linked-1"));
+    symlinkSync(join(outside, "entry.json"), join(trashDir(), "linked-1", "entry.json"));
     expect(purgeTrash()).toEqual(["old-1"]);
+    expect(lstatSync(join(trashDir(), "linked-1", "entry.json")).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(outside, "entry.json"))).toBe(true);
     expect(existsSync(join(trashDir(), "new-1", "entry.json"))).toBe(true);
     expect(lstatSync(join(trashDir(), "stray-link")).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(outside, "keep.txt"), "utf-8")).toBe("mine");

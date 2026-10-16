@@ -687,7 +687,14 @@ export class Engine {
      * then finds nothing.
      */
     private async deleteSession(id: string) {
-        while (this.closing.has(id)) await this.afterClosing(id);
+        // A model still being set up (as it opens) isn't work to refuse over: wait for it, a while.
+        const until = Date.now() + 10_000;
+        for (;;) {
+            while (this.closing.has(id)) await this.afterClosing(id);
+            const setup = this.runtimes.get(id)?.modelSetup;
+            if (!setup || Date.now() >= until) break;
+            await Promise.race([setup.catch(() => undefined), new Promise((r) => setTimeout(r, until - Date.now()).unref?.())]);
+        }
         const rt = this.runtimes.get(id);
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
@@ -717,9 +724,8 @@ export class Engine {
             await work;
         } catch (e) {
             if (rt) {
-                // Closed, but still there: windows showing it drop it and get it back in the list, to open afresh.
-                for (const c of this.clients) c.subs.delete(id);
-                this.broadcast({ type: "sessions.remove", id });
+                // Closed, but not deleted: windows that had it open it again, as it now is on disk.
+                for (const c of this.clients) if (c.subs.delete(id)) c.send({ type: "session.reload", sessionId: id });
                 const summary = this.listSessions(1000, flags.archived).find((s) => s.id === id);
                 if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
             }

@@ -3,6 +3,7 @@
 import { createSignal } from "solid-js";
 import type { CliSessionInfo, EditorInfo, EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
+import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
 import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import { prefs, setPrefs } from "./prefs";
@@ -278,7 +279,7 @@ export async function deleteSession(id: string) {
     } catch (e) {
         return reportError(e);
     }
-    toast("Session deleted", "info", { label: "Undo", run: () => void rpc.call("session.restore", { id }).catch(reportError) });
+    toast("Session deleted", "info", { label: "Undo", run: () => void rpc.call("session.restore", { id }).catch(reportError) }, UNDO_DELETE_MS);
 }
 
 export async function archive(id: string, archived: boolean) {

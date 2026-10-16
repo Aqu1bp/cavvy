@@ -12,6 +12,7 @@ import { prefs } from "./prefs";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
+import { toastMs } from "../lib/toasts";
 import type { Attachment } from "./actions";
 
 export const rpc = new Rpc(credentials);
@@ -30,10 +31,10 @@ export interface Toast {
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
 
-export function toast(message: string, level: Toast["level"] = "info", action?: Toast["action"]) {
+export function toast(message: string, level: Toast["level"] = "info", action?: Toast["action"], ms?: number) {
     const id = ++toastId;
     setToasts((t) => [...t.slice(-3), { id, level, message, action }]);
-    setTimeout(() => dismissToast(id), level === "error" ? 8000 : 4500);
+    setTimeout(() => dismissToast(id), toastMs(level, ms));
 }
 
 export function dismissToast(id: number) {
@@ -363,6 +364,14 @@ function onEvent(ev: ServerEvent) {
             return;
         case "sessions.remove":
             forgetSession(ev.id);
+            return;
+        case "session.reload":
+            // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
+            if (handles.has(ev.sessionId))
+                void rpc.call("session.open", { id: ev.sessionId }).then(adopt, () => {
+                    handles.delete(ev.sessionId);
+                    setHandleVersion((v) => v + 1);
+                });
             return;
         case "draft":
             handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images });
