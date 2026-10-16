@@ -21,6 +21,7 @@ import { backendModel, isAgentBackend } from "../backends/types";
 import { readJson, writeJson } from "../config/settings";
 import { ensureDir, paths } from "../config/paths";
 import { dirname } from "path";
+import { account, defaultAccount } from "./accounts";
 
 export function createClient(def: ProviderDef, key: string | undefined): ProviderClient {
     switch (def.kind) {
@@ -49,7 +50,8 @@ async function credentialFingerprint(def: ProviderDef): Promise<{ fp: string; ke
     if (def.auth === "cli") {
         // Turned on with /login; the CLI keeps its own sign-in.
         const cfg = readAgentConfig(def.id);
-        return cfg ? { fp: `cli|${cfg.path ?? ""}|${(cfg.args ?? []).join("\0")}` } : undefined;
+        const selected = cfg ? account(def.id, defaultAccount(def.id)) : undefined;
+        return cfg ? { fp: `cli|${cfg.path ?? ""}|${(cfg.args ?? []).join("\0")}|${selected!.id}|${selected!.folder}` } : undefined;
     }
     const key = def.requiresKey ? await getKey(def.id) : undefined;
     if (def.requiresKey && !key) return undefined;

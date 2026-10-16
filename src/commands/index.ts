@@ -58,7 +58,9 @@ import { expandCommand, type CustomCommand } from "./custom";
 import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
-import { clockTime, limitLines } from "../backends/limits";
+import { account, addAccount, listAccounts } from "../providers/accounts";
+import { loginCommand as accountLoginCommand } from "../backends/account-login";
+import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
@@ -310,6 +312,13 @@ async function modelCommand(app: App, args: string) {
 // /login, /logout, /providers
 
 async function loginCommand(app: App, args: string) {
+    const accountArgs = args.trim().split(/\s+/);
+    if ((accountArgs[0] === "claude-code" || accountArgs[0] === "codex") && accountArgs.length > 1) {
+        const provider = accountArgs[0];
+        if (accountArgs[1] === "add" && accountArgs.length === 2) return addCliAccount(app, provider);
+        if (accountArgs.length === 2) return signInCliAccount(app, provider, accountArgs[1]!);
+        throw new Error(`Use /login ${provider} add or /login ${provider} <account-id>.`);
+    }
     let providerId: string | undefined = args.trim().toLowerCase() || undefined;
     if (providerId === "custom") return addCustomProvider(app);
     if (providerId && getProvider(providerId)?.auth === "gcloud") return vertexLogin(app);
@@ -475,6 +484,55 @@ async function agentLogin(app: App, providerId: string) {
     if (!app.model) await app.setModel(modelRef(pick), { persist: true });
     else if (app.model.provider !== providerId && (await confirm(app, `Switch to ${pick.name ?? pick.id} in ${def.name}?`, [theme.muted(`Now: ${app.model.name ?? app.model.id} (${app.model.provider})`)], "Switch", "Keep the current model"))) {
         await app.setModel(modelRef(pick), { persist: true });
+    }
+}
+
+/** Launch only the vendor's own flow; credentials never pass through a Harness input dialog. */
+async function signInCliAccount(app: App, provider: string, id: string) {
+    const selected = account(provider, id);
+    const command = accountLoginCommand(provider, selected.id);
+    await app.screen.suspend(() => {
+        spawnSync(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] });
+    });
+    const status = await withProgress(app, [theme.muted("Checking sign-in…")], (signal) => checkAgentCli(provider, signal, selected.id));
+    if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : "not signed in"}`);
+    await app.refreshListings();
+}
+
+async function addCliAccount(app: App, provider: string) {
+    const id = await app.showDialog(new InputDialog({ title: "Account id", header: [theme.muted("A short id using letters, numbers, hyphens or underscores.")], placeholder: "personal" }));
+    if (id === undefined) return;
+    const name = await app.showDialog(new InputDialog({ title: "Account name", placeholder: "Personal" }));
+    if (name === undefined) return;
+    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a private folder in Harness's accounts directory."), theme.muted("A new folder starts with separate CLI settings and history.")], placeholder: "/absolute/path" }));
+    if (folder === undefined) return;
+    const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
+    app.notice(`Created ${selected.name}: ${selected.folder}`);
+    if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");
+    await signInCliAccount(app, provider, selected.id);
+}
+
+async function accountCommand(app: App, args: string) {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    const providers = ["claude-code", "codex"];
+    if (parts.length) {
+        const provider = providers.includes(parts[0]!) ? parts.shift()! : app.model?.provider;
+        if (!provider || !providers.includes(provider) || parts.length > 1) throw new Error("Use /account [claude-code|codex] [account-id].");
+        if (parts.length) return app.setAccount(provider, parts[0]!);
+        return pickAccount(app, [provider]);
+    }
+    return pickAccount(app, providers);
+}
+
+async function pickAccount(app: App, providers: string[]) {
+    const items = providers.flatMap((provider) => listAccounts(provider).map((a) => ({
+        label: a.name, value: `${provider}:${a.id}`, group: getProvider(provider)!.name,
+        description: a.folder || "The CLI's normal configuration", detail: app.session.accountId(provider) === a.id ? "current" : undefined,
+    })));
+    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("A switch starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
+    if (choice) {
+        const [provider, id] = choice.split(":");
+        app.setAccount(provider!, id!);
     }
 }
 
@@ -973,7 +1031,7 @@ function costCommand(app: App) {
     if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
     for (const l of app.planLimits.values()) {
-        const name = getProvider(l.provider)?.name ?? l.provider;
+        const name = limitAccountLabel(l.provider, l.accountId);
         lines.push("", heading(`${name} plan limits`));
         for (const line of limitLines(l)) lines.push(`  ${line}`);
         lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(l.at)}.`));
@@ -1572,7 +1630,8 @@ export function reviewPrompt(args: string): string {
 const BUILTIN: Command[] = [
     { name: "help", aliases: ["?"], description: "Show commands and shortcuts", whileBusy: true, run: (app) => helpCommand(app) },
     { name: "model", description: "Pick a model from every configured provider", args: "[provider:model]", run: modelCommand },
-    { name: "login", description: "Add an API key (any provider, auto-detected)", args: "[provider|custom]", run: loginCommand },
+    { name: "login", description: "Add an API key or CLI account", args: "[provider|custom] [add|account-id]", run: loginCommand },
+    { name: "account", description: "Choose the session account for Claude Code or Codex", args: "[provider] [account-id]", run: accountCommand },
     { name: "logout", description: "Remove a stored API key", run: logoutCommand },
     { name: "providers", description: "Providers, key status and endpoints", whileBusy: true, run: (app) => providersCommand(app) },
     { name: "fast", description: "Toggle fast service on supported models (higher usage/cost)", args: "[on|off|status]", run: fastCommand },

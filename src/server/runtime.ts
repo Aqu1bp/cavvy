@@ -25,6 +25,7 @@ import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarge
 import { costOf } from "../providers/pricing";
 import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
+import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -310,6 +311,7 @@ export class Runtime {
             trusted: this.ws.trusted,
             branch,
             mode: this.mode,
+            accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") },
             bypassAllowed: this.bypassAllowed(),
             effort: this.settings().effort,
             fastMode: this.fastModeEnabled(),
@@ -625,6 +627,19 @@ export class Runtime {
             if (before) await before.catch(() => undefined);
             return this.setModel(ref, opts);
         })());
+    }
+
+    setAccount(provider: string, id: string) {
+        if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
+        const selected = account(provider, id);
+        if (!this.session.setAccount(provider, selected.id)) return;
+        this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
+        if (this.session.messages.length) {
+            const name = getProvider(provider)?.name ?? provider;
+            const text = `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.`;
+            this.session.recordNotice("info", text);
+            this.notice(text);
+        }
     }
 
     /** Switch models. Returns false when the provider can't be used. */
@@ -1053,13 +1068,13 @@ export class Runtime {
             case "compact_end":
                 this.compacted(e.summary);
                 break;
+            case "limits":
+                this.engine.limitsReported(e.limits, e.partial);
+                break;
             case "subagent":
                 // A sub-agent on an agent CLI reports the same account's limits.
                 if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial);
                 else this.subagentEvent(e.parentId, e.label, e.event);
-                break;
-            case "limits":
-                this.engine.limitsReported(e.limits, e.partial);
                 break;
             case "cli_commands":
                 this.engine.cliCommandsReported(e.provider, this.ws.cwd, e.names);

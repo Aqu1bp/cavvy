@@ -117,7 +117,7 @@ export function RewindDialog() {
                         <div class="rw-list">
                             <For each={targets()}>
                                 {(t) => (
-                                    <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} onClick={() => setChosen(t.index)}>
+                                    <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
                                         <History size={14} />
                                         <span class="truncate">{t.text || "(empty prompt)"}</span>
                                         <span class="muted small">{changedLabel(t)}</span>

@@ -10,6 +10,7 @@ import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../co
 import type { Message, Usage } from "../providers/types";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
+import { defaultAccount, validAccountId } from "../providers/accounts";
 
 export { redactedJson };
 
@@ -72,6 +73,7 @@ type Line =
     | ({ t: "meta" } & SessionMeta)
     | { t: "msg"; m: Message }
     | { t: "model"; model: string }
+    | { t: "account"; provider: string; id: string }
     | { t: "fastMode"; enabled: boolean }
     | { t: "title"; title: string }
     | { t: "compact"; summary: string }
@@ -80,7 +82,7 @@ type Line =
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number }
+    | { t: "backend"; provider: string; id: string | null; synced?: number; folder?: string }
     /** This session was brought in from a Claude Code or Codex session (the first messages). */
     | ({ t: "import" } & ImportRecord)
     /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
@@ -133,6 +135,8 @@ export class Session {
     /** The speed the file has (a chat from before speeds were saved has it only in memory, until one is chosen). */
     private savedFastMode?: boolean;
     model?: string;
+    /** CLI account selections. Missing records in old sessions mean Default. */
+    accounts: Record<string, string> = {};
     title?: string;
     /** The latest compaction summary (/summary). */
     summary?: string;
@@ -145,6 +149,8 @@ export class Session {
     readonly usageRecords: { model: string; usage: Usage; cost: number; unknown: boolean }[] = [];
     /** Agent backends' own sessions, by provider. */
     backends = new Map<string, BackendSession>();
+    /** The home that owns each native thread, separate from the public resume map. */
+    private backendFolders = new Map<string, string>();
     /** How turns of the current history ended, where the messages don't say (see TurnNotice). */
     notices: TurnNotice[] = [];
     /** The Claude Code or Codex session this one was imported from. */
@@ -170,7 +176,24 @@ export class Session {
     static create(cwd: string, opts: { persist?: boolean; system?: string; strictWrites?: boolean } = {}): Session {
         const id = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${randomBytes(3).toString("hex")}`;
         const s = new Session({ id, cwd, createdAt: Date.now(), version: APP_VERSION, system: opts.system }, opts);
+        for (const provider of ["claude-code", "codex"]) s.setAccount(provider, defaultAccount(provider));
         return s;
+    }
+
+    /** A separate conversation keeps its selected homes, but cannot share a mutable native thread. */
+    fork(opts: { persist?: boolean } = {}): Session {
+        const copy = Session.create(this.meta.cwd, { persist: opts.persist, system: this.meta.system });
+        for (const provider of ["claude-code", "codex"]) copy.setAccount(provider, this.accountId(provider));
+        if (this.model) copy.setModel(this.model);
+        if (this.fastMode !== undefined) copy.setFastMode(this.fastMode);
+        if (this.title) copy.setTitle(this.title);
+        if (this.summary !== undefined) copy.compact(this.summary, []);
+        for (const message of this.messages) copy.push(structuredClone(message));
+        for (const notice of this.notices) {
+            copy.notices.push({ ...notice });
+            copy.write({ t: "notice", ...notice });
+        }
+        return copy;
     }
 
     get path(): string {
@@ -257,6 +280,19 @@ export class Session {
         this.write({ t: "model", model: ref });
     }
 
+    accountId(provider: string): string {
+        return this.accounts[provider] ?? "default";
+    }
+
+    /** A native thread belongs to one CLI home; never resume it after a home switch. */
+    setAccount(provider: string, id: string): boolean {
+        if (this.accountId(provider) === id) return false;
+        this.forgetBackendSession(provider);
+        this.accounts[provider] = id;
+        this.write({ t: "account", provider, id });
+        return true;
+    }
+
     setTitle(title: string) {
         this.title = title;
         this.write({ t: "title", title });
@@ -295,12 +331,24 @@ export class Session {
         this.write({ t: "import", ...rec });
     }
 
-    setBackendSession(provider: string, id: string, synced: number) {
+    /** A removed/re-added account or a changed Default home cannot inherit the previous home's thread. */
+    backendSession(provider: string, folder: string | undefined): BackendSession | undefined {
+        const current = this.backends.get(provider);
+        const bound = this.backendFolders.get(provider);
+        if (current && (bound ? bound !== folder : this.accountId(provider) !== "default")) {
+            this.forgetBackendSession(provider);
+            return undefined;
+        }
+        return current;
+    }
+
+    setBackendSession(provider: string, id: string, synced: number, folder = this.backendFolders.get(provider)) {
         const cur = this.backends.get(provider);
-        if (cur?.id === id && cur.synced === synced) return;
+        if (cur?.id === id && cur.synced === synced && folder === this.backendFolders.get(provider)) return;
         if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
         this.backends.set(provider, { id, synced });
-        this.write({ t: "backend", provider, id, synced });
+        if (folder) this.backendFolders.set(provider, folder);
+        this.write({ t: "backend", provider, id, synced, ...(folder ? { folder } : {}) });
     }
 
     /** A sub-agent's backend session (passed up to the session that's saved). */
@@ -313,13 +361,17 @@ export class Session {
     }
 
     forgetBackendSession(provider: string) {
+        this.backendFolders.delete(provider);
         if (!this.backends.delete(provider)) return;
         this.write({ t: "backend", provider, id: null });
     }
 
     /** A backend session that saw messages from `count` on can't continue a history cut back to `count`. */
     private dropBackendsAfter(count: number) {
-        for (const [p, b] of this.backends) if (b.synced > count) this.backends.delete(p);
+        for (const [p, b] of this.backends) if (b.synced > count) {
+            this.backends.delete(p);
+            this.backendFolders.delete(p);
+        }
     }
 
     /**
@@ -341,6 +393,7 @@ export class Session {
         this.messages = [];
         this.notices = [];
         this.backends.clear();
+        this.backendFolders.clear();
         this.summary = summary;
         this.write({ t: "compact", summary });
         for (const m of messages) this.push(m);
@@ -392,6 +445,7 @@ export class Session {
                 s.messages = [];
                 s.notices = [];
                 s.backends.clear();
+                s.backendFolders.clear();
                 s.summary = l.summary;
             }
             else if (l.t === "rewind") {
@@ -407,6 +461,16 @@ export class Session {
                 if (typeof l.provider !== "string") continue;
                 if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length });
                 else s.backends.delete(l.provider);
+                if (l.id && typeof l.folder === "string") s.backendFolders.set(l.provider, l.folder);
+                else s.backendFolders.delete(l.provider);
+            }
+            else if (l.t === "account" && (l.provider === "claude-code" || l.provider === "codex") && validAccountId(l.id)) {
+                // Also invalidate here: a torn write must never bind an old resume id to a different home.
+                if (s.accountId(l.provider) !== l.id) {
+                    s.backends.delete(l.provider);
+                    s.backendFolders.delete(l.provider);
+                }
+                s.accounts[l.provider] = l.id;
             }
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = s.savedFastMode = l.enabled;

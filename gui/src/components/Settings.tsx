@@ -12,6 +12,7 @@ import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { mod, openExternal, terminalShortcut } from "../lib/platform";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { Accounts } from "./Accounts";
 import { MODES } from "./ModePicker";
 import { CrumbSep, TitleBar } from "./Header";
 import { SidebarFrame } from "./Sidebar";
@@ -514,6 +515,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                     </Show>
                 </Show>
             </div>
+            <Show when={p.pr.agentCli?.installed}><Accounts provider={p.pr} /></Show>
             <Show when={adding()}>
                 <div class="prov-add">
                     <input class="input mono" type="password" autofocus placeholder={`Paste your ${p.pr.name} key`} value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void save()} />
