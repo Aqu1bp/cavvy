@@ -1,17 +1,19 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { Plus, RotateCw, SquareTerminal, X } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles/terminal.css";
 import { app, reportError, rpc } from "../state/app";
+import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen } from "../state/ui";
 import { basename, tildify } from "../lib/format";
 import { terminalInputChunks } from "../lib/terminal";
-import { copyText, isMod, mod } from "../lib/platform";
+import { copyText, isMod, isTerminalToggle, terminalShortcut } from "../lib/platform";
 
 interface Tab { id: string; cwd: string; number: number }
+const MAX_TABS = 12;
 
 /** Mounted while hidden: each tab keeps its emulator and shell across chat navigation. */
 export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
@@ -21,15 +23,15 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     const active = () => currentTabs().find((t) => t.id === selected()) ?? currentTabs().at(-1);
     const visible = () => terminalOpen() && !p.hidden && !!p.cwd;
     let next = 1;
+    const full = () => tabs().length >= MAX_TABS;
     const add = () => {
-        if (!p.cwd || app.conn !== "open" || tabs().length >= 12) return;
+        if (!p.cwd || app.conn !== "open" || full()) return;
         const tab = { id: crypto.randomUUID(), cwd: p.cwd, number: next++ };
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
     };
-    createEffect(() => {
-        if (visible() && !currentTabs().length && app.conn === "open" && tabs().length < 12) add();
-    });
+    // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
+    createEffect(on(terminalOpen, (open) => { if (open && !p.hidden && !currentTabs().length) add(); }, { defer: true }));
     const close = (tab: Tab) => {
         if (currentTabs().length === 1) setTerminalOpen(false);
         setTabs((all) => all.filter((t) => t !== tab));
@@ -59,11 +61,16 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                         <button class="hb sm" title="Close terminal and stop its shell" aria-label={`Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
-                <button class="hb sm" title="New terminal" aria-label="New terminal" disabled={app.conn !== "open" || tabs().length >= 12} onClick={add}><Plus size={15} /></button>
+                <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={app.conn !== "open" || full()} onClick={add}><Plus size={15} /></button>
                 <span class="terminal-cwd truncate" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
-                <button class="hb sm" title={`Hide terminal (${mod}+\`)`} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><X size={15} /></button>
+                <button class="hb sm" title={`Hide terminal (${terminalShortcut})`} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><X size={15} /></button>
             </div>
-            <Show when={!currentTabs().length}><div class="terminal-message">Close an existing terminal to open one here (12 per window).</div></Show>
+            <Show when={!currentTabs().length}>
+                <div class="terminal-message">
+                    <span>{full() ? `${MAX_TABS} terminals are open in this window, some in other projects. Close one to open a terminal here.` : app.conn !== "open" ? "Not connected to the harness server." : "No terminal in this project."}</span>
+                    <Show when={!full()}><button class="btn secondary sm" disabled={app.conn !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
+                </div>
+            </Show>
             <For each={tabs()}>{(tab) => <TerminalScreen tab={tab} visible={visible() && active()?.id === tab.id} />}</For>
         </section>
     );
@@ -77,6 +84,25 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
     let opened = false;
     let id = p.tab.id;
     let fitting = 0;
+    // Flow control: the server holds output back until what it sent has been drawn.
+    let drawn = 0;
+    let acking: ReturnType<typeof setTimeout> | undefined;
+    const ack = () => {
+        clearTimeout(acking);
+        acking = undefined;
+        const chars = drawn;
+        drawn = 0;
+        // The server knows the shell before it sends any output, and ignores acks for one that has gone.
+        if (chars && app.conn === "open") void rpc.call("terminal.ack", { id, chars }).catch(() => {});
+    };
+    const restart = () => {
+        clearTimeout(acking);
+        acking = undefined;
+        drawn = 0;
+        id = crypto.randomUUID();
+        term.reset();
+        void start();
+    };
     const [ended, setEnded] = createSignal<string>();
     const fitNow = () => {
         if (disposed || !p.visible || !container?.clientHeight || !term) return;
@@ -109,7 +135,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
         term.attachCustomKeyEventHandler((e) => {
             // Leave the app's toggle and clipboard shortcuts to their owners.
-            if (isMod(e) && e.code === "Backquote") return false;
+            if (isTerminalToggle(e)) return false;
             if (isMod(e) && e.key.toLowerCase() === "c" && term.hasSelection()) {
                 if (e.type === "keydown") void copyText(term.getSelection());
                 return false;
@@ -119,10 +145,19 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         const input = term.onData((data) => {
             if (!opened || ended() || app.conn !== "open") return;
             // A pasted command may exceed one RPC's input limit. Preserve order.
-            for (const chunk of terminalInputChunks(data)) void rpc.call("terminal.write", { id, data: chunk }).catch(reportError);
+            // Typed as the shell exits: it's gone, which the exit message says.
+            for (const chunk of terminalInputChunks(data)) void rpc.call("terminal.write", { id, data: chunk }).catch((e) => { if (!(e instanceof RpcError && e.code === "terminal_not_open")) reportError(e); });
         });
         const off = rpc.onEvent((e) => {
-            if (e.type === "terminal.data" && e.id === id) term.write(e.data);
+            if (e.type === "terminal.data" && e.id === id) {
+                const shell = id;
+                term.write(e.data, () => {
+                    if (disposed || shell !== id) return;
+                    drawn += e.data.length;
+                    if (drawn >= 65_536) ack();
+                    else acking ??= setTimeout(ack, 30);
+                });
+            }
             if (e.type === "terminal.exit" && e.id === id) { opened = false; setEnded(`Shell exited (${e.exitCode})`); }
         });
         const stateOff = rpc.onState((state) => {
@@ -133,6 +168,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         void start();
         onCleanup(() => {
             disposed = true;
+            clearTimeout(acking);
             cancelAnimationFrame(fitting);
             observer.disconnect();
             themeObserver.disconnect();
@@ -144,6 +180,6 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
     createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); term.focus(); } }); });
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
         <div class="terminal-emulator" ref={container} />
-        <Show when={ended()}><div class="terminal-message"><span>{ended()}</span><button class="btn secondary sm" disabled={app.conn !== "open"} onClick={() => { id = crypto.randomUUID(); term.reset(); void start(); }}><RotateCw size={12} /> Restart shell</button></div></Show>
+        <Show when={ended()}><div class="terminal-message"><span>{ended()}</span><button class="btn secondary sm" disabled={app.conn !== "open"} onClick={restart}><RotateCw size={12} /> Restart shell</button></div></Show>
     </div>;
 }

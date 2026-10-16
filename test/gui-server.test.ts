@@ -235,6 +235,26 @@ describe("connecting", () => {
         expect(rt.idle).toBe(true);
     }
 
+    test("a new chat saves its speed; an older chat without one gets the default without being written to", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "first prompt" });
+            await whenIdle(rt);
+            await engine.handle(c, "session.close", { id });
+            const file = findSessionAnywhere(id)!;
+            const lines = readFileSync(file, "utf8").split("\n");
+            expect(lines.some((l) => l.includes('"t":"fastMode"'))).toBe(true);
+            // As saved before speeds were.
+            const older = lines.filter((l) => !l.includes('"t":"fastMode"')).join("\n");
+            writeFileSync(file, older);
+            rt.ws.settings.fastMode = true;
+            await engine.handle(c, "session.open", { id });
+            expect(engine.runtimes.get(id)!.session.fastMode).toBe(true);
+            expect(readFileSync(file, "utf8")).toBe(older);
+        } finally { delete rt.ws.settings.fastMode; await engine.stop(); }
+    });
+
     test("a message waiting for a model switch when the server stops isn't run", async () => {
         const { engine, c, cwd, id } = await engineWithSession();
         const switched = engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
@@ -977,6 +997,10 @@ describe("sub-agents", () => {
 });
 
 describe("terminal WebSocket transport", () => {
+    // A plain shell with an empty home: none of the user's own startup files run.
+    const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
+    beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("terminal-home-"); });
+    afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
     test("streams only to its owning window and closes the shell on disconnect", async () => {
         const a = await client(); const b = await client();
         const id = "transport-terminal";

@@ -55,8 +55,9 @@ beforeEach(() => {
     cwd = `${real}-link`;
     symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
+    rmSync(LOG + ".tiers.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_FAST_MODE_END", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -177,7 +178,7 @@ describe("agent providers", () => {
         // Default first; hidden ones left out.
         expect(codex.models.map((m) => m.id)).toEqual(["gpt-test", "gpt-other"]);
         expect(codex.models[0]!.effortLevels).toEqual(["low", "high"]);
-        expect(codex.models[0]!.fastModeTier).toBe("fast");
+        expect(codex.models[0]!.fastModeTier).toBe("priority");
         expect(codex.models[1]!.supportsFastMode).toBe(false);
     });
 
@@ -945,6 +946,31 @@ describe("backend sessions in the session file", () => {
 
 
 describe("fast mode backend wiring", () => {
+    test("codex: standard takes a thread off a fast tier (an earlier fast turn, or Codex's own config), and leaves flex alone", async () => {
+        for (const [env, tier, want] of [["FAKE_THREAD_TIER", "priority", null], ["FAKE_THREAD_TIER", "fast", null], ["FAKE_THREAD_TIER", "flex", undefined], ["FAKE_CONFIG_TIER", "priority", null]] as const) {
+            delete process.env.FAKE_THREAD_TIER;
+            delete process.env.FAKE_CONFIG_TIER;
+            rmSync(LOG + ".tiers.json", { force: true });
+            process.env[env] = tier;
+            const { run, session } = await makeAgent({ provider: "codex", model: { supportsFastMode: true, fastModeTier: "priority" }, settings: { fastMode: false } });
+            if (env === "FAKE_THREAD_TIER") session.setBackendSession("codex", "thr-old", 0);
+            await run("hello");
+            const turn = received().filter((m) => m.method === "turn/start").at(-1);
+            if (want === null) expect(turn.params.serviceTier).toBeNull();
+            else expect("serviceTier" in turn.params).toBe(false);
+        }
+    });
+
+    test("codex: fast, then standard in the same session, ends with the thread back on standard", async () => {
+        const { run, session } = await makeAgent({ provider: "codex", model: { supportsFastMode: true, fastModeTier: "priority" }, settings: { fastMode: true } });
+        await run("fast one");
+        session.setFastMode(false);
+        await run("standard one");
+        const turns = received().filter((m) => m.method === "turn/start");
+        expect(turns[0].params.serviceTier).toBe("priority");
+        expect(turns.at(-1).params.serviceTier).toBeNull();
+    });
+
     test("a final fast-mode cooldown does not erase earlier paid credit usage", async () => {
         process.env.FAKE_FAST_MODE_END = "cooldown";
         const { run, session, events } = await makeAgent({ provider: "claude-code", model: { supportsFastMode: true }, settings: { fastMode: true } });
@@ -954,13 +980,19 @@ describe("fast mode backend wiring", () => {
     });
     for (const provider of ["claude-code", "codex"] as const) {
         for (const supported of [true, false]) test(`${provider}: fast mode ${supported ? "is requested" : "is gated"} without changing effort`, async () => {
-            const { run } = await makeAgent({ provider, model: { id: "default", supportsFastMode: supported, fastModeTier: "fast", effortLevels: ["high"] }, settings: { fastMode: true, effort: "high" } });
+            const { run } = await makeAgent({ provider, model: { id: "default", supportsFastMode: supported, fastModeTier: "priority", effortLevels: ["high"] }, settings: { fastMode: true, effort: "high" } });
             await run("hello");
             if (provider === "codex") {
                 const thread = received().find((m) => m.method === "thread/start");
                 const turn = received().find((m) => m.method === "turn/start");
-                expect(thread.params.serviceTier).toBe(supported ? "fast" : "default");
-                expect(turn.params.serviceTier).toBe(supported ? "fast" : "default");
+                // Without fast, nothing is sent: a Codex from before "default" was a tier name would refuse it.
+                if (supported) {
+                    expect(thread.params.serviceTier).toBe("priority");
+                    expect(turn.params.serviceTier).toBe("priority");
+                } else {
+                    expect("serviceTier" in thread.params).toBe(false);
+                    expect("serviceTier" in turn.params).toBe(false);
+                }
                 expect(turn.params.effort).toBe("high");
             } else {
                 const a = starts()[0]!.argv as string[];
@@ -969,13 +1001,13 @@ describe("fast mode backend wiring", () => {
             }
         });
         test(`${provider}: explicit standard session overrides fast default and resume`, async () => {
-            const { run, session } = await makeAgent({ provider, model: { supportsFastMode: true, fastModeTier: "fast" }, settings: { fastMode: true } });
+            const { run, session } = await makeAgent({ provider, model: { supportsFastMode: true, fastModeTier: "priority" }, settings: { fastMode: true } });
             session.setFastMode(false);
             await run("hello");
             await run("again");
             if (provider === "codex") {
-                expect(received().filter((m) => m.method === "turn/start").every((m) => m.params.serviceTier === "default")).toBe(true);
-                expect(received().find((m) => m.method === "thread/resume").params.serviceTier).toBe("default");
+                expect(received().filter((m) => m.method === "turn/start").every((m) => !("serviceTier" in m.params))).toBe(true);
+                expect("serviceTier" in received().find((m) => m.method === "thread/resume").params).toBe(false);
             } else {
                 for (const { argv: a } of starts()) expect(JSON.parse(a[a.indexOf("--settings") + 1]).fastMode).toBe(false);
             }

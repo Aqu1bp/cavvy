@@ -33,6 +33,8 @@ describe("fast mode capabilities", () => {
         for (const id of ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-4-6", "claude-opus-4-7"]) expect(apiFastModeInfo("anthropic", id, "https://api.anthropic.com").supportsFastMode).toBeUndefined();
     });
     test("Codex current catalog is authoritative, with conservative legacy fallback", () => {
+        // Codex 0.163's catalog: the fast tier is "priority", with "fast" kept as an extra name.
+        expect(codexFastTier({ serviceTiers: [{ id: "priority" }], additionalSpeedTiers: ["fast"] })).toBe("priority");
         expect(codexFastTier({ serviceTiers: [{ id: "fast" }] })).toBe("fast");
         expect(codexFastTier({ additionalSpeedTiers: ["fast"] })).toBe("fast");
         expect(codexFastTier({ serviceTiers: [], additionalSpeedTiers: ["fast"] })).toBeUndefined();
@@ -45,7 +47,7 @@ describe("fast mode capabilities", () => {
 });
 
 describe("fast service requests and actual billing tier", () => {
-    test("OpenAI sends fast/default, keeps effort, and records a provider downgrade", async () => {
+    test("OpenAI asks for fast only when on (the project's own tier otherwise), keeps effort, and records a provider downgrade", async () => {
         const original = globalThis.fetch;
         const bodies: any[] = [];
         let served = "fast";
@@ -65,17 +67,19 @@ describe("fast service requests and actual billing tier", () => {
             const downgraded = await p.stream(r, () => {});
             expect(downgraded.usage?.fastMode).toBe(false);
             await p.stream({ ...r, fastMode: false }, () => {});
-            expect(bodies[2].service_tier).toBe("default");
+            expect("service_tier" in bodies[2]).toBe(false);
             await p.stream({ ...r, model: { ...r.model, id: "unknown", supportsFastMode: false } }, () => {});
-            expect(bodies[3].service_tier).toBe("default");
+            expect("service_tier" in bodies[3]).toBe(false);
         } finally { globalThis.fetch = original; }
     });
-    test("Anthropic sends speed independently of effort and bills actual speed", async () => {
+    test("Anthropic asks for fast (with its beta) only when on, independently of effort, and bills actual speed", async () => {
         const original = globalThis.fetch;
         const bodies: any[] = [];
+        const betas: string[] = [];
         const event = (type: string, rest: any) => `event: ${type}\ndata: ${JSON.stringify({ type, ...rest })}\n\n`;
         globalThis.fetch = (async (_url: any, opts: any) => {
             const body = JSON.parse(opts.body); bodies.push(body);
+            betas.push(new Headers(opts.headers).get("anthropic-beta") ?? "");
             return new Response([
                 event("message_start", { message: { id: "msg1", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 1, speed: body.speed ?? "standard" } } }),
                 event("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 10 } }), event("message_stop", {}),
@@ -86,13 +90,19 @@ describe("fast service requests and actual billing tier", () => {
             const r = request("anthropic", "claude-opus-5-5", true);
             const fast = await p.stream(r, () => {});
             expect(bodies[0].speed).toBe("fast");
+            expect(betas[0]).toContain("fast-mode-2026-02-01");
             expect(bodies[0].output_config.effort).toBe("high");
             expect(fast.usage?.fastMode).toBe(true);
             expect(costOf(fast.usage!, r.model).usd).toBeCloseTo(0.0012);
             await p.stream({ ...r, fastMode: false }, () => {});
-            expect(bodies[1].speed).toBe("standard");
+            expect("speed" in bodies[1]).toBe(false);
+            expect(betas[1]).not.toContain("fast-mode");
+            await p.stream(request("anthropic", "claude-opus-4-8", true), () => {});
+            expect(bodies[2].speed).toBe("fast");
+            expect(betas[2]).toContain("fast-mode-2026-02-01");
             await p.stream(request("anthropic", "claude-sonnet-5-5", true), () => {});
-            expect(bodies[2].speed).toBeUndefined();
+            expect("speed" in bodies[3]).toBe(false);
+            expect(betas[3]).not.toContain("fast-mode");
         } finally { globalThis.fetch = original; }
     });
 });

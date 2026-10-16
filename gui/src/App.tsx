@@ -4,7 +4,7 @@ import { app, attentionCount, dismissToast, handleFor, toasts, type SessionHandl
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
-import { isMod, isTauri, os } from "./lib/platform";
+import { isMod, isTauri, isTerminalToggle, os } from "./lib/platform";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -152,9 +152,9 @@ export function App() {
     // Global shortcuts.
     onMount(() => {
         const onKey = (e: KeyboardEvent) => {
+            if (isTerminalToggle(e) && !document.querySelector(".dialog-backdrop")) return e.preventDefault(), setTerminalOpen(!terminalOpen());
             if (isMod(e) && !e.altKey) {
                 const k = e.key.toLowerCase();
-                if (e.code === "Backquote" && !document.querySelector(".dialog-backdrop")) return e.preventDefault(), setTerminalOpen(!terminalOpen());
                 if ((e.target as HTMLElement)?.closest(".terminal-emulator")) return;
                 if (k === "k") return e.preventDefault(), setPaletteOpen(!paletteOpen());
                 if (k === ",") return e.preventDefault(), setSettingsTab(settingsTab() ? undefined : "general");

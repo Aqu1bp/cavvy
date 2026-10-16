@@ -102,6 +102,7 @@ async function resolveModel(ref: string) {
     const provider = ref.slice(0, i);
     const id = ref.slice(i + 1);
     if (provider === "gemini" && ["gemini-test", "gemini-other"].includes(id)) return { model: { ...GEMINI, id }, client: childClient as any };
+    if (provider === "gemini" && id === "gemini-fast") return { model: { ...GEMINI, id, supportsFastMode: true }, client: childClient as any };
     if (provider === "codex") return { model: { provider: "codex", id }, client: await clientFor("codex") };
     if (provider === "claude-code") return { model: { provider: "claude-code", id }, client: await clientFor("claude-code") };
     return undefined;
@@ -664,6 +665,28 @@ describe("Claude Code as the main agent", () => {
         expect(text).not.toContain("claude-code:default");
     });
 
+    test("a background task follows the session's speed when it changes", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Look around", description: "Look", model: "gemini:gemini-fast", agent: "explore", wait: false } }]);
+        const g = gate();
+        script = async (req, n) => {
+            if (n > 1) return say("Done.");
+            await g.wait(req.signal);
+            return use("g1", "Glob", { pattern: "*" });
+        };
+        listings = listings.map((l) => (l.provider.id === "gemini" ? listing("gemini", ["gemini-test", "gemini-fast"]) : l));
+        const { run, agent, session } = await makeAgent({ provider: "claude-code", model: { supportsFastMode: true }, settings: { fastMode: false } });
+        session.setFastMode(true);
+        expect(await run("start")).toBe("done");
+        expect(mcpResults()[0].text).toStartWith("Started task task-1");
+        await until(() => childRequests.length === 1);
+        session.setFastMode(false);
+        g.open();
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks[0]!.status).toBe("done");
+        expect(childRequests.map((r) => r.fastMode)).toEqual([true, false]);
+    });
+
     test("a background task's result comes with the next prompt", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Review the code", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
@@ -1123,6 +1146,23 @@ describe("harness models", () => {
         expect(bad.result.isError).toBe(true);
         expect(bad.result.content).toContain("Can't run a sub-agent on nope:x");
         expect(session.usageByModel.get("gemini:gemini-test")?.usage.inputTokens).toBe(100);
+    });
+
+    test("a sub-agent runs at its session's speed (not the default for new chats) where its model has fast mode", async () => {
+        const mainRequests: ChatRequest[] = [];
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const steps = [
+            main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Fast one", prompt: "a", model: "gemini:gemini-fast", subagent_type: "explore" } }], "tool_use"),
+            main([{ type: "tool_call", id: "t2", name: "Task", input: { description: "Standard one", prompt: "b", model: "gemini:gemini-test", subagent_type: "explore" } }], "tool_use"),
+            main([{ type: "text", text: "ok" }]),
+        ];
+        const client = { stream: async (req: ChatRequest) => (mainRequests.push(req), steps[mainRequests.length - 1]), listModels: async () => [] };
+        const { run, session } = await makeAgent({ provider: "anthropic", model: { id: "claude-main", supportsFastMode: true }, client, settings: { fastMode: false } });
+        session.setFastMode(true);
+        expect(await run("go")).toBe("done");
+        expect(mainRequests.map((r) => r.fastMode)).toEqual([true, true, true]);
+        // Fast where the sub-agent's model has it; standard on one without.
+        expect(childRequests.map((r) => [r.model.id, r.fastMode])).toEqual([["gemini-fast", true], ["gemini-test", false]]);
     });
 
     test("a harness model gets no MCP server: delegation is its Task tool", async () => {

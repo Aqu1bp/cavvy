@@ -4,6 +4,8 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { Terminals } from "./terminals";
+import { RpcError } from "./rpc-error";
+export { RpcError };
 import { readdirSync, statSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir, hostname, userInfo } from "os";
@@ -68,15 +70,6 @@ export interface EngineClient {
     subs: Set<string>;
 }
 
-/** A request the GUI got wrong, or one that needs the user first. */
-export class RpcError extends Error {
-    constructor(
-        message: string,
-        readonly code?: string,
-    ) {
-        super(message);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The GUI's own state: recent projects, pinned, settled and archived sessions.
@@ -678,6 +671,9 @@ export class Engine {
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
                 this.terminals.write(client, str(p.id, "id"), str(p.data, "data"));
+                return null;
+            case "terminal.ack":
+                this.terminals.ack(client, str(p.id, "id"), p.chars);
                 return null;
             case "terminal.resize":
                 this.terminals.resize(client, str(p.id, "id"), p.cols, p.rows);

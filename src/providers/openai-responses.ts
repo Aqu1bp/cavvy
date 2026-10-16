@@ -128,9 +128,8 @@ export class OpenAIResponsesProvider implements ProviderClient {
             stream: true,
             input: toResponsesInput(req.messages, def, m.id),
         };
-        if (def.id === "openai" && new URL(this.base).hostname === "api.openai.com") {
-            body.service_tier = req.fastMode && m.supportsFastMode && apiFastModeInfo(def.id, m.id, this.base).supportsFastMode ? "fast" : "default";
-        }
+        // Left out, the project's own tier applies (auto); "default" would override it, so only fast is asked for.
+        if (req.fastMode && m.supportsFastMode && def.id === "openai" && apiFastModeInfo(def.id, m.id, this.base).supportsFastMode) body.service_tier = "fast";
         if (req.system) body.instructions = req.system;
         if (req.tools.length) {
             body.tools = req.tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: false }));

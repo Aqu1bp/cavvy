@@ -153,7 +153,11 @@ export class Runtime {
     ) {
         this.session = session;
         // Capture new-session defaults so changing Home settings cannot change an open chat’s speed.
-        if (session.fastMode === undefined) session.setFastMode(Boolean(ws.settings.fastMode));
+        // A chat from before speeds were saved keeps it in memory: opening one doesn't write to it.
+        if (session.fastMode === undefined) {
+            if (opts.resumed) session.fastMode = Boolean(ws.settings.fastMode);
+            else session.setFastMode(Boolean(ws.settings.fastMode));
+        }
         this.mode = opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
         if (this.mode === "bypassPermissions" && !this.bypassAllowed()) this.mode = "default";
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map() };

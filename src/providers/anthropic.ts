@@ -186,9 +186,10 @@ export class AnthropicProvider implements ProviderClient {
             tools: tools.length ? tools : undefined,
             stream: true,
         };
-        if (this.official && m.supportsFastMode && apiFastModeInfo(this.def.id, m.id, resolveBaseUrl(this.def)).supportsFastMode) {
-            params.speed = req.fastMode ? "fast" : "standard";
-            if (req.fastMode && !/^claude-opus-5-5(?:-|$)/.test(m.id)) betas.push("fast-mode-2026-02-01");
+        // Standard is what the API runs when speed is left out, so only fast is asked for (and it needs the beta on every model).
+        if (req.fastMode && this.official && m.supportsFastMode && apiFastModeInfo(this.def.id, m.id, resolveBaseUrl(this.def)).supportsFastMode) {
+            params.speed = "fast";
+            betas.push("fast-mode-2026-02-01");
         }
         if (!req.lightweight) params.cache_control = { type: "ephemeral" };
 

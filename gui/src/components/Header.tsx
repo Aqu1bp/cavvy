@@ -8,7 +8,7 @@ import { app, reportError, rpc, toast } from "../state/app";
 import { archive, exportSession, newSession, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, setRewindOpen } from "../state/ui";
-import { copyText, isTauri, mod, os } from "../lib/platform";
+import { copyText, isTauri, mod, os, terminalShortcut } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { Monogram } from "./Sidebar";
 import { Popover } from "./ui/Popover";
@@ -68,7 +68,7 @@ export function Header(p: { handle?: SessionHandle }) {
         <TitleBar
             end={
                 <>
-                    <button class={`hb ${terminalOpen() ? "on" : ""}`} title={`Toggle terminal (${mod}+\`)`} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}><SquareTerminal size={16} /></button>
+                    <button class={`hb ${terminalOpen() ? "on" : ""}`} title={`Toggle terminal (${terminalShortcut})`} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}><SquareTerminal size={16} /></button>
                     <Show when={st()}>
                         <button class={`hb ${prefs.panel ? "on" : ""}`} title={`Toggle panel (${mod}+.)`} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
                             <PanelRight size={16} />

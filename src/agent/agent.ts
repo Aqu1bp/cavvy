@@ -176,6 +176,8 @@ export interface AgentOptions {
     parentRequests?: () => Pick<ReviewContext, "requests" | "summary">;
     /** Sub-agents: the task the parent gave it. */
     delegatedTask?: string;
+    /** Sub-agents: the parent session's speed choice, read each request (a background task follows a later change). */
+    parentFastMode?: () => boolean | undefined;
     /** The model catalog as the host last listed it (local servers aren't cached); the cache by default. */
     listings?: () => ProviderListing[];
 }
@@ -334,6 +336,11 @@ export class Agent {
         return this.tools.map(toSchema);
     }
 
+    /** Fast mode as chosen for this session (a sub-agent's is its parent's); whether the model has it is checked by the caller. */
+    private fastModeChoice(): boolean | undefined {
+        return this.o.parentFastMode ? this.o.parentFastMode() : (this.session.fastMode ?? this.o.settings().fastMode);
+    }
+
     private request(messages: Message[], signal: AbortSignal, extra: Partial<ChatRequest> = {}): ChatRequest {
         const s = this.o.settings();
         return {
@@ -343,7 +350,7 @@ export class Agent {
             tools: this.toolSchemas(),
             maxTokens: s.maxOutputTokens,
             effort: s.effort,
-            fastMode: Boolean((this.session.fastMode ?? s.fastMode) && this.model.supportsFastMode),
+            fastMode: Boolean(this.fastModeChoice() && this.model.supportsFastMode),
             showThinking: s.showThinking,
             signal,
             webSearch: this.o.nativeWebSearch,
@@ -696,7 +703,7 @@ export class Agent {
             model: this.model,
             mode: this.o.mode.get(),
             effort: s.effort,
-            fastMode: Boolean((this.session.fastMode ?? s.fastMode) && this.model.supportsFastMode),
+            fastMode: Boolean(this.fastModeChoice() && this.model.supportsFastMode),
             appendSystemPrompt: this.o.appendSystemPrompt,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.
@@ -1484,6 +1491,8 @@ export class Agent {
             isSubagent: true,
             parentRequests: () => this.requestContext(),
             delegatedTask: req.prompt,
+            // At the parent session's speed, on its own model if that one has fast mode.
+            parentFastMode: () => this.fastModeChoice(),
             subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
             // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and the harness refuses).

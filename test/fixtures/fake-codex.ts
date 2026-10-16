@@ -26,11 +26,13 @@
 // FAKE_REJECT_CONFIG=1  thread/start and thread/resume fail when given config, like a Codex that can't parse it
 // FAKE_HANG_INIT=1    never answers initialize, and ignores SIGTERM
 // FAKE_PERMS          the permissions the "perms" scenario asks for (JSON)
+// FAKE_THREAD_TIER     the service tier a resumed thread is already on (e.g. priority from an earlier turn);
+// FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 
-import { appendFileSync, existsSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
 
@@ -60,6 +62,14 @@ const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
 const pending = new Map<number, (r: any) => void>();
 let serverSeq = 100;
 let turnSeq = 0;
+/** Each thread's service tier, as Codex keeps it ("priority", "flex", or null for standard). */
+// Codex keeps a thread's tier with the thread, so it outlives this process: kept beside the log.
+const tierFile = process.env.FAKE_LOG ? process.env.FAKE_LOG + ".tiers.json" : undefined;
+const tiers = new Map<string, string | null>(tierFile && existsSync(tierFile) ? Object.entries(JSON.parse(readFileSync(tierFile, "utf8"))) : []);
+const setTier = (id: string, tier: unknown) => {
+    tiers.set(id, typeof tier === "string" ? tier : null);
+    if (tierFile) writeFileSync(tierFile, JSON.stringify(Object.fromEntries(tiers)));
+};
 let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void } | undefined;
 /** MCP servers from the thread's config, connected at thread start. */
 const mcpServers = new Map<string, McpServerRef>();
@@ -211,19 +221,25 @@ async function handle(m: any) {
                 data: [
                     { id: "gpt-hidden", model: "gpt-hidden", displayName: "Hidden", hidden: true, isDefault: false, supportedReasoningEfforts: [], inputModalities: ["text"] },
                     { id: "gpt-other", model: "gpt-other", displayName: "Other", hidden: false, isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: "low" }], inputModalities: ["text"] },
-                    { serviceTiers: [{ id: "fast", name: "Fast", description: "Fast service" }], id: "gpt-test", model: "gpt-test", displayName: "GPT Test", hidden: false, isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }], inputModalities: ["text", "image"] },
+                    // As Codex 0.163 lists it: the tier is "priority", the legacy field still says "fast".
+                    { serviceTiers: [{ id: "priority", name: "Fast", description: "Fast service" }], additionalSpeedTiers: ["fast"], defaultServiceTier: null, id: "gpt-test", model: "gpt-test", displayName: "GPT Test", hidden: false, isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }], inputModalities: ["text", "image"] },
                 ],
                 nextCursor: null,
             });
         case "thread/start":
             await startMcp(p.config);
-            return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test" });
+            setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
+            return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? null });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
             await startMcp(p.config);
-            return reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test" });
+            if (!tiers.has(p.threadId)) setTier(p.threadId, process.env.FAKE_THREAD_TIER ?? null);
+            if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
+            return reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(p.threadId) ?? null });
         case "turn/start": {
+            // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
+            if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
             const turnId = `turn-${++turnSeq}`;
             if (process.env.FAKE_SLOW_TURN_START && turnSeq === 1) await Bun.sleep(Number(process.env.FAKE_SLOW_TURN_START));
             reply({ turn: { id: turnId, status: "inProgress" } });

@@ -6,7 +6,7 @@ import { archive, chooseProject, exportSession, newSession, openProject, openRev
 import { setPrefs, THEMES } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
-import { mod } from "../lib/platform";
+import { mod, terminalShortcut } from "../lib/platform";
 import { ModeIcon, MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
 
@@ -57,7 +57,7 @@ export function CommandPalette() {
             },
             { id: "model", section: "Actions", label: "Switch model…", hint: `${mod} /`, icon: <Sparkles size={15} />, run: () => setModelPickerOpen(true) },
             { id: "sidebar", section: "Actions", label: "Toggle sidebar", hint: `${mod} B`, icon: <PanelLeft size={15} />, run: toggleSidebar },
-            { id: "terminal", section: "Actions", label: "Toggle terminal", hint: `${mod} \``, icon: <SquareTerminal size={15} />, run: () => setTerminalOpen(!terminalOpen()) },
+            { id: "terminal", section: "Actions", label: "Toggle terminal", hint: terminalShortcut.replace("+", " "), icon: <SquareTerminal size={15} />, run: () => setTerminalOpen(!terminalOpen()) },
             { id: "panel", section: "Actions", label: "Toggle side panel", hint: `${mod} .`, icon: <PanelRight size={15} />, run: () => togglePanel() },
             { id: "settings", section: "Actions", label: "Settings", hint: `${mod} ,`, icon: <Settings size={15} />, run: () => setSettingsTab("general") },
             { id: "providers", section: "Actions", label: "Add an API key…", keywords: "providers login keys", icon: <Settings size={15} />, run: () => setSettingsTab("providers") },

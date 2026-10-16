@@ -497,6 +497,8 @@ export interface HelloResult {
 export interface Methods {
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
+    /** The window has drawn this many characters of the terminal's output (flow control). */
+    "terminal.ack": { params: { id: string; chars: number }; result: null };
     "terminal.resize": { params: { id: string; cols: number; rows: number }; result: null };
     "terminal.close": { params: { id: string }; result: null };
     hello: { params: { client?: string }; result: HelloResult };
