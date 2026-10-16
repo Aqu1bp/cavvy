@@ -665,9 +665,25 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
 const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
 // .claude/ too, but see claudeConfigIn.
 const CLAUDE_DIR = /(^|[\s'"=:/])\.claude(?=$|[/\s'";|&)>])/gi;
-const WORKTREE = /^\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/i;
-/** What could lead a path back up out of a folder: a `..`, a pattern that could match one (`.*`), or an expansion. */
-const CLIMBS = /(^|[/\s'"=:])\.(\.|[^/\s'"]*[*?[])|[$`]/;
+const WORKTREE = /\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/iy;
+
+/**
+ * Could something in the text lead a path back up out of a folder: a `..`, a
+ * pattern that could match one (`.*`), or an expansion? A name starts at a
+ * separator, `=` or `:`, and runs to the next separator. In one pass, so a
+ * long command can't make it slow.
+ */
+function climbs(text: string): boolean {
+    if (/[$`]/.test(text)) return true;
+    for (const chunk of text.split(/[/\s'"]/)) {
+        const lastPattern = Math.max(chunk.lastIndexOf("*"), chunk.lastIndexOf("?"), chunk.lastIndexOf("["));
+        for (let i = 0; i < chunk.length; i++) {
+            if (chunk[i] !== "." || (i > 0 && chunk[i - 1] !== "=" && chunk[i - 1] !== ":")) continue;
+            if (chunk[i + 1] === "." || i < lastPattern) return true;
+        }
+    }
+    return false;
+}
 
 /**
  * Does the text name something in a .claude/ folder? Not what's in a Claude
@@ -680,10 +696,11 @@ const CLIMBS = /(^|[/\s'"=:])\.(\.|[^/\s'"]*[*?[])|[$`]/;
  * isn't like the config's.
  */
 function claudeConfigIn(text: string): boolean {
-    const climbs = CLIMBS.test(text);
+    let climbing: boolean | undefined;
     for (const m of text.matchAll(CLAUDE_DIR)) {
-        const w = text.slice(m.index + m[0].length).match(WORKTREE);
-        if (!w || climbs) return true;
+        WORKTREE.lastIndex = m.index + m[0].length;
+        const w = WORKTREE.exec(text);
+        if (!w || (climbing ??= climbs(text))) return true;
         const name = w[1]!;
         if (name === "." || name === ".." || spellings(name).some((n) => /^\.(harness|claude|codex|git|mcp\.json)$/.test(n))) return true;
     }

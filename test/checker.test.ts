@@ -763,6 +763,11 @@ describe("Bash", () => {
         const { configTarget } = await import("../src/permissions/bash-safety");
         expect(configTarget("cd .claude/worktrees/feature && bun test")).toBeUndefined();
         expect(configTarget("cd .claude/worktrees/feature && cp x ../../settings.json")).toBeDefined();
+        // Linear in the command's length: long text full of `:.` or worktree paths stays quick.
+        const started = performance.now();
+        configTarget(`git commit -m ${JSON.stringify("a:.".repeat(50000))}`);
+        configTarget("cp " + ".claude/worktrees/x/a ".repeat(10000) + "out");
+        expect(performance.now() - started).toBeLessThan(2000);
     });
 });
 
