@@ -1,3 +1,5 @@
+import { isMod } from "./platform";
+
 /** Shared navigation for action menus and searchable picker panels. */
 export function menuIndex(length: number, current: number, key: string): number {
     if (!length) return -1;
@@ -68,7 +70,7 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
         }
         // The palette is the one global shortcut allowed through. Close first so
         // its focus restoration cannot later land in a stale menu.
-        if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+        if (isMod(e) && !e.altKey && e.key.toLowerCase() === "k") {
             behavior.close();
             return;
         }

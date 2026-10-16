@@ -1,5 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { menuIndex, menuTypeahead, mountMenu, rowMenuKey } from "../gui/src/lib/menu";
+import { os } from "../gui/src/lib/platform";
+
+const paletteModifier = os === "macos" ? { metaKey: true } : { ctrlKey: true };
+const otherModifier = os === "macos" ? { ctrlKey: true } : { metaKey: true };
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -144,10 +148,35 @@ test("global shortcuts stay inside the menu except the command palette", () => {
     expect(legacyIme.defaultPrevented).toBe(false);
     expect(legacyIme.stopped).toBe(true);
     expect(f.closes).toBe(0);
-    expect(f.key("k", { metaKey: true }).stopped).toBe(false);
+    expect(f.key("k", paletteModifier).stopped).toBe(false);
     expect(f.closes).toBe(1);
     expect(f.doc.activeElement).toBe(f.trigger);
 });
+
+for (const kind of ["menu", "dialog"] as const) {
+    test(`${kind}: only the platform palette shortcut dismisses the panel`, () => {
+        const f = fixture(kind); f.tick();
+        const focused = f.doc.activeElement;
+        // On macOS Ctrl+K is native kill-line editing in the model search field.
+        // On other platforms Meta+K likewise is not App's palette shortcut.
+        const edit = f.key("k", otherModifier);
+        expect(f.closes).toBe(0);
+        expect(f.doc.activeElement).toBe(focused);
+        expect(edit.defaultPrevented).toBe(false);
+        expect(edit.stopped).toBe(true);
+
+        const alt = f.key("k", { ...paletteModifier, altKey: true });
+        expect(f.closes).toBe(0);
+        expect(alt.defaultPrevented).toBe(false);
+        expect(alt.stopped).toBe(true);
+
+        const palette = f.key("k", paletteModifier);
+        expect(f.closes).toBe(1);
+        expect(f.doc.activeElement).toBe(f.trigger);
+        expect(palette.defaultPrevented).toBe(false);
+        expect(palette.stopped).toBe(false);
+    });
+}
 
 test("closing before the focus frame cancels stale focus; dismissal preserves another focused control", () => {
     const f = fixture(); f.dispose();
