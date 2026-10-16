@@ -104,7 +104,7 @@ test("a plan cannot be approved during handoff and interruption prevents startin
     const pause = new Promise<void>((resolve) => { release = resolve; });
     const source = {
         id: "source", ws: { cwd: iso.home },
-        session: { model: "test/model" },
+        session: { model: "test/model", accountId: () => "default" },
         planText: () => ({ id: "plan", text: "# Isolated change", interactionId: pending ? "interaction" : undefined }),
         respond() { throw new Error("The planning session must not be approved"); },
     };
@@ -137,7 +137,7 @@ for (const interrupted of [false, true]) {
         let pending = true;
         let sent = false;
         const source = {
-            id: "source", ws: { cwd: iso.home }, session: { model: "test/model" },
+            id: "source", ws: { cwd: iso.home }, session: { model: "test/model", accountId: () => "default" },
             planText: () => ({ id: "plan", text: "# Isolated change", interactionId: pending ? "interaction" : undefined }),
         };
         engine.runtimes.set(source.id, source);
@@ -210,7 +210,7 @@ test("an unavailable source model cannot silently start with the workspace defau
     let sent = false;
     let handedOff = false;
     engine.runtimes.set("source", {
-        id: "source", session: { model: "unavailable/model" }, ws: { cwd: iso.home },
+        id: "source", session: { model: "unavailable/model", accountId: () => "default" }, ws: { cwd: iso.home },
         planText: () => ({ id: "plan", text: "# Implement", interactionId: "waiting" }),
         handOffPlan() { handedOff = true; },
     });

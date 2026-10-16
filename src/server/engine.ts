@@ -3,7 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
-import { account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { planLimitKey, type AccountInfo } from "./protocol";
 import { mergeLimits } from "../backends/limits";
@@ -591,11 +591,13 @@ export class Engine {
         return m;
     }
 
-    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId } = {}): Promise<Runtime> {
+    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string> } = {}): Promise<Runtime> {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const ws = this.workspaceFor(p);
         const session = Session.create(p);
+        // Apply inherited selections before Runtime starts model setup; native threads stay fresh.
+        for (const [provider, id] of Object.entries(opts.accounts ?? {})) session.setAccount(provider, id);
         const mode = opts.mode && PERMISSION_MODES.includes(opts.mode) ? opts.mode : this.defaultMode(ws);
         const rt = new Runtime(this, ws, session, { mode, resumed: false });
         this.runtimes.set(rt.id, rt);
@@ -945,7 +947,7 @@ export class Engine {
      * Steps, each only once the one before it worked: a managed worktree on the
      * new branch (createWorktree, its trust checks unchanged); a session there
      * (workspaceFor, so a folder with configuration still asks for trust) with
-     * the planning session's model, effort and speed; links both ways; the plan
+     * the planning session's accounts, model, effort and speed; links both ways; the plan
      * as its first prompt; and last, the planning session's card answered so it
      * stops, still in plan mode. A worktree made for a session that then
      * couldn't start is kept and reported (`failed`): it may already hold the
@@ -981,7 +983,8 @@ export class Engine {
             };
             let next: Runtime;
             try {
-                next = await this.createSession(there, { mode });
+                const accounts = Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, rt.session.accountId(provider)]));
+                next = await this.createSession(there, { mode, accounts });
             } catch (e) {
                 return failed(e);
             }
