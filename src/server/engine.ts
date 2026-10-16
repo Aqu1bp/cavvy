@@ -62,6 +62,8 @@ export interface EngineOptions {
     listModels?: typeof listAllModels;
     /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
     unloadAfterMs?: number;
+    /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
+    terminalGraceMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
     log?: (message: string) => void;
 }
@@ -73,6 +75,8 @@ export interface EngineClient {
     send(ev: ServerEvent): void;
     /** Sessions this client has open. */
     subs: Set<string>;
+    /** The window's key, when its connection presented one: its terminals are the window's, not this connection's. */
+    window?: string;
 }
 
 
@@ -155,7 +159,7 @@ export class Workspace {
 // ---------------------------------------------------------------------------
 
 export class Engine {
-    private terminals = new Terminals();
+    private terminals: Terminals;
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
@@ -176,6 +180,7 @@ export class Engine {
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
+        this.terminals = new Terminals({ graceMs: o.terminalGraceMs });
     }
 
     async start() {
@@ -512,7 +517,7 @@ export class Engine {
         this.unloadTimers.set(id, t);
     }
 
-    /** A window went away (closed, reloading, or lost its connection). */
+    /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         this.terminals.drop(client);
@@ -728,6 +733,11 @@ export class Engine {
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
+            case "terminal.list":
+                return this.terminals.list(client);
+            case "terminal.attach":
+                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                return this.terminals.attach(client, str(p.id, "id"), p.have);
             case "scripts.list":
                 return await listScripts(p.cwd);
             case "scripts.save": {
@@ -751,7 +761,7 @@ export class Engine {
                 const { project, script } = await findScript(p.cwd, p.script);
                 // The window may have gone while the script was looked up.
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
-                const opened = this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, { input: `${script.command}\r` });
+                const opened = this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, { input: `${script.command}\r`, script: { id: script.id, name: script.name } });
                 // It's running; remembering it for the header button needn't hold up the reply, and may fail quietly.
                 void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
                 return { ...opened, script };

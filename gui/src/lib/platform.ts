@@ -21,6 +21,30 @@ export const isTerminalToggle = (e: KeyboardEvent) => (e.code === "Backquote" ||
 export const terminalShortcut = "Ctrl+`";
 
 const TOKEN_KEY = "harness.token";
+const WINDOW_KEY = "harness.window";
+
+let memoryWindow: string | undefined;
+/**
+ * This window's secret key (128 random bits): its terminals belong to it.
+ * Kept in sessionStorage, like the token, so a reload keeps it and a new
+ * window gets its own (a duplicated tab gets a copy, which the server handles).
+ */
+export function windowKey(): string {
+    let key: string | null | undefined;
+    try {
+        key = sessionStorage.getItem(WINDOW_KEY);
+    } catch {
+        key = memoryWindow;
+    }
+    if (key && /^[0-9a-f]{32}$/.test(key)) return key;
+    key = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    try {
+        sessionStorage.setItem(WINDOW_KEY, key);
+    } catch {
+        memoryWindow = key;
+    }
+    return key;
+}
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     const { invoke } = await import("@tauri-apps/api/core");

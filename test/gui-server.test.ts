@@ -47,8 +47,9 @@ class Client {
     events: ServerEvent[] = [];
     private listeners = new Set<() => void>();
 
-    constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port) {
-        this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`], headers } as any);
+    /** `window`: the window's key, presented as the GUI does. */
+    constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port, window?: string) {
+        this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`, ...(window ? [`window.${window}`] : [])], headers } as any);
         this.ws.onmessage = (m) => {
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
@@ -151,11 +152,12 @@ function fakeCodex(): string {
     return join(bin, "codex");
 }
 
-async function client(): Promise<Client> {
-    const c = new Client();
+async function client(window?: string): Promise<Client> {
+    const c = new Client(TOKEN, {}, srv.port, window);
     await c.opened();
     return c;
 }
+const WINDOW = "0123456789abcdef0123456789abcdef";
 
 const lastTurn = (v: { turns: Turn[] }) => v.turns[v.turns.length - 1]!;
 const done = (v: { state: SessionState; turns: Turn[] }) => !v.state.busy && v.turns.length > 0 && lastTurn(v).status !== "running";
@@ -1132,14 +1134,18 @@ describe("terminal WebSocket transport", () => {
     const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
     beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("terminal-home-"); });
     afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
-    test("streams only to its owning window and closes the shell on disconnect", async () => {
-        const a = await client(); const b = await client();
+    test("streams only to its owning window, whose shell outlives a reload and is attached again with the window's key", async () => {
+        const a = await client(WINDOW); const b = await client();
         const id = "transport-terminal";
-        const output = () => a.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => e.data).join("");
+        const data = (c: Client) => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+        const output = () => data(a);
         const waitFor = async (check: () => boolean) => {
             const deadline = Date.now() + 5000;
             while (!check()) { if (Date.now() > deadline) throw new Error("Terminal transport timed out"); await Bun.sleep(20); }
         };
+        const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+        let reloaded: Client | undefined;
+        let stranger: Client | undefined;
         try {
             await a.call("terminal.open", { id, cwd: project(), cols: 80, rows: 24 });
             await expect(b.call("terminal.write", { id, data: "exit\n" })).rejects.toThrow("not open");
@@ -1148,11 +1154,61 @@ describe("terminal WebSocket transport", () => {
             await waitFor(() => /__owner_shell__\d+\r?\n/.test(output()) && output().includes("33 99"));
             const pid = Number(output().match(/__owner_shell__(\d+)/)![1]);
             expect(b.events.some((e) => e.type === "terminal.data" && e.id === id)).toBe(false);
+            // The window reloads: its connection goes, its shell doesn't.
             a.close();
-            await waitFor(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
-            await expect(b.call("terminal.close", { id })).rejects.toThrow("not open");
-        } finally { a.close(); b.close(); }
+            await Bun.sleep(300);
+            expect(gone(pid)).toBe(false);
+            // Another window's key, or none, reaches nothing.
+            stranger = await client("fedcba9876543210fedcba9876543210");
+            expect(await stranger.call("terminal.list")).toEqual([]);
+            for (const c of [stranger, b]) {
+                await expect(c.call("terminal.attach", { id })).rejects.toThrow("not open");
+                await expect(c.call("terminal.close", { id })).rejects.toThrow("not open");
+            }
+            reloaded = await client(WINDOW);
+            expect(await reloaded.call("terminal.list")).toEqual([{ id, cwd: expect.any(String) }]);
+            expect(await reloaded.call("terminal.attach", { id })).toEqual({ id, cwd: expect.any(String) });
+            // Its earlier output came first, ahead of the reply.
+            expect(data(reloaded)).toContain("__owner_shell__");
+            await reloaded.call("terminal.write", { id, data: "printf '__%s__\\n' back\n" });
+            await waitFor(() => data(reloaded!).includes("__back__\r\n"));
+            // Closing the tab stops it.
+            await reloaded.call("terminal.close", { id });
+            await waitFor(() => gone(pid));
+            // A connection without a key is the window: its shell stops with it.
+            await b.call("terminal.open", { id: "keyless", cwd: project(), cols: 80, rows: 24 });
+            await b.call("terminal.write", { id: "keyless", data: "printf '__keyless__%s\\n' $$\n" });
+            const keylessOut = () => b.events.filter((e) => e.type === "terminal.data" && e.id === "keyless").map((e) => (e as { data: string }).data).join("");
+            await waitFor(() => /__keyless__\d+/.test(keylessOut()));
+            const keyless = Number(keylessOut().match(/__keyless__(\d+)/)![1]);
+            b.close();
+            await waitFor(() => gone(keyless));
+        } finally { a.close(); b.close(); reloaded?.close(); stranger?.close(); }
     }, 15_000);
+
+    test("a reloaded window that attaches before its old connection's close arrives keeps the shell", async () => {
+        const old = await client(WINDOW);
+        const id = "late-close";
+        const data = (c: Client) => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+        let reloaded: Client | undefined;
+        try {
+            await old.call("terminal.open", { id, cwd: project(), cols: 80, rows: 24 });
+            reloaded = await client(WINDOW);
+            await reloaded.call("terminal.attach", { id });
+            // The window it was taken from is told.
+            expect(old.events.some((e) => e.type === "terminal.moved" && e.id === id)).toBe(true);
+            old.close();
+            await Bun.sleep(300);
+            await reloaded.call("terminal.write", { id, data: "printf '__%s__\\n' kept\n" });
+            const deadline = Date.now() + 5000;
+            while (!data(reloaded).includes("__kept__\r\n")) { if (Date.now() > deadline) throw new Error("timed out"); await Bun.sleep(20); }
+            await reloaded.call("terminal.close", { id });
+        } finally { old.close(); reloaded?.close(); }
+    }, 15_000);
+
+    test("a malformed window key is refused", async () => {
+        await expect(new Client(TOKEN, {}, srv.port, "not-a-key").opened()).rejects.toThrow("connection failed");
+    });
 });
 
 describe("project scripts", () => {
@@ -1245,6 +1301,27 @@ describe("project scripts", () => {
             expect((await other.call("scripts.list", { cwd: main })).lastUsed).toBe(s.id);
             await c.call("terminal.close", { id });
         } finally { c.close(); other.close(); }
+    }, 20_000);
+
+    test("after a reload, a script's terminal is listed with its name, and attaching to it doesn't run it again", async () => {
+        const c = await client(WINDOW);
+        let back: Client | undefined;
+        try {
+            const dir = project();
+            const s = await c.call<ProjectScript>("scripts.save", { cwd: dir, name: "once", command: "printf '__%s__\\n' ran" });
+            const id = "script-reload";
+            const output = (w: Client) => w.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+            await c.call("scripts.run", { id, cwd: dir, script: s.id, cols: 90, rows: 24 });
+            await c.call("terminal.arm", { id });
+            await waitFor(() => output(c).includes("__ran__\r\n"));
+            c.close();
+            back = await client(WINDOW);
+            expect(await back.call("terminal.list")).toEqual([{ id, cwd: expect.any(String), script: { id: s.id, name: "once" } }]);
+            expect(await back.call("terminal.attach", { id })).toMatchObject({ script: { id: s.id, name: "once" } });
+            await Bun.sleep(500);
+            expect(output(back).split("__ran__").length - 1).toBe(1);
+            await back.call("terminal.close", { id });
+        } finally { c.close(); back?.close(); }
     }, 20_000);
 
     test("a script that doesn't exist, or a folder that's gone, opens no terminal", async () => {

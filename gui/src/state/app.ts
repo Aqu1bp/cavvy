@@ -7,10 +7,10 @@ import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js
 import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isTauri } from "../lib/platform";
+import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
 import { prefs } from "./prefs";
 
-export const rpc = new Rpc(credentials);
+export const rpc = new Rpc(credentials, windowKey);
 rpc.retriesCredentials = isTauri;
 
 // ---------------------------------------------------------------------------

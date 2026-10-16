@@ -1,22 +1,54 @@
-// User-operated shells, isolated from agent sessions and owned by one GUI connection.
+// User-operated shells, isolated from agent sessions. Each belongs to the
+// window that opened it, and outlives that window's connection for a while
+// (GRACE): a reload, or a connection that drops and comes back, finds it
+// still running and attaches to it again, with its recent output.
 import { statSync } from "fs";
 import { basename, resolve, isAbsolute } from "path";
 import { userInfo } from "os";
 import { childEnv } from "../util/env";
 import { RpcError } from "./rpc-error";
-import type { ServerEvent } from "./protocol";
+import type { ServerEvent, TerminalInfo, TerminalScript } from "./protocol";
 
-interface Owner { send(event: ServerEvent): void }
+/** A window's connection: where output goes while it's attached. */
+export interface Owner {
+    send(event: ServerEvent): void;
+    /**
+     * The window's secret key (it keeps it across reloads). Its terminals belong
+     * to the key, not to this connection: they wait for a later connection with
+     * the key when this one goes. Without one, the connection is the window, and
+     * its terminals stop with it.
+     */
+    window?: string;
+}
 interface Shell {
-    owner: Owner;
+    /** The window it belongs to: its key, or the connection that opened it when that has none. */
+    window: string | Owner;
+    /** Where its output goes: the window's connection, while attached. */
+    sink?: Owner;
+    cwd: string;
+    /** The project script it was opened to run: the tab is named after it. */
+    script?: TerminalScript;
     process: ReturnType<typeof Bun.spawn>;
     terminal: Bun.Terminal;
+    size: { cols: number; rows: number };
     timer?: ReturnType<typeof setTimeout>;
+    /** Recent output (SCROLLBACK), from a clean cut, for a window that attaches. */
+    out: string;
+    /** Characters of output so far: `out` ends there. */
+    total: number;
+    /** Where the output sent to the window ends. */
+    sent: number;
     /** Sent, and not yet drawn by the window (it acks what it has drawn). */
     unacked: number;
-    /** Output held back while the window catches up: the latest of it only. */
-    held: string;
-    skipped: number;
+    /** Output is held back until the window catches up. */
+    holding: boolean;
+    /** A full-screen program is showing (the alternate screen), and `tail` is where an escape for it may have begun. */
+    alt: boolean;
+    tail: string;
+    /** It exited; kept, with its output, until the window closes it (or, gone, doesn't come back in time). */
+    exitCode?: number;
+    /** While no window is attached: when it's stopped. */
+    expires?: ReturnType<typeof setTimeout>;
     /** Input given at open, until it's typed or cancelled. */
     typist?: Typist;
 }
@@ -30,6 +62,17 @@ interface Shell {
 const MAX_UNACKED = 1_000_000;
 const RESUME_BELOW = 250_000;
 const KEEP = 250_000;
+
+/**
+ * Output kept for a window that attaches (after a reload, say): about 12,000
+ * full 80-column lines. Trimmed a quarter at a time, so a terminal keeps at
+ * most 1.25 times this (plus one read), and there are 48 terminals at most.
+ */
+const SCROLLBACK = 1_000_000;
+/** How long a window that went away has to come back before its terminals are stopped. */
+const GRACE_MS = 10 * 60_000;
+/** Entering or leaving the alternate screen (vim, htop, less). */
+const ALT_SCREEN = /\x1b\[\?(?:1049|1047|47)([hl])/g;
 
 /**
  * Input given at open is typed once the shell is reading a command. Typed
@@ -151,14 +194,37 @@ export function terminalEnv(): Record<string, string> {
     return env;
 }
 
+/**
+ * Where output may be cut, at or after `from`: the start of the next line, so
+ * what follows doesn't begin inside an escape sequence; failing that (a very
+ * long line), not between the halves of a surrogate pair.
+ */
+function cleanCut(text: string, from: number): number {
+    const line = text.indexOf("\n", from);
+    if (line !== -1 && line - from < 4096) return line + 1;
+    return /[\uDC00-\uDFFF]/.test(text[from] ?? "") ? from + 1 : from;
+}
+
+const notOpen = () => new RpcError("That terminal is not open in this window", "terminal_not_open");
+const windowOf = (owner: Owner): string | Owner => owner.window ?? owner;
+
 export class Terminals {
     private shells = new Map<string, Shell>();
 
-    /** `input` is typed into the new shell, as if by hand, once it's armed and reading a command (see Typist). */
-    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string } = {}) {
+    /** `graceMs`: how long a window's terminals wait for it to come back (tests shorten it). */
+    constructor(private o: { graceMs?: number } = {}) {}
+
+    /**
+     * `owner` is the window's live connection (callers check), which drop()s it when it goes.
+     * `input` is typed into the new shell, as if by hand, once it's armed and reading a command (see Typist).
+     * `script` names the tab, for a window that comes back to it.
+     */
+    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string; script?: TerminalScript } = {}) {
         const size = terminalSize(cols, rows);
         if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.shells.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
-        if (this.shells.size >= 48 || [...this.shells.values()].filter((s) => s.owner === owner).length >= 12) throw new RpcError("Close a terminal before opening another (12 per window, across projects)", "limit");
+        // Detached ones, and ones that exited, count until they're closed or expire.
+        const window = windowOf(owner);
+        if (this.shells.size >= 48 || [...this.shells.values()].filter((s) => s.window === window).length >= 12) throw new RpcError("Close a terminal before opening another (12 per window, across projects)", "limit");
         cwd = resolve(cwd);
         let isDir = false;
         try { isDir = statSync(cwd).isDirectory(); } catch {}
@@ -171,16 +237,17 @@ export class Terminals {
         let entry: Shell | undefined;
         // Not into a shell that has since closed or exited.
         const typist = opts.input === undefined ? undefined : new Typist(opts.input, SAYS_WHEN_READING.has(basename(shell)), (text) => {
-            if (entry && this.shells.get(id) === entry) entry.terminal.write(text);
+            if (entry && this.shells.get(id) === entry && entry.exitCode === undefined) entry.terminal.write(text);
         });
         const flush = () => {
             if (!entry) return;
             if (entry.timer) clearTimeout(entry.timer);
             entry.timer = undefined;
             if (!pending) return;
-            if (entry.held || entry.unacked >= MAX_UNACKED) this.hold(entry, pending);
-            else this.send(id, entry, pending);
+            this.record(entry, pending);
             pending = "";
+            if (entry.unacked >= MAX_UNACKED) entry.holding = true;
+            if (!entry.holding) this.sendRest(id, entry);
         };
         const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
             const text = decoder.decode(bytes, { stream: true });
@@ -196,54 +263,63 @@ export class Terminals {
             terminal.close();
             throw e;
         }
-        const shellEntry: Shell = { owner, process: proc, terminal, unacked: 0, held: "", skipped: 0, typist };
+        const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, process: proc, terminal, size, out: "", total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
         void proc.exited.then((exitCode) => {
             if (this.shells.get(id) !== shellEntry) return;
             pending += decoder.decode();
             flush();
-            // Nothing follows: what was held back goes now.
-            this.release(id, shellEntry);
-            this.shells.delete(id);
+            typist?.cancel();
             terminal.close();
-            owner.send({ type: "terminal.exit", id, exitCode });
+            shellEntry.exitCode = exitCode;
+            // Nothing follows: what was held back goes now. With no window attached, it waits for one.
+            this.sendRest(id, shellEntry);
+            shellEntry.sink?.send({ type: "terminal.exit", id, exitCode });
         });
         return { id, cwd };
     }
 
-    private send(id: string, s: Shell, data: string) {
+    private record(s: Shell, text: string) {
+        const seen = s.tail + text;
+        let last: RegExpMatchArray | undefined;
+        for (last of seen.matchAll(ALT_SCREEN));
+        if (last) s.alt = last[1] === "h";
+        s.tail = seen.slice(-7);
+        s.out += text;
+        s.total += text.length;
+        if (s.out.length > SCROLLBACK * 1.25) s.out = s.out.slice(cleanCut(s.out, s.out.length - SCROLLBACK));
+    }
+
+    /** What the window hasn't been sent yet: its latest part only (KEEP), if it's fallen far behind. */
+    private sendRest(id: string, s: Shell) {
+        if (!s.sink || s.sent === s.total) return;
+        const start = s.total - s.out.length;
+        let from = s.sent;
+        let note = "";
+        if (s.total - from > KEEP) {
+            from = start + cleanCut(s.out, s.out.length - KEEP);
+            note = `\r\n\x1b[0m[${(from - s.sent).toLocaleString("en-US")} characters of output skipped while the terminal caught up]\r\n`;
+        }
+        this.send(id, s, note + s.out.slice(from - start));
+    }
+
+    /** `pos`: where in the output the window now is, which it gives back when it attaches again. */
+    private send(id: string, s: Shell, data: string, reset = false) {
+        s.sent = s.total;
         s.unacked += data.length;
-        s.owner.send({ type: "terminal.data", id, data });
+        s.sink!.send({ type: "terminal.data", id, data, pos: s.total, ...(reset ? { reset: true } : {}) });
     }
 
-    private hold(s: Shell, data: string) {
-        s.held += data;
-        if (s.held.length <= KEEP) return;
-        let cut = s.held.length - KEEP;
-        // Not between the halves of a surrogate pair.
-        if (/[\uDC00-\uDFFF]/.test(s.held[cut]!)) cut++;
-        s.skipped += cut;
-        s.held = s.held.slice(cut);
-    }
-
-    private release(id: string, s: Shell) {
-        if (!s.held) return;
-        const note = s.skipped ? `\r\n\x1b[0m[${s.skipped.toLocaleString("en-US")} characters of output skipped while the terminal caught up]\r\n` : "";
-        const data = note + s.held;
-        s.held = "";
-        s.skipped = 0;
-        this.send(id, s, data);
-    }
-
-    private owned(owner: Owner, id: string) {
+    /** Attached to this connection, and running. */
+    private attached(owner: Owner, id: string) {
         const s = this.shells.get(id);
-        if (!s || s.owner !== owner) throw new RpcError("That terminal is not open in this window", "terminal_not_open");
+        if (!s || s.sink !== owner || s.window !== windowOf(owner) || s.exitCode !== undefined) throw notOpen();
         return s;
     }
 
     write(owner: Owner, id: string, data: string) {
-        const s = this.owned(owner, id);
+        const s = this.attached(owner, id);
         if (typeof data !== "string" || data.length > 65_536) throw new RpcError("Terminal input is too large", "invalid");
         // Ctrl+C, a key, a paste, before the shell is ready: the user has taken over, so the command isn't typed.
         // (Not on the terminal's own replies to the shell's queries.)
@@ -253,29 +329,82 @@ export class Terminals {
 
     /** The window has sent what was typed while the shell opened: input given at open may now be typed. */
     arm(owner: Owner, id: string) {
-        this.owned(owner, id).typist?.arm();
+        this.attached(owner, id).typist?.arm();
     }
 
     /** The window has drawn this much of a terminal's output. */
     ack(owner: Owner, id: string, chars: unknown) {
         if (!Number.isSafeInteger(chars) || Number(chars) < 0) throw new RpcError("Invalid terminal ack", "invalid");
         const s = this.shells.get(id);
-        // One that has just exited or closed: nothing more to send.
-        if (!s || s.owner !== owner) return;
+        // One that has just closed, or is now another connection's: nothing more to send here.
+        if (!s || s.sink !== owner) return;
         s.unacked = Math.max(0, s.unacked - Number(chars));
-        if (s.held && s.unacked < RESUME_BELOW) this.release(id, s);
+        if (s.holding && s.unacked < RESUME_BELOW) {
+            s.holding = false;
+            this.sendRest(id, s);
+        }
     }
 
     resize(owner: Owner, id: string, cols: unknown, rows: unknown) {
-        const s = this.owned(owner, id);
-        const size = terminalSize(cols, rows);
-        s.terminal.resize(size.cols, size.rows);
+        const s = this.attached(owner, id);
+        s.size = terminalSize(cols, rows);
+        s.terminal.resize(s.size.cols, s.size.rows);
     }
 
+    /** The window's terminals, attached or not, running or exited (and nobody else's). */
+    list(owner: Owner): TerminalInfo[] {
+        const window = windowOf(owner);
+        return [...this.shells].filter(([, s]) => s.window === window).map(([id, s]) => this.info(id, s));
+    }
+
+    /**
+     * The window takes one of its terminals (again), on this connection: after a
+     * reload, a reconnect, or from a copy of the window (which then loses it).
+     * It's sent the output it lacks first: what follows `have` (how much it has
+     * drawn), or, without that or if it's no longer kept, all that's kept, after
+     * a reset. Input given at open is never typed now: the window that would have
+     * armed it, holding back what was typed meanwhile, isn't this one.
+     */
+    attach(owner: Owner, id: string, have?: unknown): TerminalInfo {
+        if (have != null && (!Number.isSafeInteger(have) || Number(have) < 0)) throw new RpcError("Invalid terminal position", "invalid");
+        const s = this.shells.get(id);
+        if (!s || s.window !== windowOf(owner)) throw notOpen();
+        if (s.expires) clearTimeout(s.expires);
+        s.expires = undefined;
+        s.typist?.cancel();
+        if (s.sink && s.sink !== owner) s.sink.send({ type: "terminal.moved", id });
+        s.sink = owner;
+        s.unacked = 0;
+        s.holding = false;
+        const start = s.total - s.out.length;
+        const fits = have != null && Number(have) >= start && Number(have) <= s.total;
+        s.sent = fits ? Number(have) : start;
+        if (s.sent < s.total || !fits) this.send(id, s, s.out.slice(s.sent - start), !fits);
+        // A full-screen program draws itself again only when the size changes: the same size again doesn't tell it.
+        if (s.exitCode === undefined && s.alt) {
+            s.terminal.resize(s.size.cols, s.size.rows > 1 ? s.size.rows - 1 : 2);
+            s.terminal.resize(s.size.cols, s.size.rows);
+        }
+        return this.info(id, s);
+    }
+
+    private info(id: string, s: Shell): TerminalInfo {
+        return { id, cwd: s.cwd, ...(s.script ? { script: { ...s.script } } : {}), ...(s.exitCode !== undefined ? { exitCode: s.exitCode } : {}) };
+    }
+
+    /** Stops it; the connection attached to it, or its window's when none is (its tab closed while away). */
     close(owner: Owner, id: string) {
-        const s = this.owned(owner, id);
+        const s = this.shells.get(id);
+        if (!s || s.window !== windowOf(owner) || (s.sink && s.sink !== owner)) throw notOpen();
+        this.kill(id, s);
+    }
+
+    private kill(id: string, s: Shell) {
         this.shells.delete(id);
         if (s.timer) clearTimeout(s.timer);
+        if (s.expires) clearTimeout(s.expires);
+        s.typist?.cancel();
+        if (s.exitCode !== undefined) return;
         // Closing the PTY hangs up the foreground job as well as its interactive shell.
         s.terminal.close();
         s.process.kill("SIGHUP");
@@ -284,11 +413,30 @@ export class Terminals {
         void s.process.exited.then(() => clearTimeout(kill));
     }
 
+    /**
+     * A connection went away. Its window's terminals keep running (and keep
+     * their output) for GRACE, for the window to attach to again, and are
+     * stopped then. A connection without a window key was the window: nothing
+     * can come back for them, so they stop now.
+     */
     drop(owner: Owner) {
-        for (const [id, s] of this.shells) if (s.owner === owner) this.close(owner, id);
+        for (const [id, s] of this.shells) {
+            // Since attached to another connection (a reloaded window's, say): not this one's to let go of.
+            if (s.sink !== owner) continue;
+            if (!owner.window) {
+                this.kill(id, s);
+                continue;
+            }
+            s.sink = undefined;
+            s.unacked = 0;
+            s.holding = false;
+            s.typist?.cancel();
+            s.expires = setTimeout(() => { if (this.shells.get(id) === s) this.kill(id, s); }, this.o.graceMs ?? GRACE_MS);
+            s.expires.unref?.();
+        }
     }
 
     stop() {
-        for (const [id, s] of this.shells) this.close(s.owner, id);
+        for (const [id, s] of this.shells) this.kill(id, s);
     }
 }

@@ -869,6 +869,64 @@ describe("arming, and when typing happens", () => {
                 shells.stop();
             }
         }, 15_000);
+
+        const KEY = "0123456789abcdef0123456789abcdef";
+        function windowShell() {
+            const events: ServerEvent[] = [];
+            const owner = { window: KEY, send: (e: ServerEvent) => events.push(e) };
+            const output = () => events.filter((e) => e.type === "terminal.data").map((e) => (e as { data: string }).data).join("");
+            return { owner, output };
+        }
+        const times = (text: string, part: string) => text.split(part).length - 1;
+        async function until(check: () => boolean) {
+            const deadline = Date.now() + 8000;
+            while (!check()) {
+                if (Date.now() > deadline) throw new Error("Terminal timed out");
+                await Bun.sleep(20);
+            }
+        }
+
+        test("a script's tab comes back after a reload with its name, and its command isn't typed again", async () => {
+            const shells = new Terminals();
+            const first = windowShell();
+            try {
+                shells.open(first.owner, "dev", folder(), 90, 28, { input: COMMAND, script: { id: "s1", name: "dev" } });
+                shells.arm(first.owner, "dev");
+                await until(() => first.output().includes("__ran__\r\n"));
+                shells.drop(first.owner);
+                const back = windowShell();
+                expect(shells.list(back.owner)).toEqual([{ id: "dev", cwd: expect.any(String), script: { id: "s1", name: "dev" } }]);
+                expect(shells.attach(back.owner, "dev")).toMatchObject({ id: "dev", script: { id: "s1", name: "dev" } });
+                // Not even if the window armed it again.
+                shells.arm(back.owner, "dev");
+                await Bun.sleep(3400);
+                expect(times(back.output(), "__ran__")).toBe(1);
+                expect(times(back.output(), "' ran")).toBe(1);
+                // Still the shell it was, and still the user's.
+                shells.write(back.owner, "dev", "printf '__%s__\\n' mine\r");
+                await until(() => back.output().includes("__mine__\r\n"));
+                expect(times(back.output(), "__ran__")).toBe(1);
+            } finally {
+                shells.stop();
+            }
+        }, 15_000);
+
+        test("a script whose window went away before arming it is never typed, even once a window attaches and arms it", async () => {
+            const shells = new Terminals();
+            const first = windowShell();
+            try {
+                shells.open(first.owner, "unarmed", folder(), 90, 28, { input: COMMAND, script: { id: "s1", name: "dev" } });
+                shells.drop(first.owner);
+                const back = windowShell();
+                shells.attach(back.owner, "unarmed");
+                shells.arm(back.owner, "unarmed");
+                await Bun.sleep(3400);
+                expect(back.output()).not.toContain("__ran__");
+                expect(first.output()).not.toContain("__ran__");
+            } finally {
+                shells.stop();
+            }
+        }, 15_000);
     });
 });
 
