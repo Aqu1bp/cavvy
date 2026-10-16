@@ -46,7 +46,8 @@ export interface SavedTab {
     id: string;
     cwd: string;
     number: number;
-    script?: { id: string; name: string };
+    /** Setup display metadata only; its single-use ticket is never saved. */
+    script?: { id: string; name: string; setup?: { label: string; command: string } };
     login?: TerminalLogin;
     terminal: string;
 }
@@ -94,7 +95,9 @@ export function parseTabs(raw: string | null): SavedTabs {
     // Login metadata is recovered from terminal.list, never trusted from storage.
     const tabs: SavedTab[] = v.tabs.filter((t: any) => t && isId(t.id) && isId(t.terminal) && typeof t.cwd === "string" && Number.isSafeInteger(t.number)
         && (t.script === undefined || (t.script && typeof t.script.id === "string" && typeof t.script.name === "string")))
-        .map((t: any) => ({ id: t.id, cwd: t.cwd, number: t.number, terminal: t.terminal, ...(t.script ? { script: { id: t.script.id, name: t.script.name } } : {}) }));
+        .map((t: any) => ({ id: t.id, cwd: t.cwd, number: t.number, terminal: t.terminal, ...(t.script ? { script: { id: t.script.id, name: t.script.name,
+            ...(typeof t.script.setup?.label === "string" && typeof t.script.setup?.command === "string"
+                ? { setup: { label: t.script.setup.label, command: t.script.setup.command } } : {}) } } : {}) }));
     const next = Math.max(Number.isSafeInteger(v.next) ? v.next : 1, ...tabs.map((t) => t.number + 1));
     const closed = Array.isArray(v.closed) ? [...new Set<string>(v.closed.filter(isId))] : [];
     return { tabs: tabs.filter((t) => !closed.includes(t.terminal)), next, open: v.open === true, ...(isId(v.selected) ? { selected: v.selected } : {}), ...(closed.length ? { closed } : {}) };

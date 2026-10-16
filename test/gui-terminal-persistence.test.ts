@@ -118,7 +118,7 @@ import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
 import { RpcError } from "../gui/src/lib/rpc";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: { id: string; name: string }; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
     const [panelOpen, setPanelOpen] = solid.createSignal(false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
@@ -166,7 +166,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs() {},
-        basename: (v: string) => v, tildify: (v: string) => v, terminalShortcut: "Ctrl+`", toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {},
+        basename: (v: string) => v, tildify: (v: string) => v, terminalShortcut: "Ctrl+`", toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
         Play: noop, Plus: noop, RotateCw: noop, SquareTerminal: noop, X: noop, Terminal: Emulator, FitAddon: class { fit() {} },
         ResizeObserver: class { observe() {} disconnect() {} }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
@@ -289,5 +289,33 @@ test("a running login can explicitly restart for a new prompt after reconnect, c
         expect(opens).toHaveLength(2);
         expect(opens[1]!.params.login).toEqual(login);
         expect(opens[1]!.params.id).not.toBe("shell");
+    } finally { m.dispose(); }
+});
+
+
+test("a saved setup tab retains only display metadata and reattaches on reload and reconnect without rerunning", async () => {
+    const script = { id: "install", name: "Install", setup: { label: "Setup · feature", command: "bun install" } };
+    const saved = parseTabs(JSON.stringify({ tabs: [{ id: "tab", terminal: "shell", cwd: "/p", number: 1,
+        script: { ...script, setup: { ...script.setup, ticket: "never-save" } }, ticket: "never-save" }], next: 2, open: true }));
+    expect(saved.tabs[0]?.script).toEqual(script);
+    expect(JSON.stringify(saved)).not.toContain("never-save");
+    expect(restoreTabs(saved, []).tabs).toEqual([]);
+    const m = mounted("TerminalPanel", { saved });
+    try {
+        await tick();
+        m.calls[0]!.resolve([{ id: "shell", cwd: "/p", script: { id: script.id, name: script.name } }]); await tick();
+        expect(m.calls.map((c) => c.method)).toEqual(["terminal.list", "terminal.attach"]);
+        expect(m.saved.at(-1)?.tabs[0]?.script).toEqual(script);
+        expect(m.nodes.some((n) => n.props.title === `Setup script “Install” in /p: bun install`)).toBe(true);
+        m.event({ type: "terminal.data", id: "shell", pos: 12, data: "setup output", reset: true });
+        m.calls[1]!.resolve({ id: "shell", cwd: "/p" }); await tick();
+        m.terminals[0]!.drain();
+        m.connection("reconnecting"); m.connection("open"); await tick();
+        const attaches = m.calls.filter((c) => c.method === "terminal.attach");
+        expect(attaches).toHaveLength(2);
+        expect(attaches[1]!.params).toEqual({ id: "shell", have: 12 });
+        attaches[1]!.resolve({ id: "shell", cwd: "/p" }); await tick();
+        expect(m.calls.some((c) => ["scripts.run", "terminal.arm", "terminal.open"].includes(c.method))).toBe(false);
+        expect(JSON.stringify(m.calls.map((c) => c.params))).not.toContain("ticket");
     } finally { m.dispose(); }
 });
