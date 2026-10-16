@@ -349,6 +349,8 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
 }
 
 let openingVersion = 0;
+let connectionVersion = 0;
+let openingConnection = 0;
 const pending = new DelayedPending(() => {
     if (app.opening) setApp("opening", "visible", true);
 });
@@ -367,6 +369,20 @@ export async function activate(id: string | undefined, cwd?: string) {
     if (id !== app.activeId) setFindOpen(false);
     pending.cancel();
     const version = ++openingVersion;
+    const cached = id ? handles.get(id) : undefined;
+    if (cached) {
+        // Preserve the mounted view (pagination, scroll, drafts) when picking it again.
+        // Cached navigation never needs a loading screen, even for another session.
+        cached.lastUsed = Date.now();
+        batch(() => {
+            setApp("activeId", id);
+            setApp("opening", undefined);
+            if (cached.view.state.cwd) setApp("homeCwd", cached.view.state.cwd);
+            markSeen(cached.id);
+        });
+        return;
+    }
+    const connection = openingConnection = connectionVersion;
     batch(() => {
         setApp("activeId", id);
         setApp("opening", id ? { id, visible: false, error: undefined } : undefined);
@@ -375,7 +391,7 @@ export async function activate(id: string | undefined, cwd?: string) {
     });
     if (!id) return;
     const project = app.homeCwd;
-    const current = () => version === openingVersion && app.activeId === id && app.homeCwd === project;
+    const current = () => version === openingVersion && connection === connectionVersion && app.activeId === id && app.homeCwd === project;
     pending.start();
     try {
         const h = await openSession(id);
@@ -407,7 +423,10 @@ export async function activate(id: string | undefined, cwd?: string) {
 /** Restore only after bootstrap. Lists are capped, so absence is not deletion. */
 export async function restoreActiveSession() {
     const id = app.activeId;
-    if (!id || handles.has(id) || (app.opening?.id === id && !app.opening.error)) return;
+    if (!id || (handles.has(id) && !app.opening)) return;
+    // A request from a previous connection may still be waiting out its spinner.
+    // Supersede it rather than letting its disconnected result win after bootstrap.
+    if (app.opening?.id === id && !app.opening.error && openingConnection === connectionVersion) return;
     await activate(id, app.homeCwd);
 }
 
@@ -594,6 +613,7 @@ export function start() {
     rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
     rpc.onState((s) => {
+        if (s === "open") connectionVersion++;
         batch(() => {
             if (s !== "open") for (const h of handles.values()) h.setReady(false);
             setApp("conn", s);

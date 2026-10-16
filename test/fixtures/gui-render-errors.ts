@@ -177,3 +177,81 @@ test("root failure offers Reload and safe Copy details", async () => {
         expect(copies[0]).toContain("root failed");
     } finally { dispose(); }
 });
+
+/** Execute the actual highlighting module, replacing only dynamic module loading. */
+function retryingHighlighter(failure: "import" | "initialize" = "import") {
+    const original = readFileSync(new URL("../../gui/src/lib/highlight.ts", import.meta.url), "utf8");
+    const js = new Bun.Transpiler({ loader: "ts" }).transformSync(original)
+        .replace(/\bimport\(/g, "loadModule(").replace(/^export /gm, "");
+    let loads = 0;
+    let initializations = 0;
+    const highlighter = {
+        getLoadedLanguages: () => ["typescript"],
+        codeToHtml: () => "<pre><code>highlighted</code></pre>",
+        codeToTokens: () => ({ tokens: [[{ content: "highlighted" }]] }),
+    };
+    const loadModule = async (name: string) => {
+        if (name === "shiki/engine/javascript") return { createJavaScriptRegexEngine: () => ({}) };
+        if (name !== "shiki/core") throw Error(`Unexpected module: ${name}`);
+        loads++;
+        if (failure === "import" && loads === 1) throw Error("Transient chunk-load failure");
+        return {
+            createCssVariablesTheme: () => ({}),
+            createHighlighterCore: async () => {
+                initializations++;
+                if (failure === "initialize" && initializations === 1) throw Error("Transient initialization failure");
+                return highlighter;
+            },
+        };
+    };
+    return {
+        ...new Function("loadModule", `${js}; return { highlight, highlightLines, warmUp };`)(loadModule),
+        loads: () => loads,
+    };
+}
+
+for (const kind of ["CodeBlock", "DiffView"]) {
+    test(`${kind} Retry recovers through the real highlighter after an import failure`, async () => {
+        const errors: string[] = [];
+        const highlighting = retryingHighlighter();
+        const Widget = component(source(`blocks/${kind}`), kind, {
+            RenderBoundary: boundary(undefined, (error) => errors.push(error)),
+            ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s,
+            CopyButton: () => node("copy"),
+            IntersectionObserver: class {
+                constructor(private callback: Function) {}
+                observe() { this.callback([{ isIntersecting: true }]); }
+                disconnect() {}
+            },
+        });
+        const root = node("root");
+        const props = kind === "CodeBlock" ? { code: "const x = 1", lang: "typescript" } : {
+            diff: { path: "x.ts", hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [{ t: "add", text: "const x = 1", b: 1 }] }] },
+        };
+        const dispose = renderer.render(() => Widget(props), root);
+        try {
+            await new Promise((r) => setImmediate(r));
+            expect(text(root)).toContain("Couldn't render this part");
+            expect(highlighting.loads()).toBe(1); // Both sides of a diff share the same attempt.
+            expect(errors).toHaveLength(1);
+            all(root).find((n) => n.tag === "button" && text(n) === "Retry")!.props.onClick();
+            await new Promise((r) => setImmediate(r));
+            expect(highlighting.loads()).toBe(2);
+            expect(text(root)).not.toContain("Couldn't render");
+            expect(all(root).some((n) => n.props.innerHTML === "highlighted")).toBe(true);
+            expect(errors).toHaveLength(1);
+        } finally { dispose(); }
+    });
+}
+
+for (const failure of ["import", "initialize"] as const) {
+    test(`a failed warm-up (${failure}) does not poison later highlighting`, async () => {
+        const highlighting = retryingHighlighter(failure);
+        highlighting.warmUp();
+        await new Promise((r) => setImmediate(r));
+        expect(highlighting.loads()).toBe(1);
+        expect(await highlighting.highlight("code", "typescript")).toBe("highlighted");
+        expect(await highlighting.highlightLines("diff", "typescript")).toEqual(["highlighted"]);
+        expect(highlighting.loads()).toBe(2); // Successful initialization remains cached.
+    });
+}

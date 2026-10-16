@@ -10,15 +10,21 @@ Object.assign(globalThis, {
     sessionStorage: { getItem() { return null; }, setItem() {} },
     location: { hash: "", search: "", pathname: "/" },
 });
+let answerImmediately = false;
 const requests: { id: string; answer: (error?: string) => void }[] = [];
 class ServerSocket extends Socket {
     send(raw: string) {
         super.send(raw);
         const { id, method, params } = JSON.parse(raw);
-        assert.equal(method, "session.open");
+        if (method !== "session.open") {
+            const result = method === "hello" ? {} : method === "settings.get" ? {} : [];
+            queueMicrotask(() => this.message({ id, result }));
+            return;
+        }
         requests.push({ id: params.id, answer: (error) => queueMicrotask(() => this.message(error
             ? { id, error: { code: "in_use", message: error } }
             : { id, result: { seq: 0, state: { id: params.id, cwd: "/" + params.id, busy: false, interactions: [] }, turns: [], agents: [] } })) });
+        if (answerImmediately) requests.at(-1)!.answer();
     }
 }
 globalThis.WebSocket = ServerSocket as unknown as typeof WebSocket;
@@ -26,9 +32,11 @@ const settle = () => new Promise<void>((r) => setImmediate(r));
 const appModule = await import("../../gui/src/state/app");
 const { app, setApp, activate, rpc } = appModule;
 Object.assign(rpc, { credentials: async () => ({ url: "ws://test", token: "test" }) });
-await rpc.connect();
+appModule.start();
+await settle();
 Socket.instances.at(-1)!.open();
-setApp("conn", "open");
+await settle();
+await settle();
 const widgets = ["Header", "Home", "Sidebar", "SessionView", "Reconnecting", "Disconnected", "TerminalPanel", "CommandPalette", "RewindDialog", "McpDialog", "FolderPicker", "TrustDialog", "DeleteSessionDialog", "CommitDialog", "Toasts", "Spinner"];
 const source = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "utf8");
 const App = component(source.slice(source.indexOf("export function App")), "App", {
@@ -54,6 +62,22 @@ try {
     assert.equal(app.activeId, "b", "older success cannot steal selection");
     assert.equal(app.homeCwd, "/b");
     assert.equal(app.opening, undefined);
+
+    const mounted = all(root).find((n) => n.tag === "SessionView")!;
+    mounted.props.shownTurns = 80;
+    mounted.props.scrollTop = 1234;
+    const same = activate("b");
+    assert.equal(app.opening, undefined, "an already loaded selection never enters opening");
+    assert.equal(all(root).find((n) => n.tag === "SessionView"), mounted, "same selection preserves the mounted view synchronously");
+    await same;
+    assert.equal(all(root).find((n) => n.tag === "SessionView"), mounted);
+    assert.equal(mounted.props.shownTurns, 80);
+    assert.equal(mounted.props.scrollTop, 1234);
+    const cached = activate("a");
+    assert.equal(app.opening, undefined, "switching to another cached handle also skips opening");
+    assert.ok(all(root).some((n) => n.tag === "SessionView"));
+    await cached;
+    await activate("b");
 
     const old = activate("old");
     await settle();
@@ -93,6 +117,39 @@ try {
     await settle();
     assert.equal(app.opening, undefined);
     assert.equal(app.activeId, "failure");
+
+    // Also cover a snapshot adopted just before disconnect, while its spinner is
+    // still visible: reconnect reopens that handle and must release the old screen.
+    for (const adopted of [false, true]) {
+        const id = adopted ? "reconnect-adopted" : "reconnect-pending";
+        const reconnecting = activate(id);
+        await settle();
+        await Bun.sleep(420);
+        assert.equal(app.opening?.visible, true);
+        if (adopted) {
+            requests.at(-1)!.answer();
+            await settle();
+            assert.ok(appModule.handleFor(id)?.ready());
+            assert.equal(app.opening?.visible, true);
+        }
+        Socket.instances.at(-1)!.close();
+        await settle(); // The old success/catch is waiting out the minimum spinner time.
+        assert.equal(app.opening?.error, undefined);
+        answerImmediately = true;
+        rpc.reconnectNow(); // Same action as the banner's Reconnect now button.
+        await settle();
+        Socket.instances.at(-1)!.open();
+        await settle();
+        await settle();
+        assert.equal(requests.filter((r) => r.id === id).length, 2, "bootstrap supersedes the previous connection's opening request");
+        await reconnecting;
+        await Bun.sleep(420); // Let the superseded request's original deadline pass too.
+        assert.equal(app.activeId, id);
+        assert.ok(appModule.handleFor(id)?.ready());
+        assert.equal(app.opening, undefined, "an old result cannot replace restored content");
+        assert.ok(all(root).some((n) => n.tag === "SessionView"));
+        answerImmediately = false;
+    }
 
     const home = activate("home-race");
     await settle();
