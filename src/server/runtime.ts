@@ -6,14 +6,14 @@
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { canonical, FileHistory, resetToolState, rewindTargets, type RestoreItem } from "../agent/checkpoints";
+import { backendsIn, canonical, FileHistory, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand } from "../commands/custom";
-import { addPermissionRule, updateSettings, type Effort, type Settings } from "../config/settings";
-import type { PermissionMode } from "../permissions/modes";
+import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -33,7 +33,7 @@ import { gitSnapshot } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
-import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, withoutActionsNote, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import type {
     AgentRun,
     Block,
@@ -190,6 +190,20 @@ export class Runtime {
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
     private agentLabels = new Map<string, string>();
     private agentText = new Map<string, string>();
+    /** Turns Claude Code or Codex answered, and the transcript segment each is in: the log keeps their steps and sub-agents (the transcript only their text). */
+    private backendTurns = new Map<string, number>();
+    /** Where in the log each such turn's steps go: its prompt's place, and which prompt it is. */
+    private stepsAt = new Map<string, { seg: number; index: number; prompt: string }>();
+    /** Their steps changed since they were written (turn id → block ids), and what was written of each (its JSON). */
+    private stepsDirty = new Map<string, Set<string>>();
+    private stepsLogged = new Map<string, Map<string, string>>();
+    /** Their sub-agents, likewise ("" for the sub-agent itself), and what was written of each field and step. */
+    private agentsDirty = new Map<string, Set<string>>();
+    private agentsLogged = new Map<string, { head: Map<string, string>; blocks: Map<string, string> }>();
+    /** The log's record of the turn running now (where it started): its end goes there, a steering message's turn's too. */
+    private uiTurn?: { seg: number; index: number; at: number; prompt?: string };
+    /** The mode it was left in, when that isn't the one it reopened in (bypass, not chosen again): the model is told. */
+    private leftIn?: PermissionMode;
 
     constructor(
         private engine: Engine,
@@ -204,19 +218,26 @@ export class Runtime {
             if (opts.resumed) session.fastMode = Boolean(ws.settings.fastMode);
             else session.setFastMode(Boolean(ws.settings.fastMode));
         }
-        this.mode = opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
+        this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
+        // A reopened session keeps the mode it was left in (bypass only when chosen again) and the effort chosen for it.
+        const left = opts.resumed && this.ui.state.mode && PERMISSION_MODES.includes(this.ui.state.mode) ? this.ui.state.mode : undefined;
+        this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
         if (this.mode === "bypassPermissions" && !this.bypassAllowed()) this.mode = "default";
+        if (left && left !== this.mode) this.leftIn = left;
+        const effort = opts.resumed ? this.ui.state.effort : undefined;
+        if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map() };
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
-        this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
         if (opts.resumed) resetToolState(this.toolState, session.messages);
 
         const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
         this.segment = segments.length - 1;
+        // Its last turn was cut off (the server stopped or died before it could end): the history says so now, as a stop would have.
+        if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
-        this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model) };
+        this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
         this.ready = this.track(this.initModel());
         void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
     }
@@ -268,7 +289,7 @@ export class Runtime {
             fastMode: this.fastModeEnabled(),
             status: "idle",
             busy: false,
-            contextTokens: 0,
+            contextTokens: this.lastContext(),
             cost: this.session.cost,
             costUnknown: this.session.costUnknown,
             ...this.tokenTotals(),
@@ -280,6 +301,197 @@ export class Runtime {
             filesChanged: this.filesChanged(),
             shells: [],
         };
+    }
+
+    /** Claude Code or Codex: an agent backend runs this session's turns. */
+    private backendModel(): boolean {
+        return getProvider(this.model?.provider ?? "")?.kind === "agent";
+    }
+
+    /** How full the context was when the session was left, if nothing has happened to it since (in a terminal, say). */
+    private lastContext(): number {
+        const s = this.ui.state;
+        return s.contextTokens !== undefined && s.messages === this.session.messages.length ? s.contextTokens : 0;
+    }
+
+    /** The log's note of the mode, effort and context, for opening the session again. Not before the session is on disk: a new one may never be. */
+    private recordState(opts: { force?: boolean } = {}) {
+        if (!opts.force && !existsSync(this.session.path)) return;
+        const s = this.ui.state;
+        const state = { mode: this.mode, effort: this.effort, contextTokens: this.view.state.contextTokens, messages: this.session.messages.length };
+        if (s.mode === state.mode && s.effort === state.effort && s.contextTokens === state.contextTokens && s.messages === state.messages) return;
+        this.ui.write({ t: "state", ...state });
+    }
+
+    // What the log keeps of turns Claude Code or Codex answered, as they're
+    // shown: each step and each sub-agent's, written when it's new or has
+    // changed (at most once a flush), so a turn cut off part way keeps what
+    // it did. What's still being written (text streaming in, a call's input)
+    // waits until it's done, or the turn or session ends.
+
+    /** Which prompt the running turn's record is of, once it's in the history: one sent at its place later isn't taken for it. */
+    private notePrompt() {
+        const t = this.uiTurn;
+        const m = t && !t.prompt ? this.session.messages[t.index] : undefined;
+        if (!t || m?.role !== "user") return;
+        t.prompt = promptKey(m);
+        this.ui.write({ t: "turn", ...t });
+    }
+
+    /** A view change to note for the log, if it's of such a turn or sub-agent. */
+    private noteStep(o: SessionOp) {
+        const mark = (dirty: Map<string, Set<string>>, key: string, id: string) => {
+            let ids = dirty.get(key);
+            if (!ids) dirty.set(key, (ids = new Set()));
+            ids.add(id);
+        };
+        const ofBackend = (agentId: string) => {
+            const a = this.view.agents.find((x) => x.id === agentId);
+            return Boolean(a && this.backendTurns.has(a.turnId));
+        };
+        switch (o.op) {
+            // (A block inside another, a sub-agent's call in its row, changes that one.)
+            case "block":
+                if (this.backendTurns.has(o.turnId)) mark(this.stepsDirty, o.turnId, o.parent ?? o.block.id);
+                break;
+            case "block.patch":
+                if (this.backendTurns.has(o.turnId)) mark(this.stepsDirty, o.turnId, o.parent ?? o.blockId);
+                break;
+            case "block.remove":
+            case "append":
+                if (this.backendTurns.has(o.turnId)) mark(this.stepsDirty, o.turnId, o.blockId);
+                break;
+            case "agent":
+                if (!this.backendTurns.has(o.agent.turnId)) break;
+                mark(this.agentsDirty, o.agent.id, "");
+                for (const b of o.agent.blocks) mark(this.agentsDirty, o.agent.id, b.id);
+                break;
+            case "agent.patch":
+                if (ofBackend(o.id)) mark(this.agentsDirty, o.id, "");
+                break;
+            case "agent.block":
+                if (ofBackend(o.id)) mark(this.agentsDirty, o.id, o.block.id);
+                break;
+            case "agent.block.patch":
+            case "agent.append":
+                if (ofBackend(o.id)) mark(this.agentsDirty, o.id, o.blockId);
+                break;
+        }
+    }
+
+    /** What changed since into the log; `all`: what's still being written too (the turn or the session is ending). */
+    private syncSteps(all = false) {
+        for (const turnId of [...this.stepsDirty.keys()]) this.syncTurn(turnId, all);
+        for (const id of [...this.agentsDirty.keys()]) this.syncAgent(id, all);
+    }
+
+    /** Where a backend's turn's steps go in the log; none until its prompt is in the history. */
+    private stepsPlace(turnId: string, turn: Turn): { seg: number; index: number; prompt: string } | undefined {
+        const known = this.stepsAt.get(turnId);
+        if (known) return known;
+        const seg = this.backendTurns.get(turnId);
+        const index = turn.prompt?.index;
+        // Its prompt, unless the history was compacted since (it's out of reach of rewind then, and has no index).
+        const prompt = seg === this.segment && index !== undefined ? this.session.messages[index] : undefined;
+        if (seg === undefined || index === undefined || prompt?.role !== "user") return undefined;
+        const at = { seg, index, prompt: promptKey(prompt) };
+        this.stepsAt.set(turnId, at);
+        return at;
+    }
+
+    private syncTurn(turnId: string, all = false) {
+        const ids = this.stepsDirty.get(turnId);
+        if (!ids) return;
+        const turn = findTurn(this.view, turnId);
+        // Gone (rebuilt after a rewind): nothing of it to write.
+        if (!turn) return void this.stepsDirty.delete(turnId);
+        const at = this.stepsPlace(turnId, turn);
+        if (!at) {
+            if (all) this.stepsDirty.delete(turnId);
+            return;
+        }
+        let logged = this.stepsLogged.get(turnId);
+        if (!logged) this.stepsLogged.set(turnId, (logged = new Map()));
+        for (const id of [...ids]) {
+            const i = turn.blocks.findIndex((b) => b.id === id);
+            const b = turn.blocks[i];
+            if (b && !all && (b.id === this.openText || b.id === this.openThinking || (b.t === "tool" && b.status === "streaming"))) continue;
+            ids.delete(id);
+            if (!b) {
+                if (logged.delete(id)) this.ui.write({ t: "step", ...at, drop: id });
+                continue;
+            }
+            const step = shownStep(b);
+            const json = step && JSON.stringify(step);
+            if (!step || logged.get(id) === json) continue;
+            logged.set(id, json!);
+            let after: string | null = null;
+            for (let j = i - 1; j >= 0; j--) {
+                if (shownStep(turn.blocks[j]!)) {
+                    after = turn.blocks[j]!.id;
+                    break;
+                }
+            }
+            this.ui.write({ t: "step", ...at, block: step, after });
+        }
+        if (!ids.size) this.stepsDirty.delete(turnId);
+    }
+
+    private syncAgent(id: string, all = false) {
+        const ids = this.agentsDirty.get(id);
+        if (!ids) return;
+        const a = this.view.agents.find((x) => x.id === id);
+        if (!a) {
+            this.agentsDirty.delete(id);
+            this.agentsLogged.delete(id);
+            return;
+        }
+        let logged = this.agentsLogged.get(id);
+        if (!logged) this.agentsLogged.set(id, (logged = { head: new Map(), blocks: new Map() }));
+        if (ids.delete("")) {
+            const head = agentHead(a);
+            const patch: AgentHead = {};
+            for (const [k, v] of Object.entries(head)) {
+                const json = JSON.stringify(v);
+                if (json !== undefined && logged.head.get(k) !== json) {
+                    logged.head.set(k, json);
+                    (patch as Record<string, unknown>)[k] = v;
+                }
+            }
+            // What it no longer has (a report, once it runs again).
+            for (const k of [...logged.head.keys()]) {
+                if ((head as Record<string, unknown>)[k] !== undefined) continue;
+                logged.head.delete(k);
+                (patch as Record<string, unknown>)[k] = null;
+            }
+            if (Object.keys(patch).length) this.ui.write({ t: "agent", id, head: patch });
+        }
+        // The log keeps its latest AGENT_KEPT steps: an older one changing (a long call ending) isn't written.
+        const kept = a.blocks.length - AGENT_KEPT;
+        for (const bid of [...ids]) {
+            const i = a.blocks.findIndex((b) => b.id === bid);
+            const b = a.blocks[i];
+            if (b && !all && (this.agentText.get(id) === bid || (b.t === "tool" && b.status === "streaming"))) continue;
+            ids.delete(bid);
+            if (!b || i < kept) continue;
+            const step = agentStep(b);
+            const json = JSON.stringify(step);
+            if (logged.blocks.get(bid) === json) continue;
+            logged.blocks.set(bid, json);
+            this.ui.write({ t: "agent", id, block: step, after: a.blocks[i - 1]?.id ?? null });
+        }
+        // What was written of steps the log no longer keeps needn't be remembered.
+        if (logged.blocks.size > AGENT_KEPT) {
+            const tail = new Set(a.blocks.slice(-AGENT_KEPT).map((b) => b.id));
+            for (const bid of [...logged.blocks.keys()]) if (!tail.has(bid)) logged.blocks.delete(bid);
+        }
+        if (!ids.size) this.agentsDirty.delete(id);
+    }
+
+    /** A backend's turn is over (or is being cut off): all of it into the log, its sub-agents too, as they are now. */
+    private syncTurnAll(turnId: string) {
+        this.syncTurn(turnId, true);
+        for (const a of this.view.agents) if (a.turnId === turnId) this.syncAgent(a.id, true);
     }
 
     private tokenTotals() {
@@ -310,6 +522,7 @@ export class Runtime {
 
     private op(o: SessionOp) {
         applyOp(this.view, structuredClone(o));
+        this.noteStep(o);
         this.outbox.push(o);
         if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), FLUSH_MS);
     }
@@ -321,6 +534,8 @@ export class Runtime {
     flush() {
         if (this.flushTimer) clearTimeout(this.flushTimer);
         this.flushTimer = undefined;
+        // Into the log as it's shown (while it's being closed too, until the log is let go of).
+        this.syncSteps();
         if (!this.outbox.length || this.closed) return;
         const ops = coalesce(this.outbox);
         this.outbox = [];
@@ -578,6 +793,9 @@ export class Runtime {
             },
         });
         if (this.session.model === undefined && this.model) this.session.setModel(modelRef(this.model));
+        // Left in bypass, it opened in another mode: the model hears of it, as of any switch.
+        if (this.leftIn) this.agent.noteModeChange(this.leftIn, this.mode);
+        this.leftIn = undefined;
     }
 
     // -----------------------------------------------------------------------
@@ -593,6 +811,7 @@ export class Runtime {
         this.mode = m;
         if (!opts.fromAgent && this.agent) this.agent.noteModeChange(from, m);
         this.setState({ mode: m, bypassAllowed: this.bypassAllowed() });
+        this.recordState();
         return true;
     }
 
@@ -610,6 +829,7 @@ export class Runtime {
     setEffort(e: EffortLevel) {
         this.effort = e;
         this.setState({ effort: e });
+        this.recordState();
     }
 
     rename(title: string) {
@@ -683,6 +903,7 @@ export class Runtime {
                 this.closeOpen();
                 this.responseBlocks = [];
                 this.activity("Thinking");
+                this.notePrompt();
                 break;
             case "text": {
                 if (!this.openText) {
@@ -831,7 +1052,7 @@ export class Runtime {
         }
         const d = result.display;
         const shown = d?.body !== undefined ? d.body : result.content;
-        const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (result.isError ? result.content : "")), result.isError), durationMs, progress: undefined };
+        const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (result.isError ? result.content : "")), result.isError, runsAgent(call.name)), durationMs, progress: undefined };
         // What it did was only known at its end (a backend's web search): its title and input say so now.
         if (title) Object.assign(patch, { title, input: trimInput(call.input) });
         if (/^The user declined/.test(result.content)) patch.status = "denied";
@@ -852,15 +1073,18 @@ export class Runtime {
     }
 
     private compacted(summary: string) {
-        this.segment++;
         const current = this.turnId;
-        // Everything before is out of the model's context now (and out of /rewind's reach).
-        for (const t of this.view.turns) {
-            if (t.id === current) {
-                if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
-                continue;
+        // Claude Code or Codex compacting its own context leaves this session's history as it is.
+        if (!this.backendModel()) {
+            this.segment++;
+            // Everything before is out of the model's context now (and out of /rewind's reach).
+            for (const t of this.view.turns) {
+                if (t.id === current) {
+                    if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
+                    continue;
+                }
+                if (!t.archived) this.op({ op: "turn.patch", turnId: t.id, patch: { archived: true, prompt: t.prompt ? { ...t.prompt, index: undefined } : undefined } });
             }
-            if (!t.archived) this.op({ op: "turn.patch", turnId: t.id, patch: { archived: true, prompt: t.prompt ? { ...t.prompt, index: undefined } : undefined } });
         }
         if (current) this.addBlock({ t: "compact", id: this.newId(), summary: redact(summary), auto: true });
         else {
@@ -868,6 +1092,7 @@ export class Runtime {
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });
+        this.recordState();
     }
 
     private subagentEvent(parentId: string, label: string, e: AgentEvent) {
@@ -960,7 +1185,7 @@ export class Runtime {
             case "tool_end": {
                 const d = e.result.display;
                 const shown = d?.body !== undefined ? d.body : e.result.content;
-                const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (e.result.isError ? e.result.content : "")), e.result.isError), durationMs: e.durationMs, progress: undefined };
+                const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (e.result.isError ? e.result.content : "")), e.result.isError, runsAgent(e.call.name)), durationMs: e.durationMs, progress: undefined };
                 if (e.title) Object.assign(patch, { title: e.title, input: trimInput(e.call.input) });
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
@@ -994,12 +1219,18 @@ export class Runtime {
         // Its last word is its report; one ending again (Claude Code saying so twice) takes the later.
         const report = (a.report === undefined || a.endedAt !== undefined) && said?.t === "text" ? said.text : undefined;
         this.agentPatch(id, { status, endedAt: Date.now(), activity: undefined, ...(report !== undefined ? { report } : {}) });
+        this.syncAgent(id, true);
+        // Its steps are written; what's kept of them to compare against can go.
+        this.agentsLogged.get(id)?.blocks.clear();
+        // One that outlived its turn changed that turn's row of it (what it did, its result) since the turn ended.
+        if (a.turnId !== this.turnId) this.syncTurn(a.turnId, true);
         // A delegated task's result (its report, and why it ended) comes once it settles.
         const task = a.taskId ? this.agent?.delegatedTasks.find((t) => t.id === a.taskId) : undefined;
         if (task)
             void task.settled.then(() => {
                 if (!task.result) return;
                 this.agentPatch(id, { report: redact(withoutActionsNote(task.result.report)), status: task.status === "cancelled" ? "stopped" : task.status === "failed" ? "failed" : "done" });
+                this.syncAgent(id, true);
             });
     }
 
@@ -1035,8 +1266,12 @@ export class Runtime {
         const status: TurnStatus = reason;
         const end = Date.now();
         this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end } });
-        const index = turn?.prompt?.index;
-        if (index !== undefined) this.ui.write({ t: "turn", seg: this.segment, index, at: turn!.startedAt ?? end, end, status });
+        // What it did, then that it ended.
+        this.syncTurnAll(turnId);
+        this.stepsLogged.delete(turnId);
+        if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status });
+        this.uiTurn = undefined;
+        this.recordState();
     }
 
     // -----------------------------------------------------------------------
@@ -1204,11 +1439,20 @@ export class Runtime {
         const steering = last?.role === "assistant" && toolCallsOf(last).length > 0;
         this.closeOpen();
         const prev = this.turnId;
-        if (prev) this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: Date.now() } });
+        if (prev) {
+            const end = Date.now();
+            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: end } });
+            if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status: "done" });
+            this.syncTurnAll(prev);
+            this.stepsLogged.delete(prev);
+        }
         const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now() };
         this.op({ op: "turn", turn });
+        if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
         this.turnId = turn.id;
-        if (!steering) this.ui.write({ t: "turn", seg: this.segment, index: this.session.messages.length, at: turn.startedAt! });
+        // Where it starts: its own prompt, or the tool results it rides along with.
+        this.uiTurn = { seg: this.segment, index: this.session.messages.length, at: turn.startedAt! };
+        this.ui.write({ t: "turn", ...this.uiTurn });
         return texts;
     }
 
@@ -1269,8 +1513,12 @@ export class Runtime {
         };
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
+        if (this.backendModel()) this.backendTurns.set(turn.id, this.segment);
         this.responseBlocks = [];
-        this.ui.write({ t: "turn", seg: this.segment, index, at: this.turnStartedAt });
+        this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
+        this.ui.write({ t: "turn", ...this.uiTurn });
+        // The mode and effort it's sent with, once the session is going to be on disk.
+        if (this.ui.state.mode !== this.mode || this.ui.state.effort !== this.effort) this.recordState({ force: true });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
@@ -1491,7 +1739,7 @@ export class Runtime {
         const history = FileHistory.for(this.session);
         return rewindTargets(this.session.messages)
             .reverse()
-            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0 }));
+            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0, ...(t.backends.length ? { backends: t.backends } : {}) }));
     }
 
     private target(index: number) {
@@ -1508,9 +1756,11 @@ export class Runtime {
         const rel = (p: string) => displayPath(p, root);
         const planId = this.newId();
         this.rewindShown = { id: planId, index, message: this.session.messages[index]!, count: this.session.messages.length, plan };
+        const backends = backendsIn(this.session.messages, index);
         return {
             index,
             planId,
+            ...(backends.length ? { backends } : {}),
             tracked: Boolean(plan),
             restore: (plan ?? []).filter((i) => i.action !== "skip").map((i) => ({ path: rel(i.path), action: i.action as "write" | "delete", outside: Boolean(i.outside) })),
             skipped: (plan ?? []).filter((i) => i.action === "skip").map((i) => ({ path: rel(i.path), reason: i.reason ?? "" })),
@@ -1533,6 +1783,7 @@ export class Runtime {
         this.rewindShown = undefined;
         const history = FileHistory.for(this.session);
         const plan = shown.plan;
+        const backends = backendsIn(this.session.messages, index);
         const restore = plan?.filter((i) => i.action !== "skip") ?? [];
         const skipped = plan?.filter((i) => i.action === "skip") ?? [];
         const root = canonical(this.ws.cwd);
@@ -1558,9 +1809,12 @@ export class Runtime {
             }
             const kept = [...(code ? [] : restore), ...skipped];
             if (kept.length) this.agent?.addReminder(`The user rewound the conversation to an earlier point (/rewind), but these files weren't restored and still have changes made after that point:\n${kept.map((it) => `- ${rel(it.path)}`).join("\n")}`);
+            // What a backend changed was never tracked: all of it is still there.
+            if (backends.length) this.agent?.addReminder(untrackedChangesNote(backends, restored));
             this.rebuild();
         }
         this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
+        this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
         return { restored, failed, text: t.text };
@@ -1571,8 +1825,10 @@ export class Runtime {
         const segments = readSegments(this.session.path);
         const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
-        const agents = agentsFromTurns(turns, this.model && modelRef(this.model)).map((r) => {
+        const agents = agentsFromTurns(turns, this.model && modelRef(this.model), this.ui.agents).map((r) => {
             const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
+            // One still working goes on being logged under its turn's new id.
+            if (live && this.backendTurns.has(live.turnId)) this.backendTurns.set(r.turnId, this.segment);
             return live ? { ...live, turnId: r.turnId } : r;
         });
         this.op({ op: "reset", turns, agents });
@@ -1699,6 +1955,9 @@ export class Runtime {
         this.cancelInteractions();
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
+        // What's still going (a turn being interrupted, sub-agents delegated past their turn) as far as it got.
+        // How it ends is written too, if that's before the session is let go of.
+        this.syncSteps(true);
         this.closed = true;
         // Delegated tasks still running stop with the session.
         const ending = Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
@@ -1709,10 +1968,13 @@ export class Runtime {
                 // Still stopping (the server's own exit doesn't wait long enough for a CLI backend's): noted for it,
                 // and the file let go now, so what it writes when it does stop isn't recorded after that.
                 this.agent?.noteStopped();
+                // Its log too (noting the stop ended the turn there): another process may have the session next.
+                this.ui.close();
                 this.session.release();
             }
             await ending;
         } finally {
+            this.ui.close();
             this.session.release();
         }
     }

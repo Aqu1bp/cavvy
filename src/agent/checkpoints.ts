@@ -16,6 +16,7 @@ import { appendFileSync, chmodSync, closeSync, constants, existsSync, fchmodSync
 import { lstat, readdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
 import { paths } from "../config/paths";
+import { getProvider } from "../providers/registry";
 import type { Message, TextPart, UserMessage } from "../providers/types";
 import type { TodoItem, ToolState } from "../tools/types";
 import type { Session } from "./session";
@@ -376,6 +377,8 @@ export interface RewindTarget {
     /** What the user typed: it goes back in the input box. */
     text: string;
     checkpoint?: number;
+    /** The agent backends that answered it (Claude Code, Codex): what they changed isn't in the file history. */
+    backends: string[];
 }
 
 const REMINDER = /^<system-reminder>\n([\s\S]*)\n<\/system-reminder>$/;
@@ -397,9 +400,40 @@ export function rewindTargets(messages: Message[]): RewindTarget[] {
         if (kind !== "prompt" && kind !== "command") return;
         const first = m.content.find((p): p is TextPart => p.type === "text" && !REMINDER.test(p.text));
         const text = (m.meta?.display ?? first?.text ?? "").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-        out.push({ index, text, checkpoint: m.meta?.checkpoint });
+        out.push({ index, text, checkpoint: m.meta?.checkpoint, backends: [] });
+    });
+    out.forEach((t, i) => {
+        // A message sent while it worked is a prompt of its own, answered along with this one.
+        let next = i + 1;
+        while (next < out.length && !messages.slice(t.index, out[next]!.index).some((m) => m.role === "assistant")) next++;
+        t.backends = backendsIn(messages, t.index, out[next]?.index);
     });
     return out;
+}
+
+/**
+ * For the model, once the conversation was rewound past turns these
+ * backends answered: what they changed is still there, except in the files
+ * that were `restored` (to how they were then, their changes included).
+ */
+export function untrackedChangesNote(backends: string[], restored: string[] = []): string {
+    const except = restored.length ? `, except in these files, which were restored to how they were then:\n${restored.map((p) => `- ${p}`).join("\n")}\n` : " ";
+    return `The user rewound the conversation to an earlier point (/rewind), but any changes ${backends.join(" and ")} made to files after that point weren't undone (rewind can't restore them)${except}So files may not be as the conversation now suggests. Check them (git status, git diff) before relying on them.`;
+}
+
+/**
+ * The agent backends (Claude Code, Codex) that answered in `messages` from
+ * `from` up to `to`. They change files with their own tools, which the file
+ * history doesn't see, so rewinding can't undo what they did.
+ */
+export function backendsIn(messages: Message[], from: number, to = messages.length): string[] {
+    const names = new Set<string>();
+    for (const m of messages.slice(from, to)) {
+        if (m.role !== "assistant" || !m.provider) continue;
+        const p = getProvider(m.provider);
+        if (p?.kind === "agent") names.add(p.name);
+    }
+    return [...names];
 }
 
 /**

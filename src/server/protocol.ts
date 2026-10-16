@@ -138,7 +138,7 @@ export interface AgentRun {
     report?: string;
     /** The last block of its earlier turns, when it started another (Codex's, messaged after it answered): its report is from what follows. */
     turnAfter?: string;
-    /** From before the session was reopened: only the call and its result are known. */
+    /** From before the session was reopened: nothing of it runs. Only its call and result are known, unless a backend's turn ran it (then its steps are kept too). */
     replayed?: boolean;
 }
 
@@ -503,8 +503,11 @@ export interface CommandInfo {
 export interface RewindTargetInfo {
     index: number;
     text: string;
+    /** Files Harness's own tools changed answering it. */
     files: number;
     tracked: boolean;
+    /** Agent backends that answered it (Claude Code, Codex): what they changed isn't tracked, so it isn't in `files`. */
+    backends?: string[];
 }
 
 export interface RewindPlanInfo {
@@ -514,6 +517,8 @@ export interface RewindPlanInfo {
     restore: { path: string; action: "write" | "delete"; outside: boolean }[];
     skipped: { path: string; reason: string }[];
     tracked: boolean;
+    /** Agent backends that answered since then: their changes to files aren't in `restore`, and rewinding leaves them. */
+    backends?: string[];
 }
 
 export interface ChangesInfo {

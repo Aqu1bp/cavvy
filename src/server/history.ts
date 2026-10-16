@@ -1,15 +1,17 @@
 // Rebuilding a session's timeline from disk, so an opened session looks the
 // way it did live: the saved transcript (all of it, including what came
 // before a compaction) plus the GUI's own log of what the transcript doesn't
-// keep (diffs, summaries, timings), in ui/<session>.jsonl next to it.
+// keep (diffs, summaries, timings, and the steps of turns Claude Code or Codex
+// answered, which the transcript keeps as text), in ui/<session>.jsonl next to it.
 
+import { createHash } from "crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
-import { textOf } from "../providers/types";
+import { textOf, toolCallsOf } from "../providers/types";
 import { redactedJson } from "../util/redact";
 import { fileDiff, trimInput, truncateText } from "./diffs";
-import type { AgentRun, Block, FileDiff, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
+import type { AgentRun, Block, EffortLevel, FileDiff, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
 import { allProviders, getProvider } from "../providers/registry";
@@ -21,6 +23,11 @@ export const INLINE_OUTPUT = 4000;
 export const STEERING = "The user sent this message while you were working:\n";
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
+/** Tells one prompt from another, the same words sent again too (each has its own checkpoint), without keeping its text again. */
+export function promptKey(m: UserMessage): string {
+    return createHash("sha256").update(JSON.stringify([m.content, m.meta?.checkpoint ?? null])).digest("hex").slice(0, 16);
+}
 
 export function promptText(m: UserMessage): string {
     const first = m.content.find((p) => p.type === "text" && !/^<system-reminder>/.test(p.text));
@@ -75,16 +82,65 @@ export function readSegments(file: string): Segment[] {
 // ---------------------------------------------------------------------------
 // The GUI's log
 
+/** The session as the GUI last left it: its permission mode and effort (one chosen for it), and its context after `messages` messages. */
+export interface UiState {
+    mode?: PermissionModeId;
+    effort?: EffortLevel;
+    contextTokens?: number;
+    messages?: number;
+}
+
+/** What changed of a sub-agent, its steps aside: null for what it no longer has (a report, once it runs again). */
+export type AgentHead = { [K in keyof Omit<AgentRun, "blocks">]?: AgentRun[K] | null };
+
 export type UiRecord =
     | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; at?: number }
-    | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus }
-    | { t: "pending-turn"; text: string; at: number };
+    /** A turn's start (no `end`) begins its record afresh; its end adds to it, and so does its prompt's promptKey once that's in the history. */
+    | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus; prompt?: string }
+    | { t: "pending-turn"; text: string; at: number }
+    /**
+     * A step of a turn Claude Code or Codex answered, as it was shown
+     * (shownStep), written when it's new and again when it changes, so a
+     * turn cut off part way (the server stopped or died) keeps what it did.
+     * The transcript keeps only the turn's text and a note of what was done,
+     * which is what other models are given; this is what the GUI shows
+     * again. `after`: the step it follows (null: it's the first). `drop`: a
+     * step taken back.
+     */
+    | { t: "step"; seg: number; index: number; /** promptKey of the prompt it answers. */ prompt?: string; block?: Block; after?: string | null; drop?: string }
+    /** A sub-agent of such a turn, likewise: what changed of it (`head`), or one of its steps (agentStep), new or changed. */
+    | { t: "agent"; id: string; head?: AgentHead; block?: Block; after?: string | null }
+    | ({ t: "state" } & UiState)
+    /** Earlier forms of these (a turn's steps all at once; a sub-agent whole), still read. */
+    | { t: "blocks"; seg: number; index: number; blocks: Block[]; prompt?: string }
+    | { t: "agent"; agent: AgentRun; id?: undefined };
+
+/** A step put where it goes: in place of itself, else after the one it follows (at the end if that one isn't there). */
+function place(blocks: Block[], b: Block, after: string | null | undefined) {
+    const i = blocks.findIndex((x) => x.id === b.id);
+    if (i >= 0) {
+        blocks[i] = b;
+        return;
+    }
+    const j = after === null ? 0 : after === undefined ? -1 : blocks.findIndex((x) => x.id === after) + 1;
+    blocks.splice(after === null || j > 0 ? j : blocks.length, 0, b);
+}
 
 export class UiLog {
     tools = new Map<string, Extract<UiRecord, { t: "tool" }>>();
     turns = new Map<string, Extract<UiRecord, { t: "turn" }>>();
+    /** Steps of backends' turns, by where their prompt is ("seg:index"). */
+    steps = new Map<string, { blocks: Block[]; prompt?: string }>();
+    agents = new Map<string, AgentRun>();
+    /** Steps the log no longer keeps of each sub-agent (beyond its latest AGENT_KEPT): a late change to one doesn't bring it back. */
+    private evicted = new Map<string, Set<string>>();
+    state: UiState = {};
+    /** The turn that started last ("seg:index"): it may never have ended. */
+    lastStarted?: string;
     private file: string;
     private created = false;
+    /** Its session was let go of: another process may be keeping this log now. */
+    private closed = false;
 
     constructor(sessionFile: string, id: string, readExisting = true) {
         this.file = join(dirname(sessionFile), "ui", `${id}.jsonl`);
@@ -113,7 +169,49 @@ export class UiLog {
         if (r.t === "tool") this.tools.set(r.id, { ...this.tools.get(r.id), ...r });
         else if (r.t === "turn") {
             const k = `${r.seg}:${r.index}`;
-            this.turns.set(k, { ...this.turns.get(k), ...r });
+            // A turn starting where another was (that one was rewound) owes it nothing.
+            const start = r.end === undefined && r.status === undefined && r.prompt === undefined;
+            if (start) {
+                this.steps.delete(k);
+                this.lastStarted = k;
+            }
+            this.turns.set(k, start ? r : { ...this.turns.get(k), ...r });
+        } else if (r.t === "step") {
+            const k = `${r.seg}:${r.index}`;
+            let s = this.steps.get(k);
+            // Another prompt's (one sent there where this log wasn't kept) start afresh.
+            if (!s || s.prompt !== r.prompt) this.steps.set(k, (s = { blocks: [], prompt: r.prompt }));
+            if (typeof r.drop === "string") s.blocks = s.blocks.filter((b) => b.id !== r.drop);
+            else if (typeof r.block?.id === "string") place(s.blocks, r.block, r.after);
+        } else if (r.t === "agent" && r.id === undefined) {
+            if (typeof r.agent?.id === "string") this.agents.set(r.agent.id, r.agent);
+        } else if (r.t === "agent" && typeof r.id === "string") {
+            let a = this.agents.get(r.id);
+            if (r.head) {
+                const next: Record<string, unknown> = { ...(a ?? { status: "stopped", startedAt: 0, toolCount: 0, tokens: 0, description: "", agentType: "", turnId: "" }) };
+                for (const [key, v] of Object.entries(r.head)) {
+                    if (v === null) delete next[key];
+                    else next[key] = v;
+                }
+                a = { ...(next as unknown as AgentRun), id: r.id, blocks: a?.blocks ?? [] };
+                this.agents.set(r.id, a);
+            }
+            if (a && typeof r.block?.id === "string" && !this.evicted.get(r.id)?.has(r.block.id)) {
+                place(a.blocks, r.block, r.after);
+                if (a.blocks.length > AGENT_KEPT) {
+                    const gone = a.blocks.splice(0, a.blocks.length - AGENT_KEPT);
+                    a.dropped = (a.dropped ?? 0) + gone.length;
+                    let ids = this.evicted.get(r.id);
+                    if (!ids) this.evicted.set(r.id, (ids = new Set()));
+                    for (const b of gone) ids.add(b.id);
+                }
+            }
+        } else if (r.t === "blocks" && Array.isArray(r.blocks)) {
+            // Written by this change's first versions: a turn's steps all at once, at its end.
+            this.steps.set(`${r.seg}:${r.index}`, { blocks: r.blocks, prompt: r.prompt });
+        } else if (r.t === "state") {
+            const { t: _, ...state } = r;
+            this.state = { ...this.state, ...state };
         }
     }
 
@@ -121,8 +219,24 @@ export class UiLog {
         return this.turns.get(`${seg}:${index}`);
     }
 
+    /**
+     * The steps of the turn at that prompt, when a backend answered it. Not
+     * if the prompt there is another one (put there where this log wasn't
+     * kept: in a terminal, after a rewind).
+     */
+    shown(seg: number, index: number, prompt: UserMessage): Block[] | undefined {
+        const r = this.steps.get(`${seg}:${index}`);
+        return r?.blocks.length && (r.prompt === undefined || r.prompt === promptKey(prompt)) ? r.blocks : undefined;
+    }
+
+    /** Nothing more is written (the session is being let go of, like Session.release). */
+    close() {
+        this.closed = true;
+    }
+
     /** Best effort, like the transcript itself; redacted like everything written to disk. */
     write(r: UiRecord) {
+        if (this.closed) return;
         this.apply(r);
         try {
             if (!this.created) {
@@ -162,9 +276,10 @@ function diffFromInput(call: ToolCallPart): FileDiff | undefined {
     return undefined;
 }
 
-export function resultPatch(text: string, isError: boolean | undefined): Partial<ToolBlock> {
+/** `agent`: a sub-agent's call, whose report can end with a backend's actions note (for models, not the reader), dropped before it's clipped. */
+export function resultPatch(text: string, isError: boolean | undefined, agent = false): Partial<ToolBlock> {
     const denied = /^The user declined/.test(text);
-    const out = truncateText(text, INLINE_OUTPUT);
+    const out = truncateText(agent ? withoutActionsNote(text) : text, INLINE_OUTPUT);
     return {
         status: denied ? "denied" : isError ? "error" : "ok",
         output: out.text,
@@ -229,17 +344,100 @@ export function actionsInNote(text: string): string[] {
     return [...text.matchAll(actionsNoteRe())].map((m) => m[2]!.trim()).filter(Boolean);
 }
 
-/** A reopened session's sub-agents: their calls and results (what they did along the way isn't kept). */
-export function agentsFromTurns(turns: Turn[], ownModel?: string): AgentRun[] {
+/**
+ * A reopened session's sub-agents. One of a backend's turn comes back as the
+ * log last saw it (`recorded`); any other from its call and result (what it
+ * did along the way isn't kept).
+ */
+export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map<string, AgentRun>): AgentRun[] {
     const out: AgentRun[] = [];
     for (const t of turns) {
         for (const b of t.blocks) {
-            if (b.t !== "tool" || !b.agent) continue;
+            if (b.t !== "tool") continue;
+            const rec = recorded?.get(b.id);
+            if (rec) {
+                // Nothing of it runs any more, and there's no task to stop.
+                const live = rec.status === "running" || rec.status === "waiting";
+                out.push({ ...rec, turnId: t.id, taskId: undefined, activity: undefined, replayed: true, blocks: rec.blocks.map(ended), ...(live ? { status: "stopped", endedAt: rec.endedAt ?? t.endedAt } : {}) });
+                continue;
+            }
+            if (!b.agent) continue;
             const status = b.status === "ok" ? "done" : b.status === "error" || b.status === "denied" ? "failed" : "stopped";
-            out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt: b.startedAt ?? t.startedAt ?? 0, report: b.output && withoutActionsNote(b.output), replayed: true });
+            const startedAt = b.startedAt ?? t.startedAt ?? 0;
+            out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt, ...(b.durationMs !== undefined && startedAt ? { endedAt: startedAt + b.durationMs } : {}), report: b.output && withoutActionsNote(b.output), replayed: true });
         }
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// A turn cut off
+
+/** How an interrupted turn ends in the history (as Agent writes it when a turn is stopped). */
+export const INTERRUPTED = "[Request interrupted by user]";
+
+const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command");
+/** Where a turn starts: a prompt, or tool results a message sent meanwhile rides along with. */
+const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING)));
+
+/**
+ * The prompt of the session's last turn (its index), if that turn was cut
+ * off: the log saw it start and never end, and nothing in the history after
+ * its prompt says how it ended (a reply, an interrupt). The server stopped
+ * or died before the turn could say. Not when the history went on after it
+ * (in a terminal, which keeps no log), was rewound past it, or compacted.
+ */
+export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[], notices: TurnNotice[] = []): number | undefined {
+    const rec = ui.lastStarted ? ui.turns.get(ui.lastStarted) : undefined;
+    if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined) return undefined;
+    const prompt = messages[rec.index];
+    if (!prompt || !startsTurn(prompt) || messages.slice(rec.index + 1).some(startsTurn)) return undefined;
+    // Another prompt there (that one was rewound in a terminal, this one sent there).
+    if (rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) return undefined;
+    // A note of how it ended (an error), unless it went on after that (a Stop hook kept it going after a warning).
+    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder");
+    if (notices.some((n) => n.index > rec.index && !wentOn(n.index))) return undefined;
+    const last = messages[messages.length - 1]!;
+    if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;
+    // Interrupted already (as a stop writes it, for tools too).
+    if (last.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text.startsWith("[Request interrupted")))) return undefined;
+    return rec.index;
+}
+
+// ---------------------------------------------------------------------------
+// What the log keeps of a backend's turn
+
+/** A sub-agent's steps kept in the log, and how much of each one's output. */
+export const AGENT_KEPT = 100;
+const AGENT_OUTPUT = 1000;
+
+/** A step as it's kept: live-only fields go, and so does a diff (a call's own record has it); output is cut to `output`, if given. */
+function keptBlock(b: Block, output?: number): Block {
+    if (b.t !== "tool") return { ...b };
+    const { progress: _p, receiving: _r, diff: _d, ...rest } = b;
+    if (output === undefined || rest.output === undefined || rest.output.length <= output) return rest;
+    return { ...rest, output: truncateText(rest.output, output).text, outputTruncated: true };
+}
+
+/**
+ * A step of a turn a backend answered, as it's written to the log: text,
+ * thinking and tool calls (notices, compactions and shell commands have
+ * records of their own, or none: undefined). Outputs are as shown, already
+ * cut to INLINE_OUTPUT.
+ */
+export function shownStep(b: Block): Block | undefined {
+    return b.t === "text" || b.t === "thinking" || b.t === "tool" ? keptBlock(b) : undefined;
+}
+
+/** A sub-agent's step as it's written to the log: its output cut, without a diff. The log keeps its latest AGENT_KEPT. */
+export function agentStep(b: Block): Block {
+    return keptBlock(b, AGENT_OUTPUT);
+}
+
+/** A sub-agent as it's written to the log, its steps aside (they're written one by one), and what it's doing now (nothing is, once it's reopened). */
+export function agentHead(a: AgentRun): AgentHead {
+    const { blocks: _b, activity: _a, dropped: _d, ...head } = a;
+    return head;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +490,8 @@ export function replay(o: ReplayInput): Turn[] {
                 if (n.level === "error" && t.status === "done") t.status = "error";
             }
         };
+        // Turns whose steps came from the log: the transcript's text of them isn't shown again.
+        const shown = new Set<Turn>();
         seg.messages.forEach((m, index) => {
             noticesBefore(index);
             if (m.role === "user") {
@@ -308,7 +508,9 @@ export function replay(o: ReplayInput): Turn[] {
                         if (p.type === "tool_result") applyResult(tools.get(p.toolCallId), p, o.ui);
                         else if (p.type === "text" && p.text.startsWith(STEERING)) {
                             const rec = o.ui.turn(si, index);
-                            start({ text: p.text.slice(STEERING.length).trim() }, rec?.at);
+                            const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at);
+                            if (rec?.end) t.endedAt = rec.end;
+                            if (rec?.status && rec.status !== "running") t.status = rec.status;
                         }
                     }
                     return;
@@ -320,10 +522,16 @@ export function replay(o: ReplayInput): Turn[] {
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;
+                const steps = o.ui.shown(si, index, m);
+                if (steps) {
+                    t.blocks.push(...steps.map((b) => restoredBlock(b, o)));
+                    shown.add(t);
+                }
                 return;
             }
             const t = ensure();
             const backend = getProvider(m.provider ?? "")?.kind === "agent";
+            if (backend && shown.has(t)) return;
             for (const p of m.content) {
                 if (p.type === "thinking") {
                     if (p.text.trim()) t.blocks.push({ t: "thinking", id: o.newId(), text: p.text });
@@ -347,10 +555,22 @@ export function replay(o: ReplayInput): Turn[] {
     return turns;
 }
 
+/** A step from the log, in this run: its own ids for text, the diff from the call's record, nothing left running. */
+function restoredBlock(b: Block, o: ReplayInput): Block {
+    if (b.t !== "tool") return { ...b, id: o.newId() } as Block;
+    const diff = o.ui.tools.get(b.id)?.diff;
+    return { ...ended(b), ...(diff ? { diff } : {}), ...(b.sub ? { sub: { ...b.sub, tools: b.sub.tools.map(ended) } } : {}) };
+}
+
+/** A call that was still open when the log last saw it: nothing runs after a reopen. */
+function ended<B extends Block>(b: B): B {
+    return b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "awaiting") ? { ...b, status: "error" } : b;
+}
+
 function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (!b) return;
     const rec = ui.tools.get(p.toolCallId);
-    Object.assign(b, resultPatch(p.content, p.isError));
+    Object.assign(b, resultPatch(p.content, p.isError, b.agent));
     if (rec?.summary) b.summary = rec.summary;
     else if (b.status === "ok") b.summary = derivedSummary(b, p.content);
     if (rec?.durationMs !== undefined) b.durationMs = rec.durationMs;

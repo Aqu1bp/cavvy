@@ -99,6 +99,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 const UNLOAD_AFTER_MS = 30_000;
 /** Deleted sessions older than a week are purged at start and this often. */
 const PURGE_EVERY_MS = 60 * 60 * 1000;
+/** How long opening a session waits for its model to be set up, so the snapshot has it (a slow provider's comes after). */
+const OPEN_MODEL_WAIT_MS = 2_000;
 
 export interface EngineClient {
     send(ev: ServerEvent): void;
@@ -1067,8 +1069,14 @@ export class Engine {
             case "session.open": {
                 const id = str(p.id, "id");
                 while (this.closing.has(id)) await this.afterClosing(id);
+                const loaded = this.runtimes.has(id);
                 const rt = this.openSession(id);
                 this.watch(client, rt.id);
+                if (!loaded) {
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    await Promise.race([rt.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
+                    clearTimeout(timer);
+                }
                 return rt.snapshot();
             }
             case "cliSessions.list":

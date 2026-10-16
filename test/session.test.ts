@@ -63,6 +63,29 @@ describe("Session persistence", () => {
         expect(lines(s.path).at(-1)).toEqual({ t: "title", title: "Second title" });
     });
 
+    test("re-choosing the model or speed it already has writes nothing", () => {
+        const s = Session.create(project());
+        s.push(user("x"));
+        s.setModel("anthropic:claude-a");
+        s.setFastMode(false);
+        s.setModel("anthropic:claude-a");
+        s.setFastMode(false);
+        expect(lines(s.path).map((l) => l.t)).toEqual(["meta", "msg", "model", "fastMode"]);
+        const l = Session.load(s.path);
+        l.setModel("anthropic:claude-a");
+        l.setFastMode(false);
+        l.setFastMode(true);
+        l.setModel("anthropic:claude-b");
+        expect(lines(s.path).slice(4)).toEqual([{ t: "fastMode", enabled: true }, { t: "model", model: "anthropic:claude-b" }]);
+        // A speed held only in memory (a chat from before speeds were saved) is written once chosen.
+        const legacy = Session.create(project());
+        legacy.push(user("y"));
+        const old = Session.load(legacy.path);
+        old.fastMode = false;
+        old.setFastMode(false);
+        expect(lines(legacy.path).at(-1)).toEqual({ t: "fastMode", enabled: false });
+    });
+
     test("session files are 0600 and their directory 0700", () => {
         const s = Session.create(project());
         s.push(user("x"));
