@@ -450,7 +450,8 @@ class ClaudeTurn {
         const warn = (message: string) => this.host.emit({ type: "notice", level: "warn", message });
         let servers: Record<string, unknown> = {};
         try {
-            servers = claudeMcpServers(this.t.approvedMcpServers ?? {}, warn);
+            // Native MCP tools bypass Harness's read-only permission checks.
+            if (!this.t.readOnly) servers = claudeMcpServers(this.t.approvedMcpServers ?? {}, warn);
         } catch {
             warn("Could not translate approved MCP servers; Claude Code runs without them.");
         }

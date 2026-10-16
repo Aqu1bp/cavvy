@@ -18,6 +18,7 @@ const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
 const { registerTools, serverTiming, stopServer } = await import("../src/mcp/server");
 const { McpClient } = await import("../src/mcp/client");
+const { McpManager } = await import("../src/mcp/manager");
 const { redact } = await import("../src/util/redact");
 const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
@@ -1075,6 +1076,22 @@ describe("Codex as the main agent", () => {
         // No harness server for the child.
         expect(setServers()).toEqual([]);
         expect(mcpResults()[0].text).toContain('(explore on claude-code:default) finished');
+    });
+
+    test("a read-only Claude delegate does not attach its parent's approved MCP servers", async () => {
+        process.env.FAKE_CODEX_SCENARIO = "mcp";
+        process.env.FAKE_SCENARIO = "bash";
+        calls([{ tool: "delegate", args: { task: "Inspect files", description: "Inspect", model: "claude-code:default", agent: "explore" } }]);
+        const manager = new McpManager(cwd, () => ({ mcpServers: { approved: {
+            command: process.execPath, args: ["--no-env-file", join(import.meta.dir, "fixtures/mcp-stdio-server.ts")],
+        } } }), true);
+        manager.load();
+        expect(Object.keys(manager.approvedServers())).toEqual(["approved"]);
+        const { run } = await makeAgent({ provider: "codex", approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("go")).toBe("done");
+        expect(starts().some((s) => s.argv.includes("--strict-mcp-config"))).toBe(true);
+        expect(setServers()).toEqual([]);
+        expect(mcpResults()[0].text).toContain("(explore on claude-code:default) finished");
     });
 
     test("a read-only agent on Claude Code runs read-only commands without asking", async () => {
