@@ -1,6 +1,6 @@
 // The session's side card: where it works (folder, branch, changes), and
-// only what's live besides: the plan, running shells, secrets it holds, MCP
-// servers that failed, and its sub-agents. Sections with nothing to say aren't drawn.
+// only what's live besides: the plan, running shells, secrets it holds, MCP servers
+// that failed or ask for approval, and its sub-agents. Empty sections aren't drawn.
 
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
@@ -8,6 +8,8 @@ import type { AgentRun } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
 import { newSession, openAgents, openReview, stopAgent } from "../state/actions";
+import { setMcpOpen } from "../state/ui";
+import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { useChanges, useGitChanges } from "../state/changes";
 import { canReveal, copyText, revealPath } from "../lib/platform";
 import { duration, plural, tildify } from "../lib/format";
@@ -52,6 +54,9 @@ function Workspace(p: { handle: SessionHandle }) {
                 </button>
                 <button class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
                     <SquarePen size={14} /> New session in {st().projectName}
+                </button>
+                <button class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
+                    <Plug size={14} /> MCP servers
                 </button>
             </Popover>
             <Show when={st().branch}>
@@ -150,27 +155,32 @@ function Secrets(p: { handle: SessionHandle }) {
     );
 }
 
-/** Healthy servers stay out of the way; one that failed shows with why. */
+/** Healthy servers stay out of the way; one that failed or asks for approval shows, and opens the full list. */
 function Mcp(p: { handle: SessionHandle }) {
-    const broken = () => p.handle.view.state.mcp.filter((m) => m.status === "failed" || m.status === "needs-approval");
+    const flagged = () => p.handle.view.state.mcp.filter(needsAttention);
     return (
-        <Show when={broken().length}>
+        <Show when={flagged().length}>
             <div class="sec">
                 <div class="sh">MCP</div>
-                <For each={broken()}>
+                <For each={flagged()}>
                     {(m) => (
                         <>
-                            <span class="prow lock" title={m.error}>
+                            <button class="prow" title={m.status === "failed" ? m.error : "Review what it runs"} onClick={() => setMcpOpen({ focus: m.name })}>
                                 <Plug size={16} />
-                                <span class="truncate grow">{m.name}</span>
-                                <span class={`meta ${m.status === "failed" ? "tone-err" : "tone-warn"}`}>{m.status === "failed" ? "Failed" : "Needs approval"}</span>
-                            </span>
+                                <span class="truncate grow">{shownName(m.name)}</span>
+                                <span class={`meta tone-${statusLabel(m).tone}`}>{statusLabel(m).text}</span>
+                            </button>
                             <Show when={m.error}>
                                 <div class="panel-error">{m.error}</div>
                             </Show>
                         </>
                     )}
                 </For>
+                <button class="prow" onClick={() => setMcpOpen({})}>
+                    <span class="mcp-spacer" aria-hidden="true" />
+                    <span class="grow meta">All MCP servers</span>
+                    <ChevronRight size={14} />
+                </button>
             </div>
         </Show>
     );

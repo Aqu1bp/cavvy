@@ -2295,3 +2295,9 @@ button.strip-ctl[aria-expanded="true"] {
 .script-row.confirming .script-acts {
     display: flex;
 }
+
+/* Lines up with the icon column of the rows above. */
+.prow .mcp-spacer {
+    width: 16px;
+    flex: none;
+}

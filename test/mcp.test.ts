@@ -7,6 +7,7 @@ const iso = isolate();
 const { McpClient, McpError, headerValue, MODERN_VERSION } = await import("../src/mcp/client");
 const { McpManager, toolNameFor, serverSegment, formatMcpResult } = await import("../src/mcp/manager");
 const { startHttpMcpServer } = await import("./fixtures/mcp-http-server");
+const { mcpFingerprint } = await import("../src/mcp/approval");
 import type { McpServerConfig, Settings } from "../src/config/settings";
 import type { McpClient as McpClientT } from "../src/mcp/client";
 import type { HttpFixture } from "./fixtures/mcp-http-server";
@@ -525,7 +526,7 @@ describe("McpManager.load and project .mcp.json approval", () => {
     );
     const base: Settings = {
         mcpServers: { fromSettings: cfg("s"), off: { ...cfg("off"), disabled: true }, dup: cfg("from-settings") },
-        enabledMcpjsonServers: ["approved"],
+        approvedMcpjsonServers: { approved: mcpFingerprint(cfg("approved"), proj) },
         disabledMcpjsonServers: ["rejected"],
     };
     const status = (m: InstanceType<typeof McpManager>) => Object.fromEntries([...m.servers.values()].map((s) => [s.name, `${s.source}:${s.status}`]));
@@ -547,7 +548,7 @@ describe("McpManager.load and project .mcp.json approval", () => {
     });
 
     test("enableAllProjectMcpServers approves every project server (rejections still win)", () => {
-        const m = new McpManager(proj, () => ({ ...base, enabledMcpjsonServers: [], enableAllProjectMcpServers: true }), true);
+        const m = new McpManager(proj, () => ({ ...base, approvedMcpjsonServers: {}, enableAllProjectMcpServers: true }), true);
         m.load();
         expect(m.servers.get("approved")!.status).toBe("pending");
         expect(m.servers.get("unapproved")!.status).toBe("pending");
@@ -579,7 +580,7 @@ describe("McpManager start, tools and shutdown", () => {
     afterAll(() => rmSync(proj, { recursive: true, force: true }));
     mkdirSync(proj, { recursive: true });
     writeFileSync(join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { mod: stdio("modern") } }));
-    let settings: Settings = { mcpServers: { leg: stdio("legacy") }, enabledMcpjsonServers: ["mod"] };
+    let settings: Settings = { mcpServers: { leg: stdio("legacy") }, approvedMcpjsonServers: { mod: mcpFingerprint(stdio("modern"), proj) } };
     const m = new McpManager(proj, () => settings, true);
     const ctx = { signal: new AbortController().signal } as never;
     afterAll(() => m.closeAll());
@@ -654,10 +655,11 @@ describe("McpManager start, tools and shutdown", () => {
         expect(m.servers.get("leg")!.status).toBe("connected");
         expect(m.servers.get("mod")!.client).toBe(modClient);
 
-        // Changing a server's config replaces it.
+        // Changing what a project server runs stops it, and it asks again.
         writeFileSync(join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { mod: stdio("modern", { CHANGED: "1" }) } }));
         m.load();
-        expect(m.servers.get("mod")!.status).toBe("pending");
+        expect(m.servers.get("mod")!.status).toBe("needs-approval");
+        expect(m.servers.get("mod")!.approval?.reason).toBe("changed");
         expect(m.servers.get("mod")!.client).toBeUndefined();
         expect(await waitFor(() => !alive(modPid))).toBe(true);
     });

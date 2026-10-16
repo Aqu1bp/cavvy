@@ -234,7 +234,7 @@ Custom commands are markdown files in `~/.harness/commands/` or `.harness/comman
 | `HARNESS.local.md` | Personal notes, git-ignored. |
 | `~/.harness/HARNESS.md` | Notes for all projects. |
 | `.harness/settings.json`, `.harness/settings.local.json`, `~/.harness/settings.json` | Settings: project, personal, user. |
-| `.mcp.json` | Shared MCP servers (each needs approval in `/mcp` the first time). |
+| `.mcp.json` | Shared MCP servers (each needs your approval before it starts; see [MCP](#mcp)). |
 | `.harness/agents/*.md`, `~/.harness/agents/*.md` | Custom sub-agents (frontmatter: `name`, `description`, `tools`, `model`). |
 
 Settings files may contain `//` and `/* */` comments and trailing commas. A settings, credentials, providers or trust file that has a JSON error is ignored (with a warning) and is never overwritten: saving a setting into it fails with a message naming the file, so nothing in it is lost. Saving rewrites the file as plain JSON, so comments in a file the harness edits are not kept.
@@ -248,6 +248,12 @@ harness mcp add github -- npx -y @modelcontextprotocol/server-github
 harness mcp add --transport http docs https://example.com/mcp -H "Authorization: Bearer …"
 harness mcp list
 ```
+
+A server in a project's `.mcp.json` starts only once you approve it, and only in a folder you trust (an untrusted folder's `.mcp.json` isn't read at all). In the terminal, `/mcp` lists the folder's servers. In the GUI, a server that needs approval or failed shows in the side panel, and clicking it (or `/mcp`, or "MCP servers" in the folder menu) opens the list of every server with its status, tool count and source. Before you approve, a card shows exactly what will run: the command and each argument on its own, the folder it runs in, the names of the environment variables it sets, or the URL and header names for a remote server. Values aren't shown, and anything that looks like a secret is masked. Control and bidi characters are shown as `⟨U+…⟩` rather than rendered. The card also says which `.mcp.json` declared it. Approving starts it at once, and every open session in the folder sees it connect. From the list you can reject a server (it stays off until you approve it), revoke an approval (it stops and asks again), or reconnect one that failed.
+
+An approval covers exactly what the server runs: its command, arguments, working folder, environment (names and values), URL and headers, in this folder. If `.mcp.json` later changes any of these, the server asks again before it starts, and the card says it changed. Approvals are saved in the folder's `.harness/settings.local.json` as a hash keyed with a secret in your harness home (`~/.harness/mcp-approval.key`), so a settings file committed to a repo can't approve that repo's servers. Approvals and rejections count only from your user settings and the folder's local settings, never from the committed `.harness/settings.json`. Approvals saved by name only, before this, ask once more. `"enableAllProjectMcpServers": true` in your user settings is a blanket opt-in: it approves every server in every trusted folder's `.mcp.json`, including later changes to what they run. It doesn't count from a folder's own settings files, since a repo can ship a `settings.local.json`. `harness mcp add --scope project` approves the server it adds.
+
+Harness's approval governs the servers Harness itself runs, whose tools go to sessions on Harness's own models. Claude Code and Codex sessions don't get those tools. Codex takes its MCP servers from its own config. Claude Code reads `.mcp.json` itself: in a folder you haven't trusted, it runs with `--strict-mcp-config` and gets none of them. In a folder you have trusted, a Claude Code session's main agent runs as `claude -p`, which starts the servers in `.mcp.json` without asking, whatever you decided in Harness. Only Claude Code's own `disabledMcpjsonServers` keeps one out. Read-only sub-agents get no MCP servers on either CLI. The approval card says this for a session on Claude Code or Codex.
 
 Both protocol generations are supported. The client probes with `server/discover` (the 2026-07-28 stateless protocol) and falls back to `initialize` for servers on 2025-11-25 and earlier. stdio and streamable HTTP transports are supported.
 

@@ -12,6 +12,7 @@ import { parseSse } from "../providers/sse";
 import { APP_NAME, APP_VERSION } from "../config/paths";
 import type { McpServerConfig } from "../config/settings";
 import { childEnv } from "../tools/bash";
+import { serverCwd } from "./approval";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -80,7 +81,8 @@ class StdioTransport implements Transport {
 
     constructor(cfg: McpServerConfig, cwd: string) {
         this.proc = spawn(cfg.command!, cfg.args ?? [], {
-            cwd: cfg.cwd ?? cwd,
+            // Resolved as the approval card shows it (and the approval is bound to).
+            cwd: serverCwd(cfg, cwd),
             env: { ...childEnv(), ...(cfg.env ?? {}) },
             stdio: ["pipe", "pipe", "pipe"],
         });
