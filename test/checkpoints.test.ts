@@ -683,7 +683,7 @@ describe("/rewind command", () => {
         expect(f.input()).toBe("");
         expect(f.printed.join("\n")).toContain("The conversation wasn't rewound");
         // The files it did restore changed under the model.
-        expect((s.agent as any).pendingReminders.join("\n")).toContain("- b.txt");
+        expect((s.agent as any).pendingReminders.map((r: { text: string }) => r.text).join("\n")).toContain("- b.txt");
     });
 
     test("files that can't be restored are listed, and the model is told about them", async () => {
@@ -699,7 +699,7 @@ describe("/rewind command", () => {
         expect(existsSync(b)).toBe(false);
         expect(readFileSync(a, "utf-8")).toBe("v1\n");
         expect(s.session.messages).toEqual([]);
-        const notes = (s.agent as any).pendingReminders.join("\n");
+        const notes = (s.agent as any).pendingReminders.map((r: { text: string }) => r.text).join("\n");
         expect(notes).toContain("weren't restored");
         expect(notes).toContain("- a.txt");
         expect(notes).not.toContain("b.txt");

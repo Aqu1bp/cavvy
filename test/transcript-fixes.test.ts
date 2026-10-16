@@ -176,3 +176,88 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
         expect(httpError(429, "Too Many Requests", JSON.stringify({ error: { message: "Rate limit reached, limit: 10 per minute" } }), null, "Google Gemini").retryable).toBe(true);
     });
 });
+
+describe("mode and model notes say where things are now, once", () => {
+    const notesOf = (req: ChatRequest) => {
+        const m = req.messages.findLast((x) => x.role === "user" && (x.meta?.kind ?? "prompt") === "prompt")!;
+        return m.content.filter((p): p is { type: "text"; text: string } => p.type === "text" && p.text.startsWith("<system-reminder>")).map((p) => p.text.replace(/^<system-reminder>\n|\n<\/system-reminder>$/g, ""));
+    };
+
+    test("several mode switches before a prompt: one note, for the mode it ends on", async () => {
+        const a = scripted(() => text("ok"));
+        a.agent.noteModeChange("default", "acceptEdits");
+        a.agent.noteModeChange("acceptEdits", "plan");
+        a.agent.noteModeChange("plan", "default");
+        a.agent.noteModeChange("default", "auto");
+        a.agent.addReminder("The user ran a shell command themselves (output shown to them):\nok");
+        await a.run("go");
+        const notes = notesOf(a.requests[0]!);
+        expect(notes).toHaveLength(2);
+        expect(notes.filter((n) => n.startsWith("The user ran a shell command"))).toHaveLength(1);
+        expect(notes.filter((n) => /permission mode|Plan mode/.test(n))).toEqual([expect.stringMatching(/^The user switched the permission mode to "Auto"/)]);
+    });
+
+    test("switched away and back: nothing to say", async () => {
+        const a = scripted(() => text("ok"));
+        a.agent.noteModeChange("default", "plan");
+        a.agent.noteModeChange("plan", "default");
+        a.agent.noteModelChange("test:test", { provider: "test", id: "other", name: "Other" } as any);
+        a.agent.noteModelChange("test:other", { provider: "test", id: "test", name: "Test Model" } as any);
+        await a.run("go");
+        expect(notesOf(a.requests[0]!)).toEqual([]);
+    });
+
+    test("out of plan mode by way of another mode still says plan mode ended", async () => {
+        const a = scripted(() => text("ok"));
+        a.agent.noteModeChange("plan", "acceptEdits");
+        a.agent.noteModeChange("acceptEdits", "default");
+        await a.run("go");
+        expect(notesOf(a.requests[0]!)).toEqual(['Plan mode has ended. The permission mode is now "Manual"; you can make changes again.']);
+    });
+
+    test("several model switches: one note, for the model it's on", async () => {
+        const a = scripted(() => text("ok"));
+        a.agent.noteModelChange("test:test", { provider: "gemini", id: "g", name: "Gemini" } as any);
+        a.agent.noteModelChange("gemini:g", { provider: "codex", id: "gpt-6-astra", name: "GPT-6-Astra" } as any);
+        a.agent.noteModelChange("codex:gpt-6-astra", { provider: "test", id: "test2", name: "Test Two" } as any);
+        await a.run("go");
+        expect(notesOf(a.requests[0]!)).toEqual(["The user switched the model to Test Two (test:test2). You are now running as this model."]);
+        // Delivered: the next prompt has none.
+        await a.run("again");
+        expect(notesOf(a.requests[1]!)).toEqual([]);
+    });
+
+    test("rewound past a model switch: the model it's on now is said again, not the old note", async () => {
+        const a = scripted(() => text("ok"));
+        await a.run("first");
+        a.agent.noteModelChange("test:test", { provider: "test", id: "b", name: "B" } as any);
+        await a.run("second");
+        expect(notesOf(a.requests[1]!)).toEqual(["The user switched the model to B (test:b). You are now running as this model."]);
+        a.agent.rewind(2);
+        await a.run("second, again");
+        const notes = notesOf(a.requests[2]!);
+        expect(notes.some((n) => n.startsWith("The user switched the model to B"))).toBe(false);
+        expect(notes).toContain("You are running as Test Model (test:test).");
+        expect(notes.filter((n) => n.startsWith("The permission mode is"))).toHaveLength(1);
+    });
+
+    test("a backend joining later isn't told, from turns it missed, that it runs as another model", async () => {
+        const cwd = realpathSync(tempDir());
+        const session = Session.create(cwd, { system: "SYSTEM" });
+        const first = scripted(() => text("Answer from Astra."), { session });
+        first.agent.noteModelChange("test:test", { provider: "codex", id: "gpt-6-astra", name: "GPT-6-Astra" } as any);
+        await first.run("question one");
+        expect(JSON.stringify(session.messages)).toContain("You are now running as this model");
+        const prompts: string[] = [];
+        const backend = { agentBackend: true, setMode() {}, listModels: async () => [], stream: async () => text(""), compact: async () => ({ reason: "done", text: "", actions: [] }), runTurn: async (t: any) => (prompts.push(t.prompt), { reason: "done", text: "From the backend.", actions: [] }) };
+        first.agent.setModel({ provider: "claude-code", id: "opus", name: "Claude Opus" } as any, backend as any);
+        first.agent.noteModelChange("codex:gpt-6-astra", { provider: "claude-code", id: "opus", name: "Claude Opus" } as any);
+        await first.run("question two");
+        expect(prompts[0]).toContain("question one");
+        expect(prompts[0]).toContain("Answer from Astra.");
+        // Its own, current note is there; the old one from the transcript isn't.
+        expect(prompts[0]).toContain("The user switched the model to Claude Opus (claude-code:opus)");
+        expect(prompts[0]).not.toContain("GPT-6-Astra");
+        session.release();
+    });
+});

@@ -360,7 +360,7 @@ export class Runtime {
         else {
             this.agent.setModel(info, client);
             this.agent.options.nativeWebSearch = this.nativeSearch();
-            if (prev && modelRef(prev) !== ref) this.agent.addReminder(`The user switched the model to ${info.name ?? info.id} (${ref}). You are now running as this model.`);
+            if (prev) this.agent.noteModelChange(modelRef(prev), info);
         }
         if (opts.persist) {
             try {

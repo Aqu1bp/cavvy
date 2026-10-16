@@ -253,12 +253,50 @@ function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
 }
 
+/** Notes that say where something is now: only the latest of each kind matters. */
+type StateKind = "mode" | "model";
+
+interface PendingNote {
+    text: string;
+    kind?: StateKind;
+    /** For a state note: where it was when the model last heard ("" when that's unknown, after a rewind). */
+    from?: string;
+}
+
+const PLAN_NOTE =
+    "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.";
+
+/** What the model hears when the mode went from `from` (as it last heard) to `to`. */
+function modeNote(from: string, to: PermissionMode): string {
+    if (to === "plan") return PLAN_NOTE;
+    if (from === "plan") return `Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`;
+    return `The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`;
+}
+
+/** Which state a note (a reminder's text) reports, this version's wording or an earlier one's. */
+function stateKind(note: string): StateKind | undefined {
+    if (/^(Plan mode is now active\.|Plan mode has ended\.|The user switched the permission mode to |The permission mode is ")/.test(note)) return "mode";
+    if (/^(The user switched the model to |You are running as )/.test(note)) return "model";
+    return undefined;
+}
+
+/**
+ * A message without its notes on the mode or model: in the transcript a
+ * backend is given of turns it missed they're stale ("You are now running
+ * as" another model), and its own turn says where things are now.
+ */
+function withoutStateNotes(m: Message): Message {
+    if (m.role !== "user") return m;
+    const content = m.content.filter((p) => p.type !== "text" || !promptNotes({ ...m, content: [p] }).some((n) => stateKind(n)));
+    return content.length === m.content.length ? m : { ...m, content };
+}
+
 export class Agent {
     readonly session: Session;
     model: ModelInfo;
     client: ProviderClient;
     readonly state: ToolState;
-    private pendingReminders: string[] = [];
+    private pendingReminders: PendingNote[] = [];
     /** Why the model call is being retried right now (shown if the user stops it meanwhile). */
     private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
@@ -307,7 +345,18 @@ export class Agent {
 
     /** Queue a note for the model, delivered with the next user message. */
     addReminder(text: string) {
-        this.pendingReminders.push(text);
+        this.pendingReminders.push({ text });
+    }
+
+    /**
+     * A note of where the mode or model is now, replacing one of the same kind
+     * not sent yet: the model hears the current state once, not each step on
+     * the way (and nothing if it's back where the model last heard it was).
+     */
+    private noteState(kind: StateKind, from: string, to: string, text: (from: string) => string) {
+        const origin = this.pendingReminders.find((r) => r.kind === kind)?.from ?? from;
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== kind);
+        if (origin !== to) this.pendingReminders.push({ kind, from: origin, text: text(origin) });
     }
 
     noteModeChange(from: PermissionMode, to: PermissionMode) {
@@ -316,15 +365,13 @@ export class Agent {
         // sub-agents running on Claude Code or Codex, each in its own mode (a read-only one stays read-only).
         if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
         for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(to);
-        if (to === "plan") {
-            this.addReminder(
-                "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.",
-            );
-        } else if (from === "plan") {
-            this.addReminder(`Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`);
-        } else {
-            this.addReminder(`The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`);
-        }
+        this.noteState("mode", from, to, (origin) => modeNote(origin, to));
+    }
+
+    /** The user picked another model (`from` is the one before, provider:id). */
+    noteModelChange(from: string, to: ModelInfo) {
+        const ref = modelRef(to);
+        this.noteState("model", from, ref, () => `The user switched the model to ${to.name ?? to.id} (${ref}). You are now running as this model.`);
     }
 
     /** The system prompt as sent: the session's, plus --append-system-prompt. */
@@ -408,7 +455,7 @@ export class Agent {
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
-        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r));
+        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
@@ -560,17 +607,25 @@ export class Agent {
      */
     rewind(index: number) {
         if (this.running) throw new Error("Agent is already running");
-        const prompt = this.session.messages[index];
+        const dropped = this.session.messages.slice(index);
+        const prompt = dropped[0];
         this.session.rewind(index);
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
         resetToolState(this.state, this.session.messages);
         this.o.classifier?.clearCache();
-        if (prompt?.role === "user") this.pendingReminders.unshift(...promptNotes(prompt));
+        // Notes about the mode or model aren't queued again as they were: what's current is said instead.
+        const notes = prompt?.role === "user" ? promptNotes(prompt) : [];
+        this.pendingReminders.unshift(...notes.filter((n) => !stateKind(n)).map((text) => ({ text })));
         // The mode may have changed in the dropped turns: say what it is now.
         const mode = this.o.mode.get();
-        if (mode === "plan") this.noteModeChange("default", "plan");
-        else this.addReminder(`The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}`);
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
+        this.pendingReminders.push({ kind: "mode", from: "", text: mode === "plan" ? modeNote("", "plan") : `The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}` });
+        // So may the model, if a dropped prompt told it of a switch (a switch since is still queued).
+        const switched = dropped.some((m) => m.role === "user" && promptNotes(m).some((n) => stateKind(n) === "model"));
+        if (switched && !this.pendingReminders.some((r) => r.kind === "model")) {
+            this.pendingReminders.push({ kind: "model", from: "", text: `You are running as ${this.model.name ?? this.model.id} (${modelRef(this.model)}).` });
+        }
     }
 
     private interrupted(_duringTools: boolean): TurnEndReason {
@@ -882,7 +937,7 @@ export class Agent {
      * one gets what other models said since its last turn.
      */
     private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
-        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex);
+        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
         const transcript = missed.length ? transcriptText(missed, 60_000) : "";
         if (!transcript) return text;
         const intro = resume
@@ -1223,8 +1278,9 @@ export class Agent {
             setMode: (m) => {
                 const from = this.o.mode.get();
                 this.o.mode.set(m);
-                // ExitPlanMode reports the change in its own result.
+                // ExitPlanMode reports the change in its own result: the model knows the mode now.
                 if (from !== "plan") this.noteModeChange(from, m);
+                else this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
             },
             onProgress: (text) => this.emit({ type: "tool_progress", id: callId, text }),
             ui: this.o.host.ui,
