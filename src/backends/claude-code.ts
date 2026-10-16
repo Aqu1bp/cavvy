@@ -50,7 +50,7 @@ export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background work once the prompt is answered (changeable for tests). */
 export const backgroundTiming = {
-    /** Agents and other non-command work keep the existing one-hour limit. */
+    /** Overall background wait cap, including across automatic report turns. */
     maxWaitMs: 60 * 60_000,
     /** Shells and monitors get a shorter grace; dev servers should not hold a turn open. */
     commandWaitMs: 10 * 60_000,
@@ -73,7 +73,14 @@ export function longLivedClaudeCommand(command: string): boolean {
         while (words[0] === "env" || /^[A-Za-z_][A-Za-z_0-9]*=/.test(words[0] ?? "")) words.shift();
         const exe = words[0]?.split("/").at(-1);
         if (["echo", "printf"].includes(exe ?? "")) return false;
-        if (words.some((w) => /^--watch(?:=|$)/.test(w))) return true;
+        // Honor explicit disabling values and later overrides (e.g. --watch --no-watch).
+        let watch = false;
+        for (const word of words) {
+            if (word === "--no-watch") watch = false;
+            else if (word === "--watch") watch = true;
+            else if (word.startsWith("--watch=")) watch = !["", "false", "0"].includes(word.slice(8).replace(/^["']|["']$/g, "").toLowerCase());
+        }
+        if (watch) return true;
         if (exe === "tail") return words.some((w) => /^-(?:[^-]*[fF]|-follow)(?:$|=)/.test(w));
         if (["dev", "serve", "start", "watch"].includes(exe ?? "")) return true;
         if (exe === "vite") return !words.slice(1).some((w) => ["build", "optimize", "--help", "--version", "-h", "-v"].includes(w));
@@ -328,7 +335,8 @@ class ClaudeTurn {
     private agentTokens = new Map<string, number>();
     /** Waiting on the background, since. */
     private waitingSince?: number;
-    private commandWaitingSince?: number;
+    /** Each command's grace starts after an answer, or when it joins the wait. */
+    private commandWaitingSince = new Map<string, number>();
     private waitingLabel?: string;
     private taskCommands = new Map<string, string>();
     private shellCommands = new Map<string, string>();
@@ -409,6 +417,7 @@ class ClaudeTurn {
         if (this.aborted || this.finishing) return;
         this.prompted = true;
         this.busy = true;
+        this.commandWaitingSince.clear();
         this.clearWaitStatus();
         // Its answer is waited for now, not a report turn.
         clearTimeout(this.settleTimer);
@@ -485,21 +494,28 @@ class ClaudeTurn {
         }
         if (this.pendingStops.size) return false;
         const commands = left.filter((t) => t.commandTask);
-        if (!commands.length) this.commandWaitingSince = undefined;
-        else this.commandWaitingSince ??= Date.now();
-        const servers = commands.filter((t) => t.command && longLivedClaudeCommand(t.command));
-        const expired = commands.length && Date.now() - this.commandWaitingSince! >= claudeBackgroundWaitMs(this.t.backgroundWaitSec);
-        const stopping = expired ? commands : servers;
+        const now = Date.now();
+        const grace = claudeBackgroundWaitMs(this.t.backgroundWaitSec);
+        for (const id of this.commandWaitingSince.keys()) {
+            if (!commands.some((t) => t.id === id)) this.commandWaitingSince.delete(id);
+        }
+        const stopping: { task: BackgroundWork; why: string }[] = [];
+        for (const task of commands) {
+            // Command tasks come from the CLI's list and have task IDs.
+            const id = task.id!;
+            if (!this.commandWaitingSince.has(id)) this.commandWaitingSince.set(id, now);
+            if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "recognized long-lived server/watcher" });
+            else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `background grace expired after ${grace / 1000}s` });
+        }
         if (stopping.length) {
-            const why = expired ? `background grace expired after ${claudeBackgroundWaitMs(this.t.backgroundWaitSec) / 1000}s` : "recognized long-lived server/watcher";
             if (stopping.length === left.length) {
-                this.noteStopped(stopping, why);
+                for (const { task, why } of stopping) this.noteStopped([task], why);
                 this.toldStopped = true;
                 return true;
             }
             // Keep agents and other finite work alive: stop only these task IDs.
             this.waitFor(left);
-            for (const task of stopping) this.stopTask(task, why);
+            for (const { task, why } of stopping) this.stopTask(task, why);
             return false;
         }
         if (left.length) {
@@ -507,7 +523,7 @@ class ClaudeTurn {
             clearTimeout(this.settleTimer);
             this.settleTimer = undefined;
             this.waitFor(left);
-            if (left.every((t) => t.commandTask) || Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
+            if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
             // Waited long enough (only between Claude Code's turns, so none is cut short): what's left stops with it.
             const ms = backgroundTiming.maxWaitMs;
             this.toldStopped = true;
@@ -606,7 +622,7 @@ class ClaudeTurn {
         clearInterval(this.pollTimer);
         this.pollTimer = undefined;
         this.waitingSince = undefined;
-        this.commandWaitingSince = undefined;
+        this.commandWaitingSince.clear();
         this.clearWaitStatus();
     }
 
@@ -677,6 +693,7 @@ class ClaudeTurn {
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {
+                    this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
                     this.onResult(m, ours);
@@ -786,6 +803,7 @@ class ClaudeTurn {
         this.reportFastMode(m);
         switch (m.subtype) {
             case "init":
+                this.commandWaitingSince.clear();
                 this.clearWaitStatus();
                 // Each turn starts with one, a turn Claude Code takes itself (with background reports) too.
                 this.busy = true;
@@ -808,6 +826,9 @@ class ClaudeTurn {
                     // A shell/Monitor may leave the list before its notification and
                     // automatic report turn. Give that turn the same grace as agents.
                     this.reportsDue += (this.background ?? []).filter((t) => t.type !== "local_agent" && !this.pendingStops.has(t.id) && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)).length;
+                    for (const id of this.commandWaitingSince.keys()) {
+                        if (!next.some((t: { id: string }) => t.id === id)) this.commandWaitingSince.delete(id);
+                    }
                     this.background = next;
                 }
                 break;
@@ -832,6 +853,7 @@ class ClaudeTurn {
                 break;
             }
             case "task_notification": {
+                this.commandWaitingSince.delete(m.task_id);
                 // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
                 // ran even if nothing of it showed. A later one replaces what this one said (the report it
                 // was waiting on, or how it ended).

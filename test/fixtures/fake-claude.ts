@@ -482,6 +482,55 @@ async function turn(content: any[], uuid?: string) {
         text(folded.length ? `Adjusted: ${folded.map((m) => m.text).join(" | ")}` : "No steering received before result.");
         return result("success", { user_message_uuids: [uuid, ...folded.map((m) => m.uuid)].slice(-64) });
     }
+    if (scenario === "monitor-repeated-reports") {
+        bgTasks.set("monitor-1", { task_id: "monitor-1", task_type: "monitor_mcp", description: "Watch checks" });
+        backgroundChanged();
+        text("Monitoring checks.");
+        result("success");
+        let reports = 0;
+        // Notifications start native report turns while the Monitor remains running.
+        // Stdin keeps the fake alive; shutdown must also stop its report timer.
+        setInterval(() => followUp(`Monitor notification ${++reports}.`), 40).unref();
+        return;
+    }
+    if (scenario.startsWith("shell-grace-")) {
+        const add = (id: string) => bgTasks.set(id, { task_id: id, task_type: id === "B" && scenario === "shell-grace-replace" ? "monitor_mcp" : "local_bash", description: `Command ${id}` });
+        const finishB = () => setTimeout(() => {
+            bgTasks.delete("B");
+            backgroundChanged();
+            followUp("Command B completed with its results.");
+        }, scenario === "shell-grace-overlap" || scenario === "shell-grace-replace" ? 180 : 80);
+        if (scenario === "shell-grace-queued" && prompts > 1) {
+            // The new answer comes after A's original deadline, with a fresh B.
+            await Bun.sleep(400);
+            bgTasks.delete("A");
+            add("B");
+            backgroundChanged();
+            text("Waiting for B.");
+            result("success");
+            finishB();
+            return;
+        }
+        const renew = scenario === "shell-grace-renew";
+        add(renew ? "B" : "A");
+        backgroundChanged();
+        text(renew ? "Waiting for B." : "Waiting for A.");
+        result("success");
+        if (scenario === "shell-grace-queued") return;
+        setTimeout(async () => {
+            if (scenario === "shell-grace-turn" || renew) {
+                answering = undefined;
+                out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: "none" });
+                await Bun.sleep(400);
+            }
+            if (scenario !== "shell-grace-overlap") bgTasks.delete("A");
+            if (!renew) add("B");
+            backgroundChanged();
+            if (scenario === "shell-grace-turn" || renew) { text("Waiting for B."); result("success"); }
+            finishB();
+        }, scenario === "shell-grace-turn" || renew ? 40 : 180);
+        return;
+    }
     if (scenario.startsWith("shell-background") || scenario.startsWith("monitor-background")) {
         const type = scenario.startsWith("monitor-background") ? "monitor_mcp" : "local_bash";
         const nested = scenario === "shell-background-nested";

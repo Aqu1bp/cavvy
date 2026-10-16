@@ -2297,3 +2297,70 @@ describe("Claude Code background grace (#60 follow-up)", () => {
         } finally { Object.assign(backgroundTiming, saved); }
     });
 });
+
+describe("Claude Code reviewed grace fixes", () => {
+    test("repeated Monitor report turns cannot extend the overall background cap", async () => {
+        process.env.FAKE_SCENARIO = "monitor-repeated-reports";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { maxWaitMs: 350, pollMs: 10 });
+        const abort = new AbortController();
+        const timeout = setTimeout(() => abort.abort(), 4000);
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.2 } } });
+            const outcome = await a.run("monitor checks", abort.signal);
+            expect(outcome).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Monitor notification 2.");
+            expect(notices(a.events).join("\n")).toMatch(/Stopped waiting for.*Watch checks.*after 1s/);
+            expect(notices(a.events).join("\n")).not.toContain("grace expired");
+            expect(a.session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" } });
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("background monitor: Watch checks");
+            process.env.FAKE_SCENARIO = "none";
+            const b = await makeAgent({ provider: "claude-code", session: a.session });
+            expect(await b.run("continue")).toBe("done");
+            expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks: background monitor: Watch checks");
+        } finally {
+            clearTimeout(timeout);
+            Object.assign(backgroundTiming, saved);
+        }
+    });
+
+    for (const flags of ["--watch=false", "--watch=0", '--watch="false"', "--watch='0'", "--no-watch", "--watch --no-watch", "--watch --watch=false", "--watch=true --watch=0"]) test(`disabled watch flags preserve finite command results: ${flags}`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_COMMAND = `npm test -- ${flags}`;
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.run("run tests")).toBe("done");
+        expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+        expect(notices(a.events).some((n) => n.includes("recognized long-lived"))).toBe(false);
+    });
+
+    test("only enabling watch flags count, with the last flag taking precedence", async () => {
+        const { longLivedClaudeCommand } = await import("../src/backends/claude-code");
+        for (const flags of ["--watch", "--watch=true", "--watch=src", "--no-watch --watch", "--watch=0 --watch=src"]) expect(longLivedClaudeCommand(`npm test -- ${flags}`)).toBe(true);
+        expect(longLivedClaudeCommand("npm test -- --watch=")).toBe(false);
+    });
+
+    for (const scenario of ["shell-grace-queued", "shell-grace-turn", "shell-grace-overlap", "shell-grace-replace", "shell-grace-renew"]) test(`${scenario}: each task gets its own full grace after its answer`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const saved = { ...backgroundTiming };
+        backgroundTiming.pollMs = 10;
+        let queueReady = false;
+        let sent = false;
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.3 } }, drainQueued: () => {
+                if (!queueReady || sent) return [];
+                sent = true;
+                return ["start command B"];
+            } });
+            const done = a.run("start command A");
+            if (scenario === "shell-grace-queued") {
+                while (!a.events.some((e) => e.type === "activity" && e.text?.includes("Command A"))) await Bun.sleep(5);
+                queueReady = true;
+            }
+            expect(await done).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Command B completed with its results.");
+            expect(notices(a.events).some((n) => /Stopped.*Command B/.test(n))).toBe(false);
+            const stops = received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+            expect(stops).toEqual(scenario === "shell-grace-overlap" ? ["A"] : []);
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+});
