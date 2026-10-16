@@ -1975,8 +1975,10 @@ export class Engine {
                     },
                     this.o.log,
                 );
+                // The commit is for plan handoffs on the server; the wire result stays CreateWorktreeResult.
+                const wire = { path: made.path, branch: made.branch };
                 // The worktree is there whatever its setup does: only asked for, by this request, may it run.
-                return p.setup === true ? { ...made, ...(await this.grantSetup(client, made.path, preview)) } : made;
+                return p.setup === true ? { ...wire, ...(await this.grantSetup(client, made.path, preview)) } : wire;
             }
             case "projects.removeWorktree":
                 return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));
