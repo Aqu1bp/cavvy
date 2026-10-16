@@ -337,4 +337,24 @@ describe("speed", () => {
         expect(r.partial).toBe(true);
         expect(r.stale).toBe(false);
     });
+
+    test("asked again, a search stopped by its budget reads on from where it stopped", async () => {
+        // The oldest session of all says it; everything newer is read first.
+        const old = write([prompt("what did we name it"), reply("we named it the quokka lighthouse")], { age: 400 * 86400 });
+        clearSearchCache();
+        const budgetBytes = 8 * 1024 * 1024;
+        const first = await searchSessions("quokka lighthouse", { budgetBytes });
+        expect(first).toMatchObject({ hits: [], partial: true });
+        // Each answer reads at most the budget; read from scratch, every one would stop where the first did.
+        let r = first;
+        let rounds = 1;
+        while (r.partial && rounds < 20) {
+            r = await searchSessions("quokka lighthouse", { budgetBytes });
+            rounds++;
+        }
+        expect(r.partial).toBe(false);
+        expect(r.hits.map((h) => h.id)).toEqual([old.id]);
+        expect(rounds).toBeGreaterThan(2);
+        expect(rounds).toBeLessThan(12);
+    });
 });

@@ -11,6 +11,7 @@ import { ModeIcon, MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
 import { askDelete } from "./Header";
 import { Spinner } from "./ui/bits";
+import { searchRounds } from "../lib/search";
 
 interface Entry {
     id: string;
@@ -69,6 +70,8 @@ export function CommandPalette() {
     // With the query they were found for: they stay on the list while the next one is asked, and open with their own.
     const [hits, setHits] = createSignal<{ query: string; hits: SessionSearchHit[] }>({ query: "", hits: [] });
     const [searching, setSearching] = createSignal(false);
+    // Past the server's budget: reading older sessions still, or stopped before all were read.
+    const [older, setOlder] = createSignal<"more" | "incomplete">();
     let asked = 0;
     let wait: ReturnType<typeof setTimeout> | undefined;
     createEffect(
@@ -76,6 +79,7 @@ export function CommandPalette() {
             clearTimeout(wait);
             const query = raw.trim();
             const mine = ++asked;
+            setOlder(undefined);
             if (query.length < MIN_SEARCH || query.length > MAX_SEARCH) {
                 setHits({ query: "", hits: [] });
                 setSearching(false);
@@ -84,9 +88,14 @@ export function CommandPalette() {
             setSearching(true);
             wait = setTimeout(async () => {
                 try {
-                    const r = await rpc.call("sessions.search", { query, limit: MAX_HITS });
-                    if (mine !== asked || r.stale) return;
-                    setHits({ query, hits: r.hits });
+                    await searchRounds(
+                        () => rpc.call("sessions.search", { query, limit: MAX_HITS }),
+                        () => mine === asked,
+                        (r) => {
+                            setHits({ query, hits: r.hits });
+                            setOlder(r.more ? "more" : r.incomplete ? "incomplete" : undefined);
+                        },
+                    );
                 } catch {
                     if (mine === asked) setHits({ query: "", hits: [] });
                 } finally {
@@ -204,7 +213,7 @@ export function CommandPalette() {
                 </Show>
             </div>
             <div class="pal-list" ref={list}>
-                <For each={results()} fallback={<div class="panel-empty">{searching() ? "Searching messages…" : "Nothing matches."}</div>}>
+                <For each={results()} fallback={<div class="panel-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found in the sessions searched so far; older ones weren't all read." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
                     {(e, i) => (
                         <>
                             <Show when={i() === 0 || results()[i() - 1]!.section !== e.section}>
@@ -239,6 +248,9 @@ export function CommandPalette() {
                         </>
                     )}
                 </For>
+                <Show when={results().length && older()}>
+                    <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Older sessions weren't all read; results may be incomplete."}</div>
+                </Show>
             </div>
         </Dialog>
     );

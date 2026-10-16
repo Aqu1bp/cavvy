@@ -165,6 +165,13 @@
     overflow-wrap: anywhere;
 }
 
+/* Below the list: message search still reading older sessions, or stopped before all were. */
+.pal-note {
+    padding: 8px 10px 4px;
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+}
+
 .pal-snippet mark {
     color: var(--fg);
     background: color-mix(in srgb, var(--accent) 26%, transparent);
