@@ -1133,7 +1133,7 @@ class CodexTurn {
         if (!form.length) return answers[0]?.[0] === "Accept" ? reply("accept", {}) : reply("decline");
         const content: Record<string, unknown> = {};
         for (const [i, f] of form.entries()) {
-            const picked = (answers[i] ?? []).filter((x) => x !== LEAVE_EMPTY);
+            const picked = (answers[i] ?? []).filter((x) => f.skip === undefined || x !== f.skip);
             const value = picked.length ? f.parse(picked) : undefined;
             if (value === undefined && picked.length) {
                 // Not an answer the form allows (typed outside its choices, out of range): not sent as one.
@@ -1354,6 +1354,8 @@ interface FormField {
     options: BackendQuestion["options"];
     multi: boolean;
     required: boolean;
+    /** The option that leaves it empty (an optional field's), named so no answer of its own is taken for it. */
+    skip?: string;
     /** The value for what was picked or typed; undefined when it isn't one. */
     parse(answer: string[]): unknown;
 }
@@ -1373,7 +1375,6 @@ export function elicitationForm(schema: any): FormField[] | undefined {
         const req = required.has(key);
         const label = typeof s.title === "string" && s.title.trim() ? s.title.trim() : key;
         const question = `${label}${typeof s.description === "string" && s.description.trim() ? ` (${s.description.trim()})` : ""}${req ? "" : " (optional)"}`;
-        const skip = req ? [] : [{ label: LEAVE_EMPTY }];
         // Choices: labels shown, values sent; something typed that isn't one of them isn't a value.
         const choices = (list: { value: string; label: string }[]) => (picked: string) => list.find((c) => c.label === picked)?.value ?? list.find((c) => c.value === picked)?.value;
         const enumOf = (x: any): { value: string; label: string }[] | undefined => {
@@ -1382,7 +1383,13 @@ export function elicitationForm(schema: any): FormField[] | undefined {
             if (Array.isArray(x?.enum)) return x.enum.filter((v: unknown) => typeof v === "string").map((v: string, i: number) => ({ value: v, label: typeof x.enumNames?.[i] === "string" ? x.enumNames[i] : v }));
             return undefined;
         };
-        const field = (options: BackendQuestion["options"], multi: boolean, parse: (a: string[]) => unknown): FormField => ({ key, question, options: [...options, ...skip], multi, required: req, parse });
+        const field = (options: BackendQuestion["options"], multi: boolean, parse: (a: string[]) => unknown): FormField => {
+            if (req) return { key, question, options, multi, required: req, parse };
+            // Not a label of the field's own (an enum's "Leave empty").
+            let skip = LEAVE_EMPTY;
+            while (options.some((o) => o.label === skip)) skip = `${skip} (skip)`;
+            return { key, question, options: [...options, { label: skip }], multi, required: req, parse, skip };
+        };
         const defaults = s.default !== undefined && typeof s.default !== "object" ? [{ label: String(s.default), description: "the default" }] : [];
         if (s.type === "array") {
             const list = enumOf(s.items);

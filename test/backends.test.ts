@@ -826,6 +826,14 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
             expect(notices(c.events).join("\n")).toMatch(/Declined the probe MCP server's form: the answer for "(color|count)" isn't one it allows/);
         }
 
+        // A required field's own choice that reads like the skip option is sent as picked.
+        rmSync(LOG, { force: true });
+        process.env.FAKE_ELICIT_FIELDS = JSON.stringify({ color: { type: "string", enum: ["Leave empty", "x"] } });
+        const d = await makeAgent({ provider: "codex", ui: { askQuestion: async () => ["Leave empty"] } });
+        expect(await d.run("go")).toBe("done");
+        expect(elicitations()).toEqual([{ action: "accept", content: { color: "Leave empty" }, _meta: null }]);
+        delete process.env.FAKE_ELICIT_FIELDS;
+
         // A required field left unanswered (dismissed), or nobody to ask: declined.
         for (const ui of [{ askQuestion: async () => undefined }, {}]) {
             rmSync(LOG, { force: true });
@@ -850,6 +858,11 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect([parse("tags", ["a"]), parse("tags", ["a", "c"]), parse("tags", ["a", "b"])]).toEqual([["a"], undefined, undefined]);
         expect([parse("count", ["5"]), parse("count", ["0"]), parse("count", ["6"]), parse("count", ["2.5"])]).toEqual([5, undefined, undefined, undefined]);
         expect([parse("name", ["Ann"]), parse("name", ["A"]), parse("name", ["Annabel"])]).toEqual(["Ann", undefined, undefined]);
+        // An answer that reads like the skip option is an answer: an optional field's skip is named apart from its own choices.
+        const [required, optional] = elicitationForm({ type: "object", properties: { a: { type: "string", enum: ["Leave empty", "x"] }, b: { type: "string", enum: ["Leave empty", "x"] } }, required: ["a"] })!;
+        expect([required!.skip, required!.options.map((o) => o.label)]).toEqual([undefined, ["Leave empty", "x"]]);
+        expect([optional!.skip, optional!.options.map((o) => o.label)]).toEqual(["Leave empty (skip)", ["Leave empty", "x", "Leave empty (skip)"]]);
+        expect(required!.parse(["Leave empty"])).toBe("Leave empty");
     });
 
     test("an MCP server's link: the question shows it; done accepts", async () => {
