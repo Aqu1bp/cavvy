@@ -25,9 +25,23 @@ rpc.retriesCredentials = isTauri;
 
 // Two wrapped rows fit above Home's input even in a 600px-tall window.
 const MAX_TOASTS = 2;
+const MAX_QUEUED_TOASTS = 10;
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
 const toastTimers = new Map<number, { life: ToastLifetime; duration: number; message: string; timer?: ReturnType<typeof setTimeout> }>();
+const toastQueue: (Toast & { duration: number })[] = [];
+
+function showQueuedToasts() {
+    while (toasts.length < MAX_TOASTS && toastQueue.length) {
+        const { duration, ...item } = toastQueue.shift()!;
+        // Waiting in the queue uses none of the toast's visible lifetime.
+        const life = new ToastLifetime(duration, performance.now());
+        if (document.hidden) life.pause("hidden", performance.now());
+        toastTimers.set(item.id, { life, duration, message: item.message });
+        setToasts((t) => [...t, item]);
+        scheduleToast(item.id);
+    }
+}
 
 function scheduleToast(id: number) {
     const entry = toastTimers.get(id);
@@ -53,27 +67,30 @@ export function toast(message: string, level: Toast["level"] = "info", action?: 
         scheduleToast(existing.id);
         return;
     }
-    const id = ++toastId;
-    while (toasts.length >= MAX_TOASTS) {
-        // Don't remove the toast being used when another can go; preserve Undo next.
-        const available = toasts.filter((t) => !t.running);
-        if (!available.length) return;
-        const idle = available.filter((t) => !toastTimers.get(t.id)?.life.interacting);
-        const candidates = idle.length ? idle : available;
-        dismissToast((candidates.find((t) => !t.action) ?? candidates[0]!).id);
+    const waiting = repeatedToast(toastQueue, message, level, action);
+    if (waiting) {
+        waiting.count++;
+        return;
     }
-    setToasts((t) => [...t, { id, level, message, count: 1, action }]);
-    const duration = toastMs(level, ms);
-    const life = new ToastLifetime(duration, performance.now());
-    if (document.hidden) life.pause("hidden", performance.now());
-    toastTimers.set(id, { life, duration, message });
-    scheduleToast(id);
+    toastQueue.push({ id: ++toastId, level, message, count: 1, action, duration: toastMs(level, ms) });
+    if (toasts.length >= MAX_TOASTS) {
+        const idle = toasts.find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
+        if (idle) dismissToast(idle.id);
+    }
+    showQueuedToasts();
+    while (toastQueue.length > MAX_QUEUED_TOASTS) {
+        const oldest = toastQueue.findIndex((t) => !t.action);
+        // Recovery actions take precedence over the queue limit when none can be dropped.
+        if (oldest < 0) break;
+        toastQueue.splice(oldest, 1);
+    }
 }
 
 export function dismissToast(id: number) {
     clearTimeout(toastTimers.get(id)?.timer);
     toastTimers.delete(id);
     setToasts((t) => t.filter((x) => x.id !== id));
+    showQueuedToasts();
 }
 
 export async function runToastAction(id: number) {

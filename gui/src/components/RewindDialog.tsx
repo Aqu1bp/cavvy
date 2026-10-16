@@ -31,6 +31,10 @@ export function RewindDialog() {
     const [busy, setBusy] = createSignal(false);
     /** Files changed outside Harness: restoring them needs a second, explicit click. */
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
+    createEffect(() => {
+        // Reconnect reopens sessions later; a plan against the old view is no longer safe.
+        if (rewindOpen() && app.conn !== "open") setRewindOpen(false);
+    });
     const [targets, { refetch }] = createResource(
         () => (app.conn === "open" && rewindOpen() && id() ? id() : undefined),
         (sid) =>

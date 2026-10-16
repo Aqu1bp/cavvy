@@ -30,7 +30,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-    for (const item of [...toasts]) dismissToast(item.id);
+    while (toasts.length) dismissToast(toasts[0]!.id);
     globalThis.setTimeout = originalTimeout;
     globalThis.clearTimeout = originalClearTimeout;
     globalThis.WebSocket = originalSocket;
@@ -62,12 +62,76 @@ test("the real toast store evicts a notice before the older Undo", () => {
     expect(toasts).toHaveLength(0);
 });
 
-test("an all-action list evicts the oldest action", () => {
+test("an all-action list queues the next Undo until a slot frees", () => {
     for (const message of ["First", "Second", "Third"]) toast(message, "info", { label: "Undo", run() {} });
+    expect(toasts.map((t) => t.message)).toEqual(["First", "Second"]);
+    dismissToast(toasts[0]!.id);
     expect(toasts.map((t) => t.message)).toEqual(["Second", "Third"]);
 });
 
+test("two Undo toasts queue ordinary notices in FIFO order with a fresh lifetime", () => {
+    for (const message of ["Undo A", "Undo B"]) toast(message, "info", { label: "Undo", run() {} }, UNDO_DELETE_MS);
+    toast("First notice");
+    toast("Second notice");
+    advance(9999);
+    expect(toasts.map((t) => t.message)).toEqual(["Undo A", "Undo B"]);
+    advance(1);
+    expect(toasts.map((t) => t.message)).toEqual(["First notice", "Second notice"]);
+    advance(4499);
+    expect(toasts).toHaveLength(2);
+    advance(1);
+    expect(toasts).toHaveLength(0);
+});
+
+test("queued repeats merge and begin paused if promoted while hidden", () => {
+    for (const message of ["Undo A", "Undo B"]) toast(message, "info", { label: "Undo", run() {} });
+    toast("Repeated");
+    toast("Repeated");
+    const ids = toasts.map((t) => t.id);
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { hidden: true } });
+    for (const id of ids) dismissToast(id);
+    expect(toasts.map((t) => [t.message, t.count])).toEqual([["Repeated", 2]]);
+    advance(20_000);
+    expect(toasts).toHaveLength(1);
+    pauseToast(toasts[0]!.id, "hidden", false);
+    advance(4500);
+    expect(toasts).toHaveLength(0);
+});
+
+test("the ten-item queue drops its oldest action-less entry, preserving queued Undo", () => {
+    for (const message of ["Visible A", "Visible B", "Queued Undo"]) toast(message, "info", { label: "Undo", run() {} });
+    for (let i = 0; i < 11; i++) toast(`Notice ${i}`);
+    const shown: string[] = [];
+    while (toasts.length) {
+        shown.push(toasts[0]!.message);
+        dismissToast(toasts[0]!.id);
+    }
+    expect(shown).toEqual(["Visible A", "Visible B", "Queued Undo", ...Array.from({ length: 9 }, (_, i) => `Notice ${i + 2}`)]);
+});
+
+test("an all-action queue preserves every recovery action even beyond its usual limit", () => {
+    const messages = Array.from({ length: 13 }, (_, i) => `Undo ${i}`);
+    for (const message of messages) toast(message, "info", { label: "Undo", run() {} });
+    const shown: string[] = [];
+    while (toasts.length) {
+        shown.push(toasts[0]!.message);
+        dismissToast(toasts[0]!.id);
+    }
+    expect(shown).toEqual(messages);
+});
+
 for (const reason of ["hover", "focus"] as const) {
+    test(`an Undo plus a ${reason} notice queues overflow instead of removing either`, () => {
+        toast("Undo", "info", { label: "Undo", run() {} });
+        toast("Being read");
+        const ids = toasts.map((t) => t.id);
+        pauseToast(ids[1]!, reason, true);
+        toast("Waiting");
+        expect(toasts.map((t) => t.message)).toEqual(["Undo", "Being read"]);
+        dismissToast(ids[0]!);
+        expect(toasts.map((t) => t.message)).toEqual(["Being read", "Waiting"]);
+    });
+
     test(`eviction preserves a toast with ${reason} while another can go`, () => {
         toast("Being read");
         const id = toasts[0]!.id;
@@ -121,6 +185,29 @@ test("pending actions neither expire nor run twice, and dismiss after success", 
     resolve();
     await pending;
     expect(toasts.some((t) => t.id === id)).toBe(false);
+});
+
+test("both running actions queue a new toast instead of losing it", async () => {
+    const finish: (() => void)[] = [];
+    for (const message of ["Undo A", "Undo B"]) {
+        toast(message, "info", {
+            label: "Undo",
+            run: () => new Promise<void>((resolve) => finish.push(resolve)),
+        });
+    }
+    const pending = toasts.map((t) => runToastAction(t.id));
+    toast("Waiting");
+    advance(20_000);
+    expect(toasts.map((t) => t.message)).toEqual(["Undo A", "Undo B"]);
+    finish[0]!();
+    await pending[0];
+    expect(toasts.map((t) => t.message)).toEqual(["Undo B", "Waiting"]);
+    finish[1]!();
+    await pending[1];
+    advance(4499);
+    expect(toasts.map((t) => t.message)).toEqual(["Waiting"]);
+    advance(1);
+    expect(toasts).toHaveLength(0);
 });
 
 test("two failed pending actions both retain Undo and readable errors without stacking", async () => {
