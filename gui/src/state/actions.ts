@@ -1,11 +1,11 @@
 // What the user does, as calls to the server.
 
-import type { EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import type { ArchiveResult, EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { copyText, pickFolder } from "../lib/platform";
-import { activate, app, createSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, dropHandle, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { requestComposerFocus, setAgentFocus, setArchiveRequest, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
 export interface Attachment {
     name: string;
@@ -247,10 +247,39 @@ export async function settle(id: string, settled: boolean) {
     await rpc.call("session.settle", { id, settled }).catch(reportError);
 }
 
+/**
+ * Archive (or restore) a session. One working in a managed worktree asks first
+ * whether to remove the worktree too (ArchiveDialog); any other archives at once.
+ */
 export async function archive(id: string, archived: boolean) {
+    if (archived) {
+        // Can't ask (an older server, say): archived as before, keeping everything.
+        const offer = await rpc.call("session.archiveOffer", { id }).catch(() => undefined);
+        if (offer?.worktree) {
+            const title = [...app.sessions, ...app.archived].find((s) => s.id === id)?.title ?? handleFor(id)?.view.state.title ?? "this session";
+            setArchiveRequest({ id, title, offer });
+            return;
+        }
+    }
+    await setArchived(id, archived);
+}
+
+/** Undo brings the session back, never a removed worktree. */
+export async function setArchived(id: string, archived: boolean) {
     await rpc.call("session.archive", { id, archived }).catch(reportError);
     if (archived && app.activeId === id) newSession(app.homeCwd);
-    toast(archived ? "Session archived" : "Session restored", "info", archived ? { label: "Undo", run: () => void archive(id, false) } : undefined);
+    toast(archived ? "Session archived" : "Session restored", "info", archived ? { label: "Undo", run: () => void setArchived(id, false) } : undefined);
+}
+
+/** Archived from ArchiveDialog: the worktree removed, or kept and why. */
+export function archivedWithWorktree(id: string, r: Extract<ArchiveResult, { archived: true }>) {
+    // The server closed it to remove the worktree: opening it again (after Undo) starts over.
+    if (r.closed) dropHandle(id);
+    const gone = r.removed && r.worktree;
+    const inside = (p: string | undefined) => Boolean(gone && p && (p === r.worktree || p.startsWith(`${r.worktree}/`)));
+    if (inside(app.homeCwd) && r.main) setApp("homeCwd", r.main);
+    if (app.activeId === id) newSession(app.homeCwd);
+    toast(r.removed ? "Session archived; worktree removed" : `Session archived; worktree kept: ${r.kept ?? "it couldn't be removed."}`, r.removed ? "success" : "info", { label: "Undo", run: () => void setArchived(id, false) });
 }
 
 export function togglePanel() {

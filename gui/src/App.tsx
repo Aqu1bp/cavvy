@@ -21,6 +21,8 @@ import { SettingsNav, SettingsPage } from "./components/Settings";
 import { RewindDialog } from "./components/RewindDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
+import { PlanDialogs } from "./components/PlanDialogs";
+import { ArchiveDialog } from "./components/ArchiveDialog";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function Toasts() {
@@ -38,17 +40,19 @@ function Toasts() {
                             </Match>
                         </Switch>
                         <span class="toast-msg">{t.message}</span>
-                        <Show when={t.action}>
-                            <button
-                                class="link-btn"
-                                onClick={() => {
-                                    t.action!.run();
-                                    dismissToast(t.id);
-                                }}
-                            >
-                                {t.action!.label}
-                            </button>
-                        </Show>
+                        <For each={t.actions}>
+                            {(a) => (
+                                <button
+                                    class="link-btn"
+                                    onClick={() => {
+                                        a.run();
+                                        dismissToast(t.id);
+                                    }}
+                                >
+                                    {a.label}
+                                </button>
+                            )}
+                        </For>
                         <button class="icon-btn" onClick={() => dismissToast(t.id)} aria-label="Dismiss">
                             <X size={13} />
                         </button>
@@ -228,6 +232,8 @@ export function App() {
             <RewindDialog />
             <FolderPicker />
             <TrustDialog />
+            <PlanDialogs />
+            <ArchiveDialog />
             <Toasts />
         </div>
     );

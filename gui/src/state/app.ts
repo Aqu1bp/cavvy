@@ -16,20 +16,27 @@ rpc.retriesCredentials = isTauri;
 // ---------------------------------------------------------------------------
 // Toasts
 
+export interface ToastAction {
+    label: string;
+    run: () => void;
+}
+
 export interface Toast {
     id: number;
     level: "info" | "warn" | "error" | "success";
     message: string;
-    action?: { label: string; run: () => void };
+    actions: ToastAction[];
 }
 
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
 
-export function toast(message: string, level: Toast["level"] = "info", action?: Toast["action"]) {
+/** With actions it stays a little longer: there's something to do with it. */
+export function toast(message: string, level: Toast["level"] = "info", action?: ToastAction | ToastAction[]) {
     const id = ++toastId;
-    setToasts((t) => [...t.slice(-3), { id, level, message, action }]);
-    setTimeout(() => dismissToast(id), level === "error" ? 8000 : 4500);
+    const actions = action ? (Array.isArray(action) ? action : [action]) : [];
+    setToasts((t) => [...t.slice(-3), { id, level, message, actions }]);
+    setTimeout(() => dismissToast(id), level === "error" ? 8000 : actions.length > 1 ? 8000 : 4500);
 }
 
 export function dismissToast(id: number) {
@@ -191,6 +198,12 @@ function schedule(h: SessionHandle) {
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
     if (document.visibilityState === "visible") requestAnimationFrame(() => flush(h));
     else setTimeout(() => flush(h), 200);
+}
+
+/** The server closed the session (archived with its worktree): this window no longer has it open. */
+export function dropHandle(id: string) {
+    if (!handles.delete(id)) return;
+    setHandleVersion((v) => v + 1);
 }
 
 export async function openSession(id: string): Promise<SessionHandle> {

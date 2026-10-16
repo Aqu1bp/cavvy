@@ -390,6 +390,15 @@ describe("Claude Code backend", () => {
         expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "default", destination: "session" }] });
     });
 
+    test("ExitPlanMode: a plan taken to another session stops Claude Code's turn, still in plan mode", async () => {
+        process.env.FAKE_SCENARIO = "plan";
+        const a = await makeAgent({ provider: "claude-code", mode: "plan", ui: { approvePlan: async () => ({ approved: false, feedback: "It went to a new worktree.", handoff: true }) } });
+        await a.run("plan it");
+        expect(a.mode()).toBe("plan");
+        expect(permissionReplies()[0]).toMatchObject({ behavior: "deny", interrupt: true });
+        expect(permissionReplies()[0].message).toContain("It went to a new worktree.");
+    });
+
     test("/compact runs Claude Code's own compaction on the session", async () => {
         const { run, agent, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
         expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(false);
