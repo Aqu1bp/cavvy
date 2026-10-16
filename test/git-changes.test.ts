@@ -4,7 +4,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { findRenames, gitChanges, render } = await import("../src/server/git-changes");
+const { findRenames, gitChanges, removeWhere, render } = await import("../src/server/git-changes");
 const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
@@ -316,6 +316,31 @@ describe("git changes", () => {
         expect(r.files[0]!.hunks[0]!.lines.map((l) => `${l.t}:${l.text}`)).toEqual(["ctx:one", "del:two", "add:TWO"]);
     });
 
+    test("with autocrlf, a file git already has with CRLFs isn't normalized", async () => {
+        const dir = repo({ "a.txt": "one\r\ntwo\r\n" });
+        git(dir, "config", "core.autocrlf", "true");
+        write(dir, "a.txt", "one\r\nTWO\r\n");
+        expect(git(dir, "diff", "--numstat").trim()).toBe("1\t1\ta.txt");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(summary(r)).toEqual(["modified a.txt +1 -1"]);
+        expect(r.files[0]!.hunks[0]!.lines.map((l) => `${l.t}:${l.text}`)).toEqual(["ctx:one\r", "del:two\r", "add:TWO\r"]);
+    });
+
+    test("a conflicted file gets its line endings normalized too", async () => {
+        const dir = repo({ ".gitattributes": "*.txt text eol=crlf\n", "c.txt": "one\ntwo\n" });
+        git(dir, "switch", "-q", "-c", "side");
+        write(dir, "c.txt", "one\r\nside\r\n");
+        git(dir, "commit", "-q", "-am", "side");
+        git(dir, "switch", "-q", "main");
+        write(dir, "c.txt", "one\r\nmain\r\n");
+        git(dir, "commit", "-q", "-am", "main");
+        Bun.spawnSync(gitArgv([...IDENTITY, "merge", "-q", "side"]), { cwd: dir, env: gitEnv(), stdout: "ignore", stderr: "ignore" });
+        expect(git(dir, "ls-files", "-u").trim().split("\n").length).toBe(3);
+        write(dir, "c.txt", "one\r\nmain\r\nextra\r\n");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(summary(r)).toEqual(["modified c.txt +1 -0"]);
+    });
+
     test("with autocrlf, a staged change whose file normalizes back is still listed", async () => {
         const dir = repo({ "a.txt": "one\ntwo\n" });
         git(dir, "config", "core.autocrlf", "true");
@@ -341,6 +366,18 @@ describe("git changes", () => {
         expect(checks).toBe(50_000);
     });
 
+    test("very many changes are dropped from in place, not by spreading them into a call", async () => {
+        const oid = "e69de29bb2d1d6434b8b29ae775ad8c2e48cc391";
+        const changes: any[] = [{ path: "gone", change: "deleted", old: { mode: "100644", oid, size: 0 } }];
+        for (let i = 0; i < 750_000; i++) changes.push({ path: `new/${i}`, change: "added", now: { mode: "100644", oid, size: 0 } });
+        await findRenames(changes, undefined as any, false, () => {});
+        expect(changes.length).toBe(750_000);
+        expect(changes.filter((c) => c.change === "renamed").map((c) => c.from)).toEqual(["gone"]);
+        const many = Array.from({ length: 1_000_000 }, (_, i) => i);
+        removeWhere(many, (n) => n % 2 === 1);
+        expect([many.length, many[1]]).toEqual([500_000, 2]);
+    });
+
     test("past the deadline, render leaves files for their own requests", async () => {
         const dir = repo({ "a.txt": "a\n" });
         write(dir, "a.txt", "b\n");
@@ -351,7 +388,8 @@ describe("git changes", () => {
             shown: (p: string) => p,
             single: false,
             deadline: Date.now() - 1,
-            normalizesEol: () => false,
+            eolOf: () => undefined,
+            indexOid: () => undefined,
         });
         expect(files.map((f) => [f.path, f.deferred, f.hunks.length])).toEqual([["a.txt", true, 0]]);
     });
@@ -495,6 +533,18 @@ describe("a session in a subfolder", () => {
         // A turn card may name it absolutely.
         const abs = await gitChanges(join(dir, "sub"), { scope: "uncommitted", path: join(dir, "top.txt") });
         expect(abs.files.map((f) => f.path)).toEqual(["../top.txt"]);
+    });
+
+    test("an absolute path naming a link asks about the link, not its target", async () => {
+        const dir = repo({ "target.txt": "t\n", "other.txt": "o\n" });
+        symlinkSync("target.txt", join(dir, "link"));
+        git(dir, "add", "link");
+        git(dir, "commit", "-q", "-m", "link");
+        rmSync(join(dir, "link"));
+        symlinkSync("other.txt", join(dir, "link"));
+        write(dir, "target.txt", "changed\n");
+        const r = await gitChanges(dir, { scope: "uncommitted", path: join(dir, "link") });
+        expect(r.files.map((f) => [f.path, f.kind])).toEqual([["link", "link"]]);
     });
 });
 

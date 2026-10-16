@@ -14,7 +14,7 @@
 import { constants, type Stats } from "fs";
 import type { BigIntStats } from "fs";
 import { lstat, open, readlink } from "fs/promises";
-import { isAbsolute, join, relative } from "path";
+import { basename, dirname, isAbsolute, join, relative } from "path";
 import { canonical } from "../agent/checkpoints";
 import { gitArgv, gitEnv } from "../util/git";
 import { redact } from "../util/redact";
@@ -469,6 +469,16 @@ export interface Change {
 const isFileMode = (mode: string) => mode === "100644" || mode === "100755";
 const kindOf = (mode: string): GitFileDiff["kind"] => (mode === SYMLINK ? "link" : mode === GITLINK ? "submodule" : undefined);
 
+/** Line-ending conversion on check-in: always, unless git already has CRLFs (auto), or none. */
+export type EolMode = "always" | "auto" | undefined;
+
+/** Drops items in place: no spread, which overflows the call stack at a few hundred thousand. */
+export function removeWhere<T>(list: T[], gone: (t: T) => boolean): void {
+    let kept = 0;
+    for (const t of list) if (!gone(t)) list[kept++] = t;
+    list.length = kept;
+}
+
 async function eachLimit<T>(items: T[], n: number, fn: (t: T) => Promise<void>): Promise<void> {
     let i = 0;
     await Promise.all(
@@ -626,13 +636,24 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // check-attr only reads .gitattributes; it runs nothing.
     const attrs = candidates.length || crlfOnly.length ? await attributes(root, [...candidates, ...crlfOnly].map((c) => c.path), deadline) : new Map<string, Record<string, string>>();
     const unset = (v?: string) => v === undefined || v === "unspecified" || v === "unset";
-    const eolConverts = (a: Record<string, string> = {}) => a.text !== "unset" && (a.text === "set" || a.text === "auto" || !unset(a.eol) || autocrlf);
-    /** Git turns this path's CRLFs into LFs on check-in, so its diff should too. */
-    const normalizesEol = (path: string) => attrs.has(path) && eolConverts(attrs.get(path));
+    /**
+     * What git does with a path's line endings on check-in (gitattributes): `text`, or `eol`
+     * with text unspecified, always converts; `text=auto` (and core.autocrlf, which means
+     * auto everywhere) converts a text file unless git already has it with CRLFs.
+     */
+    const eolMode = (a: Record<string, string> = {}): EolMode => {
+        if (a.text === "unset") return undefined;
+        if (a.text === "set") return "always";
+        if (a.text === "auto") return "auto";
+        if (!unset(a.eol)) return "always";
+        return autocrlf ? "auto" : undefined;
+    };
+    const eolOf = (path: string): EolMode => (attrs.has(path) ? eolMode(attrs.get(path)) : undefined);
     if (candidates.length || crlfOnly.length) {
         for (const c of crlfOnly) {
             // Only paths whose endings git converts are unchanged; others really did gain CRLFs.
-            if (!normalizesEol(c.path)) changes.push(c);
+            // (Their working text normalizes to the base, so that copy has no CRLFs for auto to keep.)
+            if (!eolOf(c.path)) changes.push(c);
             else {
                 const note = stillListed(c.old!, staged.get(c.path));
                 if (note) changes.push({ ...c, change: "modified", note });
@@ -643,7 +664,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
                 const a = attrs.get(c.path) ?? {};
                 const filter = a.filter && drivers.has(a.filter) ? a.filter : undefined;
                 // Big files get no CRLF-normalized id, so their endings are settled here too.
-                const converted = filter || a.ident === "set" || !unset(a["working-tree-encoding"]) || (eolConverts(a) && (c.now!.size ?? 0) > MAX_DIFF_INPUT);
+                const converted = filter || a.ident === "set" || !unset(a["working-tree-encoding"]) || (eolMode(a) && (c.now!.size ?? 0) > MAX_DIFF_INPUT);
                 return converted ? { c, filter } : undefined;
             })
             .filter((x) => x !== undefined);
@@ -664,12 +685,12 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
                     c.note = `Uses the repository's “${filter}” filter and may have changed on disk. Its diff isn't shown, because comparing it would mean running that filter.`;
                 }
             });
-            if (drop.size) changes.splice(0, changes.length, ...changes.filter((c) => !drop.has(c)));
+            if (drop.size) removeWhere(changes, (c) => drop.has(c));
         }
     }
 
     // A path the base tracks is compared above, even if the index has since dropped it.
-    changes.push(...untracked.changes.filter((c) => !old.has(c.path)));
+    for (const c of untracked.changes) if (!old.has(c.path)) changes.push(c);
     await findRenames(changes, wt, untracked.changes.length <= 2000, inTime);
     // As `git status` lists them: tracked changes, then untracked files.
     const rank = (c: Change) => (c.change === "untracked" ? 1 : 0);
@@ -684,7 +705,8 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // The path as a list gave it (a repository-relative name could be another file), or an
     // absolute one, as a turn card may have it.
     if (req.path !== undefined) {
-        const want = isAbsolute(req.path) ? relative(here, canonical(req.path)) || "." : req.path;
+        // Only the folder is resolved: a link named last is the change asked about, not its target.
+        const want = isAbsolute(req.path) ? relative(here, join(canonical(dirname(req.path)), basename(req.path))) || "." : req.path;
         listed = changes.filter((c) => shown(c.path) === want).slice(0, 1);
     }
     else if (changes.length > MAX_FILES) {
@@ -692,7 +714,10 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         more = changes.length - MAX_FILES;
     }
 
-    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, normalizesEol });
+    // Every diff read from disk needs its line-ending rule, conflicted files and all.
+    const unseen = listed.filter((c) => c.change !== "deleted" && !c.indexed && !c.kind && !attrs.has(c.path)).map((c) => c.path);
+    if (unseen.length) for (const [path, a] of await attributes(root, unseen, deadline)) attrs.set(path, a);
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid });
     let added = 0;
     let removed = 0;
     for (const f of files) {
@@ -793,7 +818,7 @@ export async function findRenames(changes: Change[], wt: WorkTree, hashUntracked
         c.from = from.path;
         c.old = from.old;
     }
-    if (taken.size) changes.splice(0, changes.length, ...changes.filter((c) => !taken.has(c)));
+    if (taken.size) removeWhere(changes, (c) => taken.has(c));
 }
 
 /** Old contents for the listed files, as raw blobs: `cat-file --batch` without --filters runs no filter. */
@@ -829,15 +854,19 @@ export interface RenderContext {
     /** One file asked for by path: no reply budget. */
     single: boolean;
     deadline: number;
-    normalizesEol: (path: string) => boolean;
+    eolOf: (path: string) => EolMode;
+    /** The index's blob for a path: auto conversion leaves a file git has with CRLFs alone. */
+    indexOid: (path: string) => string | undefined;
 }
 
-export async function render(listed: Change[], { root, wt, shown, single, deadline, normalizesEol }: RenderContext): Promise<GitFileDiff[]> {
+export async function render(listed: Change[], { root, wt, shown, single, deadline, eolOf, indexOid }: RenderContext): Promise<GitFileDiff[]> {
     const wanted = new Map<string, number>();
     const readable = (e?: Entry): e is Entry => !!e && (isFileMode(e.mode) || e.mode === SYMLINK) && (e.size ?? 0) <= MAX_DIFF_INPUT;
     for (const c of listed) {
         if (readable(c.old)) wanted.set(c.old.oid, c.old.size ?? 0);
         if (c.indexed && readable(c.now)) wanted.set(c.now.oid, 0);
+        const ix = indexOid(c.path);
+        if (ix && eolOf(c.path) === "auto" && !wanted.has(ix)) wanted.set(ix, 0);
     }
     // Old contents within the reply's budget; past it, files are fetched when opened.
     let budget = single ? Infinity : MAX_REPLY_BYTES;
@@ -897,8 +926,12 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         }
         const b = before ? redact(before.text) : null;
         // Git compares this path's working text with its line endings converted, so a one-line
-        // edit in a CRLF checkout is one line, not every line.
-        const a = after ? redact(c.indexed || !normalizesEol(c.path) ? after.text : after.text.replace(/\r\n/g, "\n")) : null;
+        // edit in a CRLF checkout is one line, not every line. Auto leaves a file it already
+        // has with CRLFs alone (and a binary one, which never gets this far).
+        const mode = c.indexed ? undefined : eolOf(c.path);
+        const ix = indexOid(c.path);
+        const kept = mode === "auto" && ix !== undefined && (olds.get(ix)?.includes("\r\n") ?? true);
+        const a = after ? redact(mode && !kept ? after.text.replace(/\r\n/g, "\n") : after.text) : null;
         const d = fileDiff(path, b, a);
         const out: GitFileDiff = { ...base, ...d, status: base.status };
         if (c.old && c.now && c.old.mode !== c.now.mode && isFileMode(c.old.mode) && isFileMode(c.now.mode) && !d.hunks.length) out.note = `Mode changed ${c.old.mode} → ${c.now.mode}`;

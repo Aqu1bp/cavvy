@@ -141,15 +141,30 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         const want = picked();
         return want ? files().find((f) => same(f.path, want)) : undefined;
     });
-    // Asked for a file the list doesn't hold (past its 300): fetched by itself.
-    const [unlisted] = createResource(
+    // Asked for a file the list doesn't hold (past its 300): fetched by itself. Its answer
+    // counts only for the view, base and path it was asked for; the resource keeps its last.
+    const unlistedKey = () => {
+        const want = picked();
+        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), want]) : undefined;
+    };
+    const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
-            const want = picked();
-            return shownScope() !== "harness" && view() && want && !listedPick() ? { id: id(), scope: gitScope(), base: base(), path: want } : false;
+            const key = unlistedKey();
+            return key ? { key, id: id(), scope: gitScope(), base: base(), path: picked()! } : false;
         },
-        async (k) => (await fetchGitChanges(k.id, k.scope, k.base, k.path)).files[0],
+        async (k) => {
+            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path);
+            const f = r.files[0];
+            return { key: k.key, file: f, error: r.error ?? (f ? undefined : "This file has no changes in this view.") };
+        },
     );
-    const file = createMemo((): Row | undefined => listedPick() ?? (picked() && unlisted() && same(unlisted()!.path, picked()!) ? unlisted() : undefined) ?? files()[0]);
+    const asked = () => {
+        const u = unlisted();
+        return u && u.key === unlistedKey() ? u : undefined;
+    };
+    /** The requested file isn't in the list: it's shown on its own, or why it can't be. */
+    const askedFor = () => unlistedKey() !== undefined;
+    const file = createMemo((): Row | undefined => listedPick() ?? asked()?.file ?? (askedFor() ? undefined : files()[0]));
     // A file whose hunks didn't fit in the list's reply is fetched on its own.
     const [full, { refetch: refetchFull }] = createResource(
         () => {
@@ -288,6 +303,19 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         </Show>
                     </nav>
                     <div class="review-diff">
+                        <Show when={askedFor() && !file()}>
+                            <div class="review-file-head">
+                                <span class="path truncate">{picked()}</span>
+                            </div>
+                            <div class="review-empty">
+                                <Show when={!unlisted.loading && asked()?.error} fallback={<Spinner size={16} />}>
+                                    {asked()!.error}{" "}
+                                    <button class="link-btn" onClick={() => void refetchUnlisted()}>
+                                        Try again
+                                    </button>
+                                </Show>
+                            </div>
+                        </Show>
                         <Show when={shownFile()} keyed>
                             {(f) => (
                                 <>
