@@ -14,7 +14,7 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runLevels, runs, SHELLS, withoutMessages } from "./bash-safety";
+import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, shellWord, SHELLS, withoutMessages } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 
 export type SandboxKind = "seatbelt" | "bwrap";
@@ -491,21 +491,20 @@ const DELETE_WORD = new RegExp(`(^|[\\s;|&(\`'"/])(${DELETERS.join("|")})(?=\\s|
 const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rmdir|removedirs)|fs\.(rm|unlink|rmdir)|fs\.promises\.(rm|unlink)|FileUtils\.(rm|rm_r|rm_rf|remove)|Remove-Item)\b/;
 
 /**
- * find's -delete, and the commands its -exec, -execdir, -ok and -okdir run,
- * each up to its `;` or `{} +` (what's in one is that command's, not find's).
+ * The commands find's -exec, -execdir, -ok and -okdir run, each up to its
+ * `;` or `{} +`. Every such word counts, even one that's another primary's
+ * operand (`-name -exec`) or inside another command: telling those apart
+ * needs all of find's primaries, and taking too many only looks more.
  */
-function findActions(args: string[]): { deletes: boolean; commands: string[][] } {
-    const commands: string[][] = [];
-    let deletes = false;
+function findCommands(args: string[]): string[][] {
+    const out: string[][] = [];
     for (let i = 0; i < args.length; i++) {
-        if (args[i] === "-delete") deletes = true;
         if (!/^-(exec|execdir|ok|okdir)$/.test(args[i]!)) continue;
         let j = i + 1;
         while (j < args.length && args[j] !== ";" && !(args[j] === "+" && args[j - 1] === "{}")) j++;
-        commands.push(args.slice(i + 1, j));
-        i = j;
+        out.push(args.slice(i + 1, j));
     }
-    return { deletes, commands };
+    return out;
 }
 
 /**
@@ -524,11 +523,11 @@ export function looksDestructive(cmd: string, cwd?: string, depth = 0): string |
         const deleter = DELETERS.find((d) => runs(prog, d));
         if (deleter) return deleter;
         if (runs(prog, "find")) {
-            const f = findActions(args);
-            if (f.deletes) return "find -delete";
-            for (const c of f.commands) for (const level of runLevels(c)) {
-                const d = DELETERS.find((d) => runs(level.argv[0], d));
-                if (d) return d;
+            if (args.includes("-delete")) return "find -delete";
+            // What -exec runs, checked like a command of its own (`-exec sh -c 'RM "$1"' sh {} \;`).
+            for (const c of findCommands(args)) {
+                const r = depth < 4 ? looksDestructive(c.map(shellWord).join(" "), cwd, depth + 1) : undefined;
+                if (r) return r;
             }
         }
         // `sh -c 'RM -rf src'`, `eval RM …`
@@ -596,7 +595,7 @@ export function looksDestructive(cmd: string, cwd?: string, depth = 0): string |
 
 /** Output that suggests the sandbox got in the way. */
 export function blockedBySandbox(output: string): boolean {
-    return /Operation not permitted|Read-only file system|EPERM|EROFS|Failed to open PTY|openpty|posix_openpt|forkpty|Could not resolve|nodename nor servname|Name or service not known|Temporary failure in name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|Network is unreachable|Failed to connect|fetch failed|Connection refused|sandbox-exec|bwrap:/i.test(output);
+    return /Operation not permitted|Read-only file system|EPERM|EROFS|Failed to open PTY|Could not resolve|nodename nor servname|Name or service not known|Temporary failure in name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|Network is unreachable|Failed to connect|fetch failed|Connection refused|sandbox-exec|bwrap:/i.test(output);
 }
 
 export const SANDBOX_HINT =

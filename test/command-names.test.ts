@@ -469,10 +469,24 @@ describe("review round 2", () => {
         }
     });
 
-    test("what find's -exec runs is that command's: `-exec printf %s -exec RM \;` prints", () => {
-        expect(looksDestructive("find . -maxdepth 0 -exec printf '%s\\n' -exec RM \;")).toBeUndefined();
-        expect(looksDestructive("find . -exec echo -delete \;")).toBeUndefined();
+    test("what find's -exec runs is checked like a command of its own", () => {
+        // Every -exec word counts, even one that's another primary's operand: in `-name -exec` it's a pattern.
+        expect(looksDestructive("find build -name -exec -o -delete")).toBe("find -delete");
         for (const cmd of ["find . -name '*.o' -exec rm {} +", "find . -exec printf x \; -exec rm {} \;", "find . -execdir sudo rm {} \;", "find . -delete"]) expect([cmd, looksDestructive(cmd)]).not.toEqual([cmd, undefined]);
+    });
+
+    test("a message counts only when it's git's, written out", () => {
+        expect(dangerousReason("git commit -m >~/.zshrc x")).toBeDefined();
+        expect(configTarget("git commit -m >.claude/settings.json x")).toBeDefined();
+        mkdirSync(join(W, "m"), { recursive: true });
+        expect(sensitiveTarget("git commit -Fm/../.env", { cwd: W })).toBe("a .env file");
+        for (const cmd of [`git() { cat "$3"; }; git commit -m .env`, "./git commit -m .env", "PATH=./bin:$PATH git commit -m .env"]) expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, "a .env file"]);
+        for (const cmd of [`git commit -qam "Document .env"`, `/usr/bin/git commit -m "Document .env"`]) expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, undefined]);
+        expect(blockedBySandbox("FAIL test/openpty.test.ts: expected 2, received 3")).toBe(false);
+    });
+
+    onCaseInsensitive("a shell body inside find -exec is checked too", () => {
+        expect(looksDestructive(`find build -type f -exec sh -c 'RM -- "$1"' sh {} \;`)).toBe("rm");
     });
 
     test("a commit message is never a path, a program or a catastrophe", () => {

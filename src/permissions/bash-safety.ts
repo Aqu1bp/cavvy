@@ -1161,7 +1161,7 @@ function criticalSpelling(t: string, homes: string[], cwdOk: boolean): boolean {
 }
 
 /** A word as the shell reads it back. */
-function shellWord(w: string): string {
+export function shellWord(w: string): string {
     return /^[\w@%+=:,./~-]+$/.test(w) ? w : "'" + w.replace(/'/g, "'\\''") + "'";
 }
 
@@ -1341,7 +1341,7 @@ function exclusionWords(argv: string[]): number[] {
         for (let i = 1; i < eff.length; i++) {
             const a = eff[i]!;
             if (a === "--") break;
-            if (/^--(glob|iglob)=!/.test(a) || /^-g!/.test(a)) out.push(off + i);
+            if (/^--(glob|iglob)=!/.test(a) || /^-g!/.test(a)) out.push(i);
             else if (a.startsWith("--")) {
                 if (!a.includes("=") && RG_VALUE_LONG.has(a.slice(2))) {
                     if ((a === "--glob" || a === "--iglob") && eff[i + 1]?.startsWith("!")) out.push(off + i + 1);
@@ -1391,17 +1391,22 @@ const GREP_VALUE_LONG = [
  */
 export function messageWords(a: CommandAnalysis): number[][] {
     if (a.unparsable || a.hasSubstitution || a.commands.some((c) => c.after === "|")) return a.commands.map(() => []);
+    // `git() { cat "$3"; }`: then it isn't git.
+    if (/\bgit\s*\(\s*\)|\bfunction\s+git\b|\balias\b/.test(a.commands.map((c) => c.text).join("\n"))) return a.commands.map(() => []);
     return a.commands.map((c) => {
-        const off = c.argv.length - effectiveArgv(c.argv).length;
-        const argv = c.argv.slice(off);
-        if (!runs(argv[0], "git")) return [];
+        // git itself, found on PATH or in a system bin, with nothing set for it; and no
+        // redirect, whose target would look like the message (`-m >~/.zshrc`).
+        const argv = c.argv;
+        const dir = argv[0]!.slice(0, Math.max(0, argv[0]!.lastIndexOf("/")));
+        if (c.redirectMayFail || !(argv[0] === "git" || (dir && SYSTEM_BIN.has(dir) && argv[0]!.endsWith("/git")))) return [];
         const { index } = gitSubcommand(argv);
         if (!["commit", "tag", "notes", "merge", "revert", "stash"].includes(argv[index] ?? "")) return [];
         const out: number[] = [];
         for (let i = index + 1; i < argv.length && argv[i] !== "--"; i++) {
             const w = argv[i]!;
-            if (w === "--message" || /^-[a-zA-Z]*m$/.test(w)) out.push(off + ++i);
-            else if (w.startsWith("--message=") || /^-[a-zA-Z]*m./.test(w)) out.push(off + i);
+            // -m after options that take no value only: in `-Fm/x` the m is -F's file.
+            if (w === "--message" || /^-[aqvsne]*m$/.test(w)) out.push(++i);
+            else if (w.startsWith("--message=") || /^-[aqvsne]*m./.test(w)) out.push(i);
         }
         return out.filter((i) => i < c.argv.length);
     });
