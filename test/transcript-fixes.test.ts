@@ -3,7 +3,8 @@
 // notes that piled up, unknown prices saved as free, and the like.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync, realpathSync } from "fs";
+import { readFileSync, realpathSync, writeFileSync } from "fs";
+import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const { cleanup } = isolate();
@@ -346,14 +347,43 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["if true; then grep x f; fi", undefined],
         ["grep $(cat p) f", undefined],
         ["npm test", undefined],
+        ["grep -rn foo .", "grep"],
+        ["grep x f 2>/dev/null", "grep"],
+        ["grep x <<< \"$v\"", "grep"],
+        ["npm test > log 2>&1; grep FAIL log", "grep"],
+        // The shell opens these before grep runs; when it can't, the 1 is the shell's.
+        ["grep x < /no/such/file", undefined],
+        ["grep x 2>/dev/null < f", undefined],
+        ["grep x 0</no/such", undefined],
+        ["grep x f > /no/such/dir/out", undefined],
+        ["grep x f 2>err.log", undefined],
+        ["cat < f | grep x", undefined],
+        // Negated: 1 is a match.
+        ["! cat package.json | grep -q name", undefined],
+        ["time ! cat f | grep x", undefined],
+        // Can change what grep is, or hide the shell's errors.
+        ["exec 2>/dev/null; grep x *.ts", undefined],
+        ["eval 'grep() false'; grep x f", undefined],
+        ["alias grep=false; grep x f", undefined],
+        ["source env.sh; grep x f", undefined],
+        [". ./env.sh; grep x f", undefined],
+        ["hash -p /usr/bin/false grep; grep x f", undefined],
     ])("%p: %p", async (cmd, want) => {
         const { finalSearch } = await import("../src/permissions/bash-safety");
-        expect(finalSearch(cmd)).toBe(want as string | undefined);
+        expect(finalSearch(cmd)?.name).toBe(want as string | undefined);
     });
 
-    const bash = async (command: string) => {
+    test("says when other commands feed it", async () => {
+        const { finalSearch } = await import("../src/permissions/bash-safety");
+        expect(finalSearch("cat a | rg foo")?.piped).toBe(true);
+        expect(finalSearch("make || cat log | grep x")?.piped).toBe(true);
+        expect(finalSearch("ls; grep x f")?.piped).toBe(false);
+    });
+
+    const bash = async (command: string, files: Record<string, string> = {}) => {
         const { BashTool } = await import("../src/tools/bash");
         const cwd = realpathSync(tempDir());
+        for (const [name, text] of Object.entries(files)) writeFileSync(join(cwd, name), text);
         return BashTool.run({ command }, { state: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, settings: {}, signal: new AbortController().signal } as any);
     };
 
@@ -376,6 +406,30 @@ describe("a last grep that finds nothing isn't an error", () => {
         const missing = await bash("grep x /no/such/file");
         expect(missing.isError).toBe(true);
         expect(missing.content).toContain("Exit code: 2");
+    });
+
+    test("a 1 that isn't grep's stays an error", async () => {
+        // grep never ran: the shell couldn't open its input, or output file.
+        for (const cmd of ["grep x < /no/such/file", "grep x 2>/dev/null < /no/such/file", "grep x /dev/null > /no/such/dir/out"]) {
+            const r = await bash(cmd);
+            expect(r.isError).toBe(true);
+            expect(r.content).toContain("Exit code: 1");
+            expect(r.content).not.toContain("found no matches");
+        }
+        // grep matched; the pipeline is negated.
+        const negated = await bash("! cat package.json | grep -q name", { "package.json": '{"name":"x"}' });
+        expect(negated.isError).toBe(true);
+        expect(negated.content).not.toContain("found no matches");
+        // A glob that matches nothing: zsh stops with 1 before grep runs (bash passes it on, and grep's 2 says why).
+        const glob = await bash("grep x *.nomatchglob");
+        expect(glob.isError).toBe(true);
+        expect(glob.content).not.toContain("found no matches");
+    });
+
+    test("a piped grep's 1 says what came before it may have failed", async () => {
+        const r = await bash("cat /dev/null | grep x");
+        expect(r.isError).toBe(false);
+        expect(r.content).toContain("What was piped into it may still have failed");
     });
 });
 

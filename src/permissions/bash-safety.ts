@@ -11,6 +11,8 @@ export interface SimpleCommand {
     argv: string[];
     /** The operator before it: ";", "\n", "&&", "||", "|" or "&" (none for the first). */
     after?: string;
+    /** A redirection on it opens a file (`< f`, `> f`, `2>> f`): the shell can fail on that before it runs. */
+    opensFile?: true;
 }
 
 export interface CommandAnalysis {
@@ -93,6 +95,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     let quote: "'" | '"' | null = null;
     /** The operator after the last command pushed (`a &&` then a blank line: still &&). */
     let lastOp: string | undefined;
+    let opensFile = false;
 
     const endWord = () => {
         if (wordStarted) argv.push(word);
@@ -103,11 +106,12 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     const endCommand = (op?: string) => {
         endWord();
         if (argv.length) {
-            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}) });
+            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(opensFile ? { opensFile: true as const } : {}) });
             lastOp = op;
         }
         argv = [];
         text = "";
+        opensFile = false;
     };
 
     for (let i = 0; i < cmd.length; i++) {
@@ -206,6 +210,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 wordStarted = false;
             }
             endWord();
+            // `< f` and `<> f` open a file; `<<`, `<<<` and `<&3` don't.
+            if (c === "<" && n !== "<" && cmd[i - 1] !== "<" && n !== "&" && n !== "(") opensFile = true;
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
             if (c === ">") {
@@ -225,6 +231,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                     if (/^\/dev\/(null|stdout|stderr)$/.test(target)) end = j + raw.length - 1;
                     else {
                         writesFiles = true;
+                        opensFile = true;
                         redirects.push(target);
                     }
                 }
@@ -495,17 +502,23 @@ export function isReadOnlyCommand(cmd: string): boolean {
 
 const GREPS = new Set(["grep", "egrep", "fgrep", "zgrep", "ggrep", "rg"]);
 const SHELL_SYNTAX = /(^|[\s;&|])(if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|exit|return|set|setopt|trap)(?=$|[\s;&|])|[{}]|pipe_?fail/i;
+/** Builtins that can redefine what `grep` runs, or hide the shell's own errors (`exec 2>/dev/null`). */
+const RESHAPES_SHELL = new Set(["eval", "alias", "source", ".", "exec", "builtin", "emulate", "unalias", "unset", "functions", "autoload", "hash", "enable", "disable", "shopt"]);
 
 /**
  * The search program (grep, rg, git grep) whose exit status is the whole
  * command's, when the text makes that certain: it's last, it ran (not after
  * `&&`, where an earlier failure ends the list with its own status), and it
- * isn't backgrounded, negated or behind pipefail. Their status 1 means
- * "no match", not a failure.
+ * isn't backgrounded, negated (`! a | grep x`) or behind pipefail, and no
+ * redirection in its pipeline opens a file (`grep x < f`: if the shell can't
+ * open it, grep never runs and the status 1 is the shell's). Their status 1
+ * means "no match", not a failure. `piped`: other commands feed it, and their
+ * failures don't show in its status.
  */
-export function finalSearch(cmd: string): string | undefined {
+export function finalSearch(cmd: string): { name: string; piped: boolean } | undefined {
     const a = analyzeCommand(cmd);
     if (a.unparsable || a.hasSubstitution || a.unsafeExpansion || SHELL_SYNTAX.test(cmd) || !a.commands.length) return undefined;
+    if (a.commands.some((c) => RESHAPES_SHELL.has(effectiveArgv(c.argv)[0] ?? ""))) return undefined;
     if (a.trailing !== undefined && a.trailing !== ";" && a.trailing !== "\n") return undefined;
     const last = a.commands.length - 1;
     const argv = effectiveArgv(a.commands[last]!.argv);
@@ -516,7 +529,9 @@ export function finalSearch(cmd: string): string | undefined {
     let first = last;
     while (first > 0 && a.commands[first]!.after === "|") first--;
     if (a.commands[first]!.after === "&&") return undefined;
-    return name;
+    const pipeline = a.commands.slice(first, last + 1);
+    if (pipeline.some((c) => c.opensFile || c.argv[0] === "!" || effectiveArgv(c.argv)[0] === "!")) return undefined;
+    return { name, piped: first < last };
 }
 
 const DANGEROUS: [RegExp, string][] = [

@@ -14,6 +14,10 @@ import { finalSearch } from "../permissions/bash-safety";
 export { childEnv };
 
 const MAX_OUTPUT = 30_000;
+/** Kept of a command's output before the rest is dropped. */
+const MAX_KEPT = MAX_OUTPUT * 20;
+/** The shell's own error (a glob with no match, a file it couldn't open, a missing command): then status 1 may be the shell's. */
+const SHELL_ERROR = /^(?:\S*\/)?(?:zsh|bash|sh|dash|ksh|\(eval\))(?::\d+)?: /m;
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
@@ -99,7 +103,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
         };
         const onChunk = (b: Buffer) => {
             const s = b.toString("utf-8");
-            if (output.length < MAX_OUTPUT * 20) output += s;
+            if (output.length < MAX_KEPT) output += s;
             opts.onData?.(s);
         };
         child.stdout?.on("data", onChunk);
@@ -242,10 +246,14 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         let out = truncateMiddle(cleanOutput(res.output), MAX_OUTPUT);
         const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
         // A last grep that found nothing exits 1: that's the answer, not a failure of what came before it.
-        const search = res.exitCode === 1 && !res.timedOut && !res.aborted ? finalSearch(input.command) : undefined;
+        // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have.
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.output.length < MAX_KEPT && !SHELL_ERROR.test(stripAnsi(res.output)) ? finalSearch(input.command) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
-        else if (search) out += `${out.trim() ? "\n\n" : ""}Exit code: 1 (the last command, ${search}, found no matches: that's its status for no match, not an error.${out.trim() ? " The output above is everything the command printed." : ""})`;
+        else if (search) {
+            const piped = search.piped ? " What was piped into it may still have failed: that doesn't change its status." : "";
+            out += `${out.trim() ? "\n\n" : ""}Exit code: 1 (the last command, ${search.name}, found no matches: that's its status for no match, not an error.${piped}${out.trim() ? " The output above is everything the command printed." : ""})`;
+        }
         else if (res.exitCode !== 0 && res.exitCode !== null) out += `\n\nExit code: ${res.exitCode}`;
         else if (res.signal) out += `\n\nTerminated by signal ${res.signal}`;
         out += notes;
