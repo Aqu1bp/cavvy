@@ -405,7 +405,12 @@ class ClaudeTurn {
         this.stopWaiting();
         // A sub-agent ended: Claude Code's turn with its report is due.
         if (this.reportsDue) {
-            this.settleTimer ??= setTimeout(() => this.finish(), backgroundTiming.settleMs);
+            this.settleTimer ??= setTimeout(() => {
+                this.settleTimer = undefined;
+                // It didn't come: the run is over, unless something started since (then that's waited for).
+                if (this.busy || this.unanswered.size || this.inBackground().length) this.idle();
+                else this.finish();
+            }, backgroundTiming.settleMs);
             return false;
         }
         return true;
