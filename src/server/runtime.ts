@@ -1311,8 +1311,8 @@ export class Runtime {
         if (!p) throw new RpcError("That request was already answered or has expired.", "expired");
         if (p.interaction.kind !== r.kind) throw new RpcError("The answer doesn't match the request.");
         // A bad value stays in the card for the user to fix; the message never quotes it.
-        if (r.kind === "secret" && r.value !== undefined) {
-            const bad = secretValueError(r.value);
+        if (p.interaction.kind === "secret" && r.kind === "secret" && r.value !== undefined) {
+            const bad = secretValueError(r.value, p.interaction.name);
             if (bad) throw new RpcError(bad, "bad_secret");
             r = { kind: "secret", value: r.value };
         }

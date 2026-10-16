@@ -176,3 +176,19 @@ test("interrupting a secret request also withdraws queued questions", async () =
         for (const d of [...app.dialogs, ...(app.dialogQueue ?? [])]) d.cancel();
     }
 });
+
+test.each(["DEMO_TOKEN", "REDACTED"])("a marker collision keeps the masked terminal prompt open (%s)", async (value) => {
+    const { app, type } = appForTest();
+    const secret = app.requestSecret("DEMO_TOKEN", "Testing marker validation", new AbortController().signal);
+    await Bun.sleep(10);
+    const prompt = app.dialogs[0];
+    try {
+        type(`${value}\r`);
+        await Bun.sleep(10);
+        expect(app.dialogs).toEqual([prompt]);
+        type("\x1b");
+        expect(await secret).toBeUndefined();
+    } finally {
+        for (const d of [...app.dialogs, ...(app.dialogQueue ?? [])]) d.cancel();
+    }
+});

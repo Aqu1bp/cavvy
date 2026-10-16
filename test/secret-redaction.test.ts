@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
-const { registerSecret, unregisterSecret, redact } = await import("../src/util/redact");
+const { registerSecret, unregisterSecret, redact, redactPrefix } = await import("../src/util/redact");
 const { SecretStore } = await import("../src/agent/secrets");
 const { BashTool } = await import("../src/tools/bash");
 afterAll(() => iso.cleanup());
@@ -78,5 +78,82 @@ test("an exact secret inside a known-format key cannot expose the key's suffix",
         expect(text).toBe("before [REDACTED anthropic-key] after");
     } finally {
         unregisterSecret(prefix);
+    }
+});
+
+test("long self-overlapping secrets redact repetitive input in bounded time", () => {
+    const value = "a".repeat(8192);
+    try {
+        registerSecret(value, "LONG_REPEAT");
+        const input = "a".repeat(2 * 1024 * 1024);
+        const start = performance.now();
+        const text = redact(input);
+        const elapsed = performance.now() - start;
+        expect(text).toBe("[REDACTED LONG_REPEAT]");
+        // A linear scan takes tens of milliseconds; repeated long indexOf matches took seconds.
+        expect(elapsed).toBeLessThan(1500);
+    } finally {
+        unregisterSecret(value);
+    }
+});
+
+test("adjacent repeated values coalesce instead of allocating a span and marker per match", () => {
+    const value = "zq7Xv9Lr";
+    try {
+        registerSecret(value, "DENSE_REPEAT");
+        const text = redact(value.repeat(1024 * 1024));
+        noFragments(text, [value]);
+        expect(text).toBe("[REDACTED DENSE_REPEAT]");
+    } finally {
+        unregisterSecret(value);
+    }
+});
+
+test("alternating values keep match storage bounded on an 8 MiB line", () => {
+    // A separate process isolates RSS growth from the suite's registry and allocations.
+    const child = Bun.spawnSync([process.execPath, "--no-env-file", "-e", `
+        import { registerSecret, redact } from ${JSON.stringify(new URL("../src/util/redact.ts", import.meta.url).pathname)};
+        registerSecret("aB7xQ2mP", "A");
+        registerSecret("rT9vK4zN", "B");
+        const input = "aB7xQ2mPrT9vK4zN".repeat(512 * 1024);
+        Bun.gc(true);
+        const before = process.memoryUsage().rss;
+        const output = redact(input);
+        console.log(JSON.stringify({ memory: process.memoryUsage().rss - before, length: output.length, correct: output === "[REDACTED A][REDACTED B]".repeat(512 * 1024) }));
+    `], { stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode).toBe(0);
+    const result = JSON.parse(child.stdout.toString());
+    expect(result.correct).toBe(true);
+    // The returned text is 12 MiB; retaining a million span objects used over 230 MiB.
+    expect(result.memory).toBeLessThan(128 * 1024 * 1024);
+});
+
+test("redacted prefixes keep original positions when markers shrink complete secrets", () => {
+    const complete = "nV8rJ4qT9mL2xP7z".repeat(512);
+    const incomplete = "bK9wR3vP7mF2xN8q";
+    try {
+        registerSecret(complete, "COMPLETE");
+        registerSecret(incomplete, "INCOMPLETE");
+        const text = redactPrefix(`${complete} ${incomplete.slice(0, -1)}`, 500);
+        noFragments(text, [complete, incomplete]);
+        expect(text).toBe("[REDACTED COMPLETE]");
+    } finally {
+        unregisterSecret(complete);
+        unregisterSecret(incomplete);
+    }
+});
+
+test("redacted prefixes emit a whole marker for a span crossing the source limit", () => {
+    const value = "hQ4nW8zC2pL6rV9m";
+    try {
+        registerSecret(value, "CROSSING");
+        const text = redactPrefix(`prefix ${value} after`, 10);
+        noFragments(text, [value]);
+        expect(text).toBe("prefix [REDACTED CROSSING]");
+        expect(redactPrefix(`prefix ${value} after`, 7)).toBe("prefix ");
+        expect(redactPrefix("ordinary text", 8)).toBe("ordinary");
+        expect(redactPrefix(value, 0)).toBe("");
+    } finally {
+        unregisterSecret(value);
     }
 });

@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { BackgroundShell, Tool, ToolContext } from "./types";
 import { stripAnsi } from "../ui/ansi";
-import { redact, lineRedactor, knownSecrets } from "../util/redact";
+import { redact, lineRedactor } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
@@ -38,9 +38,10 @@ function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, ord
     let order = 0;
     stream.setEncoding("utf8");
     stream.on("data", (chunk: string) => {
+        // Cache both delimiters: searching for an absent CR again at every LF is quadratic.
+        let lf = chunk.indexOf("\n");
+        let cr = chunk.indexOf("\r");
         for (let start = 0; start < chunk.length; ) {
-            const lf = chunk.indexOf("\n", start);
-            const cr = chunk.indexOf("\r", start);
             const nl = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
             const end = nl < 0 ? chunk.length : nl + 1;
             if (!skipping) {
@@ -57,6 +58,8 @@ function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, ord
             }
             if (nl >= 0) skipping = false;
             start = end;
+            if (lf >= 0 && lf < start) lf = chunk.indexOf("\n", start);
+            if (cr >= 0 && cr < start) cr = chunk.indexOf("\r", start);
         }
     });
     stream.on("end", () => {
@@ -160,7 +163,9 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             }
             opts.onData?.(s);
         };
-        const overflow = (s: string) => cutAtCap(s) + "\n[Output line truncated]\n";
+        // An unfinished outer secret may contain a shorter match whose marker expands.
+        // Dropping the whole oversized line avoids mixing raw and redacted cut positions.
+        const overflow = () => `[Output line omitted: exceeds ${MAX_OUTPUT * 20} characters]\n`;
         if (child.stdout) readShellStream(child.stdout, onChunk, MAX_OUTPUT * 20, overflow, nextOrder);
         if (child.stderr) readShellStream(child.stderr, onChunk, MAX_OUTPUT * 20, overflow, nextOrder);
         const timer = setTimeout(() => {
@@ -191,21 +196,6 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             resolvePromise({ output: output() + `\n${err.message}`, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
         });
     });
-}
-
-/**
- * Output kept up to the cap ends where a chunk did, maybe partway through a
- * secret whose rest never arrives, so redaction wouldn't know it (and the
- * kept tail is what the model sees). Secrets don't span lines: cut at the
- * last line break. Without one, redact complete values FIRST, then drop the
- * possible unfinished suffix. Cutting raw text can split a complete value.
- */
-function cutAtCap(output: string): string {
-    const redacted = redact(output);
-    const nl = output.lastIndexOf("\n");
-    if (nl !== -1) return redact(output.slice(0, nl + 1));
-    const hold = knownSecrets().reduce((n, s) => Math.max(n, s.length - 1), 0);
-    return redacted.slice(0, Math.max(0, redacted.length - hold));
 }
 
 function cleanOutput(s: string): string {

@@ -4,7 +4,7 @@
 // transcript, hooks and every window only ever see its name. Redaction is
 // the backstop for output that prints it.
 
-import { knownSecrets, registerSecret } from "../util/redact";
+import { knownSecrets, redactionMarkers, registerSecret } from "../util/redact";
 import { secretEnvVarNames } from "../auth/credentials";
 
 export const MAX_SECRET_BYTES = 8 * 1024;
@@ -19,13 +19,13 @@ const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const RESERVED = new Set([
     "PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "OLDPWD", "TMPDIR", "TERM", "LANG", "TZ", "IFS", "ENV", "CDPATH", "FPATH", "MANPATH",
     "PS1", "PS2", "PS3", "PS4", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE", "HISTFILE", "ZDOTDIR", "MAIL", "MAILPATH",
-    "GCONV_PATH", "LOCPATH", "LUA_INIT", "LUA_PATH", "LUA_CPATH", "R_ENVIRON", "R_ENVIRON_USER", "R_PROFILE", "R_PROFILE_USER", "R_LIBS", "R_LIBS_USER", "R_LIBS_SITE",
-    "PAGER", "EDITOR", "VISUAL", "BROWSER", "SSH_AUTH_SOCK", "SSH_ASKPASS", "SUDO_ASKPASS", "DISPLAY",
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CURL_HOME", "WGETRC", "SSLKEYLOGFILE", "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_ENGINES", "OPENSSL_MODULES",
-    "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "CLASSPATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "GOFLAGS", "GODEBUG", "RUSTFLAGS", "CARGO_HOME", "RUSTUP_HOME",
-    "PERL5LIB", "PERL5OPT", "PERLLIB", "PERL_LOCAL_LIB_ROOT", "PERL_MB_OPT", "PERL_MM_OPT", "RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_HOME", "GEM_PATH", "COREPACK_HOME", "UV_CACHE_DIR", "PIP_CACHE_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
+    "GCONV_PATH", "GLIBC_TUNABLES", "LOCPATH", "LUA_INIT", "LUA_PATH", "LUA_CPATH", "R_ENVIRON", "R_ENVIRON_USER", "R_PROFILE", "R_PROFILE_USER", "R_LIBS", "R_LIBS_USER", "R_LIBS_SITE",
+    "LESSOPEN", "LESSCLOSE", "PAGER", "EDITOR", "VISUAL", "BROWSER", "SSH_AUTH_SOCK", "SSH_ASKPASS", "SUDO_ASKPASS", "DISPLAY",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CURL_HOME", "WGETRC", "SSLKEYLOGFILE", "GNUTLS_SYSTEM_PRIORITY_FILE", "OPENSSL_CONF", "OPENSSL_CONF_INCLUDE", "OPENSSL_ENGINES", "OPENSSL_MODULES",
+    "CLASSPATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JDK_JAVAC_OPTIONS", "MAVEN_OPTS", "GRADLE_OPTS", "ANT_OPTS", "PHPRC", "PHP_INI_SCAN_DIR", "GOFLAGS", "GODEBUG", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_HOME", "RUSTUP_HOME",
+    "PERL_USE_UNSAFE_INC", "PERL5LIB", "PERL5OPT", "PERLLIB", "PERL_LOCAL_LIB_ROOT", "PERL_MB_OPT", "PERL_MM_OPT", "RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_HOME", "GEM_PATH", "COREPACK_HOME", "UV_CACHE_DIR", "PIP_CACHE_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
 ]);
-const RESERVED_PREFIXES = ["LUA_INIT_", "LUA_PATH_", "LUA_CPATH_", "LD_", "DYLD_", "GIT_", "HARNESS", "BASH_", "ZSH_", "LC_", "NPM_CONFIG_", "BUN_", "PYTHON", "CLAUDE_", "CODEX_", "ANTHROPIC_", "OPENAI_"];
+const RESERVED_PREFIXES = ["DOTNET_", "COMPLUS_", "CORECLR_", "COR_", "MALLOC_", "NODE_", "LUA_INIT", "LUA_PATH_", "LUA_CPATH_", "LD_", "DYLD_", "GIT_", "HARNESS", "BASH_", "ZSH_", "LC_", "NPM_CONFIG_", "BUN_", "PYTHON", "CLAUDE_", "CODEX_", "ANTHROPIC_", "OPENAI_"];
 
 /** Why `name` can't be a secret's name, or undefined if it can. */
 export function secretNameError(name: unknown): string | undefined {
@@ -37,7 +37,7 @@ export function secretNameError(name: unknown): string | undefined {
 }
 
 /** Why `value` can't be stored. Never quotes the value. */
-export function secretValueError(value: unknown): string | undefined {
+export function secretValueError(value: unknown, name?: string): string | undefined {
     if (typeof value !== "string") return "The value must be text.";
     if (value.length < MIN_SECRET_LENGTH) return `The value is shorter than ${MIN_SECRET_LENGTH} characters, too short to keep out of the output.`;
     if (Buffer.byteLength(value) > MAX_SECRET_BYTES) return `The value is longer than ${MAX_SECRET_BYTES / 1024} KiB.`;
@@ -45,6 +45,14 @@ export function secretValueError(value: unknown): string | undefined {
     if (!value.isWellFormed()) return "The value must be well-formed Unicode text.";
     // Streaming redaction needs unbroken values; terminal controls can also alter their displayed text.
     if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) return "The value can't contain control characters, line breaks or NUL characters.";
+    // Markers are visible output too. Check both directions so registering a later
+    // label cannot expose an older value (including one supplied by another session).
+    const marker = name === undefined ? undefined : `[REDACTED ${name}]`;
+    const markers = redactionMarkers();
+    if (marker) markers.push(marker);
+    if (forms(value).some((form) => markers.some((text) => text.includes(form))) || (marker && knownSecrets().some((secret) => marker.includes(secret)))) {
+        return "The value or name conflicts with redaction marker text. Use a different value or ask for a different name.";
+    }
     return undefined;
 }
 
@@ -88,7 +96,7 @@ export class SecretStore {
 
     /** Stores (or replaces) a secret. Its value is redacted everywhere for as long as the process lives. */
     set(name: string, value: string) {
-        const bad = secretNameError(name) ?? secretValueError(value);
+        const bad = secretNameError(name) ?? secretValueError(value, name);
         if (bad) throw new Error(bad);
         // A value another session (or a provider key) registered keeps its label, so one session's names don't show in another's output.
         const known = new Set(knownSecrets());

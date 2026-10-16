@@ -55,7 +55,7 @@ const bash = (ctx: any, command: string, more: Record<string, unknown> = {}) => 
 
 describe("names, values and purposes", () => {
     test("a name is an environment variable name of its own", () => {
-        for (const ok of ["GITHUB_TOKEN", "NPM_TOKEN", "MY_SERVICE_TOKEN", "A", "RUBYGEMS_API_KEY", "NODE_AUTH_TOKEN", `A${"B".repeat(63)}`]) expect(secretNameError(ok)).toBeUndefined();
+        for (const ok of ["GITHUB_TOKEN", "NPM_TOKEN", "MY_SERVICE_TOKEN", "A", "RUBYGEMS_API_KEY", `A${"B".repeat(63)}`]) expect(secretNameError(ok)).toBeUndefined();
         for (const bad of ["", "github_token", "1TOKEN", "_TOKEN", "MY-TOKEN", "MY TOKEN", "TOKEN=1", `A${"B".repeat(64)}`, 42, undefined, null]) expect(secretNameError(bad)).toMatch(/environment variable name/);
     });
 
@@ -190,7 +190,7 @@ describe("RequestSecret and Bash", () => {
         const straddle = (filler: string) => `${filler}; printf %s "$(printf %s "$CAP_TOKEN" | cut -c1-6)"; sleep 0.3; printf '%s\n' "$(printf %s "$CAP_TOKEN" | cut -c7-)"`;
         for (const filler of ["yes aaaaaaaaa | head -c 599997", "head -c 599997 /dev/zero | tr '\\0' a"]) {
             const r = await bash(ctx, straddle(filler));
-            expect(r.content).toContain("aaaaaaaaa");
+            expect(r.content).toContain(filler.startsWith("yes ") ? "aaaaaaaaa" : "[Output line omitted");
             noFragments(r.content, v);
             noFragments(r.display?.body ?? "", v);
         }

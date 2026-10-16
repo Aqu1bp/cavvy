@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { existsSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -61,21 +61,68 @@ test("redact a trailing-space secret before cleaning foreground and background o
     noFragments(progress.join(""), value);
 });
 
-test("foreground cap redacts complete secrets before cutting its retained tail", async () => {
+test("foreground cap omits an oversized line without splitting a complete secret", async () => {
     const { ctx, dir, progress } = setup();
     // The old 8192-character cut lands six characters into a complete secret.
     const command = script(dir, `await write('a'.repeat(591803) + token + 'b'.repeat(599990 - 591803 - token.length)); await pause(); await write('b'.repeat(11)); await pause(); await write('end\\n');`);
     const out = await BashTool.run({ command }, ctx);
     noFragments(JSON.stringify(out));
     noFragments(progress.join(""));
-    expect(out.content).toContain("aaaaaa");
+    expect(out.content).toContain("[Output line omitted");
+});
+
+test("foreground cap cannot expose an unfinished outer secret after an inner match expands", async () => {
+    const inner = "vR8kD2mN";
+    const value = "qP7tL4sW9xF" + inner + "uA6jH2rK8";
+    const { ctx, dir, progress } = setup(value);
+    ctx.state.secrets!.set("A".repeat(64), inner);
+    const command = script(dir, `await write('a'.repeat(600001 - token.length + 1) + token.slice(0, -1)); await pause(); await write(token.slice(-1) + '\\n');`);
+    const out = await BashTool.run({ command }, ctx);
+    noFragments(JSON.stringify(out), value);
+    noFragments(progress.join(""), value);
+});
+
+test("newline-heavy output is scanned linearly, including an absent CR delimiter", async () => {
+    const { ctx, dir } = setup();
+    const bytes = 16 * 1024;
+    const command = script(dir, `await write('y\\n'.repeat(${bytes / 2}));`);
+    const original = String.prototype.indexOf;
+    let scanned = 0;
+    const probe = spyOn(String.prototype, "indexOf").mockImplementation(function (this: string, search: string, from = 0) {
+        const at = original.call(this, search, from);
+        if ((search === "\r" || search === "\n") && this.length > 1024 && (this[0] === "y" || this[0] === "\n")) {
+            scanned += (at < 0 ? this.length : at + 1) - from;
+        }
+        return at;
+    });
+    try {
+        const out = await BashTool.run({ command }, ctx);
+        expect(out.isError).toBeFalsy();
+        expect(out.content).toContain("y\ny");
+        // Counts the ranges searched, so slow CI and fast native string search cannot hide quadratic work.
+        expect(scanned).toBeGreaterThan(bytes / 2);
+        expect(scanned).toBeLessThanOrEqual(bytes * 3);
+    } finally {
+        probe.mockRestore();
+    }
 });
 
 test("background buffer never exposes a secret split by front eviction", async () => {
     const { ctx, dir } = setup();
-    const command = script(dir, `await write('a'.repeat(40) + token + 'b'.repeat(1000048 - 40 - token.length));`);
-    const out = await finished(ctx, await background(ctx, command));
+    // Every line fits the streaming limit; their total exceeds the ring's 1,000,000-character bound.
+    const command = script(dir, `await write('evicted-start\\n'); for (let i = 0; i < 144; i++) await write('f'.repeat(8191) + '\\n'); await write('kept: ' + token + '\\n');`);
+    const id = await background(ctx, command);
+    const out = await finished(ctx, id);
+    const sh = ctx.state.shells.get(id)!;
+    expect(sh.output.length).toBeGreaterThan(900_000);
+    expect(sh.output.length).toBeLessThanOrEqual(1_000_000);
+    expect(sh.output).not.toContain("evicted-start");
+    expect(sh.output).not.toContain("Output line omitted");
+    // The ring must only hold redacted text BEFORE eviction can take a slice from it.
+    noFragments(sh.output);
+    expect(sh.output).toContain("kept: [REDACTED OUTPUT_TOKEN]");
     noFragments(JSON.stringify(out));
+    expect(out.content).toContain("kept: [REDACTED OUTPUT_TOKEN]");
 });
 
 test("BashOutput drops an overlong unfinished line instead of releasing secret fragments", async () => {

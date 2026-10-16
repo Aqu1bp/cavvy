@@ -1085,7 +1085,7 @@ export class App {
             placeholder: "Type or paste the value (input is hidden)",
             color: theme.info,
             hint: "enter to provide · esc to decline",
-            validate: (v) => secretValueError(v),
+            validate: (v) => secretValueError(v, name),
         });
         void this.notifier.notify("question");
         const withdraw = () => d.cancel();
