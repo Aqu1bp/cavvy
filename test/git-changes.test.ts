@@ -326,6 +326,40 @@ describe("git changes", () => {
         expect(r.files[0]!.hunks[0]!.lines.map((l) => `${l.t}:${l.text}`)).toEqual(["ctx:one\r", "del:two\r", "add:TWO\r"]);
     });
 
+    test("forced text conversion lists raw-equal CRLF content only when the index stat is dirty", async () => {
+        const dir = repo();
+        write(dir, "c.txt", "one\r\ntwo\r\n");
+        // Older than the index, so the clean case cannot depend on racy-stat timing.
+        const past = new Date("2000-01-01T00:00:00Z");
+        utimesSync(join(dir, "c.txt"), past, past);
+        git(dir, "add", "c.txt");
+        git(dir, "commit", "-q", "-m", "CRLF blob");
+        expect(git(dir, "show", "HEAD:c.txt")).toBe("one\r\ntwo\r\n");
+        write(dir, ".git/info/attributes", "c.txt text\n");
+        const clean = indexState(dir);
+        expect(clean.status).toBe("");
+        expect((await gitChanges(dir, { scope: "uncommitted" })).files).toEqual([]);
+        expect(indexState(dir)).toEqual(clean);
+
+        const later = new Date("2001-01-01T00:00:00Z");
+        utimesSync(join(dir, "c.txt"), later, later);
+        expect(statSync(join(dir, "c.txt")).mtimeMs).toBe(later.getTime());
+        const dirty = indexState(dir);
+        expect(dirty.status).toBe(" M c.txt\0");
+        for (const scope of ["uncommitted", "branch"] as const) {
+            const r = await gitChanges(dir, { scope, ...(scope === "branch" ? { base: "main" } : {}) });
+            expect(r.files.map((f) => [f.path, f.change, f.note])).toEqual([["c.txt", "modified", "Line endings would be normalized on commit."]]);
+        }
+        expect(indexState(dir)).toEqual(dirty);
+
+        // Automatic conversion preserves a CRLF index; disabling text does too.
+        for (const attr of ["text=auto", "-text"]) {
+            write(dir, ".git/info/attributes", `c.txt ${attr}\n`);
+            expect(git(dir, "status", "--porcelain")).toBe("");
+            expect((await gitChanges(dir, { scope: "uncommitted" })).files).toEqual([]);
+        }
+    });
+
     test("in branch scope, CRLFs committed over an LF base are a change when the index keeps them", async () => {
         const dir = repo({ "a.txt": "one\ntwo\n" });
         git(dir, "switch", "-q", "-c", "feat");
@@ -337,6 +371,20 @@ describe("git changes", () => {
         const r = await gitChanges(dir, { scope: "branch", base: "main" });
         expect(summary(r)).toEqual(["modified a.txt +2 -2"]);
         expect((await gitChanges(dir, { scope: "uncommitted" })).files).toEqual([]);
+    });
+
+    test("forced text conversion detects CRLFs across chunks in raw-equal large files", async () => {
+        // The only CRLF straddles the streaming hash's 1 MiB boundary.
+        const body = "a".repeat(1024 * 1024 - 1) + "\r\n" + "b".repeat(2 * 1024 * 1024);
+        const dir = repo({ "large.txt": body });
+        write(dir, ".git/info/attributes", "large.txt eol=lf\n");
+        const later = new Date("2099-01-01T00:00:00Z");
+        utimesSync(join(dir, "large.txt"), later, later);
+        expect(git(dir, "status", "--porcelain")).toBe(" M large.txt\n");
+        const before = indexState(dir);
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files.map((f) => [f.path, f.change, f.note])).toEqual([["large.txt", "modified", "Line endings would be normalized on commit."]]);
+        expect(indexState(dir)).toEqual(before);
     });
 
     test("auto conversion leaves content git sees as binary alone", async () => {

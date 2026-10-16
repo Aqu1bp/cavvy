@@ -168,6 +168,8 @@ interface Entry {
     size?: number;
     /** The blob id with CRLF line endings turned into LF (files that have them). */
     norm?: string;
+    /** CRLFs exist even when the file is too large for a normalized id. */
+    crlf?: boolean;
     /** With `norm`: git's auto conversion sees this content as binary, so leaves it alone. */
     autoBinary?: boolean;
 }
@@ -210,7 +212,8 @@ function blobId(data: Uint8Array, algo: Algo): string {
 type Algo = "sha1" | "sha256";
 
 /** Ids of files already hashed, while their stat stays the same. */
-const idCache = new Map<string, { stamp: string; oid: string; norm?: string; autoBinary?: boolean }>();
+type ContentId = Pick<Entry, "oid" | "norm" | "crlf" | "autoBinary">;
+const idCache = new Map<string, ContentId & { stamp: string }>();
 
 const OPEN_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
@@ -245,7 +248,7 @@ async function readRegular(abs: string, max: number): Promise<{ buf?: Buffer; si
 }
 
 /** A big file's blob id, read in chunks, within the request's time. */
-async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<string | undefined> {
+async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<ContentId | undefined> {
     const fh = await open(abs, OPEN_FLAGS).catch(() => undefined);
     if (!fh) return undefined;
     try {
@@ -255,15 +258,20 @@ async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<st
         h.update(`blob ${st.size}\0`);
         const chunk = Buffer.alloc(1024 * 1024);
         let total = 0;
+        let crlf = false;
+        let last = -1;
         for (;;) {
             inTime();
             const { bytesRead } = await fh.read(chunk, 0, chunk.length, null);
             if (!bytesRead) break;
             total += bytesRead;
-            if (total > st.size) return "changing";
-            h.update(chunk.subarray(0, bytesRead));
+            if (total > st.size) return { oid: "changing" };
+            const bytes = chunk.subarray(0, bytesRead);
+            crlf ||= (last === 13 && bytes[0] === 10) || bytes.includes("\r\n");
+            last = bytes[bytesRead - 1]!;
+            h.update(bytes);
         }
-        return total === st.size ? h.digest("hex") : "changing";
+        return total === st.size ? { oid: h.digest("hex"), crlf } : { oid: "changing" };
     } catch (e) {
         if (e instanceof RpcError) throw e;
         return undefined;
@@ -312,18 +320,19 @@ export function convertsEol(mode: EolMode, working: { binary: boolean }, index: 
     return index === null || !(Buffer.from(index).includes("\r\n") && !gitSeesBinary(index));
 }
 
-async function fileId(abs: string, st: Stats, algo: Algo, inTime: () => void): Promise<{ oid: string; norm?: string; autoBinary?: boolean }> {
+async function fileId(abs: string, st: Stats, algo: Algo, inTime: () => void): Promise<ContentId> {
     const stamp = `${algo}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
     const hit = idCache.get(abs);
     if (hit?.stamp === stamp) return hit;
-    let id: { oid: string; norm?: string; autoBinary?: boolean };
-    if (st.size > MAX_DIFF_INPUT) id = { oid: (await streamId(abs, algo, inTime)) ?? "unreadable" };
+    let id: ContentId;
+    if (st.size > MAX_DIFF_INPUT) id = (await streamId(abs, algo, inTime)) ?? { oid: "unreadable" };
     else {
         const r = await readRegular(abs, MAX_DIFF_INPUT);
         if (!r?.buf) id = { oid: "unreadable" };
         else {
             id = { oid: blobId(r.buf, algo) };
             if (r.buf.includes("\r\n")) {
+                id.crlf = true;
                 id.norm = blobId(Buffer.from(r.buf.toString("latin1").replace(/\r\n/g, "\n"), "latin1"), algo);
                 id.autoBinary = gitSeesBinary(r.buf);
             }
@@ -638,6 +647,8 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const changes: Change[] = [];
     /** Differ only in CRLF line endings: unchanged if git converts this path's endings. */
     const crlfOnly: Change[] = [];
+    /** Raw equality can still change on check-in when attributes force CRLF conversion. */
+    const rawEqual: Change[] = [];
     let submodules = 0;
     const paths = [...new Set([...old.keys(), ...staged.keys()])];
     await eachLimit(paths, 32, async (path) => {
@@ -668,7 +679,9 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         const sameMode = was.mode === now.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode));
         if (sameMode && was.oid === now.oid) {
             const note = stillListed(was, ix);
-            if (note) changes.push({ path, change: "modified", old: was, now, kind: kindOf(was.mode), note });
+            const c: Change = { path, change: "modified", old: was, now, kind: kindOf(was.mode), note };
+            if (!indexed && isFileMode(now.mode) && now.crlf) rawEqual.push(c);
+            else if (note) changes.push(c);
             return;
         }
         const c: Change = { path, change: kindOf(was.mode) === kindOf(now.mode) && now.mode !== "other" ? "modified" : "typechange", old: was, now, kind: kindOf(now.mode) ?? kindOf(was.mode), indexed };
@@ -684,7 +697,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const tracked = (c: Change) => !c.indexed && !!c.now && isFileMode(c.now.mode) && staged.get(c.path)?.tag === "H" && isFileMode(staged.get(c.path)!.mode);
     const candidates = changes.filter((c) => (c.change === "added" || c.change === "modified" || c.change === "typechange") && tracked(c));
     // check-attr only reads .gitattributes; it runs nothing.
-    const attrs = candidates.length || crlfOnly.length ? await attributes(root, [...candidates, ...crlfOnly].map((c) => c.path), deadline) : new Map<string, Record<string, string>>();
+    const attrs = candidates.length || crlfOnly.length || rawEqual.length ? await attributes(root, [...candidates, ...crlfOnly, ...rawEqual].map((c) => c.path), deadline) : new Map<string, Record<string, string>>();
     const unset = (v?: string) => v === undefined || v === "unspecified" || v === "unset";
     /**
      * What git does with a path's line endings on check-in (gitattributes): `text`, or `eol`
@@ -699,7 +712,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         return autocrlf ? "auto" : undefined;
     };
     const eolOf = (path: string): EolMode => (attrs.has(path) ? eolMode(attrs.get(path)) : undefined);
-    if (candidates.length || crlfOnly.length) {
+    if (candidates.length || crlfOnly.length || rawEqual.length) {
         // Auto conversion depends on the index's copy. Where that's the base, it's the working
         // text normalized, so (the working text not binary to git) it holds no CR at all; where
         // it isn't (a branch's commits, something staged), it's read.
@@ -707,7 +720,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
             const ix = staged.get(c.path);
             return ix && ix.oid !== c.old!.oid ? ix.oid : undefined;
         };
-        const wanted = crlfOnly.filter((c) => eolOf(c.path) === "auto" && !c.now!.autoBinary && ixFor(c)).map((c) => ixFor(c)!);
+        const wanted = [...crlfOnly, ...rawEqual].filter((c) => eolOf(c.path) === "auto" && c.now!.autoBinary === false && ixFor(c)).map((c) => ixFor(c)!);
         const ixBlobs = wanted.length ? await blobs(root, [...new Set(wanted)], deadline) : new Map<string, Buffer>();
         for (const c of crlfOnly) {
             // Only paths whose endings git would convert are unchanged; others really did gain CRLFs.
@@ -718,12 +731,25 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
                 if (note) changes.push({ ...c, change: "modified", note });
             }
         }
+        const normalize = new Set<Change>();
+        for (const c of rawEqual) {
+            // Auto preserves a raw-equal CRLF index; a different staged copy needs its
+            // own check. Forced text/eol converts either, unless git trusts the stat.
+            const ix = staged.get(c.path);
+            const indexBlob = !ix ? null : ix.oid === c.old!.oid ? undefined : ixBlobs.get(ix.oid);
+            if (convertsEol(eolOf(c.path), { binary: c.now!.autoBinary !== false }, indexBlob)) {
+                c.note ??= "Line endings would be normalized on commit.";
+                changes.push(c);
+                normalize.add(c);
+                if (tracked(c)) candidates.push(c);
+            } else if (c.note) changes.push(c);
+        }
         const settle = candidates
             .map((c) => {
                 const a = attrs.get(c.path) ?? {};
                 const filter = a.filter && drivers.has(a.filter) ? a.filter : undefined;
                 // Big files get no CRLF-normalized id, so their endings are settled here too.
-                const converted = filter || a.ident === "set" || !unset(a["working-tree-encoding"]) || (eolMode(a) && (c.now!.size ?? 0) > MAX_DIFF_INPUT);
+                const converted = normalize.has(c) || filter || a.ident === "set" || !unset(a["working-tree-encoding"]) || (eolMode(a) && (c.now!.size ?? 0) > MAX_DIFF_INPUT);
                 return converted ? { c, filter } : undefined;
             })
             .filter((x) => x !== undefined);
@@ -739,6 +765,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
                     c.now = { mode: ix.mode, oid: ix.oid };
                     c.indexed = true;
                     c.filter = filter;
+                    if (normalize.has(c)) c.note = undefined;
                 } else if (filter) {
                     c.filter = filter;
                     c.note = `Uses the repository's “${filter}” filter and may have changed on disk. Its diff isn't shown, because comparing it would mean running that filter.`;
