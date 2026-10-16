@@ -621,6 +621,11 @@ export interface GitChangesInfo extends ChangesInfo {
     moreAtLeast?: boolean;
 }
 
+export interface GitCommitHead {
+    branch?: string;
+    detached: boolean;
+}
+
 export interface GitCommitInfo {
     hash: string;
     subject: string;
@@ -755,7 +760,7 @@ export interface Methods {
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string }; result: GitChangesInfo };
-    "session.gitCommit": { params: { id: string; paths: string[]; message: string }; result: GitCommitInfo };
+    "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
     "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };

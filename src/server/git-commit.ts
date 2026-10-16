@@ -6,7 +6,7 @@ import { canonical } from "../agent/checkpoints";
 import { gitArgv, gitEnv } from "../util/git";
 import { redact, redactedJson } from "../util/redact";
 import { gitChanges } from "./git-changes";
-import type { GitCommitInfo, GitFileDiff } from "./protocol";
+import type { GitCommitHead, GitCommitInfo, GitFileDiff } from "./protocol";
 import { RpcError } from "./rpc-error";
 
 const REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"];
@@ -111,7 +111,7 @@ async function checkOperation(root: string) {
     }
 }
 
-export async function gitCommit(cwd: string, paths: string[], message: string): Promise<GitCommitInfo> {
+export async function gitCommit(cwd: string, paths: string[], message: string, options: { expectedHead?: GitCommitHead; signal?: AbortSignal } = {}): Promise<GitCommitInfo> {
     cwd = canonical(cwd);
     if (!message.trim() || message.includes("\0") || Buffer.byteLength(message) > 64 * 1024) throw new RpcError("Enter a commit message (at most 64 KiB, without NUL characters).", "invalid");
     const files = await selection(cwd, paths);
@@ -142,6 +142,12 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         };
         const oldHead = await git(root, ["rev-parse", "--verify", "HEAD"], { allowFailure: true });
         const headRef = (await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true })).out.trimEnd();
+        const expected = options.expectedHead;
+        if (expected && headRef !== (expected.detached ? "" : `refs/heads/${expected.branch}`)) {
+            const from = expected.detached ? "detached HEAD" : expected.branch;
+            const to = headRef.replace(/^refs\/heads\//, "") || "detached HEAD";
+            throw new RpcError(`The branch changed from ${from} to ${to}; reopen the dialog.`, "git");
+        }
         await git(root, oldHead.code ? ["read-tree", "--empty"] : ["read-tree", oldHead.out.trim()], { index: privateIndex });
         // The real index copy preserves every unselected entry, including index flags.
         try {

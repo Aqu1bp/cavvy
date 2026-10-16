@@ -1182,7 +1182,16 @@ export class Engine {
                 if (typeof p.message !== "string" || !p.message.trim() || Buffer.byteLength(p.message) > 65_536 || p.message.includes("\0")) {
                     throw new RpcError("message must be nonempty, at most 64 KiB, and contain no NUL bytes", "invalid");
                 }
-                return this.runtime(p.id).gitCommit(p.paths, p.message);
+                if (p.expectedHead !== undefined) {
+                    const head = p.expectedHead;
+                    if (
+                        !head || typeof head !== "object" || typeof head.detached !== "boolean" ||
+                        (head.detached ? head.branch !== undefined : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
+                    ) {
+                        throw new RpcError("expectedHead must describe a branch or detached HEAD", "invalid");
+                    }
+                }
+                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead);
             }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };

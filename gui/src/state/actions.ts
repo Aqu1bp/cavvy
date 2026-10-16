@@ -1,7 +1,7 @@
 // What the user does, as calls to the server.
 
 import { createSignal } from "solid-js";
-import type { CliSessionInfo, EditorInfo, EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import type { CliSessionInfo, EditorInfo, EffortLevel, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
@@ -281,9 +281,9 @@ export async function deleteSession(id: string) {
 }
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */
-export async function gitCommit(id: string, paths: string[], message: string) {
+export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead) {
     try {
-        const result = await rpc.call("session.gitCommit", { id, paths, message });
+        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead });
         toast(`Committed ${result.hash.slice(0, 7)} ${result.subject}`, "success");
         return result;
     } finally {

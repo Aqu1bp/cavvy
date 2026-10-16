@@ -43,6 +43,7 @@ import type {
     Block,
     ChangesInfo,
     GitChangesInfo,
+    GitCommitHead,
     GitCommitInfo,
     GitCommitMessageInfo,
     GitScope,
@@ -1908,11 +1909,11 @@ export class Runtime {
         if (!this.idle) throw new RpcError("This session is still working. Wait for its responses, questions, shells, and tasks to finish before committing.", "busy");
     }
 
-    async gitCommit(paths: string[], message: string): Promise<GitCommitInfo> {
+    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
         this.checkGitCommit();
         this.committing = true;
         try {
-            return await gitCommit(this.ws.cwd, paths, message);
+            return await gitCommit(this.ws.cwd, paths, message, { expectedHead });
         } finally {
             this.committing = false;
         }

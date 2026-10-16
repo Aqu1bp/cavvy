@@ -98,7 +98,7 @@ export function CommitDialog() {
         setCommitting(true);
         setError(undefined);
         try {
-            await gitCommit(request.id, paths(), message());
+            await gitCommit(request.id, paths(), message(), { branch: view()?.head?.branch, detached: !view()?.head?.branch });
             setCommitRequest(undefined);
         } catch (e) {
             setError(errorText(e));
