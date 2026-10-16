@@ -3,7 +3,7 @@
 // focus by themselves, so an Enter meant for the input can't approve
 // anything; the number keys and Esc work when you're not typing.
 
-import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, Globe, KeyRound, MessageCircleQuestion, Plug, ShieldAlert, SquareTerminal } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
@@ -322,6 +322,7 @@ const MASKS = typeof CSS !== "undefined" && CSS.supports("-webkit-text-security"
  * storage) and is cleared once it's sent or the card goes away.
  */
 function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
+    const descriptionId = createUniqueId();
     let input!: HTMLInputElement;
     const [shown, setShown] = createSignal(false);
     const [ready, setReady] = createSignal(false);
@@ -355,7 +356,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
         <>
             <Head icon={<KeyRound size={14} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
             <div class="itab-body">
-                <p class="secret-purpose">{p.it.purpose}</p>
+                <p class="secret-purpose" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
                     <input
                         ref={input}
@@ -372,6 +373,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
                         data-form-type="other"
                         placeholder={`Value for ${p.it.name}`}
                         aria-label={`Value for ${p.it.name}`}
+                        aria-describedby={descriptionId}
                         onInput={check}
                         onKeyDown={(e) => {
                             if (e.key === "Enter") {
@@ -394,7 +396,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
                     Decline <kbd>Esc</kbd>
                 </button>
                 <span class="spacer" />
-                <button class="pbtn primary" disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
+                <button class="pbtn primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
                     Provide
                 </button>
             </div>

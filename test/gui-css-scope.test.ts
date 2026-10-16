@@ -1,8 +1,30 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { parseRules } from "./helpers/contrast";
 
 const gui = join(import.meta.dir, "../gui/src");
+
+test("forced-colors selection outlines preserve keyboard focus on selected controls", () => {
+    const css = readFileSync(join(gui, "styles/base.css"), "utf8");
+    const forced = css.match(/@media\s*\(forced-colors:\s*active\)\s*\{([\s\S]*?)\n\}/)?.[1];
+    expect(forced).toBeDefined();
+    const rules = parseRules(forced!);
+    expect(rules.find((r) => r.selectors.includes(":focus-visible"))?.decls.get("outline")).toBe("2px solid Highlight");
+    expect(parseRules(css).find((r) => r.selectors.includes(":focus-visible"))?.decls.get("outline-offset")).toBe("2px");
+
+    // These classes belong to focusable controls. Card/model/file row wrappers
+    // instead keep their selection outline while a child button receives focus.
+    for (const selector of [".navi.on", ".segmented button.on", ".menu-item.sel", ".menu-item.current", ".rw-item.on", ".toggle.on"]) {
+        const outlines = rules.filter((r) => r.decls.has("outline") && r.selectors.some((s) => s.startsWith(selector)));
+        expect(outlines).toHaveLength(1);
+        expect(outlines[0]!.selectors.filter((s) => s.startsWith(selector))).toEqual([`${selector}:not(:focus-visible)`]);
+        expect(outlines[0]!.decls.get("outline")).toBe(selector === ".toggle.on" ? "1px solid Highlight" : "1px solid SelectedItem");
+        if (selector !== ".toggle.on") expect(outlines[0]!.decls.get("outline-offset")).toBe("-1px");
+    }
+    // Enabled toggles retain their state background even while focused.
+    expect(rules.find((r) => r.selectors.includes(".toggle.on"))?.decls.get("background")).toBe("Highlight");
+});
 
 // Read only class values, including literal branches of Solid's template expressions.
 // Searching the whole source would confuse props/variables named "split" with classes.
