@@ -1970,3 +1970,60 @@ describe("project scripts", () => {
         }
     }, 20_000);
 });
+
+describe("CLI accounts over RPC", () => {
+    test("add, unsigned status, rename, defaults, busy switch and confined removal", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        saveAgentConfig("codex", { path: fakeCodex() });
+        process.env.FAKE_LOGGED_IN = "0";
+        process.env.FAKE_ACCOUNT = "none";
+        const c = await client();
+        try {
+            for (const provider of ["claude-code", "codex"]) {
+                const a = await c.call("accounts.add", { provider, id: "rpc-personal", name: "Personal" });
+                expect(existsSync(a.folder)).toBe(true);
+                const listed = await c.call<any[]>("accounts.list", { provider, refresh: true });
+                expect(listed.find((v) => v.id === a.id)).toMatchObject({ signedIn: false, description: "not signed in", folder: a.folder });
+                const log = join(tempDir("account-login-log-"), "starts.jsonl");
+                process.env.FAKE_LOG = log;
+                const terminalId = `login-${provider}`;
+                await c.call("terminal.open", { id: terminalId, cwd: "/ignored", cols: 80, rows: 24, login: { provider, accountId: a.id, env: { CODEX_HOME: "/client-must-not-control-this" } } });
+                const deadline = Date.now() + 5000;
+                while (!c.events.some((e) => e.type === "terminal.exit" && e.id === terminalId)) {
+                    if (Date.now() > deadline) throw new Error("Login fixture did not exit");
+                    await Bun.sleep(10);
+                }
+                const starts = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((v) => v.argv);
+                const login = starts.find((v) => v.argv.includes("login"));
+                expect(login.argv).toEqual(provider === "codex" ? ["login"] : ["auth", "login"]);
+                expect(login[provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(a.folder);
+                expect(login[provider === "codex" ? "claudeConfigDir" : "codexHome"]).toBeUndefined();
+                delete process.env.FAKE_LOG;
+                await c.call("accounts.rename", { provider, id: a.id, name: "Work" });
+                expect((await c.call<any[]>("accounts.list", { provider })).find((v) => v.id === a.id).name).toBe("Work");
+                await c.call("accounts.setDefault", { provider, id: a.id });
+                const session = await c.open("session.create", { cwd: project() });
+                expect(c.view(session).state.accounts?.[provider]).toBe(a.id);
+                await c.call("session.setAccount", { id: session, provider, accountId: "default" });
+                await c.until(session, (v) => v.state.accounts?.[provider] === "default");
+                await expect(c.call("accounts.remove", { provider, id: a.id, confirmedFolder: "wrong" })).rejects.toMatchObject({ code: "invalid" });
+                await c.call("accounts.remove", { provider, id: a.id, confirmedFolder: a.folder });
+                expect(existsSync(a.folder)).toBe(false);
+                await expect(c.call("accounts.remove", { provider, id: "default", confirmedFolder: "/" })).rejects.toMatchObject({ code: "invalid" });
+                await expect(c.call("accounts.add", { provider, id: "../bad", name: "Bad" })).rejects.toMatchObject({ code: "invalid" });
+                await expect(c.call("accounts.add", { provider, id: "badfolder", name: "Bad", folder: "/tmp/../bad" })).rejects.toMatchObject({ code: "invalid" });
+            }
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.send", { id, text: "demo" });
+            await c.until(id, (v) => v.state.interactions.length > 0);
+            await expect(c.call("session.setAccount", { id, provider: "codex", accountId: "default" })).rejects.toMatchObject({ code: "busy" });
+            await c.call("session.interrupt", { id });
+        } finally {
+            delete process.env.FAKE_LOGGED_IN;
+            delete process.env.FAKE_ACCOUNT;
+            delete process.env.FAKE_LOG;
+            c.close();
+        }
+    }, 30_000);
+});

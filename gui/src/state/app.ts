@@ -385,6 +385,7 @@ function onEvent(ev: ServerEvent) {
             toast(ev.message, ev.level);
             return;
         case "models.changed":
+            void refreshProviders().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;

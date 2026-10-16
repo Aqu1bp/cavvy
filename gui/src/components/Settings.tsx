@@ -11,6 +11,7 @@ import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type Them
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { mod, openExternal } from "../lib/platform";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { Accounts } from "./Accounts";
 import { MODES } from "./ModePicker";
 import { CrumbSep, TitleBar } from "./Header";
 import { SidebarFrame } from "./Sidebar";
@@ -387,6 +388,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     };
     return (
         <div class="prov">
+            <Show when={p.pr.agentCli?.installed}><Accounts provider={p.pr} /></Show>
             <div class="prov-line">
                 <span class="prov-ico" title={p.pr.configured ? "Set up" : "Not set up"}>
                     <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} />

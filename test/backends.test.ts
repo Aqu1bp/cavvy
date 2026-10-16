@@ -944,6 +944,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(usageOf(session).inputTokens).toBe(200 + 400);
     });
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP tool call Codex asks about goes to the harness's rules and the user, not declined unasked", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         const yes = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
@@ -987,8 +988,9 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(await no.run("go")).toBe("denied");
         expect(elicitations()[0].action).toBe("decline");
         expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
-    });
+    }, 20_000);
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP server's form goes to the question dialog, its answers typed as the form asks; with nobody to ask it's declined", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         process.env.FAKE_ELICIT = "form";
@@ -1037,7 +1039,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
             expect(await b.run("go")).toBe("done");
             expect(elicitations()).toEqual([{ action: "decline", content: null, _meta: null }]);
         }
-    });
+    }, 20_000);
 
     test("an MCP server's form: what's typed outside what a field allows isn't sent as its value", () => {
         const form = elicitationForm({

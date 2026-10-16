@@ -22,7 +22,9 @@ import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
 import { canonical } from "../util/files";
-import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
+import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
+import { accountEnv, defaultAccount } from "../providers/accounts";
+import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 
@@ -55,7 +57,7 @@ class Rpc {
                     const p = this.pending.get(m.id);
                     if (!p) continue;
                     this.pending.delete(m.id);
-                    if (m.error) p.reject(new ProviderError(`Codex: ${String(m.error.message ?? "request failed")}`));
+                    if (m.error) p.reject(new ProviderError(`Codex: ${cliMessage(String(m.error.message ?? "request failed"))}`));
                     else p.resolve(m.result);
                 }
             }
@@ -100,22 +102,22 @@ export function untrustedArgs(cwd: string): string[] {
 }
 
 /** Start app-server (no handshake yet). */
-function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean } = {}): Rpc {
+function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
     const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : [])];
-    return new Rpc(new JsonLinesProcess(bin, args, { cwd }), onNotification, onRequest);
+    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId) }), onNotification, onRequest);
 }
 
-async function handshake(rpc: Rpc) {
-    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
+async function handshake(rpc: Rpc, accountPermissions = false) {
+    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: accountPermissions ? { experimentalApi: true } : null });
     rpc.notify("initialized");
 }
 
 /** Start app-server and do the handshake; the signal (or the timeout) stops it at any point. */
-async function connect(providerId: string, cwd: string, signal?: AbortSignal): Promise<Rpc> {
+async function connect(providerId: string, cwd: string, signal?: AbortSignal, accountId?: string): Promise<Rpc> {
     const rpc = spawnRpc(providerId, cwd, () => {}, async () => {
         throw new Error("not supported");
-    });
+    }, { accountId });
     const kill = () => void rpc.proc.kill();
     signal?.addEventListener("abort", kill, { once: true });
     try {
@@ -140,7 +142,7 @@ export interface CodexAccount {
 
 function parseAccount(r: any): CodexAccount {
     const a = r?.account;
-    return { type: typeof a?.type === "string" ? a.type : undefined, email: typeof a?.email === "string" ? a.email : undefined, planType: typeof a?.planType === "string" ? a.planType : undefined, requiresAuth: r?.requiresOpenaiAuth === true };
+    return { type: cliStatusString(a?.type), email: cliStatusString(a?.email), planType: cliStatusString(a?.planType), requiresAuth: r?.requiresOpenaiAuth === true };
 }
 
 export function describeCodexAuth(a: CodexAccount): string {
@@ -151,8 +153,8 @@ export function describeCodexAuth(a: CodexAccount): string {
 }
 
 /** How Codex is signed in (account/read), from Codex itself. */
-export async function codexAccount(providerId = "codex", signal?: AbortSignal): Promise<CodexAccount> {
-    const rpc = await connect(providerId, homedir(), signal);
+export async function codexAccount(providerId = "codex", signal?: AbortSignal, accountId?: string): Promise<CodexAccount> {
+    const rpc = await connect(providerId, homedir(), signal, accountId);
     const kill = () => void rpc.proc.kill();
     signal?.addEventListener("abort", kill, { once: true });
     try {
@@ -238,7 +240,7 @@ export class CodexBackend implements AgentBackendClient {
 
     /** Codex's model catalog (model/list), the default model first. */
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
-        const rpc = await connect(this.def.id, homedir(), signal);
+        const rpc = await connect(this.def.id, homedir(), signal, defaultAccount(this.def.id));
         const kill = () => void rpc.proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         try {
@@ -422,7 +424,12 @@ class CodexTurn {
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted });
+        const accountPermissions = accountPermissionConfig(t.additionalDirectories);
+        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId });
+        const stopAccountWatch = watchAccountFolders(() => {
+            this.failure = "Account folders changed while Codex was running. Send again to apply their updated protections.";
+            void this.rpc.proc.kill();
+        });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -434,7 +441,7 @@ class CodexTurn {
         };
         t.signal.addEventListener("abort", onAbort, { once: true });
         try {
-            await withTimeout(handshake(this.rpc), 30_000, "Codex didn't start (no answer to initialize)");
+            await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
                 return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.` };
@@ -450,6 +457,7 @@ class CodexTurn {
                 if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
                 config = off;
             }
+            if (accountPermissions) config = { ...config, ...accountPermissions };
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
             // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
@@ -457,13 +465,13 @@ class CodexTurn {
             const fastTier = tierFor(t.fastMode);
             /** The thread's tier as last reported or set. */
             let tierNow: string | null | undefined;
-            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(this.host.mode(), t.readOnly) } : { sandbox: policy.sandbox }), approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
                     return await this.rpc.request(method, params);
                 } catch (e) {
-                    if (this.aborted || !o) throw e;
+                    if (this.aborted || !o || accountPermissions) throw e;
                     const r = await this.rpc.request(method, { ...params, config: undefined, developerInstructions: t.appendSystemPrompt || undefined });
                     this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them.` });
                     return r;
@@ -503,7 +511,7 @@ class CodexTurn {
                     const tier = tierFor(this.host.fastMode?.() ?? t.fastMode);
                     const serviceTier = tier ?? (typeof tierNow === "string" && FAST_TIERS.has(tierNow) ? null : undefined);
                     await this.waitFor(async () => {
-                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                         if (this.turnId) this.turnsSeen.add(this.turnId);
                     });
@@ -527,6 +535,7 @@ class CodexTurn {
         } catch (e) {
             if (!this.aborted) this.failure = redact((e as Error).message);
         } finally {
+            stopAccountWatch();
             t.signal.removeEventListener("abort", onAbort);
             if (abortTimer) clearTimeout(abortTimer);
             await this.rpc.proc.stop(1000);

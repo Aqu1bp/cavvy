@@ -220,6 +220,14 @@ export async function setModel(ref: string) {
     }
 }
 
+export async function setAccount(provider: string, accountId: string) {
+    try {
+        if (app.activeId) await rpc.call("session.setAccount", { id: app.activeId, provider, accountId });
+        else await rpc.call("accounts.setDefault", { provider, id: accountId });
+        await refreshProviders();
+    } catch (e) { reportError(e); }
+}
+
 export async function setMode(mode: PermissionModeId) {
     const id = app.activeId;
     if (!id) {

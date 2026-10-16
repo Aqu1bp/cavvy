@@ -3,6 +3,9 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
+import { loginCommand } from "../backends/account-login";
+import type { AccountInfo } from "./protocol";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { RpcError } from "./rpc-error";
@@ -758,6 +761,28 @@ export class Engine {
     // -----------------------------------------------------------------------
     // Providers
 
+    private accountStatus = new Map<string, Partial<AccountInfo>>();
+
+    private accountProjects(): string[] {
+        return [...this.workspaces.keys(), ...(this.o.startCwd ? [this.o.startCwd] : [])];
+    }
+
+    private async accountsList(provider: string, refresh = false): Promise<AccountInfo[]> {
+        accountProvider(provider);
+        return Promise.all(listAccounts(provider).map(async (a) => {
+            const key = `${provider}:${a.id}`;
+            if (refresh) {
+                try {
+                    const status = await checkAgentCli(provider, undefined, a.id);
+                    this.accountStatus.set(key, { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan });
+                } catch (e) {
+                    this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
+                }
+            }
+            return { ...a, ...this.accountStatus.get(key) };
+        }));
+    }
+
     private async providersList(): Promise<ProviderInfo[]> {
         const out: ProviderInfo[] = [];
         for (const p of allProviders()) {
@@ -778,7 +803,7 @@ export class Engine {
                     source: on ? "your plan" : undefined,
                     keyUrl: p.keyUrl,
                     requiresKey: false,
-                    agentCli: { installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
+                    agentCli: { accounts: listAccounts(p.id).length > 1 ? await this.accountsList(p.id) : undefined, defaultAccount: defaultAccount(p.id), installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
                 });
                 continue;
             }
@@ -1006,6 +1031,13 @@ export class Engine {
         switch (method) {
             case "terminal.open":
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                if (p.login !== undefined) {
+                    if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
+                    const provider = str(p.login.provider, "provider");
+                    const accountId = str(p.login.accountId, "accountId");
+                    const command = loginCommand(provider, accountId);
+                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, onExit: () => { void this.accountsList(provider, true).then(() => this.broadcast({ type: "models.changed" })); } });
+                }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
                 this.terminals.write(client, str(p.id, "id"), str(p.data, "data"));
@@ -1232,6 +1264,39 @@ export class Engine {
                 if (p.refresh) await this.refreshListings(true);
                 else if (!this.listed) await this.firstListings();
                 return this.modelsList();
+            case "session.setAccount":
+                this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
+                return null;
+            case "accounts.list":
+                return this.accountsList(str(p.provider, "provider"), p.refresh === true);
+            case "accounts.add": {
+                const provider = str(p.provider, "provider");
+                if ([...this.runtimes.values()].some((rt) => rt.busy)) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
+                const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
+                forgetClient(provider);
+                this.broadcast({ type: "models.changed" });
+                return added;
+            }
+            case "accounts.rename":
+                renameAccount(str(p.provider, "provider"), str(p.id, "id"), str(p.name, "name"));
+                this.broadcast({ type: "models.changed" });
+                return null;
+            case "accounts.setDefault":
+                setDefaultAccount(str(p.provider, "provider"), str(p.id, "id"));
+                this.broadcast({ type: "models.changed" });
+                return null;
+            case "accounts.remove": {
+                const provider = str(p.provider, "provider");
+                const id = str(p.id, "id");
+                account(provider, id);
+                for (const rt of this.runtimes.values()) {
+                    if (rt.busy && rt.session.accountId(provider) === id) throw new RpcError("Stop the account's running turn before removing it", "busy");
+                }
+                removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
+                this.accountStatus.delete(`${provider}:${id}`);
+                this.broadcast({ type: "models.changed" });
+                return null;
+            }
             case "providers.list":
                 return this.providersList();
             // Awaited here: these can reject before their first await, and a promise handed back unawaited is
@@ -1243,6 +1308,8 @@ export class Engine {
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");
                 if (getProvider(id)?.auth === "cli") {
+                    // Keep account folders registered and protected until explicitly removed.
+                    if ((readAgentConfig(id)?.accounts?.length ?? 0) > 0) throw new RpcError("Remove named accounts before turning off this CLI", "invalid");
                     // Turns it off here; the CLI stays signed in.
                     removeAgentConfig(id);
                     forgetClient(id);

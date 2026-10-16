@@ -29,13 +29,15 @@ import { homedir } from "os";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
+import { accountEnv, defaultAccount } from "../providers/accounts";
+import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
 import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
-import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
+import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
@@ -93,9 +95,9 @@ export interface ClaudeStatus {
 }
 
 /** `claude auth status --json`: Claude Code's own report of its sign-in. */
-export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal): Promise<ClaudeStatus> {
+export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<ClaudeStatus> {
     const bin = requireCli(providerId, CLAUDE_CLI);
-    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000 });
+    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: accountEnv(providerId, accountId) });
     let j: Record<string, unknown> | undefined;
     try {
         j = JSON.parse(r.stdout);
@@ -103,10 +105,11 @@ export async function claudeStatus(providerId = "claude-code", signal?: AbortSig
         // older versions print text
     }
     if (!j || typeof j !== "object") {
+        if (/not (logged|signed) in/i.test(r.stdout || r.stderr)) return { loggedIn: false };
         if (r.code !== 0) throw new ProviderError(`claude auth status failed: ${cliMessage(r.stderr || r.stdout) || `exit ${r.code}`}`);
         return { loggedIn: !/not (logged|signed) in/i.test(r.stdout) };
     }
-    const str = (k: string) => (typeof j![k] === "string" ? (j![k] as string) : undefined);
+    const str = (k: string) => cliStatusString(j![k]);
     return { loggedIn: j.loggedIn === true, authMethod: str("authMethod"), apiProvider: str("apiProvider"), email: str("email"), subscriptionType: str("subscriptionType") };
 }
 
@@ -154,7 +157,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         // No settings, MCP servers or session file: this only asks for the list.
-        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir() });
+        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
         const kill = () => void proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, 30_000);
@@ -184,7 +187,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined);
+        const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
+        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined);
         this.turns.add(turn);
         try {
             const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
@@ -192,7 +196,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
-            if (s) this.spent.set(s.sessionId, s.total);
+            if (s) this.spent.set(key(s.sessionId), s.total);
         }
     }
 
@@ -309,16 +313,19 @@ class ClaudeTurn {
         if (!t.trusted) a.push("--setting-sources", "user", "--strict-mcp-config");
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
+        const sandbox = claudeAccountSandbox();
+        // Also check excluded commands, which the CLI may run outside its sandbox.
+        if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
         // Always override external preferences: an unsupported model must not silently switch to Opus.
         const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}) }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
         a.push("--disallowedTools", READ_ONLY_DENY.join(","));
         if (t.trusted) a.push("--strict-mcp-config");
-        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
+        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false } };
         a.push("--settings", JSON.stringify(settings));
         return a;
     }
@@ -482,7 +489,12 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd });
+        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId) });
+        const stopAccountWatch = watchAccountFolders(() => {
+            this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
+            this.reason = "error";
+            void this.proc.kill();
+        });
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -513,6 +525,7 @@ class ClaudeTurn {
                 if (!this.busy && this.idle()) break;
             }
         } finally {
+            stopAccountWatch();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
@@ -537,7 +550,7 @@ class ClaudeTurn {
         const resumeFailed = Boolean(this.t.resumeId && !this.sessionId && /no conversation found|session.{0,40}(not found|doesn't exist|does not exist)/i.test(`${this.failure ?? ""}\n${err}`));
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
-            const why = (resumeFailed && this.failure) || cliMessage(err) || `claude exited with code ${code}`;
+            const why = this.failure || cliMessage(err) || `claude exited with code ${code}`;
             return { reason: "error", text, actions: this.actions, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
         }
         const reason = this.reason ?? "done";
@@ -1028,8 +1041,9 @@ export function claudeRule(raw: string, root: string): string[] {
 /** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
 export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
     const store = [paths.credentialsFile(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const accounts = accountProtectionFolders().flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
-    return { deny: [...map(r.deny), ...store], ask: map(r.ask) };
+    return { deny: [...map(r.deny), ...store, ...accounts], ask: map(r.ask) };
 }
 
 /** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */

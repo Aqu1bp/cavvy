@@ -45,14 +45,15 @@ const log = (o: unknown) => {
 };
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
-log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY) });
+log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
 
 if (argv[0] === "auth" && argv[1] === "status") {
     const on = process.env.FAKE_LOGGED_IN !== "0";
-    console.log(JSON.stringify(on ? { loggedIn: true, authMethod: "oauth_token", apiProvider: "firstParty", subscriptionType: "max" } : { loggedIn: false, authMethod: "none", apiProvider: "firstParty" }));
+    console.log(JSON.stringify(on ? { loggedIn: true, authMethod: "oauth_token", apiProvider: "firstParty", subscriptionType: process.env.FAKE_PLAN ?? "max", ...(process.env.FAKE_EMAIL ? { email: process.env.FAKE_EMAIL } : {}) } : { loggedIn: false, authMethod: "none", apiProvider: "firstParty" }));
     process.exit(on ? 0 : 1);
 }
+if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
 if (process.env.FAKE_IGNORE_STOP === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
 // Something it starts that holds its output open after it exits (a command left running with its stdout).
 if (process.env.FAKE_HOLD_STDOUT === "1") Bun.spawn(["sleep", "8"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }).unref();
