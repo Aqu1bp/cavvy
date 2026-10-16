@@ -381,32 +381,41 @@ export function runs(word: string | undefined, ...names: string[]): boolean {
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
- * Programs that run another one named after their own options. `valued`: the
- * options that take the next word as their value. `operands`: words before the
- * program (timeout's duration). `split`: env's -S, whose value is a command line.
+ * Programs that run another one named after their own options, which they
+ * read up to the first word that isn't one (they all stop there). `short`
+ * and `long`: the options that take a value, the rest of a short cluster or
+ * else the next word (a long one by any prefix, as getopt_long takes them);
+ * `attached`: ones whose value can only be the rest of the cluster (GNU
+ * xargs's -e, -i, -l). Options of GNU's, BSD's and sudo's own are all
+ * counted: one a program doesn't have makes it fail. `operands`: words
+ * before the program (timeout's duration). `split`: env's -S, whose value
+ * is more arguments. `query`: options that make it look the program up
+ * instead (`command -v`).
  */
 interface Wrapper {
-    valued: RegExp;
+    short: string;
+    attached?: string;
+    long?: string[];
     operands?: number;
-    split?: RegExp;
+    split?: { short: string; long: string };
+    query?: string;
 }
-const NONE = /^$/;
-const TIMEOUT: Wrapper = { valued: /^(-[sk]|--signal|--kill-after)$/, operands: 1 };
+const TIMEOUT: Wrapper = { short: "sk", long: ["signal", "kill-after"], operands: 1 };
 const WRAPPERS = new Map<string, Wrapper>([
-    ["time", { valued: /^-[of]$/ }],
-    ["nice", { valued: /^-n$/ }],
-    ["nohup", { valued: NONE }],
-    ["command", { valued: NONE }],
-    ["builtin", { valued: NONE }],
-    ["exec", { valued: /^-a$/ }],
-    ["env", { valued: /^(-[uPC]|--unset|--chdir)$/, split: /^(-S|--split-string)$/ }],
+    ["time", { short: "of", long: ["output", "format"] }],
+    ["nice", { short: "n", long: ["adjustment"] }],
+    ["nohup", { short: "" }],
+    ["command", { short: "", query: "vV" }],
+    ["builtin", { short: "" }],
+    ["exec", { short: "a" }],
+    ["env", { short: "uPCa", long: ["unset", "chdir", "argv0"], split: { short: "S", long: "split-string" } }],
     ["timeout", TIMEOUT],
     ["gtimeout", TIMEOUT],
-    ["xargs", { valued: /^(-[EIJLnPRSsad]|--(arg-file|delimiter|eof|max-args|max-lines|max-procs|max-chars|replace|process-slot-var))$/ }],
-    ["sudo", { valued: /^(-[ugCDhprtTU]|--(user|group|close-from|chdir|host|prompt|role|type|command-timeout|other-user))$/ }],
-    ["doas", { valued: /^-[uC]$/ }],
-    ["stdbuf", { valued: /^(-[ioe]|--(input|output|error))$/ }],
-    ["caffeinate", { valued: /^-[tw]$/ }],
+    ["xargs", { short: "aEILnsPdJRS", attached: "eil", long: ["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"] }],
+    ["sudo", { short: "aCcDgpRrTtUu", attached: "h", long: ["user", "group", "close-from", "chdir", "chroot", "host", "prompt", "role", "type", "command-timeout", "other-user", "login-class", "auth-type"] }],
+    ["doas", { short: "aCu" }],
+    ["stdbuf", { short: "ioe", long: ["input", "output", "error"] }],
+    ["caffeinate", { short: "tw" }],
 ]);
 
 function wrapperOf(word: string | undefined): Wrapper | undefined {
@@ -418,12 +427,63 @@ function wrapperOf(word: string | undefined): Wrapper | undefined {
     return undefined;
 }
 
+const ENV_ESCAPES: Record<string, string> = { f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "#": "#", $: "$", '"': '"', "'": "'", "\\": "\\" };
+
+/**
+ * The words env -S makes of its string, as macOS's env(1) describes it
+ * (GNU's follows the same rules): spaces and tabs separate; '…' keeps all
+ * but \' and \; "…" and bare text take the escapes, \_ being a space
+ * inside "…" and a separator outside; \c ends the string, as does a word
+ * that starts with #. ${NAME} (env's own environment) is left as written.
+ * Text env would refuse (an open quote, an unknown escape) is split at
+ * spaces and \_ instead, so it's still looked at.
+ */
+function envSplit(s: string): string[] {
+    const loose = () => s.split(/[ \t]|\\_/).filter(Boolean);
+    const words: string[] = [];
+    let cur: string | undefined;
+    const end = () => {
+        if (cur !== undefined) words.push(cur);
+        cur = undefined;
+    };
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i]!;
+        if (ch === " " || ch === "\t") end();
+        else if (ch === "#" && cur === undefined) break;
+        else if (ch === "'" || ch === '"') {
+            let w = cur ?? "";
+            for (i++; i < s.length && s[i] !== ch; i++) {
+                if (s[i] !== "\\") {
+                    w += s[i];
+                    continue;
+                }
+                const e = s[i + 1];
+                if (ch === "'") w += e === "'" || e === "\\" ? s[++i] : "\\";
+                else if (e === "_") (w += " "), i++;
+                else if (e !== undefined && ENV_ESCAPES[e] !== undefined) (w += ENV_ESCAPES[e]), i++;
+                else return loose();
+            }
+            if (i >= s.length) return loose();
+            cur = w;
+        } else if (ch === "\\") {
+            const e = s[++i];
+            if (e === "_") end();
+            else if (e === "c") break;
+            else if (e !== undefined && ENV_ESCAPES[e] !== undefined) cur = (cur ?? "") + ENV_ESCAPES[e];
+            else return loose();
+        } else cur = (cur ?? "") + ch;
+    }
+    end();
+    return words;
+}
+
 /**
  * Every program a simple command runs, for the checks that protect (deny and
  * ask rules, catastrophic commands, deletions): the command past its env
  * assignments, then, through each wrapper (`env`, `exec`, `nohup`, `nice -n 5`,
- * `command -p`, `timeout 5`, `xargs`, `sudo -u x`, in any spelling), the one it
- * runs. `at` is where it starts in argv (-1 for one from env -S's command line).
+ * `command -p`, `timeout 5`, `xargs -n 1`, `sudo -u x`, in any spelling), the
+ * one it runs. `at` is where it starts in argv (-1 for one that env -S's
+ * string gave, whose levels come last and start with that env's own).
  */
 export function runLevels(argv0: string[], depth = 0): { argv: string[]; at: number }[] {
     const out: { argv: string[]; at: number }[] = [];
@@ -434,34 +494,40 @@ export function runLevels(argv0: string[], depth = 0): { argv: string[]; at: num
         const argv = argv0.slice(at);
         out.push({ argv, at: depth ? -1 : at });
         const w = wrapperOf(argv[0]);
-        // `command -v x` and `command -V x` only look x up.
-        if (!w || (runs(argv[0], "command") && /^-[a-zA-Z]*[vV]/.test(argv[1] ?? ""))) break;
+        if (!w) break;
         const env = runs(argv[0], "env");
         let operands = w.operands ?? 0;
+        let optsDone = false;
+        let script: string | undefined;
         let j = 1;
-        for (; j < argv.length; j++) {
+        for (; j < argv.length && script === undefined; j++) {
             const a = argv[j]!;
-            if (a === "--") {
-                j++;
-                break;
-            }
-            if (env && (ASSIGNMENT.test(a) || a === "-")) continue;
-            // `env -S 'rm -rf' ~` runs `rm -rf ~`: the string's words, then the rest.
-            const split = w.split?.test(a) ? (argv[++j] ?? "") : env && /^(-S.|--split-string=)/.test(a) ? a.replace(/^(-S|--split-string=)/, "") : undefined;
-            if (split !== undefined) {
-                const words = [...analyzeCommand(split).commands.flatMap((c) => c.argv), ...argv.slice(j + 1)];
-                if (depth < 4) out.push(...runLevels(words, depth + 1));
-                return out;
-            }
-            if (a.startsWith("-") && a.length > 1) {
-                if (w.valued.test(a)) j++;
-                continue;
-            }
-            if (operands > 0) {
-                operands--;
-                continue;
-            }
-            break;
+            if (!optsDone && a === "--") optsDone = true;
+            else if (env && (ASSIGNMENT.test(a) || (!optsDone && a === "-"))) continue;
+            else if (!optsDone && a.startsWith("--")) {
+                const eq = a.indexOf("=");
+                const name = a.slice(2, eq < 0 ? undefined : eq);
+                if (w.split?.long.startsWith(name)) script = eq < 0 ? (argv[++j] ?? "") : a.slice(eq + 1);
+                else if (eq < 0 && w.long?.some((l) => l.startsWith(name))) j++;
+            } else if (!optsDone && a.startsWith("-") && a.length > 1) {
+                // A cluster: the first option that takes a value takes the rest of the word, or the next word.
+                for (let k = 1; k < a.length; k++) {
+                    const ch = a[k]!;
+                    if (w.query?.includes(ch)) return out;
+                    if (w.attached?.includes(ch)) break;
+                    const split = w.split?.short === ch;
+                    if (!split && !w.short.includes(ch)) continue;
+                    const value = k + 1 < a.length ? a.slice(k + 1) : argv[++j];
+                    if (split) script = value ?? "";
+                    break;
+                }
+            } else if (operands > 0) operands--;
+            else break;
+        }
+        if (script !== undefined) {
+            // `env -S 'rm -rf' ~` runs `rm -rf ~`: env goes on with the string's words, then the rest.
+            if (depth < 4) out.push(...runLevels([argv[0]!, ...envSplit(script), ...argv.slice(j)], depth + 1));
+            return out;
         }
         at += j;
     }
@@ -710,8 +776,12 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (base === "node" || base === "python" || base === "python3" || base === "ruby") return args.length === 1 && INTERPRETER_VERSION_FLAGS.has(args[0]!);
     // `env CMD` runs CMD; only the bare form just prints.
     if (base === "env") return args.length === 0;
-    // `command -v x` and `-V` say what x is without running it (effectiveArgv left the other forms out).
-    if (base === "command") return args.length > 0 && args.every((a) => /^-[pvV]+$/.test(a) || !a.startsWith("-")) && args.some((a) => /^-[pvV]*[vV]/.test(a));
+    // `command -v x` and `-V` say what x is without running it. Its options come
+    // first: in `command cp -v a b` the -v is cp's, and cp runs.
+    if (base === "command") {
+        const opts = args.slice(0, Math.max(0, args.findIndex((a) => !a.startsWith("-") || a === "--")));
+        return opts.every((a) => /^-[pvV]+$/.test(a)) && opts.some((a) => /[vV]/.test(a)) && args.length > opts.length;
+    }
     if (base === "printenv") return args.every((a) => !a.startsWith("-"));
     if (base === "awk" || base === "gawk") return false; // can write files / run commands
     if (base === "xargs") return false;
@@ -1089,9 +1159,16 @@ function criticalSpelling(t: string, homes: string[], cwdOk: boolean): boolean {
     return /^\/[^/]+$/.test(p) || USERS_DIR.test(p);
 }
 
+/** A word as the shell reads it back. */
+function shellWord(w: string): string {
+    return /^[\w@%+=:,./~-]+$/.test(w) ? w : "'" + w.replace(/'/g, "'\\''") + "'";
+}
+
 /** The argv checks of dangerousReason, for each program the command runs (through env, exec, nohup…), by any name it's found by. */
-function dangerousArgv(argv0: string[]): string | undefined {
-    for (const { argv } of runLevels(argv0)) {
+function dangerousArgv(argv0: string[], depth: number): string | undefined {
+    for (const { argv, at } of runLevels(argv0)) {
+        // What env -S's string runs: checked as a command line of its own, so the patterns see it too.
+        if (at < 0) return depth < 4 ? dangerousReason(argv.map(shellWord).join(" "), depth + 1) : undefined;
         const prog = argv[0];
         const args = argv.slice(1);
         const dd = args.indexOf("--");
@@ -1167,7 +1244,7 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
     if (depth > 4) return undefined;
     const a = analyzeCommand(cmd);
     for (const c of a.commands) {
-        const r = dangerousArgv(c.argv);
+        const r = dangerousArgv(c.argv, depth);
         if (r) return r;
     }
     for (const body of substitutionBodies(cmd)) {
@@ -1278,10 +1355,30 @@ function exclusionWords(argv: string[]): number[] {
             }
         }
     } else if (["grep", "egrep", "fgrep", "ggrep"].includes(prog)) {
-        for (let i = 1; i < eff.length && eff[i] !== "--"; i++) if (/^--exclude(-dir)?=/.test(eff[i]!)) out.push(off + i);
+        for (let i = 1; i < eff.length; i++) {
+            const a = eff[i]!;
+            if (a === "--") break;
+            if (a.startsWith("--")) {
+                const eq = a.indexOf("=");
+                const name = a.slice(2, eq < 0 ? undefined : eq);
+                if (name === "exclude" || name === "exclude-dir") out.push(off + i + (eq < 0 ? 1 : 0));
+                // By any prefix, as getopt_long takes them: `--fil x` is `--file x`.
+                if (eq < 0 && name && GREP_VALUE_LONG.some((l) => l.startsWith(name))) i++;
+            } else if (a.startsWith("-") && a.length > 1) {
+                const k = [...a.slice(1)].findIndex((ch) => GREP_VALUE_SHORT.includes(ch));
+                if (k >= 0 && k === a.length - 2) i++;
+            }
+        }
     }
-    return out;
+    return out.filter((i) => i < argv.length);
 }
+
+// grep's options that take a value, BSD grep's (macOS) and GNU grep's (with its undocumented -X).
+const GREP_VALUE_SHORT = "ABCDdefmX";
+const GREP_VALUE_LONG = [
+    "after-context", "before-context", "context", "devices", "directories", "regexp", "file", "max-count", "exclude", "exclude-dir",
+    "exclude-from", "include", "include-dir", "label", "binary-files", "group-separator",
+];
 
 /**
  * Commands that look at credential files ask first even when read-only.

@@ -11,7 +11,7 @@
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
 import { analyzeCommand, effectiveArgv, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
-import { CASE_FOLDS, canonical } from "../util/files";
+import { CASE_FOLDS, canonical, spellings } from "../util/files";
 
 export interface ParsedRule {
     tool: string;
@@ -161,15 +161,25 @@ export function bashRuleMatches(spec: string | undefined, command: string, mode:
 }
 
 /**
- * The rule's program name in each spelling a program name has (programNames),
- * for matching it against those. A spelling that would turn the name into a
+ * The rule's program word in each spelling a program word has (programWords),
+ * for matching it against those. A spelling that would turn it into a
  * pattern (fullwidth ＊ or ：) isn't used.
  */
 function specSpellings(spec: string): string[] {
     const name = spec.match(/^[^\s*?:]*/)![0];
     const dir = name.slice(0, name.lastIndexOf("/") + 1);
-    const others = programNames(name).filter((n) => !/[\s*?:/]/.test(n));
-    return [...new Set([spec, ...others.map((n) => dir + n + spec.slice(name.length))])];
+    // Folding never adds a `/`, so each spelling has the rule's directories.
+    const others = [...programNames(name).map((n) => dir + n), ...spellings(name)].filter((n) => !/[\s*?:]/.test(n));
+    return [...new Set([spec, ...others.map((n) => n + spec.slice(name.length))])];
+}
+
+/**
+ * A program word as the deny rules see it: as written, in each spelling the
+ * volume finds it by (`/BIN/RM` is /bin/rm on macOS), and its name alone in
+ * each (`rm`), so `Bash(rm:*)` and `Bash(/bin/rm:*)` both cover it.
+ */
+function programWords(word: string): string[] {
+    return [...new Set([word, ...spellings(word), ...programNames(word)])];
 }
 
 /**
@@ -185,7 +195,7 @@ function denyMatches(spec: string, command: string, depth: number): boolean {
     for (const c of analyzeCommand(command).commands) {
         for (const { argv } of runLevels(c.argv)) {
             const rest = argv.slice(1);
-            for (const name of [argv[0]!, ...programNames(argv[0]!)]) {
+            for (const name of programWords(argv[0]!)) {
                 const text = [name, ...rest].join(" ");
                 if (specs.some((s) => matchCommandSpec(s, text))) return true;
             }

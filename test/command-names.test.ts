@@ -198,7 +198,7 @@ describe("programs run through wrappers", () => {
         const levels = (cmd: string) => runLevels(analyzeCommand(cmd).commands[0]!.argv).map((l) => [l.argv[0], l.at]);
         expect(levels("A=1 nice -n 5 env -u X B=2 rm -rf x")).toEqual([["nice", 1], ["env", 4], ["rm", 8]]);
         expect(levels("command -v rm")).toEqual([["command", 0]]);
-        expect(levels("env -S 'rm -rf' x")).toEqual([["env", 0], ["rm", -1]]);
+        expect(levels("env -S 'rm -rf' x")).toEqual([["env", 0], ["env", -1], ["rm", -1]]);
         expect(levels("ls -la")).toEqual([["ls", 0]]);
         expect(levels("FOO=1")).toEqual([]);
     });

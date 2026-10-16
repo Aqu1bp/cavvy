@@ -14,7 +14,7 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs } from "./bash-safety";
+import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, SHELLS } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
 
 export type SandboxKind = "seatbelt" | "bwrap";
@@ -213,6 +213,11 @@ const ESCAPE_SERVICES = [
     "com.apple.pasteboard.1", "com.apple.SecurityServer", "com.apple.security.syspolicy", "com.apple.windowserver.active",
 ];
 
+/** The CLI config folders inside a worktree: the worktree's write access mustn't reopen them. */
+function cliInWorktrees(p: SandboxPolicy): string[] {
+    return (p.cliConfig ?? []).filter((c) => (p.worktrees ?? []).some((t) => isWithin(c, t)));
+}
+
 /**
  * Seatbelt profile. Later rules win over earlier ones, so each `deny` after
  * an `allow` carves an exception out of it.
@@ -238,7 +243,8 @@ export function seatbeltProfile(p: SandboxPolicy): string {
         ...(cli.length ? [`(deny file-write* ${subpaths(cli)})`] : []),
         ...(worktrees.length ? [`(allow file-write* ${subpaths(worktrees)})`] : []),
         // Unreadable paths can't be written (or renamed out from under the read rule) either.
-        `(deny file-write* ${subpaths([...p.readOnly, ...p.gitDirs.flatMap(gitProtectedPaths), ...p.unreadable])})`,
+        // Config that a worktree holds (a `.codex` symlinked into one) too.
+        `(deny file-write* ${subpaths([...p.readOnly, ...cliInWorktrees(p), ...p.gitDirs.flatMap(gitProtectedPaths), ...p.unreadable])})`,
         // Paths that can't be moved, replaced or repointed, only written inside:
         // the git dirs and `.git` pointer files, the writable directories
         // above them (the workspace roots, say), and the worktrees. Moved away,
@@ -317,7 +323,7 @@ export function bwrapArgs(p: SandboxPolicy): string[] {
     // Bound onto itself, a git dir is a mount point, which can't be moved or
     // replaced; a `.git` pointer file is bound read-only.
     for (const g of gits) if (existsSync(g)) args.push(statSync(g).isDirectory() ? "--bind" : "--ro-bind", g, g);
-    for (const r of [...p.readOnly, ...gits.flatMap(gitProtectedPaths)]) if (existsSync(r)) args.push("--ro-bind", r, r);
+    for (const r of [...p.readOnly, ...cliInWorktrees(p), ...gits.flatMap(gitProtectedPaths)]) if (existsSync(r)) args.push("--ro-bind", r, r);
     for (const u of p.unreadable) {
         if (!existsSync(u)) continue;
         if (statSync(u).isDirectory()) args.push("--tmpfs", u);
@@ -473,9 +479,11 @@ export function sandboxCacheEnv(network = false): Record<string, string> {
     return env;
 }
 
-// `/` so a program given by path (/bin/rm) counts too. In every spelling, case ignored
-// where the volume ignores it (`RM` is rm there).
-const DELETE_WORD = new RegExp(/(^|[\s;|&(`'"/])(rm|rmdir|unlink|shred|truncate|srm)(?=\s|$|[;|&)`'"])/.source, CASE_INSENSITIVE_FS ? "i" : "");
+// `/` so a program given by path (/bin/rm) counts too. As written: the
+// programs a command runs are also checked by every name they're found by
+// (`RM` is rm on macOS), and capitalized words in a commit message aren't.
+const DELETERS = ["rm", "rmdir", "unlink", "shred", "truncate", "srm"];
+const DELETE_WORD = new RegExp(`(^|[\\s;|&(\`'"/])(${DELETERS.join("|")})(?=\\s|$|[;|&)\`'"])`);
 // Deletion from inline code: python -c, node -e, ruby -e, PowerShell.
 const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rmdir|removedirs)|fs\.(rm|unlink|rmdir)|fs\.promises\.(rm|unlink)|FileUtils\.(rm|rm_r|rm_rf|remove)|Remove-Item)\b/;
 
@@ -485,13 +493,26 @@ const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rm
  * project itself. With cwd, `git checkout <name>` counts when the name is a
  * file there (it discards that file's changes) and not when it's a branch.
  */
-export function looksDestructive(cmd: string, cwd?: string): string | undefined {
-    for (const t of [cmd, ...spellings(cmd)]) if (DELETE_WORD.test(t)) return t.match(DELETE_WORD)![2]!.toLowerCase();
+export function looksDestructive(cmd: string, cwd?: string, depth = 0): string | undefined {
+    if (DELETE_WORD.test(cmd)) return cmd.match(DELETE_WORD)![2];
     if (DELETE_CALL.test(cmd)) return "deletes files";
     for (const { programs, dir } of commandsWithDirs(cmd, cwd)) for (const argv of programs) {
         const prog = argv[0];
         const args = argv.slice(1);
-        if (runs(prog, "find") && args.some((a) => a === "-delete")) return "find -delete";
+        const deleter = DELETERS.find((d) => runs(prog, d));
+        if (deleter) return deleter;
+        if (runs(prog, "find")) {
+            if (args.some((a) => a === "-delete")) return "find -delete";
+            const run = DELETERS.find((d) => args.some((a, i) => /^-(exec|execdir|ok|okdir)$/.test(a) && runs(args[i + 1], d)));
+            if (run) return run;
+        }
+        // `sh -c 'RM -rf src'`, `eval RM …`
+        if (depth < 4) {
+            const c = args.findIndex((a) => /^-[a-zA-Z]*c$/.test(a));
+            const inner = runs(prog, ...SHELLS) && c >= 0 ? args[c + 1] : runs(prog, "eval") ? args.join(" ") : undefined;
+            const r = inner ? looksDestructive(inner, cwd, depth + 1) : undefined;
+            if (r) return r;
+        }
         for (const p of ["dd", "mkfs", "diskutil"]) if (runs(prog, p)) return p;
         if (!runs(prog, "git")) continue;
         const { index, dirs } = gitSubcommand(argv);
