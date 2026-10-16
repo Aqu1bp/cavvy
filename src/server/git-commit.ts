@@ -167,6 +167,18 @@ async function checkOperation(root: string, signal?: AbortSignal) {
     }
 }
 
+/** What to do when a commit was made but the index it prepared couldn't be installed. Git stays locked until one of these is done. */
+function recoverySteps(hash: string, lock: string, index: string, dir: string | undefined): string {
+    const short = hash.slice(0, 7);
+    return [
+        "Git stays locked until you finish this from a terminal:",
+        `1. Check that ${short} is on your branch: git branch --contains ${short}`,
+        `2. If it is, install the index Harness prepared (your other staged changes kept): mv "${lock}" "${index}"`,
+        `   If it isn't, discard it (your index stays as it was before the commit): rm "${lock}"`,
+        ...(dir ? [`3. Then remove the recovery files: rm -r "${dir}"`] : []),
+    ].join("\n");
+}
+
 export async function gitCommit(cwd: string, paths: string[], message: string, options: { expectedHead?: GitCommitHead; signal?: AbortSignal } = {}): Promise<GitCommitInfo> {
     const git = (root: string, args: string[], opts: GitOptions = {}) => runGit(root, args, { signal: options.signal, ...opts });
     cwd = canonical(cwd);
@@ -182,7 +194,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
     const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"], { pathOutput: true })).out.replace(/\n$/, "");
     const lock = `${index}.lock`;
     const held = await open(lock, "wx").catch((e) => {
-        if (e.code === "EEXIST") throw new RpcError("Git's index is locked by another operation. Wait for it to finish and try again.", "busy");
+        if (e.code === "EEXIST") throw new RpcError(`Git's index is locked by another operation (${lock}). Wait for it to finish and try again. If a commit from Harness said it kept its prepared index there, follow the steps it gave first.`, "busy");
         throw e;
     });
     let dir: string | undefined;
@@ -204,7 +216,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             GIT_EDITOR: ":",
         };
         const oldHead = await git(root, ["rev-parse", "--verify", "HEAD"], { allowFailure: true });
-        const headRef = (await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true })).out.trimEnd();
+        const headRef = (await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true, pathOutput: true })).out.trimEnd();
         const expected = options.expectedHead;
         if (expected && headRef !== (expected.detached ? "" : `refs/heads/${expected.branch}`)) {
             const from = expected.detached ? "detached HEAD" : expected.branch;
@@ -321,7 +333,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         ).out.trim();
         const subject = (await git(root, ["log", "-1", "--format=%s", hash])).out.trimEnd();
         await validateUnselected();
-        if ((await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true })).out.trimEnd() !== headRef) throw new RpcError("The checked-out branch changed. Refresh the Review pane and try again.", "git");
+        if ((await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true, pathOutput: true })).out.trimEnd() !== headRef) throw new RpcError("The checked-out branch changed. Refresh the Review pane and try again.", "git");
         try {
             await git(
                 root,
@@ -350,7 +362,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
                 preserveRecovery = false;
             } catch (recoveryError) {
                 if (!preserveRecovery) throw recoveryError;
-                throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but publication could not be confirmed: ${(recoveryError as Error).message}\nThe prepared index is preserved at ${lock}, with recovery files at ${dir}. Recover from a terminal before committing again.`, "git");
+                throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but publication could not be confirmed: ${(recoveryError as Error).message}\n${recoverySteps(hash, lock, index, dir)}`, "git");
             }
         }
         try {
@@ -360,7 +372,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             ownsLock = false;
         } catch (e) {
             preserveRecovery = true;
-            throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but the index could not be updated: ${(e as Error).message}\nThe prepared index is preserved at ${lock}, with recovery files at ${dir}. Recover from a terminal before committing again.`, "git");
+            throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but the index could not be updated: ${(e as Error).message}\n${recoverySteps(hash, lock, index, dir)}`, "git");
         }
         // Like git commit, a post-commit hook's exit status cannot undo the commit.
         await hook("post-commit", [], true).catch((e) => {
