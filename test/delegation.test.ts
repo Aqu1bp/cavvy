@@ -4,7 +4,7 @@
 // real ones; nothing here runs the real CLIs or touches the network.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -1076,6 +1076,31 @@ describe("Codex as the main agent", () => {
         // No harness server for the child.
         expect(setServers()).toEqual([]);
         expect(mcpResults()[0].text).toContain('(explore on claude-code:default) finished');
+    });
+
+    test("switching to Claude after a persisted cd omits relative MCP servers approved at the root", async () => {
+        const subdir = join(cwd, "subdir");
+        mkdirSync(subdir);
+        const fixture = JSON.stringify(join(import.meta.dir, "fixtures/mcp-stdio-server.ts"));
+        writeFileSync(join(cwd, "server.js"), `await import(${fixture});`);
+        writeFileSync(join(subdir, "server.js"), `import { writeFileSync } from "fs"; writeFileSync("wrong-server-ran", ""); await import(${fixture});`);
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
+            relative: { command: process.execPath, args: ["--no-env-file", "./server.js"] },
+        } }));
+        const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["relative"] }), true);
+        manager.load();
+        script = (_req, n) => n === 1 ? use("cd", "Bash", { command: "cd subdir" }) : say("Changed directory");
+        const { agent, run, events } = await makeAgent({ provider: "gemini", client: childClient, approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("change directory")).toBe("done");
+        expect(realpathSync(agent.state.cwd)).toBe(subdir);
+        agent.setModel({ provider: "claude-code", id: "default" }, await clientFor("claude-code"));
+        expect(await run("hello")).toBe("done");
+        expect(starts().find((s) => s.argv.includes("--strict-mcp-config"))?.cwd).toBe(subdir);
+        expect(existsSync(join(subdir, "wrong-server-ran"))).toBe(false);
+        expect(setServers().every((m) => !m.request.servers.relative)).toBe(true);
+        const warnings = notices(events).filter((n) => n.includes("MCP servers omitted"));
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain("relative (server launch directory differs from the Claude Code turn)");
     });
 
     test("a read-only Claude delegate does not attach its parent's approved MCP servers", async () => {

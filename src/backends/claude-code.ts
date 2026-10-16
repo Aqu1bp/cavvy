@@ -451,7 +451,7 @@ class ClaudeTurn {
         let servers: Record<string, unknown> = {};
         try {
             // Native MCP tools bypass Harness's read-only permission checks.
-            if (!this.t.readOnly) servers = claudeMcpServers(this.t.approvedMcpServers ?? {}, warn);
+            if (!this.t.readOnly) servers = claudeMcpServers(this.t.approvedMcpServers ?? {}, this.t.cwd, warn);
         } catch {
             warn("Could not translate approved MCP servers; Claude Code runs without them.");
         }

@@ -1556,7 +1556,7 @@ describe("Claude Code MCP approval boundary", () => {
         attachTiming.timeoutMs = response === "hang" ? 50 : 5000;
         process.env.FAKE_MCP_REFUSE = response;
         try {
-            const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => ({ approved: config() }) });
+            const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => ({ approved: { ...config(), cwd } }) });
             expect(await run("hello")).toBe(response === "exit" ? "error" : "done");
             const warning = response === "hang" ? "warn: Claude Code timed out waiting for MCP servers: approved." : "warn: Claude Code couldn't connect to MCP servers: approved.";
             expect(notices(events)).toContain(warning);
@@ -1612,9 +1612,22 @@ describe("Claude Code MCP approval boundary", () => {
         }
     });
 
+    test("stdio launch-directory checks leave HTTP servers unaffected", async () => {
+        const { claudeMcpServers } = await import("../src/backends/claude-mcp");
+        const warnings: string[] = [];
+        const servers = claudeMcpServers({
+            same: { ...config(), cwd: realpathSync(cwd) },
+            missing: config(),
+            elsewhere: { ...config(), cwd: bin },
+            remote: { url: "https://example.invalid/mcp", cwd: bin },
+        }, cwd, (message) => warnings.push(message));
+        expect(servers).toEqual({ same: { type: "stdio", ...config() }, remote: { type: "http", url: "https://example.invalid/mcp" } });
+        expect(warnings).toEqual(["MCP servers omitted from Claude Code: missing (server launch directory is unavailable); elsewhere (server launch directory differs from the Claude Code turn)."]);
+    });
+
     test("incompatible cwd and interpolated HTTP headers are omitted in one warning", async () => {
         const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => ({
-            elsewhere: { ...config(), cwd }, expanded: { url: "https://example.invalid/mcp", headers: { Authorization: "${SECRET}" } },
+            elsewhere: { ...config(), cwd: bin }, expanded: { url: "https://example.invalid/mcp", headers: { Authorization: "${SECRET}" } },
         }) });
         await run("hello");
         expect(payloads()).toEqual([]);
@@ -1629,7 +1642,7 @@ describe("Claude Code MCP approval boundary", () => {
         process.env.FAKE_SCENARIO = ending === "aborted" ? "hang" : "write";
         if (ending === "failed") process.env.FAKE_CRASH_ON_SECOND = "1";
         const ac = new AbortController();
-        const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, queued: ending === "failed" ? [["again"]] : [], approvedMcpServers: () => ({ approved: config() }) });
+        const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, queued: ending === "failed" ? [["again"]] : [], approvedMcpServers: () => ({ approved: { ...config(), cwd } }) });
         const done = run("hello", ac.signal);
         if (ending === "aborted") {
             while (!events.some((e) => e.type === "tool_start")) await Bun.sleep(10);

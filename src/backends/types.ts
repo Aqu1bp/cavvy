@@ -94,7 +94,7 @@ export interface BackendTurn {
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
-    /** Snapshot of the MCP manager’s approved set; absent means no servers. */
+    /** Snapshot of the MCP manager’s approved set, with effective stdio cwd; absent means no servers. */
     approvedMcpServers?: Record<string, McpServerConfig>;
     /** The harness's deny and ask rules, and the root their paths are relative to. */
     rules: { deny: string[]; ask: string[]; root: string };

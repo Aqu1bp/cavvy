@@ -139,7 +139,8 @@ export class McpManager {
     approvedServers(): Record<string, McpServerConfig> {
         return Object.fromEntries([...this.servers.values()]
             .filter((s) => !s.config.disabled && s.collidesWith === undefined && ["pending", "connecting", "connected", "failed"].includes(s.status))
-            .map((s) => [s.name, s.config]));
+            // Preserve the launch directory when a backend turn has changed cwd since this manager was created.
+            .map((s) => [s.name, s.config.url ? { ...s.config } : { ...s.config, cwd: s.config.cwd ?? this.cwd }]));
     }
 
     async startAll(signal?: AbortSignal) {

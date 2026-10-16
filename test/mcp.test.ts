@@ -550,7 +550,17 @@ describe("McpManager.load and project .mcp.json approval", () => {
         const m = new McpManager(proj, () => ({ ...base, mcpServers: { ...base.mcpServers, "same name": cfg("first"), same_name: cfg("collision") } }), true);
         m.load();
         m.servers.get("approved")!.status = "failed";
-        expect(m.approvedServers()).toEqual({ fromSettings: cfg("s"), dup: cfg("from-settings"), approved: cfg("approved"), "same name": cfg("first") });
+        expect(m.approvedServers()).toEqual({ fromSettings: { ...cfg("s"), cwd: proj }, dup: { ...cfg("from-settings"), cwd: proj }, approved: { ...cfg("approved"), cwd: proj }, "same name": { ...cfg("first"), cwd: proj } });
+    });
+
+    test("approved stdio servers retain their effective launch directory without changing HTTP servers", () => {
+        const implicit = cfg("implicit");
+        const explicit = { ...cfg("explicit"), cwd: "/elsewhere" };
+        const http = { url: "https://example.invalid/mcp" };
+        const m = new McpManager(proj, () => ({ mcpServers: { implicit, explicit, http } }), true);
+        m.load();
+        expect(m.approvedServers()).toEqual({ implicit: { ...implicit, cwd: proj }, explicit, http });
+        expect(implicit).not.toHaveProperty("cwd");
     });
 
     test("enableAllProjectMcpServers approves every project server (rejections still win)", () => {
