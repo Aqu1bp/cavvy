@@ -376,7 +376,27 @@ describe("harness and git config edits", () => {
         mkdirSync(mixed, { recursive: true });
         writeFileSync(join(mixed, ".git"), "gitdir: x\n");
         expect(check(T("Write"), write(join(mixed, "src", "a.ts")), "acceptEdits").behavior).toBe("allow");
-        expect(check(T("Write"), write(join(mixed, ".Claude", "settings.json")), "acceptEdits").behavior).toBe("ask");
+        expect(check(T("Write"), write(join(mixed, ".claude", "settings.json")), "acceptEdits").behavior).toBe("ask");
+        if (caseInsensitiveFs) expect(check(T("Write"), write(join(mixed, ".Claude", "settings.json")), "acceptEdits").behavior).toBe("ask");
+    });
+
+    test("a worktree named like the config isn't set aside: run from .claude/worktrees, its .harness/ is that project's config", () => {
+        const root = join(W, "nest", ".claude", "worktrees");
+        const inRoot = new PermissionChecker(() => settings, root);
+        const ask = (p: string) => expect(inRoot.check(T("Write"), write(p), "acceptEdits", root).behavior).toBe("ask");
+        const targets: Record<string, string> = { ".harness": "settings.json", ".claude": "settings.json", ".codex": "config.toml", ".git": join("hooks", "pre-commit"), ".mcp.json": "x" };
+        for (const [name, file] of Object.entries(targets)) {
+            mkdirSync(join(root, name), { recursive: true });
+            writeFileSync(join(root, name, ".git"), "gitdir: x\n");
+            ask(join(root, name, file));
+        }
+        if (caseInsensitiveFs) ask(join(root, ".HARNESS", "settings.json"));
+        // Any other name is a project of its own; the folder itself is still in .claude/.
+        mkdirSync(join(root, "feature"), { recursive: true });
+        writeFileSync(join(root, "feature", ".git"), "gitdir: x\n");
+        expect(inRoot.check(T("Write"), write(join(root, "feature", "a.ts")), "acceptEdits", root).behavior).toBe("allow");
+        ask(join(root, "feature"));
+        rmSync(join(W, "nest"), { recursive: true, force: true });
     });
 
     test.each([".gitignore", ".gitattributes", ".github/workflows/ci.yml", "harness/settings.json", ".mcp.json.bak", "src/.git-keep"])("look-alike %p is a normal edit", (rel) => {

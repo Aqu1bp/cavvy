@@ -63,17 +63,25 @@ function pathForms(p: string): string[] {
     return [...new Set([FOLD(p), FOLD(c)])];
 }
 
+/** What isHarnessConfig looks for in a path. */
+const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
+
 /**
  * The path with each git checkout Claude Code keeps at …/.claude/worktrees/<name>
  * put aside: that's a project of its own, so the .claude/ it sits in says nothing
  * about its files. Everything else in the path still counts: the checkout's own
  * .claude/, .git and .mcp.json, and anything protected around it (one kept inside
  * a .git/ is still in there). A git repo elsewhere in ~/.claude (a plugin's hooks)
- * isn't one of these. Looked up as given: folding case first would find another
- * folder on a case-sensitive volume.
+ * isn't one of these, and nor is one named like the config itself: in a session
+ * run from .claude/worktrees, its .harness/ is that project's config even if it
+ * has a .git of its own. Only what's in the folder is set aside, not the folder
+ * itself. Looked up as given: folding case first would find another folder on a
+ * case-sensitive volume.
  */
 function withoutWorktrees(p: string): string {
-    return p.replace(/\/\.claude\/worktrees\/[^/]+(?=\/|$)/gi, (segment, at: number) => (existsSync(join(p.slice(0, at + segment.length), ".git")) ? "/<worktree>" : segment));
+    return p.replace(/\/\.claude\/worktrees\/([^/]+)(?=\/)/gi, (segment, name: string, at: number) =>
+        !CONFIG_NAMES.has(FOLD(name)) && existsSync(join(p.slice(0, at + segment.length), ".git")) ? "/<worktree>" : segment,
+    );
 }
 
 export class PermissionChecker {
