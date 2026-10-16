@@ -1,3 +1,4 @@
+import { composerDrafts } from "../lib/composer-draft";
 // The GUI's state: the connection, the sidebar's sessions, models, providers
 // and projects, and every open session's timeline (kept current from the
 // server's ops, applied once per frame).
@@ -312,7 +313,7 @@ export async function refreshSettings() {
 }
 
 /** Unsent text and images per session (the input box keeps them here), so switching sessions doesn't lose them. */
-export const composerDrafts = new Map<string, { text: string; attachments: Attachment[] }>();
+export { composerDrafts } from "../lib/composer-draft";
 /** Deleted sessions (until they're brought back): an input box going away doesn't keep their draft. */
 const deleted = new Set<string>();
 export const wasDeleted = (id: string) => deleted.has(id);

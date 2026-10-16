@@ -65,3 +65,11 @@ app.settings.model = undefined;
 calls.length = 0;
 assert.equal(await send("/project-skill"), true);
 assert.deepEqual(calls.map((c) => c.method), ["session.send"]);
+
+// A project's Claude override must work even when the global default is another provider.
+app.activeId = undefined;
+app.settings.model = "mock:model";
+calls.length = 0;
+assert.equal(await send("/project-skill"), true);
+assert.deepEqual(calls.map((c) => c.method), ["session.send"]);
+assert.equal(calls[0]!.params.id, "created");

@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
-import { app, composerDrafts, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
+import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
@@ -17,6 +17,7 @@ import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "..
 import { PlanMeter } from "./PlanMeter";
 import { contextView } from "../lib/context";
 import { createLifetimeGuard } from "../lib/lifetime";
+import { createComposerDraft } from "../lib/composer-draft";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
@@ -97,8 +98,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
-    const [text, setText] = createSignal("");
-    const [attachments, setAttachments] = createSignal<Attachment[]>([]);
+    const draftKey = () => p.sessionId ?? "home";
+    const draft = createComposerDraft(draftKey, wasDeleted);
+    const { text, setText, attachments, setAttachments } = draft;
     const [menu, setMenu] = createSignal<MenuItem[]>([]);
     const [menuSel, setMenuSel] = createSignal(0);
     const [menuDismissedFor, setMenuDismissedFor] = createSignal<string>();
@@ -114,30 +116,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
     const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
     const shell = () => text().startsWith("!");
-    const draftKey = () => p.sessionId ?? "home";
-
     const resize = () => {
         if (!ta) return;
         ta.style.height = "auto";
         ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
     };
 
-    // Per-session drafts. Each session gets its own input box (it's made again
-    // when another session is shown), so the draft is kept when it goes away.
-    const keepDraft = (key: string) => {
-        if (!wasDeleted(key) && (text().trim() || attachments().length)) composerDrafts.set(key, { text: text(), attachments: attachments() });
-        else composerDrafts.delete(key);
-    };
-    createEffect(
-        on(draftKey, (key, prev) => {
-            if (prev !== undefined) keepDraft(prev);
-            const d = composerDrafts.get(key);
-            setText(d?.text ?? "");
-            setAttachments(d?.attachments ?? []);
-            requestAnimationFrame(resize);
-        }),
-    );
-    onCleanup(() => keepDraft(draftKey()));
+    createEffect(on(draftKey, () => requestAnimationFrame(resize)));
     // What the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();
@@ -229,32 +214,31 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const t = text();
         if (!canSend() || sending()) return;
         setSending(true);
-        const atts = attachments();
-        const key = draftKey();
-        // Sent later as a message (it looked like an unknown command): clear the box if it still holds just that.
-        const sent = whileMounted(() => {
-            if (draftKey() !== key || text() !== t || attachments() !== atts) return;
-            setText("");
-            setAttachments([]);
-            composerDrafts.delete(key);
-            requestAnimationFrame(resize);
-        });
+        const submitted = draft.capture();
+        const { attachments: atts } = submitted;
+        // A toast retry may finish after Home has unmounted too.
+        const resizeAfterSend = whileMounted(() => requestAnimationFrame(resize));
+        const sent = () => {
+            draft.sent(submitted);
+            resizeAfterSend();
+        };
         const finish = whileMounted((ok: boolean | "command") => {
             setSending(false);
             if (!ok) return;
-            if (ok === "command" && atts.length) { setText(""); setMenu([]); return; }
+            if (ok === "command") setText("");
+            histIdx = -1;
+            setMenu([]);
+            requestAnimationFrame(resize);
+        });
+        const ok = await send(t, atts, { sent });
+        if (ok === true) {
+            draft.sent(submitted);
             if (t.trim()) {
                 history.push(t);
                 if (history.length > 100) history.shift();
             }
-            histIdx = -1;
-            setText("");
-            setAttachments([]);
-            composerDrafts.delete(draftKey());
-            setMenu([]);
-            requestAnimationFrame(resize);
-        });
-        finish(await send(t, atts, { sent }));
+        }
+        finish(ok);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {

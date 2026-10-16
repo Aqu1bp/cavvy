@@ -169,11 +169,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
                 toast("Choose a project folder first", "warn");
                 return false;
             }
-            // Claude Code skills are workspace-specific; its session guard knows whether a list has arrived.
-            // A known non-Claude default can reject typos before creating a session.
-            const name = opts.literal ? undefined : slashName(text);
-            const provider = app.settings.model?.split(":")[0];
-            if (name && provider && provider !== "claude-code" && !(await rpc.call("commands.list", { cwd })).some((c) => c.name === name)) return unknown(name);
+            // The server resolves the merged project settings and its workspace's CLI commands.
             const h = await startIn(cwd);
             if (!h) return false;
             id = h.id;

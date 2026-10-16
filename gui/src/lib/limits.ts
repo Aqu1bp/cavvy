@@ -63,9 +63,9 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
     });
     const reached = windows.some((w) => w.reached) || (Boolean(l.reached) && !passed(l.resetsAt) && !(l.windows.length && l.windows.every((w) => passed(w.resetsAt))));
     const blockingResets = l.windows.filter((_, i) => windows[i]!.reached).map((w) => w.resetsAt);
-    if (l.reached && !passed(l.resetsAt)) blockingResets.push(l.resetsAt);
+    if (l.reached && !passed(l.resetsAt) && (l.resetsAt !== undefined || !blockingResets.length)) blockingResets.push(l.resetsAt);
     const knownResets = blockingResets.filter((t): t is number => t !== undefined);
-    const resetsAt = knownResets.length ? Math.max(...knownResets) : undefined;
+    const resetsAt = !blockingResets.includes(undefined) && knownResets.length ? Math.max(...knownResets) : undefined;
     const stale = now - l.at > STALE_MS || l.windows.some((w) => passed(w.resetsAt));
     const pcts = windows.map((w) => w.pct).filter((p): p is number => p !== undefined);
     return {

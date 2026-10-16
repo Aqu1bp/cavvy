@@ -231,8 +231,8 @@ export function codexFastTier(m: { serviceTiers?: { id: string }[]; additionalSp
 
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
-    /** An update from any session supersedes account reads already in flight. */
-    private limitUpdates = { revision: 0 };
+    /** Order account snapshots across sessions, including reads that finish in reverse order. */
+    private limitUpdates = { revision: 0, reads: 0, acceptedRead: 0 };
 
     constructor(readonly def: ProviderDef) {}
 
@@ -382,6 +382,8 @@ class CodexTurn {
     /** Each thread's token totals as Codex last reported them. */
     private totals = new Map<string, Tokens>();
     private threadModels = new Map<string, string>();
+    /** A reroute applies to the reported turn, not the next request for the thread. */
+    private turnModels = new Map<string, string>();
     private aborted = false;
     private failure?: string;
     private status?: string;
@@ -409,7 +411,7 @@ class CodexTurn {
         private t: BackendTurn,
         /** Sub-agents' labels by thread, kept across turns (the client's). */
         private labels = new Map<string, string>(),
-        private limitUpdates = { revision: 0 },
+        private limitUpdates = { revision: 0, reads: 0, acceptedRead: 0 },
     ) {}
 
     modeChanged(m: PermissionMode) {
@@ -516,6 +518,8 @@ class CodexTurn {
                     // The speed as it is now too: a sub-agent's session may have changed it since (its turn restarting, a queued message).
                     const tier = tierFor(this.host.fastMode?.() ?? t.fastMode);
                     const serviceTier = tier ?? (typeof tierNow === "string" && FAST_TIERS.has(tierNow) ? null : undefined);
+                    // Queued and restarted turns explicitly request this model again, even after a reroute.
+                    if (model) this.threadModels.set(this.threadId!, model);
                     await this.waitFor(async () => {
                         const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
@@ -560,12 +564,17 @@ class CodexTurn {
     /** Ask Codex where the plan stands (account/rateLimits/read); an older Codex without it is left be. */
     private async readLimits() {
         const revision = this.limitUpdates.revision;
+        const read = ++this.limitUpdates.reads;
+        const at = Date.now();
         try {
             const r = await withTimeout(this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex didn't answer account/rateLimits/read");
-            // The response can contain the snapshot from before a newer push arrived.
-            if (revision !== this.limitUpdates.revision) return;
-            const parsed = parseCodexRateLimits(r);
-            if (parsed) this.noteLimits(parsed);
+            // A newer push or successful read may already have replaced this snapshot in another session.
+            if (revision !== this.limitUpdates.revision || read < this.limitUpdates.acceptedRead) return;
+            const parsed = parseCodexRateLimits(r, { at });
+            if (parsed) {
+                this.limitUpdates.acceptedRead = read;
+                this.noteLimits(parsed);
+            }
         } catch {
             // Not known, then: the meter waits for an update.
         }
@@ -612,8 +621,17 @@ class CodexTurn {
     private onNotification(method: string, p: any) {
         const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
         if (method === "thread/started" && typeof p?.thread?.id === "string" && typeof p.thread.model === "string") this.threadModels.set(p.thread.id, p.thread.model);
-        if (method === "model/rerouted" && typeof p?.toModel === "string" && (thread || this.threadId)) this.threadModels.set((thread ?? this.threadId)!, p.toModel);
-        if (method === "turn/started" && typeof p.turn?.id === "string") this.turnsSeen.add(p.turn.id);
+        const modelThread = thread ?? this.threadId;
+        if (method === "model/rerouted" && typeof p?.toModel === "string" && modelThread) {
+            const turn = typeof p.turnId === "string" ? p.turnId : this.turnId;
+            if (turn) this.turnModels.set(`${modelThread}/${turn}`, p.toModel);
+        }
+        if (method === "turn/started" && typeof p.turn?.id === "string") {
+            this.turnsSeen.add(p.turn.id);
+            const model = modelThread && this.threadModels.get(modelThread);
+            const key = `${modelThread}/${p.turn.id}`;
+            if (model && !this.turnModels.has(key)) this.turnModels.set(key, model);
+        }
         if (method === "thread/tokenUsage/updated") return this.onUsage(p, thread);
         // Codex streams its sub-agents' threads (and its reviewer's) on the same connection. Its
         // reviewer's verdicts are about any thread's action; everything else is that thread's own.
@@ -742,6 +760,7 @@ class CodexTurn {
             spent = last;
         }
         if (!spent) return;
+        const model = this.turnModels.get(`${key}/${p.turnId}`) ?? this.threadModels.get(key);
         const usage: Usage = {
             inputTokens: Math.max(0, spent.inputTokens - spent.cachedInputTokens),
             outputTokens: spent.outputTokens,
@@ -751,7 +770,7 @@ class CodexTurn {
             // A ChatGPT plan isn't billed per token; with an API key the price isn't known here.
             cost: this.billedToPlan ? 0 : undefined,
             billing: this.billedToPlan ? "plan" : "api",
-            resolvedModel: this.threadModels.has(key) ? `${this.def.id}:${this.threadModels.get(key)}` : undefined,
+            resolvedModel: model ? `${this.def.id}:${model}` : undefined,
         };
         const main = !thread || !this.threadId || thread === this.threadId;
         if (main) {

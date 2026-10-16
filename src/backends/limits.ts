@@ -73,8 +73,9 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now()): { limits: 
     if (!status && !windows.length) return undefined;
     const reached = status === "rejected" ? true : status === "allowed" || status === "allowed_warning" ? false : undefined;
     // Every exhausted window blocks usage, even if the rejection names only one.
-    const blockingResets = [resetsAt, latestReset(windows.filter((w) => w.reached))].filter((t): t is number => t !== undefined);
-    const lifts = reached && blockingResets.length ? Math.max(...blockingResets) : undefined;
+    const blocking = windows.filter((w) => w.reached && (w.resetsAt === undefined || w.resetsAt > at));
+    const blockingResets = [resetsAt, latestReset(blocking)].filter((t): t is number => t !== undefined);
+    const lifts = reached && !blocking.some((w) => w.resetsAt === undefined) && blockingResets.length ? Math.max(...blockingResets) : undefined;
     return { limits: { provider: "claude-code", windows, reached, resetsAt: lifts, at }, partial: !listed };
 }
 
@@ -133,6 +134,8 @@ export function parseCodexRateLimits(r: unknown, opts: { update?: boolean; at?: 
 }
 
 function latestReset(windows: LimitWindow[]): number | undefined {
+    // A known window's reset says nothing about when another blocker will lift.
+    if (windows.some((w) => w.resetsAt === undefined)) return undefined;
     const times = windows.map((w) => w.resetsAt).filter((t): t is number => t !== undefined);
     return times.length ? Math.max(...times) : undefined;
 }
@@ -157,17 +160,16 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     for (const n of next.windows) if (!windows.some((w) => w.id === n.id)) windows.push(n);
     const live = (t: number | undefined) => t === undefined || t > next.at;
     const exhausted = windows.filter((w) => w.reached && live(w.resetsAt));
-    let reached = next.reached;
+    let reached = exhausted.length ? true : next.reached;
     if (reached === undefined) {
-        if (exhausted.length) reached = true;
         // Reached for a full window that has since reset, or been reported with room: no longer.
-        else if (prev.reached && prev.windows.some((w) => w.reached)) reached = false;
+        if (prev.reached && prev.windows.some((w) => w.reached)) reached = false;
         // Reached with no window to show for it (credits, say): until its reset, when known.
         else reached = prev.reached && live(prev.resetsAt) ? true : prev.reached === undefined ? undefined : false;
     }
     // It lifts when the last of what's blocking it does: the full windows, and the new report's own reset.
     const blockers = [...exhausted.map((w) => w.resetsAt), next.reached ? next.resetsAt : undefined].filter((t): t is number => t !== undefined);
-    const resetsAt = reached ? (blockers.length ? Math.max(...blockers) : live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
+    const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
     return { provider: next.provider, windows, reached, resetsAt, at: next.at };
 }
 

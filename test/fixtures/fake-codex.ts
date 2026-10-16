@@ -44,6 +44,8 @@
 //                     older Codex); FAKE_LIMIT_UPDATE a JSON file: an account/rateLimits/updated's params, sent as a
 //                     turn starts (shapes from Codex 0.163.0's schema and a capture, test/fixtures/limits)
 //                     (FAKE_LIMIT_REPEAT=n: n times)
+// FAKE_RATE_LIMITS_RELEASE  hold the read's snapshot and turn until this file exists (cross-session races)
+// FAKE_CODEX_REROUTED_FIRST=1  FAKE_CODEX_REROUTED applies only to the first turn
 // FAKE_SCENARIO=usage-limit  the turn fails on the plan's limit (codexErrorInfo usageLimitExceeded)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 //
@@ -102,7 +104,7 @@ function spend(threadId: string, turnId: string, last: Tokens) {
     const total = was ? (Object.fromEntries(Object.entries(was).map(([k, v]) => [k, v + last[k as keyof Tokens]])) as Tokens) : last;
     usageOf.set(threadId, { total, last, turnId });
     if (usageFile) writeFileSync(usageFile, JSON.stringify(Object.fromEntries(usageOf)));
-    if (process.env.FAKE_CODEX_REROUTED) notify("model/rerouted", { threadId, turnId, toModel: process.env.FAKE_CODEX_REROUTED });
+    if (process.env.FAKE_CODEX_REROUTED && (process.env.FAKE_CODEX_REROUTED_FIRST !== "1" || turnSeq === 1)) notify("model/rerouted", { threadId, turnId, toModel: process.env.FAKE_CODEX_REROUTED });
     notify("thread/tokenUsage/updated", { threadId, turnId, tokenUsage: { total, last, modelContextWindow: 400000 } });
 }
 /** The thread's usage as it last was, reported again (no new spend). */
@@ -136,6 +138,7 @@ function serverRequest(method: string, params: unknown): Promise<any> {
 
 const notify = (method: string, params: unknown) => out({ method, params });
 let delayedLimits: (() => void) | undefined;
+let releasedLimits: Promise<void> | undefined;
 
 async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }) {
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
@@ -146,6 +149,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     // Answer an earlier read after the push, before completing the turn.
     delayedLimits?.();
     delayedLimits = undefined;
+    await releasedLimits;
     if (scenario === "usage-limit") {
         const error = { message: "You've hit your usage limit. Upgrade to Pro or try again later.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
         notify("error", { error, willRetry: false, threadId, turnId });
@@ -429,6 +433,17 @@ async function handle(m: any) {
         }
         case "account/rateLimits/read":
             if (!process.env.FAKE_RATE_LIMITS) return fail(`unknown method ${m.method}`);
+            if (process.env.FAKE_RATE_LIMITS_RELEASE) {
+                const snapshot = JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS, "utf-8"));
+                const release = process.env.FAKE_RATE_LIMITS_RELEASE;
+                releasedLimits = (async () => {
+                    const until = Date.now() + 5000;
+                    while (!existsSync(release) && Date.now() < until) await Bun.sleep(5);
+                    reply(snapshot);
+                    log({ limitsReadReplied: true });
+                })();
+                return;
+            }
             if (process.env.FAKE_RATE_LIMITS_DELAY === "1") {
                 delayedLimits = () => reply(JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS!, "utf-8")));
                 return;

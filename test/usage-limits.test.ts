@@ -107,6 +107,23 @@ describe("Claude Code's rate_limit_event", () => {
         expect(meterOf(r.limits, 1792526400_000 + 1)!.reached).toBe(false);
     });
 
+    test("a rejection's known five-hour reset cannot promise when an unknown weekly blocker lifts", () => {
+        const r = parseClaudeRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: 1792156200, unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1792156200 }, seven_day: { utilization: 1 } } }, at)!;
+        expect(r.limits.reached).toBe(true);
+        expect(r.limits.resetsAt).toBeUndefined();
+        expect(r.limits.windows[0]!.resetsAt).toBe(1792156200_000);
+        expect(r.limits.windows[1]!.resetsAt).toBeUndefined();
+    });
+
+    test("a partial allowed report does not clear another full window with an unknown reset", () => {
+        const prev = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day", unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1792156200 }, seven_day: { utilization: 1 } } }, at)!.limits;
+        const next = parseClaudeRateLimit({ status: "allowed", rateLimitType: "five_hour", resetsAt: 1792160400 }, at + 1)!;
+        const merged = mergeLimits(prev, next.limits, next.partial);
+        expect(merged.reached).toBe(true);
+        expect(merged.resetsAt).toBeUndefined();
+        expect(merged.windows[0]!.resetsAt).toBe(1792160400_000);
+    });
+
     test("99.6% used is 99%, not a reached limit", () => {
         const r = parseClaudeRateLimit({ status: "allowed_warning", rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.996, resetsAt: 1792156200 } } }, at)!;
         expect(r.limits.windows[0]).toMatchObject({ usedPercent: 99, reached: undefined });
@@ -154,6 +171,39 @@ describe("Codex's account/rateLimits", () => {
         expect(r.limits.reached).toBe(true);
         expect(r.limits.resetsAt).toBe(1792160400_000);
         expect(r.limits.windows[0]!.reached).toBe(true);
+    });
+
+    test("both read and update leave the overall reset unknown if any full window has no time", () => {
+        for (const update of [false, true]) {
+            const r = parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 100, resetsAt: 1792160400 }, secondary: { usedPercent: 100 } } }, { at, update })!;
+            expect(r.limits.reached).toBe(true);
+            expect(r.limits.resetsAt).toBeUndefined();
+            expect(r.limits.windows[0]!.resetsAt).toBe(1792160400_000);
+            expect(r.limits.windows[1]!.resetsAt).toBeUndefined();
+        }
+    });
+
+    test("sparse merges keep an unknown blocking reset until that window is resolved", () => {
+        const known = parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 100, resetsAt: 1792160400 } } }, { at })!.limits;
+        const unknown = parseCodexRateLimits({ rateLimits: { secondary: { usedPercent: 100 } } }, { update: true, at: at + 1 })!.limits;
+        const mixed = mergeLimits(known, unknown, true);
+        expect(mixed.reached).toBe(true);
+        expect(mixed.resetsAt).toBeUndefined();
+        expect(mixed.windows[0]!.resetsAt).toBe(1792160400_000);
+
+        const repeatKnown = { ...known, at: at + 2 };
+        expect(mergeLimits(mixed, repeatKnown, true).resetsAt).toBeUndefined();
+        const afterReset = mergeLimits(mixed, { provider: "codex", windows: [], at: 1792160400_001 }, true);
+        expect(afterReset.reached).toBe(true);
+        expect(afterReset.resetsAt).toBeUndefined();
+
+        const resolved = parseCodexRateLimits({ rateLimits: { secondary: { usedPercent: 100, resetsAt: 1792652703 } } }, { update: true, at: at + 3 })!.limits;
+        expect(mergeLimits(mixed, resolved, true).resetsAt).toBe(1792652703_000);
+        const cleared = parseCodexRateLimits({ rateLimits: { secondary: { usedPercent: 30 } } }, { update: true, at: at + 4 })!.limits;
+        expect(mergeLimits(mixed, cleared, true).resetsAt).toBe(1792160400_000);
+        const allClear = mergeLimits(afterReset, { ...cleared, at: 1792160400_002 }, true);
+        expect(allClear.reached).toBe(false);
+        expect(allClear.resetsAt).toBeUndefined();
     });
 
     test("updated with nothing in it: no windows, and earlier ones still stand", () => {
@@ -290,6 +340,33 @@ const received = () =>
 const soon = () => Date.now() + 125 * 60_000 + 20_000;
 
 describe("a turn that hits the plan's limit says when it resets", () => {
+    test("Claude Code: a new blocker without a reset clears a previously known overall time", async () => {
+        const short = Math.round(soon() / 1000);
+        const known = join(bin, "claude-known-reset.json");
+        const unknown = join(bin, "claude-unknown-weekly-reset.json");
+        writeFileSync(known, JSON.stringify({ status: "rejected", rateLimitType: "five_hour", resetsAt: short }));
+        writeFileSync(unknown, JSON.stringify({ status: "rejected", rateLimitType: "seven_day" }));
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = known;
+        process.env.FAKE_RATE_LIMIT_FOLLOWUP = unknown;
+        for (const late of ["0", "1"]) {
+            process.env.FAKE_RATE_LIMIT_LATE = late;
+            const r = await runTurn("claude-code");
+            expect(r.reason).toBe("error");
+            expect(r.notices.find((n) => n.startsWith("error:"))).toContain("Claude Code didn't say when it resets.");
+        }
+    });
+
+    test("Codex: mixed known and unknown blocking resets leave the turn's reset unknown", async () => {
+        const p = join(bin, "codex-unknown-weekly-reset.json");
+        writeFileSync(p, JSON.stringify({ rateLimits: { primary: { usedPercent: 100, resetsAt: Math.round(soon() / 1000) }, secondary: { usedPercent: 100 }, rateLimitReachedType: "rate_limit_reached" } }));
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_LIMIT_UPDATE = p;
+        const r = await runTurn("codex");
+        expect(r.reason).toBe("error");
+        expect(r.notices.find((n) => n.startsWith("error:"))).toContain("Codex didn't say when it resets.");
+    });
+
     test("Claude Code: a partial five-hour rejection keeps the full weekly window's later reset", async () => {
         const short = Math.round(soon() / 1000);
         const weekly = short + 3 * 86_400;
@@ -676,6 +753,22 @@ describe("the plan meter", () => {
         expect(m.windows.map((w) => w.reached)).toEqual([false, true]);
         expect(m.resets).toBe(resetLabel(weekly, short + 1, true));
         expect(meterOf(l, weekly + 1)!.reached).toBe(false);
+    });
+
+    test("an unknown blocking reset suppresses the overall time but keeps each window's time", () => {
+        const short = now + 160 * 60_000;
+        const l = limits({ reached: true, resetsAt: short, windows: [
+            { id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: short, reached: true },
+            { id: "seven_day", label: "Weekly", usedPercent: 100, reached: true },
+        ] });
+        for (const when of [now, short + 1]) {
+            const m = meterOf(l, when)!;
+            expect(m.reached).toBe(true);
+            expect(m.resets).toBeUndefined();
+            expect(m.windows[0]!.resets).toBeDefined();
+            expect(m.windows[1]!.resets).toBeUndefined();
+            expect(m.windows[1]!.reached).toBe(true);
+        }
     });
 
     test("reached: red, with the reset time and how long", () => {
