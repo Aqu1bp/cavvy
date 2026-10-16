@@ -8,9 +8,9 @@ import type { AgentRun } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
 import { newSession, openAgents, openReview, stopAgent } from "../state/actions";
-import { useChanges } from "../state/changes";
+import { useChanges, useGitChanges } from "../state/changes";
 import { canReveal, copyText, revealPath } from "../lib/platform";
-import { duration, tildify } from "../lib/format";
+import { duration, plural, tildify } from "../lib/format";
 import { now } from "../lib/clock";
 import { Popover } from "./ui/Popover";
 
@@ -21,7 +21,16 @@ function Workspace(p: { handle: SessionHandle }) {
     let row: HTMLButtonElement | undefined;
     const [menu, setMenu] = createSignal(false);
     const st = () => p.handle.view.state;
-    const [changes] = useChanges(() => p.handle);
+    // Git's count of what changed in the folder; Harness's own record outside a repository.
+    const [git] = useGitChanges(() => p.handle);
+    const [edits] = useChanges(() => p.handle);
+    const changes = () => {
+        const g = git();
+        if (!g) return undefined;
+        if (g.repo) return { files: g.files.length + g.more, atLeast: g.moreAtLeast, added: g.added, removed: g.removed, error: g.error };
+        const e = edits();
+        return e && { files: e.files.length, atLeast: false, added: e.added, removed: e.removed, error: undefined };
+    };
     const close = () => setMenu(false);
     return (
         <div class="sec">
@@ -54,7 +63,11 @@ function Workspace(p: { handle: SessionHandle }) {
             <button class="prow" title="Review changes" onClick={() => openReview()}>
                 <FileDiff size={16} />
                 <span class="grow">Changes</span>
-                <Show when={changes()?.files.length} fallback={<span class="meta">{changes.loading && !changes() ? "" : "None yet"}</span>}>
+                <Show when={changes()?.files} fallback={<span class="meta" title={changes()?.error}>{changes()?.error ? "Unavailable" : changes() ? "None yet" : ""}</span>}>
+                    <span class="meta" title={plural(changes()!.files, "changed file")}>
+                        {changes()!.files}
+                        {changes()!.atLeast ? "+" : ""}
+                    </span>
                     <span class="stat">
                         <span class="add">+{changes()!.added}</span>
                         <span class="del">−{changes()!.removed}</span>

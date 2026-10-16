@@ -523,6 +523,39 @@ export interface ChangesInfo {
     tracked: boolean;
 }
 
+/** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. */
+export type GitScope = "uncommitted" | "branch";
+
+export interface GitFileDiff extends FileDiff {
+    /** What git would call it. Renames are exact ones (the same content under a new name). */
+    change: "added" | "modified" | "deleted" | "untracked" | "renamed" | "typechange";
+    /** A rename's old path. */
+    from?: string;
+    /** Not a plain file: a symbolic link (its target is diffed), a submodule, a repository inside this one, or a new folder of many files. */
+    kind?: "link" | "submodule" | "repo" | "folder";
+    /** Hunks left out to keep the reply small; ask again with this path to get them. */
+    deferred?: boolean;
+}
+
+/** What git says changed in a session's folder, whoever changed it. */
+export interface GitChangesInfo extends ChangesInfo {
+    files: GitFileDiff[];
+    /** false: not a Git repository (or Git can't read it); `reason` says why. */
+    repo: boolean;
+    reason?: string;
+    scope: GitScope;
+    head?: { branch?: string; sha?: string };
+    /** Branch scope: the base branch and the commit this branch left it at. */
+    base?: { ref: string; sha: string };
+    /** Branches to compare with, most recently changed first (local and remote, capped). */
+    bases: string[];
+    /** What Harness treats as the main branch. */
+    defaultBase?: string;
+    /** Changed files not listed; `moreAtLeast` when even the count was cut short. */
+    more: number;
+    moreAtLeast?: boolean;
+}
+
 export interface GuiSettings {
     model?: string;
     smallModel?: string;
@@ -642,6 +675,7 @@ export interface Methods {
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string } };
     "session.changes": { params: { id: string }; result: ChangesInfo };
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string }; result: GitChangesInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };
     "session.settle": { params: { id: string; settled: boolean }; result: null };

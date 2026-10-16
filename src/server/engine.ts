@@ -1071,6 +1071,13 @@ export class Engine {
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.changes":
                 return this.runtime(p.id).changes();
+            case "session.gitChanges": {
+                if (p.scope !== "uncommitted" && p.scope !== "branch") throw new RpcError("scope must be uncommitted or branch", "invalid");
+                // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
+                if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
+                if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path });
+            }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.dequeue": {

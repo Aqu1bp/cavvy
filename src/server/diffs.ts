@@ -9,13 +9,13 @@ const MAX_LINES = 1500;
 /** Longest line sent; minified files would otherwise blow up a message. */
 const MAX_LINE_CHARS = 2000;
 /** Bigger inputs aren't diffed at all. */
-const MAX_INPUT = 2 * 1024 * 1024;
+export const MAX_DIFF_INPUT = 2 * 1024 * 1024;
 
 export function fileDiff(path: string, before: string | null, after: string | null, opts: { context?: number; maxLines?: number } = {}): FileDiff {
     const status: FileDiff["status"] = before === null ? "added" : after === null ? "deleted" : "modified";
     const a = before ?? "";
     const b = after ?? "";
-    if (a.length + b.length > MAX_INPUT) return { path, status, added: 0, removed: 0, hunks: [], note: "Too large to show" };
+    if (a.length + b.length > MAX_DIFF_INPUT) return { path, status, added: 0, removed: 0, hunks: [], note: "Too large to show" };
     const ops = diffLines(a, b);
     let added = 0;
     let removed = 0;
