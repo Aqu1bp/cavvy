@@ -152,7 +152,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     // Ops missed while it wasn't open (or the connection was down) may have created files.
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
-    deleted.delete(id);
+    if (deleted.delete(id)) setDeletedVersion((v) => v + 1);
     const existing = handles.get(id);
     if (existing) {
         existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
@@ -246,6 +246,8 @@ export async function activate(id: string | undefined, cwd?: string) {
             if (where) requestTrust(where, () => void activate(id, cwd));
             return;
         }
+        if (e instanceof RpcError && e.code === "not_found") forgetSession(id);
+        if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
         reportError(e);
     }
 }
@@ -311,13 +313,16 @@ export async function refreshSettings() {
 export const composerDrafts = new Map<string, { text: string; attachments: Attachment[] }>();
 /** Deleted sessions (until they're brought back): an input box going away doesn't keep their draft. */
 const deleted = new Set<string>();
-export const wasDeleted = (id: string) => deleted.has(id);
+const [deletedVersion, setDeletedVersion] = createSignal(0);
+export const wasDeleted = (id: string) => { deletedVersion(); return deleted.has(id); };
 /** What this window had seen of deleted sessions, in case they're brought back (Undo). */
 const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 function forgetSession(id: string) {
     deleted.add(id);
+    setDeletedVersion((v) => v + 1);
+    if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
     setApp("archived", (l) => l.filter((s) => s.id !== id));
@@ -338,7 +343,7 @@ function reopenFailed(id: string, e: unknown) {
 }
 
 function upsertSession(s: SessionSummary) {
-    deleted.delete(s.id);
+    if (deleted.delete(s.id)) setDeletedVersion((v) => v + 1);
     const seen = seenBeforeDelete.get(s.id);
     if (seen !== undefined) {
         seenBeforeDelete.delete(s.id);
