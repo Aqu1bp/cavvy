@@ -38,6 +38,7 @@ import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveMode
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
+import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, runCommand } from "../commands/index";
@@ -634,6 +635,8 @@ export class App {
                     if (kind === "prompt" || kind === "summary") {
                         const t = (m.meta?.display ?? textOf(m)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
                         if (t) out.push("", ...wrapLine(theme.muted("> ") + truncate(t, cols * 3), cols - 2));
+                        const note = attachmentsNote(m.content);
+                        if (note) out.push(...(t ? [] : [""]), ...wrapLine(theme.subtle(`  ${truncate(note, cols * 2)}`), cols - 2));
                     }
                 } else {
                     const t = textOf(m).trim();

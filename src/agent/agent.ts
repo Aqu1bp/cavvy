@@ -47,6 +47,7 @@ import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
+import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration } from "../mcp/server";
 import {
@@ -445,10 +446,7 @@ export class Agent {
     private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.o.settings();
-        const promptText = content
-            .filter((p): p is TextPart => p.type === "text")
-            .map((p) => p.text)
-            .join("\n");
+        const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
 
         if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -996,8 +994,7 @@ export class Agent {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
         let promptIndex = this.session.messages.length - 1;
-        const text = parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
-        const images = parts.filter((p): p is ImagePart => p.type === "image");
+        const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
         const host: BackendHost = {
             emit: (e) => this.emitFromBackend(e),
@@ -1042,18 +1039,19 @@ export class Agent {
         let stopRounds = 0;
         let prompt = text;
         let promptImages = images;
+        let promptDocuments = documents;
         while (true) {
             const resume = this.session.backends.get(provider);
             this.emit({ type: "request_start" });
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, resumeId: resume?.id });
+                result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
@@ -1084,6 +1082,7 @@ export class Agent {
                     stopRounds++;
                     prompt = reminder(`A Stop hook asked you to keep going:\n${redact(h.blocked)}`).text;
                     promptImages = [];
+                    promptDocuments = [];
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
                     promptIndex = this.session.messages.length - 1;
                     this.syncBackend(provider, 1);
@@ -1549,7 +1548,8 @@ export class Agent {
             const m = this.session.messages[i]!;
             if (m.role !== "user") continue;
             const kind = m.meta?.kind;
-            const text = () => textOf(m).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+            // A long paste rides as an attachment, but it's what the developer asked for too.
+            const text = () => [textOf(m), ...pastedTexts(m.content)].join("\n").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
             if (kind === "summary") {
                 summary = text() || undefined;
                 break;

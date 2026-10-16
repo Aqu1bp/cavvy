@@ -185,7 +185,7 @@
         0 1px 2px color-mix(in srgb, var(--stop) 24%, transparent);
 }
 
-/* ---- Images ------------------------------------------------------------ */
+/* ---- Attachments: image thumbnails and file chips ----------------------- */
 
 .attachments {
     display: flex;
@@ -220,6 +220,85 @@
     place-items: center;
     background: rgba(0, 0, 0, 0.6);
     color: #fff;
+}
+
+.attachments-wrap {
+    display: flex;
+    flex-direction: column;
+}
+
+.file-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 64px;
+    max-width: 280px;
+    padding: 0 6px 0 12px;
+    border-radius: var(--radius-md);
+    box-shadow: inset 0 0 0 1px var(--border);
+    background: var(--bg-hover);
+}
+
+.file-chip.open {
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.file-chip.refused {
+    background: var(--danger-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.file-chip-icon {
+    display: grid;
+    place-items: center;
+    color: var(--fg-muted);
+}
+
+.file-chip.refused .file-chip-icon,
+.file-chip.refused .file-chip-meta {
+    color: var(--danger);
+}
+
+.file-chip-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.file-chip-name {
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.file-chip-meta {
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+}
+
+.file-chip .flip {
+    transform: rotate(180deg);
+}
+
+.attachment-preview {
+    margin: 8px 16px 0;
+    padding: 10px 12px;
+    max-height: 240px;
+    overflow: auto;
+    border-radius: var(--radius-md);
+    background: var(--bg-hover);
+    font-family: var(--font-mono);
+    font-size: 0.786rem;
+    line-height: 1.5;
+    white-space: pre;
+}
+
+.attachments-note {
+    padding: 8px 16px 0;
+    font-size: 0.821rem;
+    color: var(--danger);
 }
 
 /* ---- Tabs on the top edge: queued messages, and what waits on you ------ */
@@ -270,6 +349,15 @@
     flex: 1;
     font-size: 0.929rem;
     color: color-mix(in srgb, var(--fg) 85%, transparent);
+}
+
+.queue-attached {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 40%;
+    font-size: 0.821rem;
+    color: var(--fg-muted);
 }
 
 .queue-hint {

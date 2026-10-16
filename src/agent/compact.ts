@@ -1,5 +1,6 @@
 import type { Message, UserMessage } from "../providers/types";
 import { truncateMiddle } from "../util/files";
+import { framedText } from "../providers/files";
 
 export const COMPACT_PROMPT = `Your task is to write a detailed summary of the conversation so far. The summary replaces the conversation history, so it must preserve everything needed to continue the work without losing context.
 
@@ -35,7 +36,7 @@ export function compactRequestMessage(extra?: string): UserMessage {
 export function transcriptText(messages: Message[], maxChars: number): string {
     const cap = Math.floor(maxChars / 4);
     const blocks = messages
-        .map(renderForTranscript)
+        .map((m) => renderForTranscript(m, cap))
         .filter(Boolean)
         .map((b) => truncateMiddle(b, cap));
     if (!blocks.length) return "";
@@ -54,17 +55,39 @@ export function transcriptText(messages: Message[], maxChars: number): string {
     return [first, ...recent.reverse()].join("\n\n");
 }
 
-function renderForTranscript(m: Message): string {
+function renderForTranscript(m: Message, cap: number): string {
     const out: string[] = [];
+    const files: { at: number; name: string }[] = [];
     for (const p of m.content) {
         if (p.type === "text") out.push(truncateMiddle(p.text, 4000));
         else if (p.type === "tool_call") out.push(`[called ${p.name}: ${truncateMiddle(JSON.stringify(p.input), 600)}]`);
         else if (p.type === "tool_result") out.push(`[${p.isError ? "error from" : "result of"} ${p.toolName}: ${truncateMiddle(p.content, 1500)}]`);
         else if (p.type === "image") out.push("[image]");
+        else if (p.type === "file") {
+            if (p.kind === "pdf") out.push(`[the user attached ${p.name} earlier; its contents aren't included here]`);
+            else {
+                // Framed here too (shortened first), so a file can't pass for the transcript's own lines.
+                files.push({ at: out.length, name: p.name });
+                out.push(framedText({ ...p, text: truncateMiddle(p.text, 4000) }));
+            }
+        }
     }
     if (!out.length) return "";
     const results = m.content.every((p) => p.type === "tool_result");
-    return results ? out.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${out.join("\n")}`;
+    const left: string[] = [];
+    const render = () => {
+        const parts = out.filter(Boolean);
+        if (left.length) parts.push(`[${left.length === 1 ? "an attached file" : `${left.length} attached files`} left out here, too long to include: ${left.join(", ")}]`);
+        return results ? parts.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${parts.join("\n")}`;
+    };
+    // Past the cap, whole files go (the last first) rather than shortening the message through a frame.
+    let s = render();
+    for (let f = files.pop(); f && s.length > cap; f = files.pop()) {
+        out[f.at] = "";
+        left.unshift(f.name);
+        s = render();
+    }
+    return s;
 }
 
 /** The compaction request with a condensed transcript in place of the full history. */
@@ -92,6 +115,8 @@ export function estimateTokens(messages: Message[]): number {
             else if (p.type === "tool_call") chars += JSON.stringify(p.input).length + 50;
             else if (p.type === "thinking") chars += p.text.length;
             else if (p.type === "image") chars += 6000;
+            // A PDF's pages are read as text and images: a rough guess from its size.
+            else if (p.type === "file") chars += p.kind === "text" ? p.text.length + 300 : Math.max(6000, Math.round(p.size / 6));
         }
     }
     return Math.ceil(chars / 3.5);

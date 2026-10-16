@@ -167,6 +167,18 @@
     align-self: flex-start;
 }
 
+.prompt-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    white-space: normal;
+}
+
+.prompt-attachments .chip .truncate {
+    min-width: 0;
+    max-width: 180px;
+}
+
 /* The reply: no avatar, no name. Work, folded once it's done, then what was said. */
 .reply {
     display: flex;

@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { ArrowUp, FileText, Folder, ImagePlus, ListEnd, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
+import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, composerDrafts, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
@@ -12,13 +12,13 @@ import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { Popover } from "./ui/Popover";
 import { Ring } from "./ui/bits";
+import { AttachmentChips } from "./AttachmentChips";
+import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
 /** What was sent, for ↑ in an empty box. */
 const history: string[] = [];
-
-const MAX_IMAGE = 15 * 1024 * 1024;
 
 /** The ring, and on hover what it stands for: tokens, spend, and compacting now. */
 function ContextRing(p: { sessionId: string }) {
@@ -137,7 +137,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (d === undefined) return;
         h()!.setDraft(undefined);
         if (d.text) setText((t) => (t.trim() ? `${d.text}\n${t}` : d.text));
-        if (d.images?.length) setAttachments((a) => [...a, ...d.images!.map((i) => ({ name: "image", mediaType: i.mediaType, data: i.data, preview: `data:${i.mediaType};base64,${i.data}` }))]);
+        if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
         requestAnimationFrame(() => {
             resize();
             ta?.focus();
@@ -220,12 +220,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     // ---- sending
     const submit = async () => {
         const t = text();
-        if ((!t.trim() && !attachments().length) || sending()) return;
+        if (!canSend() || sending()) return;
         setSending(true);
         const atts = attachments();
         const ok = await send(t, atts);
         setSending(false);
         if (!ok) return;
+        if (ok === "command" && atts.length) {
+            setText("");
+            setMenu([]);
+            return;
+        }
         if (t.trim()) {
             history.push(t);
             if (history.length > 100) history.shift();
@@ -290,31 +295,46 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
     };
 
-    // ---- images
+    // ---- attachments: any file (sorted by what's in it, see lib/attachments), and long pastes
     const addFiles = async (files: FileList | File[]) => {
         for (const f of Array.from(files)) {
-            if (!/^image\/(png|jpeg|gif|webp)$/.test(f.type)) continue;
-            if (f.size > MAX_IMAGE) continue;
-            const data = await new Promise<string>((resolve) => {
-                const r = new FileReader();
-                r.onload = () => resolve(String(r.result));
-                r.readAsDataURL(f);
-            });
-            const base64 = data.slice(data.indexOf(",") + 1);
-            setAttachments((a) => [...a, { name: f.name || "pasted image", mediaType: f.type, data: base64, preview: URL.createObjectURL(f) }]);
+            const a = await readAttachment(f, attachments());
+            setAttachments((list) => [...list, a]);
         }
     };
     const onPaste = (e: ClipboardEvent) => {
-        const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+        const files = Array.from(e.clipboardData?.files ?? []);
         if (files.length) {
             e.preventDefault();
             void addFiles(files);
+            return;
+        }
+        const pasted = e.clipboardData?.getData("text/plain") ?? "";
+        if (isLongPaste(pasted)) {
+            e.preventDefault();
+            setAttachments((list) => [...list, pastedText(pasted, list)]);
         }
     };
+    /** A "Pasted text" chip back into the box as plain text, where the cursor is. */
+    const toText = (i: number) => {
+        const a = attachments()[i];
+        if (a?.kind !== "text") return;
+        setAttachments((list) => list.filter((_, j) => j !== i));
+        const at = ta?.selectionStart ?? text().length;
+        setText((t) => t.slice(0, at) + a.text + t.slice(ta?.selectionEnd ?? at));
+        requestAnimationFrame(() => {
+            resize();
+            ta?.focus();
+        });
+    };
+    /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
+    const model = () => st()?.model ?? app.models.flatMap((g) => g.models).find((m) => m.ref === app.settings.model);
+    const readsPdf = () => model()?.supportsPdf !== false;
+    const blocked = createMemo(() => blockedBy(attachments(), readsPdf()));
 
     /** A queued message back into the box, out of the queue. */
     // By the message's id, so a queue that moved on meanwhile doesn't lose a different one. Edited, it
-    // comes back with its images, into this session's draft (even if another is shown by then).
+    // comes back with its images and files, into this session's draft (even if another is shown by then).
     const dequeue = async (i: number, edit: boolean) => {
         const queueId = st()?.queueIds[i];
         const handle = h();
@@ -322,7 +342,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         try {
             const r = await rpc.call("session.dequeue", { id: p.sessionId, queueId, edit });
             if (!r.removed) toast("That message has already been sent", "info");
-            else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images });
+            else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images, files: r.files });
         } catch (e) {
             reportError(e);
         }
@@ -333,7 +353,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (busy()) return "Queue a message for the next step…";
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ for files, / for commands)";
     };
-    const canSend = createMemo(() => Boolean(text().trim() || attachments().length));
+    const hasContent = () => Boolean(text().trim() || attachments().length);
+    const canSend = createMemo(() => hasContent() && !blocked());
     /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
     let root: HTMLDivElement | undefined;
     const edge = () => root;
@@ -365,6 +386,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             <div class="queue-row">
                                 <ListEnd size={14} class="queue-icon" />
                                 <span class="queue-text truncate">{q}</span>
+                                <Show when={st()!.queuedAttached?.[i()]}>
+                                    {(label) => (
+                                        <span class="queue-attached truncate" title={label()}>
+                                            <Paperclip size={12} /> {label()}
+                                        </span>
+                                    )}
+                                </Show>
                                 <Show when={i() === 0}>
                                     <span class="queue-hint">Sends after this step</span>
                                 </Show>
@@ -425,18 +453,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             </Show>
             <div class="composer-box" ref={box}>
                 <Show when={attachments().length}>
-                    <div class="attachments">
-                        <For each={attachments()}>
-                            {(a, i) => (
-                                <div class="attachment">
-                                    <img src={a.preview} alt={a.name} />
-                                    <button class="attachment-x" title="Remove" aria-label="Remove image" onClick={() => setAttachments((list) => list.filter((_, j) => j !== i()))}>
-                                        <X size={11} />
-                                    </button>
-                                </div>
-                            )}
-                        </For>
-                    </div>
+                    <AttachmentChips items={attachments()} readsPdf={readsPdf()} blocked={blocked()} onRemove={(i) => setAttachments((list) => list.filter((_, j) => j !== i))} onToText={toText} />
                 </Show>
                 <div class="composer-input">
                     <Show when={shell()}>
@@ -463,20 +480,31 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     />
                 </div>
                 <div class="composer-bar">
-                    <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(e) => e.currentTarget.files && void addFiles(e.currentTarget.files)} />
+                    <input
+                        ref={fileInput}
+                        type="file"
+                        multiple
+                        hidden
+                        onChange={(e) => {
+                            const input = e.currentTarget;
+                            if (input.files) void addFiles(Array.from(input.files));
+                            // Picking the same file again should add it again.
+                            input.value = "";
+                        }}
+                    />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} />
                     <FastModeToggle current={st()?.model} currentRef={app.settings.model} enabled={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy} />
                     <EffortMenu current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
                     <span class="spacer" />
-                    <button class="hb" title="Attach images" aria-label="Attach images" onClick={() => fileInput?.click()}>
-                        <ImagePlus size={16} />
+                    <button class="hb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
+                        <Paperclip size={16} />
                     </button>
                     <Show when={p.sessionId}>
                         <ContextRing sessionId={p.sessionId!} />
                     </Show>
                     <Show
-                        when={busy() && !canSend()}
+                        when={busy() && !hasContent()}
                         fallback={
                             <button class="send" disabled={!canSend() || sending()} onClick={() => void submit()} title={prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`} aria-label="Send">
                                 <ArrowUp size={17} stroke-width={2.4} />
