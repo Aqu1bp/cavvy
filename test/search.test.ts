@@ -375,6 +375,21 @@ describe("searching session files", () => {
         }
     });
 
+    test("whitespace normalization cannot expose a registered secret in a snippet", async () => {
+        const s = write([prompt("the passphrase"), reply("it was harbor  willow all along")]);
+        registerSecret("harbor willow", "test-secret");
+        try {
+            const hits = (await searchSessions("harbor")).hits;
+            expect(hits).toHaveLength(1);
+            expect(hits[0]).toMatchObject({ id: s.id, snippet: "it was [REDACTED test-secret] all along" });
+            expect(hits[0]!.match).toBeUndefined();
+            const visible = (await searchSessions("all along")).hits.find((h) => h.id === s.id)!;
+            expect(visible.snippet.slice(...visible.match!)).toBe("all along");
+        } finally {
+            unregisterSecret("harbor willow");
+        }
+    });
+
     test("requested secrets redact cached search snippets and titles in every supported encoding", async () => {
         const value = "search p@ss/!'()*~>?>~-9284";
         const uri = encodeURIComponent(value);
@@ -596,6 +611,12 @@ describe("searching session files", () => {
         const v = (await searchSessions("victor real session")).hits[0]!;
         expect(v.id).toBe(real.id);
         expect(v.at).not.toBe(7_777);
+    });
+
+    test("snippet highlights follow whitespace normalization", () => {
+        const s = snippetAround("before harbor  willow after", 7, "harbor  willow");
+        expect(s.snippet).toBe("before harbor willow after");
+        expect(s.snippet.slice(...s.match!)).toBe("harbor willow");
     });
 
     test("the snippet is a short stretch around the match", () => {

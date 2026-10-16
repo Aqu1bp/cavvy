@@ -391,8 +391,9 @@ async function turnTimes(sessionFile: string, id: string, ctl: Control): Promise
  */
 export function snippetAround(text: string, at: number, query: string): { snippet: string; match?: [number, number] } {
     // The whole message, before any of it is cut: a secret of any length is only recognized whole.
-    const red = redact(text);
-    // Redaction may have moved the match (or swallowed it): take the one nearest where it was.
+    const red = redact(redact(text).replace(/\s+/g, " "));
+    // Redaction and whitespace folding may move the match (or swallow it): take the nearest one.
+    query = query.replace(/\s+/g, " ");
     const fr = foldCase(red);
     const fq = foldCase(query);
     let m = -1;
@@ -409,10 +410,9 @@ export function snippetAround(text: string, at: number, query: string): { snippe
         if (sp >= 0 && sp < 16) start += sp + 1;
     }
     const stop = Math.min(red.length, centre + qlen + SNIPPET_AFTER);
-    const squash = (s: string) => s.replace(/\s+/g, " ");
-    const pre = (start > 0 ? "…" : "") + squash(red.slice(start, centre)).trimStart();
-    const mid = squash(red.slice(centre, centre + qlen));
-    const post = squash(red.slice(centre + qlen, stop)).trimEnd() + (stop < red.length ? "…" : "");
+    const pre = (start > 0 ? "…" : "") + red.slice(start, centre).trimStart();
+    const mid = red.slice(centre, centre + qlen);
+    const post = red.slice(centre + qlen, stop).trimEnd() + (stop < red.length ? "…" : "");
     return { snippet: pre + mid + post, ...(m >= 0 ? { match: [pre.length, pre.length + mid.length] as [number, number] } : {}) };
 }
 
