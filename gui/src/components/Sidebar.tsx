@@ -273,6 +273,7 @@ export function Sidebar() {
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId);
     });
+    const entriesByKey = createMemo(() => new Map(layout().map((entry) => [entry.key, entry])));
     // Capture before Solid moves keyed rows; animate only after the new layout is painted.
     const keys = createMemo<string[]>((previous) => {
         const next = layout().map((entry) => entry.key);
@@ -367,7 +368,7 @@ export function Sidebar() {
                 onPointerEnter={() => setHovered(true)}
                 onPointerLeave={() => setHovered(false)}>
                 <For each={keys()}>{(key) => {
-                    const entry = () => layout().find((e) => e.key === key)!;
+                    const entry = () => entriesByKey().get(key)!;
                     // A held row keeps its component (and menu/rename) through status changes.
                     const kind = untrack(() => entry().kind);
                     if (kind === "card" || kind === "row") {
@@ -389,7 +390,7 @@ export function Sidebar() {
                     if (kind === "settled") return <button class="shelf settled-head" aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
                         <span>Settled</span><i /><ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
                     </button>;
-                    if (kind === "archived") return <div class="shelf"><span>Archived</span><i /><button class="shelf-btn" onClick={() => setShowArchived(false)}>Done</button></div>;
+                    if (kind === "archived") return <div class="shelf"><span>Archived</span><i /><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><Plus size={14} /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>

@@ -10,13 +10,14 @@ import * as format from "../gui/src/lib/format";
 import { sessionStatus } from "../gui/src/lib/session-status";
 import type { SessionSummary } from "../src/server/protocol";
 
-function fixture() {
+function fixture(count = 60) {
     const nodes: any[] = [];
     const frames = new Map<number, () => void>();
     const animations: any[] = [];
     let sequence = 0;
+    let entryKeyReads = 0;
     let ids: string[] = [];
-    const [sessions, setSessions] = solid.createSignal<SessionSummary[]>(Array.from({ length: 60 }, (_, i) => ({
+    const [sessions, setSessions] = solid.createSignal<SessionSummary[]>(Array.from({ length: count }, (_, i) => ({
         id: String(i), cwd: `/p/${i % 3}`, projectName: `project-${i % 3}`, title: `Session ${i}`, createdAt: 1,
         updatedAt: 100 - i, status: "idle", messages: 2, pinned: false, settled: false, archived: false, live: true,
     })));
@@ -50,6 +51,10 @@ function fixture() {
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "FolderPlus", "ListFilter", "MoreHorizontal", "PanelLeftClose", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "ProviderIcon"].map((name) => [name, () => null]));
     const scope = { renderer, ...solid, ...order, ...format, ...icons, sessionStatus, app, prefs,
+        // Count work against layout keys, rather than timing a machine-dependent render.
+        holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
+            ...entry, get key() { entryKeyReads++; return entry.key; },
+        })),
         setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
         handleFor: () => undefined, isUnread: () => true, activate: setActiveId,
@@ -67,6 +72,7 @@ function fixture() {
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     return { nodes, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, setArchived, setMotion, animations,
+        resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
 
@@ -161,4 +167,46 @@ test("deleting a held row releases its lock without reading a removed summary", 
         f.update("40", { status: "waiting" });
         expect(f.ids[0]).toBe("40");
     } finally { f.dispose(); }
+});
+
+
+test("archived Done leaves immediately under hover and restores the hold afterward", async () => {
+    const f = fixture();
+    try {
+        f.setArchived(f.sessions().slice(0, 2).map((s) => ({ ...s, id: `archive-${s.id}`, archived: true })));
+        f.nodes.find((n) => n.props.title === "View options").props.onClick();
+        f.nodes.findLast((n) => n.props.class === "menu-item compact" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        expect(f.ids).toEqual(["archive-0", "archive-1"]);
+        f.nav.props.onPointerEnter();
+        f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        expect(f.ids).toHaveLength(25);
+        expect(f.ids[0]).toBe("0");
+        expect(f.ids).not.toContain("archive-0");
+        await Promise.resolve();
+        const held = f.ids;
+        f.update("0", { updatedAt: -1000 });
+        expect(f.ids).toEqual(held);
+        f.nav.props.onPointerLeave();
+        expect(f.ids[0]).toBe("1");
+    } finally { f.dispose(); }
+});
+
+test("expanded sidebar summary updates do linear layout-key work", async () => {
+    const reads: number[] = [];
+    for (const count of [150, 300]) {
+        const f = fixture(count);
+        try {
+            while (f.ids.length < count) {
+                f.nodes.findLast((n) => n.props.class === "slim more").props.onClick();
+                await Promise.resolve();
+            }
+            expect(f.ids).toHaveLength(count);
+            f.resetEntryKeyReads();
+            f.update("0", { title: "Updated summary" });
+            expect(f.entryKeyReads).toBeGreaterThanOrEqual(count);
+            expect(f.entryKeyReads).toBeLessThanOrEqual(count * 8);
+            reads.push(f.entryKeyReads);
+        } finally { f.dispose(); }
+    }
+    expect(reads[1]!).toBeLessThanOrEqual(reads[0]! * 3);
 });
