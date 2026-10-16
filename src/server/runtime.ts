@@ -632,8 +632,7 @@ export class Runtime {
         if (!info) return false;
         if (!info.contextWindow && def.kind !== "anthropic") info = (await lookupModel(ref).catch(() => undefined)) ?? info;
         // The model it was on, if the conversation has begun (none to tell of before the first prompt).
-        // A note already queued (one a rewind kept) is corrected all the same.
-        const prev = this.conversationStarted || this.agent?.statePending("model") ? this.model : undefined;
+        const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
         this.client = client;
         this.classifier.setComplete((system, prompt, signal, o) => this.complete(system, prompt, signal, o));
@@ -642,6 +641,8 @@ export class Runtime {
             this.agent.setModel(info, client);
             this.agent.options.nativeWebSearch = this.nativeSearch();
             if (prev) this.agent.noteModelChange(modelRef(prev), info);
+            // Before it, a note still queued (one a rewind to the start kept) would be about another model.
+            else this.agent.dropStateNote("model");
         }
         if (opts.persist) {
             try {
@@ -826,9 +827,12 @@ export class Runtime {
         }
         const from = this.mode;
         this.mode = m;
-        // Before the first prompt only plan mode is news (the model has to know it may only plan), and a note already queued must be corrected.
-        const news = this.conversationStarted || from === "plan" || m === "plan" || this.agent?.statePending("mode");
-        if (!opts.fromAgent && this.agent && news) this.agent.noteModeChange(from, m);
+        if (!opts.fromAgent && this.agent) {
+            // Before the first prompt only plan mode is news: the model has to know it may only plan. Any other
+            // mode is where the session starts, so a note still queued (of plan mode, or one a rewind to the start kept) goes.
+            if (!this.conversationStarted) this.agent.dropStateNote("mode");
+            if (this.conversationStarted || m === "plan") this.agent.noteModeChange(from, m);
+        }
         this.setState({ mode: m, bypassAllowed: this.bypassAllowed() });
         this.recordState();
         return true;

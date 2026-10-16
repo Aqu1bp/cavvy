@@ -81,20 +81,17 @@ test("approved guardian warnings stay silent without creating synthetic tool rec
     expect(reopened.flatMap((t) => t.blocks).filter((b) => b.t === "tool")).toHaveLength(1);
 });
 
-for (const mode of ["auto", "default", "acceptEdits", "plan", "bypassPermissions"] as const) test(`${mode}: listener guidance is in thread instructions only where network is blocked`, async () => {
+for (const mode of ["auto", "default", "acceptEdits", "plan", "bypassPermissions"] as const) test(`${mode}: listener guidance is in the thread's instructions, true in every mode (the mode can change later)`, async () => {
     process.env.FAKE_COMMAND = "pwd";
     await run(mode);
     const calls = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).flatMap((l) => l.received ? [l.received] : []);
     const turn = calls.find((m) => m.method === "turn/start").params;
     const thread = calls.find((m) => m.method === "thread/start").params;
     const instructions = thread.developerInstructions ?? "";
-    if (mode === "bypassPermissions") expect(instructions).not.toContain("Local listeners");
-    else {
-        expect(turn.sandboxPolicy.networkAccess).toBe(false);
-        expect(instructions).toContain("Local listeners are blocked by the sandbox");
-        expect(instructions).toContain("ask to run that command outside the sandbox");
-    }
-    expect(turn.input[0].text).not.toContain("Local listeners");
+    if (mode !== "bypassPermissions") expect(turn.sandboxPolicy.networkAccess).toBe(false);
+    expect(instructions).toContain("blocks local listeners too");
+    expect(instructions).toContain("ask to run that command outside the sandbox");
+    expect(turn.input[0].text).not.toContain("local listeners");
     expect(instructions).not.toContain("Keep outbound network access disabled");
 });
 
@@ -136,6 +133,6 @@ test("listener instructions survive rejection of the delegation configuration", 
     const threads = calls.filter((m) => m.method === "thread/start");
     expect(threads).toHaveLength(2);
     expect(threads[1].params.config).toBeUndefined();
-    expect(threads[1].params.developerInstructions).toContain("Local listeners are blocked by the sandbox");
+    expect(threads[1].params.developerInstructions).toContain("blocks local listeners too");
     expect(threads[1].params.developerInstructions).not.toContain("Delegation instructions");
 });

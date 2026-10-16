@@ -2125,14 +2125,15 @@ describe("notes to the model on what changed", () => {
     test("plan mode picked and left again before the first prompt leaves nothing to tell, whatever the mode is next", async () => {
         const { engine, c, id, send } = await freshSession();
         try {
-            for (const mode of ["plan", "default", "acceptEdits"]) await engine.handle(c, "session.setMode", { id, mode });
+            // Back to where it was, then straight from plan mode to another.
+            for (const mode of ["plan", "default", "plan", "acceptEdits"]) await engine.handle(c, "session.setMode", { id, mode });
             expect(await send("first prompt")).toEqual(["first prompt"]);
         } finally {
             await engine.stop();
         }
     });
 
-    test("after a rewind to the first prompt, what it queued again is corrected by a switch before resending", async () => {
+    test("after a rewind to the first prompt, a switch before resending takes back what the rewind queued: it starts afresh", async () => {
         const { engine, c, id, rt, send } = await freshSession();
         try {
             await send("first prompt");
@@ -2142,10 +2143,7 @@ describe("notes to the model on what changed", () => {
             expect(rt.session.messages).toEqual([]);
             await engine.handle(c, "session.setModel", { id, ref: "mock:mock-sonnet", persist: false });
             await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
-            const notes = await send("again");
-            const last = (re: RegExp) => notes.findLast((n) => re.test(n));
-            expect(last(/switched the model to/)).toContain("(mock:mock-sonnet)");
-            expect(last(/permission mode/)).toContain('"Accept edits"');
+            expect(await send("again")).toEqual(["again"]);
         } finally {
             await engine.stop();
         }

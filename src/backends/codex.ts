@@ -211,7 +211,9 @@ const PLAN_NOTE =
 const MANUAL_NOTE =
     "<system-reminder>\nThe sandbox is read-only, but you can still change files and run other commands: each one goes to the user for approval first and runs once they approve. Make the changes the task needs; don't stop because the sandbox is read-only.\n</system-reminder>";
 
-const LISTENER_NOTE = "Local listeners are blocked by the sandbox, including loopback servers used by tests. If a command needs a local listener, ask to run that command outside the sandbox through Codex's approval flow.";
+// Said once for the thread, whatever the mode: the mode (and with it the sandbox) can change while the thread lives.
+const LISTENER_NOTE =
+    "In every permission mode but bypass, the sandbox has no network access, and that blocks local listeners too, including loopback servers that tests start. If a command needs one, ask to run that command outside the sandbox through the approval flow.";
 
 /** What a turn starts with for the mode: plan mode's rules, or (manual mode, an agent that may change things) that changes are asked about. */
 function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
@@ -447,7 +449,7 @@ class CodexTurn {
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
             const o = t.orchestrator;
-            const baseInstructions = [t.appendSystemPrompt, policy.sandboxPolicy.networkAccess === false ? LISTENER_NOTE : undefined].filter(Boolean).join("\n\n") || undefined;
+            const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config = o ? orchestratorConfig(o) : undefined;
             if (t.readOnly) {
