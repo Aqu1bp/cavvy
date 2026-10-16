@@ -1,6 +1,6 @@
 // User-requested commits only. Keep the real index locked, build the commit in
 // a private index, and install a copy with only the selected entries updated.
-import { copyFile, lstat, mkdtemp, open, readFile, rename, rm, writeFile } from "fs/promises";
+import { copyFile, lstat, mkdtemp, open, readFile, rename, rm, utimes, writeFile } from "fs/promises";
 import { dirname, join, relative, resolve } from "path";
 import { canonical } from "../agent/checkpoints";
 import { gitArgv, gitEnv } from "../util/git";
@@ -187,7 +187,12 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         await git(root, oldHead.code ? ["read-tree", "--empty"] : ["read-tree", oldHead.out.trim()], { index: privateIndex });
         // The real index copy preserves every unselected entry, including index flags.
         try {
+            const original = await lstat(index);
             await copyFile(index, lock);
+            // Git uses the index timestamp to detect same-size edits within its
+            // timestamp resolution. Keep it until Git rewrites and smudges any
+            // racy entries; a newer copy timestamp could hide unchecked edits.
+            await utimes(lock, original.atime, original.mtime);
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
             const empty = join(dir, "empty");

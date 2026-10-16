@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -58,6 +58,26 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("reconciliation preserves detection of unchecked edits with racy index timestamps", async () => {
+        const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n" });
+        git(dir, "config", "core.trustctime", "false");
+        git(dir, "config", "core.checkStat", "minimal");
+        const time = Math.floor(Date.now() / 1000) - 10;
+        const file = join(dir, "unchecked.txt");
+        utimesSync(file, time, time);
+        git(dir, "add", "--refresh", "--", "unchecked.txt");
+        utimesSync(join(dir, ".git", "index"), time, time);
+        write(dir, "unchecked.txt", "NEW\n");
+        utimesSync(file, time, time);
+        write(dir, "selected.txt", "selected change\n");
+        expect(git(dir, "status", "--porcelain", "--", "unchecked.txt")).toBe(" M unchecked.txt\n");
+
+        await gitCommit(dir, ["selected.txt"], "selected only");
+
+        expect(git(dir, "status", "--porcelain", "--", "unchecked.txt")).toBe(" M unchecked.txt\n");
+        expect(git(dir, "show", "HEAD:unchecked.txt")).toBe("old\n");
+    });
+
     test("a linked worktree commits using its separate gitdir and preserves unchecked staging", async () => {
         const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n" });
         const worktree = join(realpathSync(iso.home), `linked-${n++}`);
