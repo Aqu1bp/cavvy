@@ -8,6 +8,7 @@ const errors: unknown[] = [];
 const calls: { method: string; params: any }[] = [];
 const app = { activeId: "original" as string | undefined, homeCwd: "/project", settings: { model: "mock:model" as string | undefined }, homeMode: "default" };
 let failure: unknown = new RpcError("Unknown command /oops", "unknown_command");
+let created = 0;
 const rpc = { call: async (method: string, params: any) => {
     calls.push({ method, params });
     if (failure) throw failure;
@@ -17,7 +18,7 @@ const noop = () => {};
 mock.module("../../gui/src/state/app", () => ({
     app, rpc, reportError: (e: unknown) => errors.push(e),
     toast: (text: string, _level: string, action: any) => notices.push({ text, action }),
-    createSession: async () => ({ id: "created" }), setApp: (key: string, value: any) => Object.assign(app, { [key]: value }),
+    createSession: async () => { created++; return { id: "created" }; }, setApp: (key: string, value: any) => Object.assign(app, { [key]: value }),
     activate: noop, handleFor: noop, refreshModels: noop, refreshProjects: noop,
     refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop,
 }));
@@ -49,6 +50,33 @@ failure = new RpcError("Disconnected", "disconnected");
 assert.equal(await send("/oops"), false);
 assert.deepEqual(errors, [failure]);
 assert.equal(notices.length, 1);
+
+// A rejected first message leaves the newly activated session usable. Both
+// recovery paths reuse it, with the toast retaining the submitted images.
+for (const recovery of ["literal", "corrected"] as const) {
+    app.activeId = undefined;
+    const before = created;
+    failure = new RpcError("Unknown command /oops", "unknown_command");
+    calls.length = 0;
+    assert.equal(await send("/oops", attachments), false);
+    assert.equal(app.activeId, "created");
+    assert.equal(created, before + 1);
+    assert.equal(calls[0]!.params.id, "created");
+    assert.equal(notices.at(-1)?.text, "Unknown command /oops");
+    failure = undefined;
+    if (recovery === "literal") {
+        notices.at(-1)!.action!.run();
+        await Bun.sleep(0);
+    } else {
+        assert.equal(await send("corrected message", attachments), true);
+    }
+    assert.equal(created, before + 1);
+    assert.deepEqual(calls.at(-1), { method: "session.send", params: {
+        id: "created", text: recovery === "literal" ? "/oops" : "corrected message",
+        images: [{ mediaType: "image/png", data: "image-data" }],
+        literal: recovery === "literal" ? true : undefined,
+    } });
+}
 
 // A fresh Claude workspace reaches its server guard without a premature home rejection.
 app.activeId = undefined;

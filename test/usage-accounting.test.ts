@@ -54,6 +54,39 @@ test("Codex API-key estimates are cost, only plan records contribute plan equiva
     expect(summary.totals).toMatchObject({ cost: 20, planEquivalent: 10 });
 });
 
+test("PR 11's undated top-level unknown flag remains unpriced in Usage", async () => {
+    const file = join(dir, "pr11-unknown.jsonl");
+    // Exactly the record PR 11 writes, before usage lines acquired timestamps and resolved models.
+    // Use a model priced today so losing the flag would incorrectly turn this into known spend.
+    writeFileSync(file, JSON.stringify({ t: "usage", usage: { inputTokens: 1_000_000, outputTokens: 100 }, cost: 0, model: "anthropic:claude-opus-5-5", unknown: true }) + "\n");
+    utimesSync(file, now / 1000, now / 1000);
+    const summary = await usageSummary(1, now);
+    expect(summary.rows).toHaveLength(1);
+    expect(summary.rows[0]).toMatchObject({ inputTokens: 1_000_000, outputTokens: 100, cost: 0, unknown: true });
+    expect(summary.totals).toMatchObject({ cost: 0, unknown: true });
+    expect(summary.approxDated).toBe(1);
+});
+
+test("new usage lines retain time and resolved model alongside unknown pricing through reload", async () => {
+    const session = Session.create(cwd);
+    session.push({ role: "user", content: [{ type: "text", text: "hello" }] });
+    const usage = { inputTokens: 100, outputTokens: 20, resolvedModel: "codex:gpt-unpriced", billing: "api" as const };
+    const before = Date.now();
+    session.recordUsage("codex:default", usage, 0, true);
+    const line = usageLines(session).at(-1);
+    expect(line).toEqual({ t: "usage", model: "codex:default", usage, cost: 0, unknown: true, at: expect.any(Number) });
+    expect(line.at).toBeGreaterThanOrEqual(before);
+    expect(line.at).toBeLessThanOrEqual(Date.now());
+    expect(session.costUnknown).toBe(true);
+    const loaded = Session.load(session.path);
+    expect(loaded.costUnknown).toBe(true);
+    expect(loaded.usageByModel.get("codex:default")).toMatchObject({ unknown: true, cost: 0 });
+    const summary = await usageSummary(1);
+    expect(summary.rows[0]).toMatchObject({ model: "gpt-unpriced", cost: 0, unknown: true });
+    expect(summary.approxDated).toBe(0);
+    expect(summary.approxPriced).toBe(0);
+});
+
 test("recorded concrete models keep historical prices when Claude aliases move; legacy aliases are approximate", async () => {
     alias("claude-opus-4-1");
     records("resolved", [{ model: "claude-code:opus", usage: { inputTokens: 1_000_000, outputTokens: 0, cost: 0, resolvedModel: "claude-code:claude-opus-4-1" }, cost: 0 }]);
@@ -134,4 +167,22 @@ test("Codex thread model is recorded for its default alias, including reroutes a
     const usage = usageLines(session).at(-1).usage;
     expect(usage).toMatchObject({ resolvedModel: "codex:gpt-6-astra", billing: "api" });
     expect(usage.cost).toBeUndefined();
+});
+
+test("delegated unpriced usage retains unknown pricing and resolved model in its parent's transcript", async () => {
+    process.env.FAKE_ACCOUNT = "apikey";
+    const { agent, session } = await agentFor("codex");
+    session.push({ role: "user", content: [{ type: "text", text: "delegate a task" }] });
+    const child = await (agent as any).runChild("unpriced-child", { prompt: "hello", description: "unpriced accounting", agent: "general-purpose" }, new AbortController().signal);
+    expect(child.status).toBe("done");
+    expect(usageLines(session)).toHaveLength(1);
+    expect(usageLines(session)[0]).toMatchObject({
+        model: "codex:default",
+        at: expect.any(Number),
+        unknown: true,
+        cost: 0,
+        usage: { resolvedModel: "codex:gpt-test", billing: "api" },
+    });
+    expect(session.costUnknown).toBe(true);
+    expect(Session.load(session.path).costUnknown).toBe(true);
 });

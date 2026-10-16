@@ -194,9 +194,26 @@ describe("slash commands the server doesn't know", () => {
         await expect(c.call("session.send", { id, text: "/cost" })).rejects.toMatchObject({ code: "unknown_command" });
         await Bun.sleep(100);
         expect(c.view(id).turns).toEqual([]);
+        expect(c.view(id).state.busy).toBe(false);
+        expect(c.view(id).state.queued).toEqual([]);
         await c.call("session.send", { id, text: "/nonsense please", literal: true });
         await c.until(() => done(c.view(id)));
         expect(prompts(c.view(id))).toEqual(["/nonsense please"]);
+        c.close();
+    });
+
+    test("a refused first message leaves the session idle for a corrected message", async () => {
+        const c = await client();
+        const id = await c.create(project());
+        await expect(c.call("session.send", { id, text: "/mistyped" })).rejects.toMatchObject({ code: "unknown_command" });
+        // Read the server snapshot as well: refusal never starts or queues a turn.
+        const snap = await c.call<SessionSnapshot>("session.open", { id });
+        expect(snap.turns).toEqual([]);
+        expect(snap.state.busy).toBe(false);
+        expect(snap.state.queued).toEqual([]);
+        await c.call("session.send", { id, text: "corrected message" });
+        await c.until(() => done(c.view(id)));
+        expect(prompts(c.view(id))).toEqual(["corrected message"]);
         c.close();
     });
 
