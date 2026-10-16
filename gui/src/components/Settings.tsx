@@ -388,7 +388,6 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     };
     return (
         <div class="prov">
-            <Show when={p.pr.agentCli?.installed}><Accounts provider={p.pr} /></Show>
             <div class="prov-line">
                 <span class="prov-ico" title={p.pr.configured ? "Set up" : "Not set up"}>
                     <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} />
@@ -460,6 +459,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                     </Show>
                 </Show>
             </div>
+            <Show when={p.pr.agentCli?.installed}><Accounts provider={p.pr} /></Show>
             <Show when={adding()}>
                 <div class="prov-add">
                     <input class="input mono" type="password" autofocus placeholder={`Paste your ${p.pr.name} key`} value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void save()} />

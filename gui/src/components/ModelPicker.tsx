@@ -62,7 +62,10 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
 
     const accountInfo = (provider = currentProvider()) => app.providers.find((p) => p.id === provider)?.agentCli;
     const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
-    const accountName = () => accountInfo()?.accounts?.find((a) => a.id === selectedAccount())?.name;
+    const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
+    const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
+    const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
+    const accountName = () => accountChoices().find((a) => a.id === selectedAccount())?.name ?? "Removed account";
 
     // Providers with something to pick, or an error worth seeing.
     const groups = createMemo(() =>
@@ -142,13 +145,14 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
                 {/* What an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */}
                 <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
-                <Show when={(accountInfo()?.accounts?.length ?? 0) > 1}><span> · {accountName() ?? "Default"}</span></Show>
+                <Show when={showAccounts()}><span> · {accountName() ?? "Default"}</span></Show>
                 <ChevronDown size={14} class="chv" />
             </button>
             <Popover open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
-                <Show when={(accountInfo(rail())?.accounts?.length ?? 0) > 1}>
+                <Show when={showAccounts(rail())}>
                     <label class="small">{providerName(rail())} · Account <select aria-label="Session account" value={selectedAccount(rail())} onChange={(e) => void setAccount(rail(), e.currentTarget.value)}>
-                        <For each={accountInfo(rail())?.accounts}>{(a) => <option value={a.id}>{a.name}</option>}</For>
+                        <Show when={missingAccount(rail())}><option value={selectedAccount(rail())} disabled>Removed account — choose another</option></Show>
+                        <For each={accountChoices(rail())}>{(a) => <option value={a.id}>{a.name}</option>}</For>
                     </select></label>
                 </Show>
                 <div class="mp-wrap" role="dialog" aria-label="Choose a model" onKeyDown={onKey}>
