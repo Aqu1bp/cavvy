@@ -396,19 +396,29 @@ function checkConfigTrust(repo: Repo, cwd: string, worktrees: string[], action: 
     }
 }
 
-/** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
-export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
-    const cwd = resolve(o.path);
+/**
+ * What creating a worktree from `cwd` checks before anything else: a
+ * repository with a main worktree, Git metadata that's its own, and config
+ * the user trusts (or that can't run anything). Returns the main worktree.
+ */
+export function checkCreate(cwd: string): string {
     const repo = repoOf(cwd);
     checkIdentity(repo, [cwd]);
     checkConfigTrust(repo, cwd, [], "create");
+    return repo.main;
+}
+
+/** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
+export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
+    const cwd = resolve(o.path);
+    const main = checkCreate(cwd);
     const branch = checkBranch(cwd, o.branch);
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
     const commit = resolveBase(cwd, o.base);
-    const target = o.location ? chosenTarget(o.location) : managedTarget(repo.main, o.folder || defaultFolder(branch));
+    const target = o.location ? chosenTarget(o.location) : managedTarget(main, o.folder || defaultFolder(branch));
     target.prepare();
     // A partial clone fetches the files it checks out (its config is trusted, or it would have been refused above).
-    const r = await runGitAsync(repo.main, [...NO_HOOKS, "worktree", "add", "-b", branch, target.path, commit], CREATE_TIMEOUT_MS, { lazyFetch: true });
+    const r = await runGitAsync(main, [...NO_HOOKS, "worktree", "add", "-b", branch, target.path, commit], CREATE_TIMEOUT_MS, { lazyFetch: true });
     if (r.timedOut) {
         logFailure(log, "git worktree add timed out", r.stderr);
         throw new RpcError(`Git took too long to create the worktree. If ${target.path} was left half made, remove it with git worktree remove --force.`, "timeout");
