@@ -303,7 +303,7 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
         <>
             <Show when={done().length}>
                 <div class={`wgroup ${open() ? "open" : ""}`}>
-                    <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <button class="wrow" data-find-skip onClick={() => setOpen(!open())} aria-expanded={open()}>
                         <span class="slot">
                             <ToolIcon name={groupIcon(done())} size={16} />
                         </span>
@@ -333,7 +333,7 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
                     <Show when={open()}>
                         <div class="wkids">
                             <Show when={single()} fallback={<For each={steps()}>{(b) => (b.t === "tool" ? <ToolRow tool={b} /> : <div class="wthought">{(b as ThinkingBlock).text.trim().split("\n")[0]}</div>)}</For>}>
-                                <div class="tool-detail">
+                                <div class="tool-detail" data-find-skip>
                                     <ToolDetails tool={done()[0]!} />
                                 </div>
                             </Show>
@@ -529,6 +529,7 @@ export function OpenFileButton(p: { path: string; line?: number }) {
     return (
         <button
             class="icon-btn row-open"
+            data-find-skip
             title="Open in editor"
             aria-label={`Open ${p.path} in editor`}
             onClick={(e) => {
@@ -596,7 +597,7 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                 </pre>
             </Show>
             <Show when={open()}>
-                <div class="tool-detail" data-find-skip={isLive(p.tool) || undefined}>
+                <div class="tool-detail" data-find-skip>
                     <ToolDetails tool={p.tool} />
                 </div>
             </Show>
@@ -679,7 +680,7 @@ function ToolDetails(p: { tool: ToolBlock }) {
             </Show>
             <Show when={!t().diff && toolFile(t())}>
                 {(f) => (
-                    <button class="link-btn tool-open" onClick={() => void openInEditor(f().path, f().line)}>
+                    <button class="link-btn tool-open" data-find-skip onClick={() => void openInEditor(f().path, f().line)}>
                         <SquareArrowOutUpRight size={13} /> Open in editor
                     </button>
                 )}

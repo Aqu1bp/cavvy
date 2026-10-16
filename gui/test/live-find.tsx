@@ -5,6 +5,7 @@ import type { ToolBlock, Turn } from "@shared/protocol";
 import { ActivityGroup } from "../src/components/blocks/Activity";
 import { findMatches, textRanges } from "../src/lib/find";
 import { setFindReveal } from "../src/state/ui";
+import { checkEditorFind } from "./editor-find";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
 import "../src/styles/transcript.css";
@@ -74,13 +75,14 @@ async function run() {
         await frame();
         check(findMatches([turn()], "Run").length === 3 && textRanges(row("second"), "Run").length === 3, "finished call restores verb and summary matching");
         check(findMatches([turn()], "Run sleep").length === 1 && textRanges(row("second"), "Run sleep").length === 1, "finished row retains spaces between title parts");
-        result.textContent = "PASS: long running/awaiting arguments; concurrent live scopes; streaming and finished transitions";
-        result.dataset.status = "passed";
     } finally {
         dispose();
     }
 }
-run().catch((error) => {
+run().then(() => checkEditorFind(root)).then(() => {
+    result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys";
+    result.dataset.status = "passed";
+}).catch((error) => {
     result.textContent = String(error.stack ?? error);
     result.dataset.status = "failed";
 });

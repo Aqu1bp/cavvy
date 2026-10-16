@@ -253,7 +253,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string }) {
     const [all, setAll] = createSignal(false);
     return (
         <Show when={files().length}>
-            <div class="files-card">
+            <div class="files-card" data-find-skip>
                 <div class="files-head">
                     <span class="files-title">{plural(files().length, "changed file")}</span>
                     <span class="stat">

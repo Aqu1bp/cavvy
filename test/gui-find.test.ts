@@ -1,9 +1,10 @@
 // Real browser coverage for find's DOM scopes and clipped text. No browser package
-// needed; use installed Chrome (or HARNESS_TEST_CHROME), a private profile and dump-dom.
+// needed; use installed Chrome (or HARNESS_TEST_CHROME) and a private profile.
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { chromeFixture } from "./helpers/chrome";
 
 const chrome = [process.env.HARNESS_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((p) => p && existsSync(p));
 
@@ -81,12 +82,11 @@ test("Chrome cleanup releases resources even when termination or server stop fai
     }
 });
 
-test.skipIf(!chrome)("find reveals long live arguments and highlights concurrent calls' arguments", async () => {
+test.skipIf(!chrome)("find reveals live arguments and linked paths without counting editor controls", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-"));
     const profile = join(scratch, "chrome");
     let browser: ReturnType<typeof Bun.spawn> | undefined;
     let server: ReturnType<typeof Bun.serve> | undefined;
-    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
         const { build } = await import("../gui/node_modules/vite/dist/node/index.js");
         const out = join(scratch, "dist");
@@ -107,17 +107,11 @@ test.skipIf(!chrome)("find reveals long live arguments and highlights concurrent
         browser = Bun.spawn([
             chrome!, "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
             ...sandboxArgs(process.getuid?.()),
-            "--disable-background-networking", `--user-data-dir=${profile}`, "--dump-dom", "--virtual-time-budget=5000",
-            `http://127.0.0.1:${server.port}/test/live-find.html`,
-        ], { stdout: "pipe", stderr: "pipe" });
-        const [html, errors, code] = await Promise.race([
-            Promise.all([new Response(browser.stdout).text(), new Response(browser.stderr).text(), browser.exited]),
-            new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("Chrome find regression timed out")), 30_000); }),
-        ]);
-        expect(code, errors).toBe(0);
-        expect(html).toContain('data-status="passed"');
+            "--disable-background-networking", `--user-data-dir=${profile}`, "--remote-debugging-port=0",
+        ], { stdout: "ignore", stderr: Bun.file(join(scratch, "chrome.log")) });
+        const result = await chromeFixture(browser, profile, `http://127.0.0.1:${server.port}/test/live-find.html`, AbortSignal.timeout(30_000));
+        expect(result.status, result.message).toBe("passed");
     } finally {
-        clearTimeout(deadline);
         await cleanup(browser, server, scratch);
     }
 }, 60_000);
