@@ -45,6 +45,8 @@ const instances = new WeakMap<FileHistory, WeakMap<Session, TurnSnapshots>>();
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const POLICY = "Ignored files are not captured. Concurrent sessions in this repository see each other's changes. Submodule and nested repository contents are not captured.";
 const safePath = (p: string) => p.length > 0 && !isAbsolute(p) && !p.split("/").some((part) => part === ".." || part.toLowerCase() === ".git");
+const pathMap = (...sources: Record<string, string>[]): Record<string, string> => Object.assign(Object.create(null), ...sources);
+const own = (map: Record<string, string> | undefined, path: string) => map && Object.hasOwn(map, path) ? map[path] : undefined;
 
 /**
  * Tree ids write-tree can create, computed before it runs. Git creates loose
@@ -188,7 +190,7 @@ export class TurnSnapshots {
             if (!this.active || this.stopped) return;
             const captured = await this.capture();
             if (this.stopped) return;
-            await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: {}, durationMs: 0 });
+            await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
         });
     }
 
@@ -254,7 +256,7 @@ export class TurnSnapshots {
     private async capture(): Promise<TurnCapture | undefined> {
         const started = Date.now();
         const deadline = started + (this.options.budgetMs ?? 2000);
-        const result: TurnCapture = { incomplete: false, notes: [], skipped: {}, durationMs: 0 };
+        const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
         const inTime = () => {
             if (this.stopped) throw new Error("The snapshot session was closed.");
@@ -299,7 +301,7 @@ export class TurnSnapshots {
                 const stamp = `${st.dev}:${st.ino}:${st.mode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
                 const skip = (reason: string) => {
                     result.skipped[path] = reason;
-                    (result.skippedStamps ??= {})[path] = stamp;
+                    (result.skippedStamps ??= pathMap())[path] = stamp;
                 };
                 if (!st.isFile() && !st.isSymbolicLink()) {
                     // A tracked file replaced by a directory is deleted; its new
@@ -374,13 +376,13 @@ export class TurnSnapshots {
     private async compare(turn: SnapshotTurn, deadline: number): Promise<Change[]> {
         if (!turn.end) return [];
         const [before, after] = await Promise.all([this.tree(turn.start, deadline), this.tree(turn.end, deadline)]);
-        const skipped = { ...turn.start.skipped, ...turn.end.skipped };
+        const skipped = pathMap(turn.start.skipped, turn.end.skipped);
         const changes: Change[] = [];
         for (const path of new Set([...before.keys(), ...after.keys(), ...Object.keys(skipped)])) {
             const old = before.get(path), now = after.get(path);
-            if (turn.start.skipped[path] && turn.end.skipped[path] && turn.start.skippedStamps?.[path] && turn.start.skippedStamps[path] === turn.end.skippedStamps?.[path]) continue;
-            if (!skipped[path] && old?.oid === now?.oid && old?.mode === now?.mode) continue;
-            changes.push({ path, old, now, indexed: true, change: skipped[path] ? "modified" : !old ? "added" : !now ? "deleted" : old.mode.slice(0, 3) !== now.mode.slice(0, 3) ? "typechange" : "modified", note: skipped[path], kind: (now ?? old)?.mode === "120000" ? "link" : undefined });
+            if (Object.hasOwn(turn.start.skipped, path) && Object.hasOwn(turn.end.skipped, path) && own(turn.start.skippedStamps, path) && own(turn.start.skippedStamps, path) === own(turn.end.skippedStamps, path)) continue;
+            if (!Object.hasOwn(skipped, path) && old?.oid === now?.oid && old?.mode === now?.mode) continue;
+            changes.push({ path, old, now, indexed: true, change: Object.hasOwn(skipped, path) ? "modified" : !old ? "added" : !now ? "deleted" : old.mode.slice(0, 3) !== now.mode.slice(0, 3) ? "typechange" : "modified", note: skipped[path], kind: (now ?? old)?.mode === "120000" ? "link" : undefined });
         }
         return changes.sort((a, b) => a.path.localeCompare(b.path));
     }

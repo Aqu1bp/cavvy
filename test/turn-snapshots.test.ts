@@ -76,6 +76,34 @@ function expectPrivate(root: string) {
 }
 
 describe("per-turn snapshots", () => {
+    test("prototype-named files keep ordinary diffs and omission metadata after reopening", async () => {
+        const names = ["constructor", "toString", "__proto__"];
+        const { cwd, dir, snapshots } = setup(Object.fromEntries(names.map((name) => [name, "before\n"])));
+        await snapshots.begin(1, "unchanged");
+        await snapshots.end();
+        expect((await snapshots.changes({ scope: "last-turn" })).files).toEqual([]);
+        await snapshots.begin(2, "edit prototype names");
+        for (const name of names) write(cwd, name, "after\n");
+        await snapshots.end();
+        const reopened = new TurnSnapshots(dir, cwd);
+        const changes = await reopened.changes({ scope: "last-turn" });
+        expect(changes.files.map((f) => f.path).sort()).toEqual(names.sort());
+        for (const file of changes.files) {
+            expect(file.note).toBeUndefined();
+            expect([file.added, file.removed]).toEqual([1, 1]);
+        }
+        for (const name of names) write(cwd, name, Buffer.alloc(MAX_SNAPSHOT_BYTES + 1));
+        await reopened.begin(3, "unchanged omissions");
+        await reopened.end();
+        const omitted = new TurnSnapshots(dir, cwd);
+        const result = await omitted.changes({ scope: "last-turn" });
+        expect(result).toMatchObject({ incomplete: true, files: [] });
+        for (const name of names) {
+            expect(Object.hasOwn(omitted.list().at(-1)!.start.skipped, name)).toBe(true);
+            expect(result.notes?.some((note) => note.includes(`Not captured: ${name}:`))).toBe(true);
+        }
+    });
+
     test("reopening a cut-off steering turn keeps its start without inventing an end", async () => {
         const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
         await snapshots.begin(101, "first prompt");
