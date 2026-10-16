@@ -150,7 +150,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     });
     createEffect(
         on(
-            () => st()?.cwd ?? app.homeCwd,
+            () => app.conn === "open" ? st()?.cwd ?? app.homeCwd : undefined,
             (cwd) => {
                 if (cwd) void rpc.call("commands.list", { cwd }).then((c) => (commands = c)).catch(() => undefined);
             },
@@ -219,6 +219,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
 
     // ---- sending
     const submit = async () => {
+        if (app.conn !== "open") return toast("Not sent: not connected");
         const t = text();
         if (!canSend() || sending()) return;
         setSending(true);
@@ -506,7 +507,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <Show
                         when={busy() && !hasContent()}
                         fallback={
-                            <button class="send" disabled={!canSend() || sending()} onClick={() => void submit()} title={prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`} aria-label="Send">
+                            <button class="send" disabled={app.conn !== "open" || !canSend() || sending()} onClick={() => void submit()} title={app.conn !== "open" ? "Not connected" : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`} aria-description={app.conn !== "open" ? "Not connected" : undefined} aria-label="Send">
                                 <ArrowUp size={17} stroke-width={2.4} />
                             </button>
                         }

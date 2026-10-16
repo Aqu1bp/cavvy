@@ -12,7 +12,8 @@ import { prefs } from "./prefs";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
-import { toastMs } from "../lib/toasts";
+import { repeatedToast, ToastLifetime, toastMs, type Toast, type ToastAction } from "../lib/toasts";
+export type { Toast } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
 import type { Attachment } from "./actions";
 
@@ -22,23 +23,49 @@ rpc.retriesCredentials = isTauri;
 // ---------------------------------------------------------------------------
 // Toasts
 
-export interface Toast {
-    id: number;
-    level: "info" | "warn" | "error" | "success";
-    message: string;
-    action?: { label: string; run: () => void };
-}
-
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
+const toastTimers = new Map<number, { life: ToastLifetime; timer?: ReturnType<typeof setTimeout> }>();
 
-export function toast(message: string, level: Toast["level"] = "info", action?: Toast["action"], ms?: number) {
+function scheduleToast(id: number) {
+    const entry = toastTimers.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    if (!entry.life.paused) entry.timer = setTimeout(() => dismissToast(id), entry.life.remaining(performance.now()));
+}
+
+export function pauseToast(id: number, reason: "hover" | "focus" | "hidden", paused: boolean) {
+    const entry = toastTimers.get(id);
+    if (!entry) return;
+    if (paused) entry.life.pause(reason, performance.now());
+    else entry.life.resume(reason, performance.now());
+    scheduleToast(id);
+}
+
+export function toast(message: string, level: Toast["level"] = "info", action?: ToastAction, ms?: number) {
+    const existing = repeatedToast(toasts, message, level, action);
+    if (existing) {
+        const index = toasts.findIndex((t) => t.id === existing.id);
+        batch(() => {
+            setToasts(index, "count", existing.count + 1);
+            if (action) setToasts(index, "actions", (actions) => [...actions, action]);
+        });
+        toastTimers.get(existing.id)?.life.restart(toastMs(level, ms), performance.now());
+        scheduleToast(existing.id);
+        return;
+    }
     const id = ++toastId;
-    setToasts((t) => [...t.slice(-3), { id, level, message, action }]);
-    setTimeout(() => dismissToast(id), toastMs(level, ms));
+    for (const old of toasts.slice(0, Math.max(0, toasts.length - 3))) dismissToast(old.id);
+    setToasts((t) => [...t, { id, level, message, count: 1, actions: action ? [action] : [] }]);
+    const life = new ToastLifetime(toastMs(level, ms), performance.now());
+    if (document.hidden) life.pause("hidden", performance.now());
+    toastTimers.set(id, { life });
+    scheduleToast(id);
 }
 
 export function dismissToast(id: number) {
+    clearTimeout(toastTimers.get(id)?.timer);
+    toastTimers.delete(id);
     setToasts((t) => t.filter((x) => x.id !== id));
 }
 
@@ -52,6 +79,7 @@ export function reportError(e: unknown) {
 
 export interface AppState {
     conn: ConnectionState;
+    slowRequest: boolean;
     hello?: HelloResult;
     sessions: SessionSummary[];
     archived: SessionSummary[];
@@ -83,6 +111,7 @@ function loadSeen(): Record<string, number> {
 
 export const [app, setApp] = createStore<AppState>({
     conn: "connecting",
+    slowRequest: false,
     sessions: [],
     archived: [],
     models: [],
@@ -401,6 +430,10 @@ function onEvent(ev: ServerEvent) {
 let connectedOnce = false;
 
 export function start() {
+    document.addEventListener("visibilitychange", () => {
+        for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
+    });
+    rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
     rpc.onState((s) => {
         setApp("conn", s);

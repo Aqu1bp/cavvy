@@ -3,6 +3,7 @@
 // restarted desktop sidecar with a new port and token is picked up).
 
 import type { Method, ParamsOf, ResultOf, ServerEvent, ServerMessage } from "@shared/protocol";
+import { RequestAges } from "./request-age";
 
 export interface Credentials {
     /** ws:// URL of the server's /ws endpoint. */
@@ -24,6 +25,8 @@ export class RpcError extends Error {
 }
 
 interface Pending {
+    method: Method;
+    sessionId?: string;
     resolve: (v: unknown) => void;
     reject: (e: Error) => void;
 }
@@ -37,6 +40,12 @@ export class Rpc {
     private attempt = 0;
     private closed = false;
     private openWaiters: (() => void)[] = [];
+    private ages = new RequestAges();
+    private slowListeners = new Set<(slow: boolean) => void>();
+    private noticeTimer?: ReturnType<typeof setTimeout>;
+    private retryTimer?: ReturnType<typeof setTimeout>;
+    private connecting = false;
+    private generation = 0;
     state: ConnectionState = "connecting";
 
     constructor(private credentials: () => Promise<Credentials | undefined>) {}
@@ -56,16 +65,43 @@ export class Rpc {
         for (const fn of this.stateListeners) fn(s, this.attempt);
     }
 
+    onSlow(fn: (slow: boolean) => void): () => void {
+        this.slowListeners.add(fn);
+        return () => this.slowListeners.delete(fn);
+    }
+
+    private updateNotice() {
+        clearTimeout(this.noticeTimer);
+        const now = performance.now();
+        for (const fn of this.slowListeners) fn(this.ages.slow(now));
+        const delay = this.ages.nextDelay(now);
+        if (delay !== undefined) this.noticeTimer = setTimeout(() => this.updateNotice(), delay);
+    }
+
+    private rejectPending() {
+        for (const p of this.pending.values()) p.reject(new RpcError("Disconnected from the harness server", "disconnected"));
+        this.pending.clear();
+        this.ages.clear();
+        this.updateNotice();
+    }
+
     async connect(): Promise<void> {
-        if (this.closed) return;
+        if (this.closed || this.connecting || this.ws) return;
+        clearTimeout(this.retryTimer);
+        this.connecting = true;
+        const generation = ++this.generation;
         let creds: Credentials | undefined;
         try {
             creds = await this.credentials();
         } catch {
+            if (generation !== this.generation || this.closed) return;
+            this.connecting = false;
             // The desktop app's server isn't up yet (a slow first start, a restart): ask again.
             if (this.retriesCredentials) return this.retry();
             creds = undefined;
         }
+        if (generation !== this.generation || this.closed) return;
+        this.connecting = false;
         if (!creds) {
             this.setState("unauthorized");
             return;
@@ -74,17 +110,17 @@ export class Rpc {
         this.ws = ws;
         let opened = false;
         ws.onopen = () => {
+            if (this.ws !== ws || this.closed) return;
             opened = true;
             this.attempt = 0;
             this.setState("open");
             for (const w of this.openWaiters.splice(0)) w();
         };
-        ws.onmessage = (m) => this.receive(String(m.data));
+        ws.onmessage = (m) => { if (this.ws === ws && !this.closed) this.receive(String(m.data)); };
         ws.onclose = (ev) => {
             if (this.ws !== ws) return;
             this.ws = undefined;
-            for (const p of this.pending.values()) p.reject(new RpcError("Disconnected from the harness server", "disconnected"));
-            this.pending.clear();
+            this.rejectPending();
             if (this.closed) return;
             // Refused before opening, more than a few times: probably a stale token.
             if (!opened && ev.code === 1006 && this.attempt >= 3 && !this.retriesCredentials) {
@@ -97,10 +133,25 @@ export class Rpc {
 
     private retry() {
         if (this.closed) return;
+        clearTimeout(this.retryTimer);
         this.attempt++;
         this.setState(this.attempt > 8 ? "unavailable" : "reconnecting");
         const delay = Math.min(10_000, 250 * 2 ** Math.min(this.attempt, 6)) * (0.8 + Math.random() * 0.4);
-        setTimeout(() => void this.connect(), delay);
+        this.retryTimer = setTimeout(() => void this.connect(), delay);
+    }
+
+    /** Retry the connection, never a request: a lost reply may still have taken effect. */
+    reconnectNow() {
+        if (this.closed || this.state === "open") return;
+        clearTimeout(this.retryTimer);
+        this.generation++;
+        this.connecting = false;
+        const ws = this.ws;
+        this.ws = undefined;
+        ws?.close();
+        this.attempt = 0;
+        this.setState("reconnecting");
+        void this.connect();
     }
 
     /** The desktop app asks the sidecar for credentials each time, so a stale token is never the problem there. */
@@ -114,6 +165,13 @@ export class Rpc {
             return;
         }
         if ("event" in msg) {
+            // Manual compaction waits for completion, but its activity is already visible.
+            if (msg.event.type === "session.ops" && msg.event.ops.some((op) => op.op === "state" && op.patch.activity?.label === "Compacting conversation")) {
+                for (const [id, p] of this.pending) {
+                    if (p.method === "session.compact" && p.sessionId === msg.event.sessionId) this.ages.remove(id);
+                }
+                this.updateNotice();
+            }
             for (const fn of this.listeners) {
                 try {
                     fn(msg.event);
@@ -126,6 +184,8 @@ export class Rpc {
         const p = this.pending.get(msg.id);
         if (!p) return;
         this.pending.delete(msg.id);
+        this.ages.remove(msg.id);
+        this.updateNotice();
         if ("error" in msg) p.reject(new RpcError(msg.error.message, msg.error.code, msg.error.folder));
         else p.resolve(msg.result);
     }
@@ -137,18 +197,32 @@ export class Rpc {
     }
 
     async call<M extends Method>(method: M, params: ParamsOf<M>): Promise<ResultOf<M>> {
-        if (this.state !== "open") await this.ready();
+        // Offline actions must stay with the user, not run later on reconnect.
+        if (this.closed || this.state !== "open") throw new RpcError("Not connected", "disconnected");
         const ws = this.ws;
         if (!ws || ws.readyState !== WebSocket.OPEN) throw new RpcError("Not connected", "disconnected");
         const id = this.next++;
         return new Promise<ResultOf<M>>((resolve, reject) => {
-            this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-            ws.send(JSON.stringify({ id, method, params }));
+            this.pending.set(id, { method, sessionId: "id" in params ? String(params.id) : undefined, resolve: resolve as (v: unknown) => void, reject });
+            this.ages.add(id, method, performance.now());
+            this.updateNotice();
+            try {
+                ws.send(JSON.stringify({ id, method, params }));
+            } catch (e) {
+                this.pending.delete(id);
+                this.ages.remove(id);
+                this.updateNotice();
+                reject(e);
+            }
         });
     }
 
     close() {
         this.closed = true;
+        this.generation++;
+        clearTimeout(this.retryTimer);
+        this.rejectPending();
+        this.setState("unavailable");
         this.ws?.close();
     }
 }

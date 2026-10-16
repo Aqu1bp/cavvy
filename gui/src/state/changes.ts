@@ -2,7 +2,7 @@ import { createResource, createSignal } from "solid-js";
 import type { ChangesInfo, GitChangesInfo, GitScope } from "@shared/protocol";
 import { coalesce, type Slot } from "@shared/coalesce";
 import type { SessionHandle } from "./app";
-import { reportError, rpc } from "./app";
+import { app, reportError, rpc } from "./app";
 
 /** The review pane's views: what git says changed, or only what Harness's edit tools did. */
 export type ReviewScope = GitScope | "harness";
@@ -10,7 +10,7 @@ export type ReviewScope = GitScope | "harness";
 /** What the agent's edit tools changed in a session; fetched again as edits land and when a turn ends. */
 export function useChanges(handle: () => SessionHandle) {
     return createResource(
-        () => ({ id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy }),
+        () => app.conn === "open" && ({ id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy }),
         async ({ id }) => rpc.call("session.changes", { id }).catch((e): ChangesInfo => (reportError(e), { files: [], added: 0, removed: 0, tracked: true })),
     );
 }

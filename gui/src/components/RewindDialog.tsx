@@ -32,8 +32,11 @@ export function RewindDialog() {
     /** Files changed outside Harness: restoring them needs a second, explicit click. */
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
     const [targets, { refetch }] = createResource(
-        () => (rewindOpen() && id() ? id() : undefined),
-        (sid) => rpc.call("session.rewindTargets", { id: sid }),
+        () => (app.conn === "open" && rewindOpen() && id() ? id() : undefined),
+        (sid) => rpc.call("session.rewindTargets", { id: sid }).catch((e) => {
+            if (app.conn === "open") reportError(e);
+            return [];
+        }),
     );
     createEffect(
         on(rewindOpen, (open) => {

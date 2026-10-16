@@ -1688,7 +1688,10 @@ button.strip-ctl[aria-expanded="true"] {
 .toasts {
     position: fixed;
     right: 20px;
-    bottom: 20px;
+    top: 60px;
+    max-height: min(320px, calc(40vh - 60px), var(--toast-space, 100vh));
+    max-width: calc(100vw - 40px);
+    overflow-y: auto;
     z-index: 80;
     display: flex;
     flex-direction: column;
@@ -1697,7 +1700,16 @@ button.strip-ctl[aria-expanded="true"] {
     pointer-events: none;
 }
 
+.toast-region {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-end;
+    max-width: 100%;
+}
+
 .toast {
+    flex: none;
     pointer-events: auto;
     display: flex;
     align-items: center;

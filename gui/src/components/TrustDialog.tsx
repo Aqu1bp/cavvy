@@ -1,14 +1,17 @@
 import { createResource, Show } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
-import { reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
+import { app, reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
 import { trustAndContinue } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 
 /** Asked when opening a session in a folder whose configuration hasn't been trusted or declined. */
 export function TrustDialog() {
     const [info] = createResource(
-        () => trustRequest()?.path,
-        (path) => rpc.call("projects.inspect", { path }),
+        () => app.conn === "open" && trustRequest()?.path,
+        (path) => rpc.call("projects.inspect", { path }).catch((e) => {
+            if (app.conn === "open") reportError(e);
+            return undefined;
+        }),
     );
     const decide = async (trust: boolean) => {
         const req = trustRequest();

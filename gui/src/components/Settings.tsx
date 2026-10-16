@@ -10,6 +10,7 @@ import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { mod, openExternal } from "../lib/platform";
+import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { MODES } from "./ModePicker";
 import { CrumbSep, TitleBar } from "./Header";
@@ -119,6 +120,7 @@ function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: 
 const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
 function General() {
+    const [confirmBypass, setConfirmBypass] = createSignal(false);
     const s = () => app.settings;
     onMount(() => void refreshEditors());
     // The chosen editor stays listed when it's gone, so the choice isn't silently lost.
@@ -192,8 +194,11 @@ function General() {
                 </select>
             </Row>
             <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">
-                <Toggle label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => void update({ allowBypass: v })} />
+                <Toggle label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => v ? setConfirmBypass(true) : void update({ allowBypass: false })} />
             </Row>
+            <ConfirmDialog open={confirmBypass()} onClose={() => setConfirmBypass(false)} title="Allow bypass mode?" confirmLabel="Allow bypass mode" onConfirm={() => update({ allowBypass: true })}>
+                Lets sessions run tools without asking for permission. Enable only in a sandbox or container.
+            </ConfirmDialog>
             <Group>This computer</Group>
             <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
                 <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
@@ -353,6 +358,7 @@ function Appearance() {
 }
 
 function ProviderRow(p: { pr: ProviderInfo }) {
+    const [confirmRemove, setConfirmRemove] = createSignal(false);
     const [adding, setAdding] = createSignal(false);
     const [key, setKey] = createSignal("");
     const [busy, setBusy] = createSignal(false);
@@ -387,6 +393,15 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     };
     return (
         <div class="prov">
+            <ConfirmDialog
+                open={confirmRemove()}
+                onClose={() => setConfirmRemove(false)}
+                title={p.pr.agentCli ? `Turn off ${p.pr.name}?` : `Remove the ${p.pr.name} key?`}
+                confirmLabel={p.pr.agentCli ? "Turn off" : "Remove key"}
+                onConfirm={remove}
+            >
+                {p.pr.agentCli ? `Stops using ${p.pr.name} in Harness. It stays signed in.` : `Removes the stored ${p.pr.name} key from Harness. You'll need to add it again to use this provider.`}
+            </ConfirmDialog>
             <div class="prov-line">
                 <span class="prov-ico" title={p.pr.configured ? "Set up" : "Not set up"}>
                     <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} />
@@ -408,7 +423,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                         <Show
                             when={!p.pr.configured}
                             fallback={
-                                <button class="hb sm" title={`Turn off (${p.pr.name} stays signed in)`} aria-label={`Turn off ${p.pr.name}`} onClick={() => void remove()}>
+                                <button class="hb sm" title={`Turn off (${p.pr.name} stays signed in)`} aria-label={`Turn off ${p.pr.name}`} onClick={() => setConfirmRemove(true)}>
                                     <Trash2 size={14} />
                                 </button>
                             }
@@ -452,7 +467,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                             </Show>
                         }
                     >
-                        <button class="hb sm" title="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => void remove()}>
+                        <button class="hb sm" title="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => setConfirmRemove(true)}>
                             <Trash2 size={14} />
                         </button>
                     </Show>

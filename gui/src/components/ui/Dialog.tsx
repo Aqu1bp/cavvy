@@ -1,4 +1,4 @@
-import { onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createUniqueId, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
 
@@ -28,6 +28,7 @@ const stack: object[] = [];
 const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
 function DialogInner(p: DialogProps) {
+    const titleId = createUniqueId();
     let box: HTMLDivElement | undefined;
     const previous = document.activeElement as HTMLElement | null;
     onMount(() => {
@@ -71,11 +72,11 @@ function DialogInner(p: DialogProps) {
     return (
         <Portal>
             <div class="dialog-backdrop" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
-                <div ref={box} class={`dialog ${p.class ?? ""}`} style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }} role="dialog" aria-modal="true" tabIndex={-1}>
+                <div ref={box} class={`dialog ${p.class ?? ""}`} style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }} role="dialog" aria-modal="true" aria-labelledby={!p.bare && p.title ? titleId : undefined} tabIndex={-1}>
                     <Show when={!p.bare}>
                         <div class="dialog-head">
                             <div>
-                                <div class="dialog-title">{p.title}</div>
+                                <div class="dialog-title" id={titleId}>{p.title}</div>
                                 <Show when={p.subtitle}>
                                     <div class="dialog-sub">{p.subtitle}</div>
                                 </Show>
