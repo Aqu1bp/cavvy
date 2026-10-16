@@ -535,6 +535,8 @@ export interface GitFileDiff extends FileDiff {
     kind?: "link" | "submodule" | "repo" | "folder";
     /** Hunks left out to keep the reply small; ask again with this path to get them. */
     deferred?: boolean;
+    /** Git runs this filter driver on the file; its diff, if any, is of the form stored in git. */
+    filter?: string;
 }
 
 /** What git says changed in a session's folder, whoever changed it. */

@@ -24,7 +24,7 @@ const [split, setSplit] = createSignal(false);
 const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "");
 const nameOf = (path: string) => path.split("/").pop() ?? path;
 
-type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred">>;
+type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter">>;
 
 /** git status's letters, spelled out on hover. */
 const CHANGE: Record<GitFileDiff["change"], { letter: string; label: string }> = {
@@ -72,6 +72,8 @@ function FileHead(p: { file: Row }) {
     const tag = () => {
         const ch = changeOf(p.file);
         if (p.file.kind === "link") return "Symbolic link";
+        // Its diff, when there is one, is of what git stores (an LFS pointer, say), not the file on disk.
+        if (p.file.filter) return `Filter: ${p.file.filter}`;
         if (p.file.kind === "submodule") return "Submodule";
         if (ch === "modified") return undefined;
         return ch === "added" ? "New file" : ch === "renamed" ? `Renamed from ${p.file.from}` : CHANGE[ch].label;
@@ -146,7 +148,16 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     );
     const loaded = () => (full()?.path === file()?.path ? full() : undefined);
     const shownFile = (): Row | undefined => (file()?.deferred ? (loaded()?.file ?? file()) : file());
-    const absolute = (path: string) => (path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${p.handle.view.state.cwd}/${path}`);
+    const absolute = (path: string) => {
+        const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${p.handle.view.state.cwd}/${path}`;
+        // Files elsewhere in the repository come as ../path.
+        const parts: string[] = [];
+        for (const part of full.split("/")) {
+            if (part === "..") parts.pop();
+            else if (part !== ".") parts.push(part);
+        }
+        return parts.join("/") || "/";
+    };
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
     const [fallback] = createResource(
         () => gitScope() === "branch" && git()?.error && !git()?.bases.length && id(),

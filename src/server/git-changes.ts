@@ -12,10 +12,10 @@
 // writes the index, refs or objects.
 
 import { constants, type Stats } from "fs";
+import type { BigIntStats } from "fs";
 import { lstat, open, readlink } from "fs/promises";
-import { join } from "path";
+import { isAbsolute, join, relative } from "path";
 import { canonical } from "../agent/checkpoints";
-import { displayPath } from "../util/files";
 import { gitArgv, gitEnv } from "../util/git";
 import { redact } from "../util/redact";
 import { fileDiff, MAX_DIFF_INPUT, textOf } from "./diffs";
@@ -307,6 +307,13 @@ class WorkTree {
         return ok;
     }
 
+    /** Full-precision stat of a regular file, for comparing with the index's record. */
+    async bigStat(rel: string): Promise<BigIntStats | undefined> {
+        if (!(await this.inside(rel))) return undefined;
+        const st = await lstat(join(this.root, rel), { bigint: true }).catch(() => undefined);
+        return st?.isFile() ? st : undefined;
+    }
+
     async stat(rel: string): Promise<Stats | undefined> {
         if (!(await this.inside(rel))) return undefined;
         return lstat(join(this.root, rel)).catch(() => undefined);
@@ -342,6 +349,93 @@ class WorkTree {
 }
 
 // ---------------------------------------------------------------------------
+// The index's stat data
+
+/** What the index recorded from lstat(2) when git last looked at a file; 32-bit fields, as git keeps them. */
+interface IndexStat {
+    ctime: [bigint, bigint];
+    mtime: [bigint, bigint];
+    ino: bigint;
+    uid: bigint;
+    gid: bigint;
+    size: bigint;
+}
+
+/**
+ * Stat data for every stage-0 index entry, from `ls-files --debug`, and the
+ * index file's own mtime (for racy entries). Its format is documented as
+ * subject to change; an entry this can't read just isn't trusted as clean.
+ */
+async function indexStats(root: string): Promise<{ entries: Map<string, IndexStat>; mtime: bigint } | undefined> {
+    const [list, where] = await Promise.all([git(root, ["ls-files", "--debug", "-s", "-z"]), git(root, ["rev-parse", "--git-path", "index"])]);
+    if (list.code !== 0 || list.cut || where.code !== 0) return undefined;
+    const file = trimNl(where.out);
+    const st = await lstat(isAbsolute(file) ? file : join(root, file), { bigint: true }).catch(() => undefined);
+    if (!st) return undefined;
+    return { entries: parseDebug(list.out), mtime: st.mtimeNs };
+}
+
+export function parseDebug(buf: Buffer): Map<string, IndexStat> {
+    const out = new Map<string, IndexStat>();
+    const s = buf.toString("utf-8");
+    let pos = 0;
+    while (pos < s.length) {
+        // "<mode> <oid> <stage>\t<path>\0", then indented "  key: value" lines.
+        const nul = s.indexOf("\0", pos);
+        if (nul < 0) break;
+        const head = s.slice(pos, nul);
+        pos = nul + 1;
+        let block = "";
+        while (s.startsWith("  ", pos)) {
+            const nl = s.indexOf("\n", pos);
+            const end = nl < 0 ? s.length : nl + 1;
+            block += s.slice(pos, end);
+            pos = end;
+        }
+        const m = /^\d{6} [0-9a-f]+ 0\t/.exec(head);
+        if (!m) continue;
+        const field = (k: string) => {
+            const f = new RegExp(`(?:^|\\s)${k}: (\\d+)(?::(\\d+))?`).exec(block);
+            return f ? ([BigInt(f[1]!), BigInt(f[2] ?? 0)] as [bigint, bigint]) : undefined;
+        };
+        const [ctime, mtime, ino, uid, gid, size] = ["ctime", "mtime", "ino", "uid", "gid", "size"].map(field);
+        if (!ctime || !mtime || !ino || !uid || !gid || !size) continue;
+        out.set(head.slice(m[0].length), { ctime, mtime, ino: ino[0], uid: uid[0], gid: gid[0], size: size[0] });
+    }
+    return out;
+}
+
+const u32 = (n: bigint) => BigInt.asUintN(32, n);
+const NS = 1_000_000_000n;
+
+/**
+ * Whether a file's stat still matches its index entry, by git's own rules
+ * (racy-git.adoc, core.checkStat, core.trustCtime): then git takes it as
+ * unchanged without reading it. Nanoseconds count only where git recorded
+ * them; an entry not older than the index itself is racy, so not trusted.
+ */
+export function statClean(st: BigIntStats, e: IndexStat | undefined, indexMtime: bigint, rules: { trustCtime: boolean; minimal: boolean }): boolean {
+    if (!e) return false;
+    const same = (ns: bigint, [sec, nsec]: [bigint, bigint]) => u32(ns / NS) === sec && (rules.minimal || nsec === 0n || ns % NS === nsec);
+    if (u32(st.size) !== e.size || !same(st.mtimeNs, e.mtime)) return false;
+    if (rules.trustCtime && !same(st.ctimeNs, e.ctime)) return false;
+    if (!rules.minimal && (u32(st.ino) !== e.ino || u32(st.uid) !== e.uid || u32(st.gid) !== e.gid)) return false;
+    const [sec, nsec] = e.mtime;
+    const idxSec = indexMtime / NS;
+    const racy = sec > idxSec || (sec === idxSec && (nsec === 0n || nsec >= indexMtime % NS));
+    return !racy;
+}
+
+/** Attributes for paths, as check-attr reports them ("unspecified" when not set). */
+async function attributes(root: string, paths: string[]): Promise<Map<string, Record<string, string>>> {
+    const r = await git(root, ["check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding", "text", "eol"], { input: paths.join("\0") + "\0" });
+    const recs = records(r.out);
+    const out = new Map<string, Record<string, string>>();
+    for (let i = 0; i + 2 < recs.length; i += 3) out.set(recs[i]!, { ...out.get(recs[i]!), [recs[i + 1]!]: recs[i + 2]! });
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Comparing
 
 interface Change {
@@ -358,6 +452,8 @@ interface Change {
     indexed?: boolean;
     /** No net change to show, but something git would still point out. */
     note?: string;
+    /** The filter driver git runs on this file. */
+    filter?: string;
 }
 
 const isFileMode = (mode: string) => mode === "100644" || mode === "100755";
@@ -416,14 +512,23 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"]),
         git(root, ["symbolic-ref", "-q", "--short", "HEAD"]),
         git(root, ["rev-parse", "--show-object-format"]),
-        git(root, ["config", "-z", "--get-regexp", "^core\\.(filemode|autocrlf)$"]),
+        git(root, ["config", "-z", "--get-regexp", "^(core\\.(filemode|autocrlf|trustctime|checkstat)|filter\\..+\\.(clean|process))$"]),
         listRefs(root),
     ]);
     const headSha = head.code === 0 ? trimNl(head.out) : undefined;
     const algo: Algo = format.code === 0 && trimNl(format.out) === "sha256" ? "sha256" : "sha1";
-    const settings = new Map(records(config.out).map((r) => [r.slice(0, r.indexOf("\n")).toLowerCase(), r.slice(r.indexOf("\n") + 1)] as const));
+    const settings = new Map<string, string>();
+    /** Filter drivers that would run on check-in (a filter attribute naming one without them does nothing). */
+    const drivers = new Set<string>();
+    for (const r of records(config.out)) {
+        const key = r.slice(0, r.indexOf("\n"));
+        const m = /^filter\.(.+)\.(clean|process)$/i.exec(key);
+        if (m) drivers.add(m[1]!);
+        else settings.set(key.toLowerCase(), r.slice(r.indexOf("\n") + 1));
+    }
     const filemode = boolConfig(settings.get("core.filemode"), true);
     const autocrlf = settings.has("core.autocrlf") && /^(true|input|yes|on|1)$/i.test(settings.get("core.autocrlf")!.trim());
+    const statRules = { trustCtime: boolConfig(settings.get("core.trustctime"), true), minimal: settings.get("core.checkstat")?.trim().toLowerCase() === "minimal" };
     const branchName = branch.code === 0 ? trimNl(branch.out) : undefined;
 
     let baseSha = headSha;
@@ -494,15 +599,48 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         else changes.push(c);
     });
     inTime();
-    if (crlfOnly.length) {
-        // Only paths whose endings git converts are unchanged; others really did gain CRLFs.
+
+    // Files git converts on check-in can differ on disk from their blob while git calls them
+    // clean: a filter's smudged form (Git LFS: the real file, where the blob is a pointer),
+    // $Id$ expansion, another encoding, CRLF endings. Converting here would mean running the
+    // filter, so these are settled the way git settles most files: by the index's stat data.
+    const tracked = (c: Change) => !c.indexed && !!c.now && isFileMode(c.now.mode) && staged.get(c.path)?.tag === "H" && isFileMode(staged.get(c.path)!.mode);
+    const candidates = changes.filter((c) => (c.change === "added" || c.change === "modified" || c.change === "typechange") && tracked(c));
+    if (candidates.length || crlfOnly.length) {
         // check-attr only reads .gitattributes; it runs nothing.
-        const attrs = await git(root, ["check-attr", "-z", "--stdin", "text", "eol"], { input: crlfOnly.map((c) => c.path).join("\0") + "\0" });
-        const recs = records(attrs.out);
-        const seen = new Map<string, Record<string, string>>();
-        for (let i = 0; i + 2 < recs.length; i += 3) seen.set(recs[i]!, { ...seen.get(recs[i]!), [recs[i + 1]!]: recs[i + 2]! });
-        const converts = (a: Record<string, string> = {}) => a.text !== "unset" && (a.text === "set" || a.text === "auto" || (a.eol ?? "unspecified") !== "unspecified" || autocrlf);
-        for (const c of crlfOnly) if (!converts(seen.get(c.path))) changes.push(c);
+        const attrs = await attributes(root, [...candidates, ...crlfOnly].map((c) => c.path));
+        const unset = (v?: string) => v === undefined || v === "unspecified" || v === "unset";
+        const eolConverts = (a: Record<string, string> = {}) => a.text !== "unset" && (a.text === "set" || a.text === "auto" || !unset(a.eol) || autocrlf);
+        // Only paths whose endings git converts are unchanged; others really did gain CRLFs.
+        for (const c of crlfOnly) if (!eolConverts(attrs.get(c.path))) changes.push(c);
+        const settle = candidates
+            .map((c) => {
+                const a = attrs.get(c.path) ?? {};
+                const filter = a.filter && drivers.has(a.filter) ? a.filter : undefined;
+                // Big files get no CRLF-normalized id, so their endings are settled here too.
+                const converted = filter || a.ident === "set" || !unset(a["working-tree-encoding"]) || (eolConverts(a) && (c.now!.size ?? 0) > MAX_DIFF_INPUT);
+                return converted ? { c, filter } : undefined;
+            })
+            .filter((x) => x !== undefined);
+        if (settle.length) {
+            const index = await indexStats(root);
+            const drop = new Set<Change>();
+            await eachLimit(settle, 32, async ({ c, filter }) => {
+                const ix = staged.get(c.path)!;
+                const st = await wt.bigStat(c.path);
+                if (index && st && ix.mode === c.now!.mode && statClean(st, index.entries.get(c.path), index.mtime, statRules)) {
+                    // Unchanged since git last looked: what it would see is the index's copy.
+                    if (c.old && c.old.oid === ix.oid && c.old.mode === ix.mode) return void drop.add(c);
+                    c.now = { mode: ix.mode, oid: ix.oid };
+                    c.indexed = true;
+                    c.filter = filter;
+                } else if (filter) {
+                    c.filter = filter;
+                    c.note = `Uses the repository's “${filter}” filter and may have changed on disk. Its diff isn't shown, because comparing it would mean running that filter.`;
+                }
+            });
+            if (drop.size) changes.splice(0, changes.length, ...changes.filter((c) => !drop.has(c)));
+        }
     }
 
     // A path the base tracks is compared above, even if the index has since dropped it.
@@ -513,8 +651,9 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     changes.sort((a, b) => rank(a) - rank(b) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     inTime();
 
+    // Relative to the session's folder, with ../ for the rest of the repository.
     const here = canonical(cwd);
-    const shown = (rel: string) => displayPath(join(root, rel), here);
+    const shown = (rel: string) => relative(here, join(root, rel)) || ".";
     let listed = changes;
     let more = 0;
     // The path exactly as a list gave it: a repository-relative name could be another file.
@@ -661,6 +800,7 @@ async function render(listed: Change[], root: string, wt: WorkTree, shown: (rel:
         const path = shown(c.path);
         const base: GitFileDiff = { path, status: statusOf(c), change: c.change, added: 0, removed: 0, hunks: [] };
         if (c.from) base.from = shown(c.from);
+        if (c.filter) base.filter = c.filter;
         if (c.kind) base.kind = c.kind;
         const note = (n: string): GitFileDiff => ({ ...base, note: n });
         if (c.note) {

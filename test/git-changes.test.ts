@@ -346,6 +346,80 @@ describe("branch scope", () => {
     });
 });
 
+describe("files git converts on check-in", () => {
+    /** The Git LFS shape: the blob holds the clean form, the disk the smudged one. */
+    function filtered() {
+        const marks = tempDir("harness-marks-");
+        const dir = repo();
+        git(dir, "config", "filter.up.clean", `touch ${join(marks, "clean")}; tr a-z A-Z`);
+        git(dir, "config", "filter.up.smudge", `touch ${join(marks, "smudge")}; tr A-Z a-z`);
+        write(dir, ".gitattributes", "*.lfs filter=up\n");
+        write(dir, "big.lfs", "hello world\n");
+        git(dir, "add", "-A");
+        git(dir, "commit", "-q", "-m", "init");
+        rmSync(join(dir, "big.lfs"));
+        git(dir, "checkout", "--", "big.lfs");
+        const marked = () => Bun.spawnSync(["ls", marks]).stdout.toString().split("\n").filter(Boolean);
+        const clear = () => {
+            for (const m of marked()) rmSync(join(marks, m));
+        };
+        clear();
+        return { dir, marked, clear };
+    }
+
+    test("a checked-out filtered file git calls clean isn't listed, and its filter never runs", async () => {
+        const { dir, marked, clear } = filtered();
+        expect(readFileSync(join(dir, "big.lfs"), "utf-8")).toBe("hello world\n");
+        expect(git(dir, "show", "HEAD:big.lfs")).toBe("HELLO WORLD\n");
+        clear();
+        const before = indexState(dir, false);
+        expect((await gitChanges(dir, { scope: "uncommitted" })).files).toEqual([]);
+        expect((await gitChanges(dir, { scope: "branch", base: "main" })).files).toEqual([]);
+        expect(marked()).toEqual([]);
+        expect(indexState(dir, false)).toEqual(before);
+    });
+
+    test("an edited filtered file is listed with a note instead of a diff", async () => {
+        const { dir, marked } = filtered();
+        write(dir, "big.lfs", "hello there\n");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files.map((f) => [f.change, f.path, f.filter, f.hunks.length])).toEqual([["modified", "big.lfs", "up", 0]]);
+        expect(r.files[0]!.note).toMatch(/“up” filter.*would mean running that filter/);
+        expect(marked()).toEqual([]);
+    });
+
+    test("a staged filtered file shows the stored form's diff", async () => {
+        const { dir, marked, clear } = filtered();
+        write(dir, "big.lfs", "hello there\n");
+        git(dir, "add", "big.lfs"); // the test's own git runs the filter
+        clear();
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(marked()).toEqual([]);
+        expect(r.files.map((f) => [f.path, f.filter, f.hunks.flatMap((h) => h.lines.map((l) => `${l.t}:${l.text}`))])).toEqual([["big.lfs", "up", ["del:HELLO WORLD", "add:HELLO THERE"]]]);
+    });
+
+    test("an entry not older than the index itself (racy) isn't trusted as clean", async () => {
+        const { dir } = filtered();
+        // Stamped later than the index file, then recorded: git itself would re-read it.
+        Bun.spawnSync(["touch", "-t", "209901010000", join(dir, "big.lfs")]);
+        git(dir, "update-index", "--refresh");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files.map((f) => [f.path, f.filter])).toEqual([["big.lfs", "up"]]);
+    });
+});
+
+describe("a session in a subfolder", () => {
+    test("names files elsewhere in the repository with ../", async () => {
+        const dir = repo({ "top.txt": "t\n", "sub/x.txt": "x\n" });
+        write(dir, "top.txt", "T\n");
+        write(dir, "sub/x.txt", "X\n");
+        const r = await gitChanges(join(dir, "sub"), { scope: "uncommitted" });
+        expect(r.files.map((f) => f.path)).toEqual(["x.txt", "../top.txt"]); // in the repository's order, as git status lists them
+        const one = await gitChanges(join(dir, "sub"), { scope: "uncommitted", path: "../top.txt" });
+        expect(one.files.map((f) => f.path)).toEqual(["../top.txt"]);
+    });
+});
+
 describe("outside a repository", () => {
     test("says why, so the pane can fall back to Harness's edits", async () => {
         const r = await gitChanges(tempDir("harness-plain-"), { scope: "uncommitted" });
@@ -386,7 +460,12 @@ describe("repository config never runs a program", () => {
         const b = await gitChanges(dir, { scope: "branch", base: "other" });
         await gitChanges(dir, { scope: "uncommitted", path: "a.txt" });
         expect(marked()).toEqual([]);
-        expect(summary(u)).toEqual(["modified a.txt +1 -0", "modified b.txt +1 -1", "untracked c.txt +1 -0"]);
+        // Their filter would be needed to diff them, so they're listed without one.
+        expect(summary(u)).toEqual(["modified a.txt +0 -0", "modified b.txt +0 -0", "untracked c.txt +1 -0"]);
+        expect(u.files.slice(0, 2).map((f) => [f.filter, f.note?.includes("filter")])).toEqual([
+            ["evil", true],
+            ["evil", true],
+        ]);
         expect(summary(b)).toEqual(summary(u));
         expect(indexState(dir, false)).toEqual(before);
     });
