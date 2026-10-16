@@ -1,6 +1,7 @@
 // Which dialogs and popovers are open.
 
 import { createSignal } from "solid-js";
+import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "usage" | "shortcuts" | "about";
@@ -30,6 +31,14 @@ export const [review, setReview] = createSignal<{ path?: string; scope?: ReviewS
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
+
+/**
+ * A plan of a session's, open in a dialog: to read it, save it, or carry it out
+ * in a new worktree. `planId` is PlanInfo.id (the latest plan when omitted).
+ */
+export const [planDialog, setPlanDialog] = createSignal<{ kind: "view" | "save" | "worktree"; sessionId: string; planId?: string } | undefined>();
+/** Archiving a session that works in a managed worktree: whether to remove the worktree too. */
+export const [archiveRequest, setArchiveRequest] = createSignal<{ id: string; title: string; offer: ArchiveOffer } | undefined>();
 
 /** Bottom panel; hiding it keeps its shells running. */
 export const [terminalOpen, setTerminalOpen] = createSignal(false);

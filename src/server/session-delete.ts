@@ -9,7 +9,7 @@
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { harnessHome, paths } from "../config/paths";
-import { findSessionAnywhere, holdSession, releaseSession, SessionInUseError } from "../agent/session";
+import { findSessionAnywhere, holdSession, releaseSession, sessionFolder, SessionInUseError } from "../agent/session";
 import { forgetFileHistory } from "../agent/checkpoints";
 import { isInside } from "../util/files";
 import { RpcError } from "./rpc-error";
@@ -190,9 +190,10 @@ function entryOf(id: string): TrashEntry {
 /**
  * Put a trashed session back where it was, with what the GUI store said
  * about it. Renames keep the files' modes (0600, folders 0700). The
- * transcript goes last, so the session lists only once it's all back.
+ * transcript goes last, so the session lists only once it's all back. The optional
+ * preflight can refuse restoring a session whose worktree is being removed.
  */
-export function restoreSession(id: string): SessionFlags {
+export function restoreSession(id: string, beforeRestore?: (cwd: string | undefined) => void): SessionFlags {
     const entry = join(trashDir(), checkId(id));
     // Only from a trash folder that's in the Harness home (not a link out of it).
     try {
@@ -226,6 +227,11 @@ export function restoreSession(id: string): SessionFlags {
         for (const [, to] of moves) {
             if (present(to)) throw new RpcError(`${to} exists again, so the session can't be put back.`, "exists");
             mustBeInHome(to);
+        }
+        if (beforeRestore) {
+            const transcript = join(entry, "transcript.jsonl");
+            // A linked transcript can be moved safely, but must never be followed for this check.
+            beforeRestore(lstatSync(transcript).isFile() ? sessionFolder(transcript) : undefined);
         }
         moveAll(moves);
         // Only what this emptied: anything else in it keeps the folder for the purge.

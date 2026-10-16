@@ -3,10 +3,12 @@
 // focus by themselves, so an Enter meant for the input can't approve
 // anything; the number keys and Esc work when you're not typing.
 
-import { createEffect, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, Globe, KeyRound, MessageCircleQuestion, Plug, ShieldAlert, SquareTerminal } from "lucide-solid";
+import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Save, ShieldAlert, SquareTerminal } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
+import { rpc } from "../state/app";
+import { setPlanDialog } from "../state/ui";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
@@ -410,11 +412,18 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     const reject = () => respond(p.sessionId, p.it.id, { kind: "plan", approved: false, feedback: feedback()?.trim() || undefined });
     let body: HTMLDivElement | undefined;
     createEffect(on(() => p.it.id, () => body?.scrollTo({ top: 0 })));
+    // Whether there's a repository to make a worktree in (and, if not, why).
+    const [info] = createResource(() => p.it.id, () => rpc.call("session.planInfo", { id: p.sessionId, toolId: p.it.toolId ?? p.it.id }).catch(() => undefined));
+    const planId = () => p.it.toolId ?? p.it.id;
+    const worktree = () => info()?.git && setPlanDialog({ kind: "worktree", sessionId: p.sessionId, planId: planId() });
+    const save = () => setPlanDialog({ kind: "save", sessionId: p.sessionId, planId: planId() });
     useKeys((k) => {
         if (k === "1") return void approve("acceptEdits"), true;
         if (k === "2") return void approve("default"), true;
         if (k === "3") return void approve("auto"), true;
         if (k === "4" || k === "Escape") return setFeedback((f) => f ?? ""), true;
+        if (k === "5") return worktree(), true;
+        if (k === "6") return save(), true;
         return false;
     });
     return (
@@ -444,6 +453,17 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
             <div class="itab-actions">
                 <button class="pbtn quiet" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
                     {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
+                </button>
+                <button class="pbtn quiet" title="Save the plan as a Markdown file" onClick={save}>
+                    <Save size={13} /> Save… <kbd>6</kbd>
+                </button>
+                <button
+                    class="pbtn outlined"
+                    disabled={!info()?.git}
+                    title={info()?.notGit ?? "Build it in a new Git worktree, in a new session; this one stops, still in plan mode"}
+                    onClick={worktree}
+                >
+                    <FolderGit2 size={13} /> New worktree… <kbd>5</kbd>
                 </button>
                 <span class="spacer" />
                 <button class="pbtn outlined" onClick={() => void approve("auto")}>

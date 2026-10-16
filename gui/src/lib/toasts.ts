@@ -19,6 +19,8 @@ export interface Toast {
     message: string;
     count: number;
     action?: ToastAction;
+    /** Extra choices for a saved file; the primary action keeps existing queue semantics. */
+    additionalActions?: ToastAction[];
     running?: boolean;
 }
 
