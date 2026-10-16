@@ -1,7 +1,7 @@
-import { createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
+import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
+import { duration, turnDuration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { formatSize } from "../lib/attachments";
 import { prefs } from "../state/prefs";
@@ -349,7 +349,18 @@ function segments(items: Item[]): Seg[] {
     return out;
 }
 
-export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void; onFork?: () => void }) {
+export function TurnView(p: {
+    turn: Turn;
+    state: SessionState;
+    last: boolean;
+    agents?: AgentRun[];
+    onRewind?: (index: number) => void;
+    onFork?: () => void;
+    workOpen?: boolean;
+    keepWorkOpen?: () => boolean;
+    onWorkOpen?: (open: boolean) => void;
+    onToggleWork?: (el: HTMLElement, toggle: () => void) => void;
+}) {
     const items = createMemo(() => groupBlocks(p.turn.blocks));
     const segs = createMemo(() => segments(items()));
     const running = () => p.turn.status === "running";
@@ -368,14 +379,19 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
         return b.t === "shell" && b.running;
     };
     const hasWork = () => segs().some((s) => s.kind === "work");
-    const [unfolded, setUnfolded] = createSignal(false);
+    const [unfolded, setUnfolded] = createSignal(p.workOpen ?? false);
+    const unfold = (open: boolean) => { setUnfolded(open); p.onWorkOpen?.(open); };
+    // Run before DOM effects can remove the work the reader is inspecting.
+    createComputed(on(running, (value, previous) => {
+        if (previous && !value && p.keepWorkOpen?.()) unfold(true);
+    }));
     const showWork = () => running() || unfolded();
     // A match in the work log (or in what was said on the way) opens it.
     createEffect(
         on(findReveal, (r) => {
             if (r?.turnId !== p.turn.id || r.part === "prompt") return;
             const has = (it: Item) => (it.kind === "block" ? it.block.id === r.part : it.steps.some((b) => b.id === r.part));
-            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) setUnfolded(true);
+            if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) unfold(true);
         }),
     );
     const hasOutput = () => p.turn.blocks.length > 0 || running();
@@ -394,7 +410,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
             .map((b) => b.text)
             .join("\n\n");
     const waitingOnUser = () => running() && p.state.interactions.length > 0;
-    const worked = () => (p.turn.endedAt && p.turn.startedAt ? duration(p.turn.endedAt - p.turn.startedAt) : undefined);
+    const worked = () => (p.turn.endedAt && p.turn.startedAt ? turnDuration(p.turn.endedAt - p.turn.startedAt) : undefined);
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
     const renderItem = (it: () => Item) => (
@@ -432,7 +448,11 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                         <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
                     </Show>
                     <Show when={!running() && hasWork()}>
-                        <button class="fold" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
+                        <button class="fold" aria-expanded={unfolded()} onClick={(event) => {
+                            const toggle = () => unfold(!unfolded());
+                            if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
+                            else toggle();
+                        }}>
                             {worked() ? (
                                 <>
                                     Worked for <span class="num">{worked()}</span>
