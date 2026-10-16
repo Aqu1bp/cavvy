@@ -1,9 +1,9 @@
 // Actual palette and app event handling, with a controlled RPC boundary.
 import { render } from "solid-js/web";
-import type { ServerEvent, SessionSearchHit, SessionSearchResult } from "@shared/protocol";
+import type { ServerEvent, SessionSearchHit, SessionSearchResult, SessionSummary } from "@shared/protocol";
 import { CommandPalette } from "../src/components/CommandPalette";
-import { RpcError } from "../src/lib/rpc";
-import { app, rpc, setApp, start, toasts, wasDeleted } from "../src/state/app";
+import { RpcError, type ConnectionState } from "../src/lib/rpc";
+import { app, refreshSessions, rpc, setApp, start, toasts, wasDeleted } from "../src/state/app";
 import { jumpTarget, setJumpTarget, setPaletteOpen } from "../src/state/ui";
 import "../src/styles/overlays.css";
 
@@ -19,22 +19,41 @@ export async function checkPaletteDelete(root: HTMLElement) {
     const previousId = app.activeId;
     const original = { call: rpc.call, connect: rpc.connect, onEvent: rpc.onEvent, onState: rpc.onState };
     let event!: (ev: ServerEvent) => void;
-    let pending: ((r: SessionSearchResult) => void) | undefined;
+    let connection!: (s: ConnectionState, attempt: number) => void;
+    const pending: ((r: SessionSearchResult) => void)[] = [];
     let defer = false;
+    let deferLists = false;
+    let listed: SessionSummary[] = [];
+    const pendingLists: (() => void)[] = [];
     const calls: string[] = [];
     const hits: SessionSearchHit[] = ["removed", "late", "missing"].map((id) => ({
         id: `palette-${id}`, title: `Fixture ${id}`, cwd: "/fixture", projectName: "fixture", archived: false,
         seg: 0, index: 1, role: "assistant", snippet: "palettequokka reply", match: [0, 13], at: Date.now(),
     }));
-    // Register the real app handler, without connecting or changing connection state.
+    const summary = (hit: SessionSearchHit, archived = false): SessionSummary => ({
+        id: hit.id, cwd: hit.cwd, title: hit.title, projectName: hit.projectName, archived,
+        createdAt: hit.at, updatedAt: hit.at, messages: 2, status: "idle", pinned: false, settled: false, live: false,
+    });
+    const nextSearch = async () => {
+        await until(() => pending.length > 0);
+        return pending.shift()!;
+    };
+    // Drive real event/reconnect handlers without opening a network connection.
     rpc.onEvent = (fn) => { event = fn; return () => {}; };
-    rpc.onState = () => () => {};
+    rpc.onState = (fn) => { connection = fn; return () => {}; };
     rpc.connect = async () => {};
     rpc.call = (async (method: string, params: any) => {
         if (method === "sessions.search") {
-            if (defer) return new Promise<SessionSearchResult>((resolve) => { pending = resolve; });
+            if (defer) return new Promise<SessionSearchResult>((resolve) => { pending.push(resolve); });
             return { hits, partial: false };
         }
+        if (method === "sessions.list") {
+            const rows = listed.filter((s) => s.archived === !!params.archived);
+            if (deferLists) return new Promise((resolve) => { pendingLists.push(() => resolve(rows)); });
+            return rows;
+        }
+        if (method === "hello" || method === "settings.get") return {};
+        if (["projects.recent", "providers.list", "models.list"].includes(method)) return [];
         if (method === "session.open") {
             calls.push(params.id);
             throw new RpcError(`No session ${params.id}`, "not_found");
@@ -54,6 +73,8 @@ export async function checkPaletteDelete(root: HTMLElement) {
         return input;
     };
     try {
+        connection("open", 0);
+        await until(() => app.modelsLoaded);
         await until(() => rows().some((r) => r.textContent?.includes("Delete session…")));
         check(rows().some((r) => r.textContent?.includes("Review changes")), "review and delete actions coexist");
         type("palettequokka");
@@ -65,13 +86,41 @@ export async function checkPaletteDelete(root: HTMLElement) {
         check(!jumpTarget() && !rows().some((r) => r.textContent?.includes("Fixture removed")), "deletion drops the displayed hit and pending jump");
 
         defer = true;
-        const input = type("palettequokka reply");
-        await until(() => !!pending);
+        type("palettequokka reply");
+        const beforeDelete = await nextSearch();
         event({ type: "sessions.remove", id: hits[1]!.id });
-        pending!({ hits, partial: false });
-        await until(() => messageRows().length === 1);
-        check(messageRows()[0]!.textContent?.includes("Fixture missing"), "late search response cannot reintroduce deleted hits");
+        event({ type: "sessions.upsert", session: summary(hits[1]!) });
+        check(!wasDeleted(hits[1]!.id), "Undo upsert clears its deletion marker");
+        beforeDelete({ hits, partial: false });
+        const afterUndo = await nextSearch();
+        check(messageRows().length === 0, "Undo cannot revive displayed hits or pending replies from before deletion");
+        afterUndo({ hits, partial: false });
+        await until(() => messageRows().length === 2);
+        check(messageRows().some((r) => r.textContent?.includes("Fixture late")), "fresh search finds the restored session without changing the query");
 
+        defer = false;
+        event({ type: "sessions.remove", id: hits[1]!.id });
+        await until(() => messageRows().length === 1);
+        connection("reconnecting", 1);
+        // Undo happened elsewhere while disconnected: no upsert reaches this window.
+        listed = [summary(hits[0]!), summary(hits[1]!, true)];
+        connection("open", 0);
+        await until(() => !wasDeleted(hits[0]!.id) && !wasDeleted(hits[1]!.id));
+        check(app.sessions.some((s) => s.id === hits[0]!.id) && app.archived.some((s) => s.id === hits[1]!.id), "reconnect sees restored active and archived sessions");
+        await until(() => messageRows().length === 3);
+
+        // A list fetched before a deletion must not clear the newer marker.
+        deferLists = true;
+        const refresh = refreshSessions();
+        await until(() => pendingLists.length === 2);
+        event({ type: "sessions.remove", id: hits[0]!.id });
+        for (const finish of pendingLists.splice(0)) finish();
+        await refresh;
+        check(wasDeleted(hits[0]!.id) && !app.sessions.some((s) => s.id === hits[0]!.id), "stale list does not undo a deletion received during refresh");
+        event({ type: "sessions.remove", id: hits[1]!.id });
+        await until(() => messageRows().length === 1);
+
+        const input = document.querySelector<HTMLInputElement>(".palette input")!;
         input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
         await until(() => wasDeleted(hits[2]!.id));
         check(calls.length === 1 && calls[0] === hits[2]!.id, "Enter attempts the remaining stale hit");

@@ -152,7 +152,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     // Ops missed while it wasn't open (or the connection was down) may have created files.
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
-    if (deleted.delete(id)) setDeletedVersion((v) => v + 1);
+    sessionPresent(id);
     const existing = handles.get(id);
     if (existing) {
         existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
@@ -262,7 +262,14 @@ export function requestTrust(path: string, then: () => void) {
 // Lists
 
 export async function refreshSessions() {
-    const [list, archived] = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]);
+    const markers = new Map(deleted);
+    const lists = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]);
+    // A list confirms a missed restore, but cannot undo a deletion that happened
+    // while either request was in flight (including a second deletion after Undo).
+    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id))) as typeof lists;
+    batch(() => {
+        for (const s of [...list, ...archived]) sessionPresent(s.id);
+    });
     // First run: nothing counts as unread yet.
     if (!Object.keys(app.seen).length) {
         const seen: Record<string, number> = {};
@@ -312,16 +319,21 @@ export async function refreshSettings() {
 /** Unsent text and images per session (the input box keeps them here), so switching sessions doesn't lose them. */
 export const composerDrafts = new Map<string, { text: string; attachments: Attachment[] }>();
 /** Deleted sessions (until they're brought back): an input box going away doesn't keep their draft. */
-const deleted = new Set<string>();
-const [deletedVersion, setDeletedVersion] = createSignal(0);
-export const wasDeleted = (id: string) => { deletedVersion(); return deleted.has(id); };
+const deleted = new Map<string, symbol>();
+/** Invalidate search answers when a deletion or its restoration is observed. */
+const [sessionPresenceVersion, setSessionPresenceVersion] = createSignal(0);
+export { sessionPresenceVersion };
+export const wasDeleted = (id: string) => { sessionPresenceVersion(); return deleted.has(id); };
+function sessionPresent(id: string) {
+    if (deleted.delete(id)) setSessionPresenceVersion((v) => v + 1);
+}
 /** What this window had seen of deleted sessions, in case they're brought back (Undo). */
 const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 function forgetSession(id: string) {
-    deleted.add(id);
-    setDeletedVersion((v) => v + 1);
+    deleted.set(id, Symbol());
+    setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
@@ -343,7 +355,7 @@ function reopenFailed(id: string, e: unknown) {
 }
 
 function upsertSession(s: SessionSummary) {
-    if (deleted.delete(s.id)) setDeletedVersion((v) => v + 1);
+    sessionPresent(s.id);
     const seen = seenBeforeDelete.get(s.id);
     if (seen !== undefined) {
         seenBeforeDelete.delete(s.id);

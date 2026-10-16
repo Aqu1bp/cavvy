@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { Archive, ArrowRight, Bot, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
-import { activate, app, handleFor, reportError, rpc, wasDeleted } from "../state/app";
+import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion, wasDeleted } from "../state/app";
 import { archive, chooseProject, exportSession, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs, THEMES } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
@@ -75,8 +75,11 @@ export function CommandPalette() {
     let asked = 0;
     let wait: ReturnType<typeof setTimeout> | undefined;
     createEffect(
-        on(q, (raw) => {
+        on([q, sessionPresenceVersion], ([raw, version], prev) => {
             clearTimeout(wait);
+            // Undo can clear a marker; don't let pre-delete hits reappear with it.
+            // Refresh this query too, so restored sessions need no extra typing.
+            if (prev && version !== prev[1]) setHits({ query: "", hits: [] });
             const query = raw.trim();
             const mine = ++asked;
             setOlder(undefined);
@@ -90,7 +93,7 @@ export function CommandPalette() {
                 try {
                     await searchRounds(
                         () => rpc.call("sessions.search", { query, limit: MAX_HITS }),
-                        () => mine === asked,
+                        () => mine === asked && version === sessionPresenceVersion(),
                         (r) => {
                             setHits({ query, hits: r.hits });
                             setOlder(r.more ? "more" : r.incomplete ? "incomplete" : undefined);
