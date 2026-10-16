@@ -80,7 +80,30 @@ type Line =
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number };
+    | { t: "backend"; provider: string; id: string | null; synced?: number }
+    /** This session was brought in from a Claude Code or Codex session (the first messages). */
+    | ({ t: "import" } & ImportRecord)
+    /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
+    | { t: "subagent"; provider: string; id: string };
+
+/**
+ * Where an imported session came from. It stays in the file for good, so the
+ * same CLI session isn't imported twice, whatever later happens to the
+ * backend's id (a failed resume, a compaction).
+ */
+export interface ImportRecord {
+    /** The agent provider it belongs to: "claude-code" or "codex". */
+    source: string;
+    /** The CLI's own session (thread) id. */
+    id: string;
+    /** When the CLI session started, if known. */
+    startedAt?: number;
+    importedAt: number;
+    /** Messages imported (the first ones in the file). */
+    messages: number;
+    /** Earlier messages of the CLI session that weren't. */
+    omitted: number;
+}
 
 /**
  * An agent backend's session behind this one, and how much of this session's
@@ -120,16 +143,27 @@ export class Session {
     backends = new Map<string, BackendSession>();
     /** How turns of the current history ended, where the messages don't say (see TurnNotice). */
     notices: TurnNotice[] = [];
+    /** The Claude Code or Codex session this one was imported from. */
+    imported?: ImportRecord;
+    /**
+     * The session a sub-agent runs for. Its own isn't saved, so the backend
+     * sessions it starts are recorded in that one: they're Harness's, not
+     * conversations to pick up from the CLI.
+     */
+    runsFor?: Session;
+    private subagentRuns = new Set<string>();
     private file: string;
     private persist: boolean;
+    private strictWrites: boolean;
 
-    constructor(meta: SessionMeta, opts: { persist?: boolean; file?: string } = {}) {
+    constructor(meta: SessionMeta, opts: { persist?: boolean; file?: string; strictWrites?: boolean } = {}) {
         this.meta = meta;
         this.persist = opts.persist ?? true;
+        this.strictWrites = opts.strictWrites ?? false;
         this.file = opts.file ?? join(projectStateDir(meta.cwd), `${meta.id}.jsonl`);
     }
 
-    static create(cwd: string, opts: { persist?: boolean; system?: string } = {}): Session {
+    static create(cwd: string, opts: { persist?: boolean; system?: string; strictWrites?: boolean } = {}): Session {
         const id = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${randomBytes(3).toString("hex")}`;
         const s = new Session({ id, cwd, createdAt: Date.now(), version: APP_VERSION, system: opts.system }, opts);
         return s;
@@ -186,7 +220,9 @@ export class Session {
             }
             const lines = [...this.pending.splice(0), line];
             appendFileSync(this.file, lines.map((l) => redactedJson(l) + "\n").join(""));
-        } catch {
+        } catch (error) {
+            // Imports must stop on a failed write before recording completion.
+            if (this.strictWrites) throw error;
             // Persistence is best effort; the session keeps working in memory.
         }
     }
@@ -244,11 +280,27 @@ export class Session {
         this.usageByModel.set(model, cur);
     }
 
+    /** Record a completed import, after its messages and native backend session. */
+    setImported(rec: ImportRecord) {
+        this.imported = rec;
+        this.write({ t: "import", ...rec });
+    }
+
     setBackendSession(provider: string, id: string, synced: number) {
         const cur = this.backends.get(provider);
         if (cur?.id === id && cur.synced === synced) return;
+        if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
         this.backends.set(provider, { id, synced });
         this.write({ t: "backend", provider, id, synced });
+    }
+
+    /** A sub-agent's backend session (passed up to the session that's saved). */
+    recordSubagentRun(provider: string, id: string) {
+        const k = `${provider}:${id}`;
+        if (this.subagentRuns.has(k)) return;
+        this.subagentRuns.add(k);
+        this.write({ t: "subagent", provider, id });
+        this.runsFor?.recordSubagentRun(provider, id);
     }
 
     forgetBackendSession(provider: string) {
@@ -350,6 +402,7 @@ export class Session {
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
+            else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
         }
         repairTail(s);
@@ -643,7 +696,7 @@ function sessionHead(file: string): SessionHead {
         let wanted: boolean | undefined;
         const decide = () => {
             const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice)"/.test(prefix);
+            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import|subagent)"/.test(prefix);
             if (!wanted) parts = [Buffer.from(prefix, "latin1")];
         };
         for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
@@ -706,6 +759,64 @@ function readHeadLine(raw: string, head: SessionHead) {
         // The conversation's opening prompt still names it after a compaction.
         if (head.first !== undefined) head.firstAt = -1;
     }
+}
+
+export interface CliLink {
+    provider: string;
+    id: string;
+    /** Imported from it, ran on it, or one of its sub-agents ran on it. */
+    kind: "import" | "backend" | "subagent";
+}
+
+/**
+ * The Claude Code and Codex sessions a session file is tied to: the one it was
+ * imported from, every backend session it ran on (an id can change when a
+ * resume fails), and the ones its sub-agents ran on. Only those records are parsed; other lines are skipped as
+ * they stream past.
+ */
+export function cliLinks(file: string): CliLink[] {
+    const out: CliLink[] = [];
+    const fd = openSync(file, "r");
+    try {
+        const chunk = Buffer.alloc(CHUNK_BYTES);
+        let parts: Buffer[] = [];
+        let len = 0;
+        let wanted: boolean | undefined;
+        for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
+            const c = chunk.subarray(0, n);
+            for (let start = 0; start < n; ) {
+                const nl = c.indexOf(10, start);
+                const piece = c.subarray(start, nl < 0 ? n : nl);
+                if (wanted !== false) {
+                    parts.push(Buffer.from(piece));
+                    len += piece.length;
+                    if (len >= PREFIX_BYTES || nl >= 0) {
+                        const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
+                        wanted = /^\{"t":"(import|backend|subagent)"/.test(prefix) && len < 64 * 1024;
+                        if (!wanted) parts = [];
+                    }
+                }
+                if (nl < 0) break;
+                if (wanted) {
+                    try {
+                        const l = JSON.parse(Buffer.concat(parts).toString("utf-8")) as Line;
+                        if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") out.push({ provider: l.source, id: l.id, kind: "import" });
+                        else if (l.t === "backend" && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id, kind: "backend" });
+                        else if (l.t === "subagent" && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id, kind: "subagent" });
+                    } catch {
+                        // torn line
+                    }
+                }
+                parts = [];
+                len = 0;
+                wanted = undefined;
+                start = nl + 1;
+            }
+        }
+    } finally {
+        closeSync(fd);
+    }
+    return out;
 }
 
 /** Different paths can share a sessions folder (foo-bar and foo.bar); the session records its own. */

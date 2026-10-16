@@ -32,7 +32,12 @@ import { childEnv } from "../util/env";
 import { expandPath, isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
+import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
+import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
+import { CODEX_CLIENT_NAME } from "../backends/codex";
 import type {
+    CliSessionInfo,
+    CliSessionsList,
     CommandInfo,
     EditorInfo,
     EffortLevel,
@@ -72,6 +77,22 @@ export interface EngineOptions {
     /** Starts an editor (tests record the argv instead). */
     launchEditor?: (argv: string[]) => Promise<void>;
 }
+
+/**
+ * A CLI session in the list: one Harness holds is listed apart; one Harness's
+ * sub-agents ran on is left out, as is a Codex thread started by Harness's
+ * client that no session holds (sub-agent runs from before they were recorded).
+ */
+function sortCliSession(links: HarnessLinks, source: CliSource, id: string, originator: string | undefined): "new" | "held" | "hidden" {
+    const k = linkKey(source, id);
+    if (links.held.has(k)) return "held";
+    if (links.subagent.has(k)) return "hidden";
+    if (source === "codex" && originator === CODEX_CLIENT_NAME) return "hidden";
+    return "new";
+}
+
+/** A CLI session changed this recently may still be open in a terminal. */
+const RECENT_CLI_MS = 2 * 60_000;
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
 const UNLOAD_AFTER_MS = 30_000;
@@ -459,6 +480,107 @@ export class Engine {
         this.remember(p);
         await rt.ready.catch(() => undefined);
         if (opts.model) await rt.setModel(opts.model);
+        return rt;
+    }
+
+    /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Harness. */
+    cliSessionsList(cwd: string): CliSessionsList {
+        const p = resolve(expandHome(cwd));
+        if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
+        const now = Date.now();
+        const links = harnessLinks(this.aliasesOf(p, []));
+        const listings = CLI_SOURCES.map((source) => ({ source, ...listCliSessions(source, p, { sort: (id, originator) => sortCliSession(links, source, id, originator) }) }));
+        const sessions: CliSessionInfo[] = listings
+            .flatMap((l) => [...l.sessions, ...l.held])
+            .map((s) => ({
+                source: s.source,
+                id: s.id,
+                title: redact(s.title),
+                startedAt: s.startedAt,
+                updatedAt: s.updatedAt,
+                messages: s.messages,
+                partial: s.partial,
+                ...(s.model ? { model: redact(s.model) } : {}),
+                ...(links.held.has(linkKey(s.source, s.id)) ? { harnessId: links.held.get(linkKey(s.source, s.id)) } : {}),
+                recent: now - s.updatedAt < RECENT_CLI_MS,
+            }))
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+        return {
+            sources: listings.map((l) => ({ source: l.source, name: getProvider(l.source)?.name ?? l.source, enabled: Boolean(readAgentConfig(l.source)), more: l.more, moreInHarness: l.moreHeld })),
+            sessions,
+        };
+    }
+
+    /**
+     * Paths that are this folder, under which Harness may have kept its sessions:
+     * as given, as the CLI sessions recorded it, and recent projects that are the
+     * same folder by another path (/tmp and /private/tmp).
+     */
+    private aliasesOf(p: string, recorded: string[]): string[] {
+        const real = (x: string) => {
+            try {
+                return realpathSync(x);
+            } catch {
+                return resolve(x);
+            }
+        };
+        const target = real(p);
+        const recent = (readStore().recent ?? []).map((r) => r.path).filter((x) => real(x) === target);
+        return [...new Set([p, ...recorded, ...recent])];
+    }
+
+    private importing = new Map<string, Promise<Runtime>>();
+
+    /**
+     * A Harness session for a Claude Code or Codex session of this folder: the
+     * one that already holds it, else a new one on the matching backend with
+     * the conversation so far, opened. Two requests for the same one share the work.
+     */
+    async importCliSession(cwd: string, source: unknown, id: unknown): Promise<Runtime> {
+        if (!CLI_SOURCES.includes(source as CliSource)) throw new RpcError("source must be claude-code or codex");
+        if (!validCliId(id)) throw new RpcError("That isn't a Claude Code or Codex session id");
+        const p = resolve(expandHome(cwd));
+        if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
+        const key = linkKey(source as CliSource, id);
+        const running = this.importing.get(key);
+        if (running) return running;
+        const work = (async () => this.importNow(p, source as CliSource, id))();
+        this.importing.set(key, work);
+        try {
+            return await work;
+        } finally {
+            this.importing.delete(key);
+        }
+    }
+
+    private async importNow(p: string, source: CliSource, id: string): Promise<Runtime> {
+        const name = getProvider(source)?.name ?? source;
+        // Only a session a listing of this folder shows: no path is made from the id.
+        const entry = findCliSession(source, p, id);
+        if (!entry) throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
+        const links = harnessLinks(this.aliasesOf(p, [entry.cwd]));
+        // A run of Harness's own sub-agents isn't offered, so it isn't imported either.
+        if (sortCliSession(links, source, entry.id, entry.originator) === "hidden") throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
+        const existing = links.held.get(linkKey(source, entry.id));
+        if (existing) {
+            await this.afterClosing(existing);
+            const rt = this.openSession(existing);
+            await rt.ready.catch(() => undefined);
+            return rt;
+        }
+        if (!readAgentConfig(source)) throw new RpcError(`Turn on ${name} in Settings → Providers`, "provider_off");
+        // The folder it ran in, as this one names it (the listing matched them by real path): the
+        // trust asked about and given is for this path, and the CLI, started here, sees the real one.
+        const folder = p;
+        // The trust check comes first: nothing is written for a folder that can't be opened.
+        this.workspaceFor(folder);
+        const transcript = readCliTranscript(entry);
+        if (!transcript.turns.length) throw new RpcError(`That ${name} session has no messages to import`);
+        const model = importModel(source, transcript.model ?? entry.model, this.listings);
+        const sid = writeImportedSession({ cwd: folder, entry, transcript, model, title: cleanTitle(redact(entry.title)) });
+        this.remember(folder);
+        const rt = this.openSession(sid);
+        await rt.ready.catch(() => undefined);
         return rt;
     }
 
@@ -867,6 +989,13 @@ export class Engine {
                 const rt = this.openSession(id);
                 this.watch(client, rt.id);
                 return rt.snapshot();
+            }
+            case "cliSessions.list":
+                return this.cliSessionsList(str(p.cwd, "cwd"));
+            case "cliSessions.import": {
+                const rt = await this.importCliSession(str(p.cwd, "cwd"), p.source, p.id);
+                this.watch(client, rt.id);
+                return rt.snapshot() satisfies SessionSnapshot;
             }
             case "session.close": {
                 const id = str(p.id, "id");

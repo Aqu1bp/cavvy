@@ -48,6 +48,8 @@ export interface UserMessage {
         display?: string;
         /** The file checkpoint this prompt started (/rewind). */
         checkpoint?: number;
+        /** Brought in from a Claude Code or Codex session started elsewhere: shown, never rewound to. */
+        imported?: boolean;
     };
 }
 

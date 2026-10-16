@@ -1626,6 +1626,8 @@ export class Agent {
             includeGit: false,
         });
         const session = Session.create(this.state.projectRoot, { persist: false, system });
+        // Not saved itself: a Claude Code or Codex session it runs on is recorded in this one.
+        session.runsFor = this.session;
         // Prompts and progress name the model when it isn't this agent's.
         const label = other ? `${req.description} (${modelRef(model)})` : req.description;
         const parentHost = this.o.host;

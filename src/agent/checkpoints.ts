@@ -380,11 +380,19 @@ export interface RewindTarget {
 
 const REMINDER = /^<system-reminder>\n([\s\S]*)\n<\/system-reminder>$/;
 
-/** Prompts the conversation can be rewound to, oldest first. Ones before a compaction are gone from the history. */
+/**
+ * Prompts the conversation can be rewound to, oldest first. Ones before a
+ * compaction are gone from the history; imported ones (from a Claude Code or
+ * Codex session) and anything up to the last of them can't be cut into.
+ */
 export function rewindTargets(messages: Message[]): RewindTarget[] {
     const out: RewindTarget[] = [];
+    let lastImported = -1;
     messages.forEach((m, index) => {
-        if (m.role !== "user") return;
+        if (m.role === "user" && m.meta?.imported) lastImported = index;
+    });
+    messages.forEach((m, index) => {
+        if (m.role !== "user" || index <= lastImported) return;
         const kind = m.meta?.kind ?? "prompt";
         if (kind !== "prompt" && kind !== "command") return;
         const first = m.content.find((p): p is TextPart => p.type === "text" && !REMINDER.test(p.text));

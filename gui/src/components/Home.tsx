@@ -9,6 +9,7 @@ import { chooseProject, connectCli, openProject, trustAndContinue } from "../sta
 import { requestComposerFocus, setSettingsTab } from "../state/ui";
 import { ago, basename, tildify } from "../lib/format";
 import { now } from "../lib/clock";
+import { CliSessions } from "./CliSessions";
 import { Composer } from "./Composer";
 import { Popover } from "./ui/Popover";
 import { WorktreePicker } from "./WorktreePicker";
@@ -146,6 +147,10 @@ export function Home() {
                         ) : undefined
                     }
                 />
+
+                <Show when={app.homeCwd} keyed>
+                    {(cwd) => <CliSessions cwd={cwd} />}
+                </Show>
             </div>
         </div>
     );
