@@ -1,0 +1,222 @@
+// The Usage view's and plan meter's RPCs, and the GUI server's guard on
+// slash commands, end to end: a real server and WebSocket, the mock model,
+// and the fake Codex (test/fixtures) for plan limits.
+
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
+import { isolate, tempDir } from "./helpers/isolate";
+
+const iso = isolate();
+const { startServer } = await import("../src/server/server");
+const { applyOp } = await import("../src/server/timeline");
+const { startMockLlm } = await import("../scripts/mock-llm");
+const { createDemoProject } = await import("../scripts/demo-project");
+const { saveAgentConfig } = await import("../src/providers/registry");
+import type { PlanLimits, ServerEvent, SessionSnapshot, SessionState, Turn, UsageSummary } from "../src/server/protocol";
+
+const TOKEN = "test-token-usage-0123456789";
+const mock = startMockLlm({ delayMs: 0 });
+mkdirSync(join(iso.home, "commands"), { recursive: true });
+writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
+writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }));
+// A user's own command, as ~/.harness/commands/hello.md.
+writeFileSync(join(iso.home, "commands", "hello.md"), "---\ndescription: Say hello\n---\nSay hello to $ARGUMENTS.");
+
+let srv: Awaited<ReturnType<typeof startServer>>;
+beforeAll(async () => {
+    srv = await startServer({ token: TOKEN, unloadAfterMs: 300 });
+});
+afterAll(async () => {
+    await srv.stop();
+    mock.stop();
+    iso.cleanup();
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+});
+
+const project = () => createDemoProject(tempDir("harness-usage-proj-"), { git: false });
+
+class Client {
+    ws: WebSocket;
+    private next = 1;
+    private waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+    views = new Map<string, { state: SessionState; turns: Turn[]; agents: any[]; seq: number }>();
+    events: ServerEvent[] = [];
+    private listeners = new Set<() => void>();
+
+    constructor() {
+        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["harness.v1", `auth.${TOKEN}`] } as any);
+        this.ws.onmessage = (m) => {
+            const msg = JSON.parse(String(m.data));
+            if ("event" in msg) {
+                const ev = msg.event as ServerEvent;
+                this.events.push(ev);
+                if (ev.type === "session.ops") {
+                    const v = this.views.get(ev.sessionId);
+                    if (v && ev.seq > v.seq) {
+                        for (const op of ev.ops) applyOp(v, op);
+                        v.seq = ev.seq;
+                    }
+                }
+                for (const l of this.listeners) l();
+                return;
+            }
+            const w = this.waiting.get(msg.id);
+            this.waiting.delete(msg.id);
+            if (msg.error) w?.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code }));
+            else w?.resolve(msg.result);
+        };
+    }
+
+    opened(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.ws.onopen = () => resolve();
+            this.ws.onerror = () => reject(new Error("connection failed"));
+        });
+    }
+
+    call<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+        const id = this.next++;
+        this.ws.send(JSON.stringify({ id, method, params }));
+        return new Promise((resolve, reject) => this.waiting.set(id, { resolve, reject }));
+    }
+
+    async create(cwd: string): Promise<string> {
+        const snap = await this.call<SessionSnapshot>("session.create", { cwd });
+        this.views.set(snap.state.id, { state: snap.state, turns: snap.turns, agents: snap.agents, seq: snap.seq });
+        return snap.state.id;
+    }
+
+    view(id: string) {
+        return this.views.get(id)!;
+    }
+
+    until(pred: () => boolean, ms = 15_000): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const check = () => {
+                if (!pred()) return;
+                this.listeners.delete(check);
+                clearTimeout(t);
+                resolve();
+            };
+            const t = setTimeout(() => {
+                this.listeners.delete(check);
+                reject(new Error("timed out"));
+            }, ms);
+            this.listeners.add(check);
+            check();
+        });
+    }
+
+    close() {
+        this.ws.close();
+    }
+}
+
+async function client(): Promise<Client> {
+    const c = new Client();
+    await c.opened();
+    return c;
+}
+
+const done = (v: { state: SessionState; turns: Turn[] }) => !v.state.busy && v.turns.length > 0 && v.turns[v.turns.length - 1]!.status !== "running";
+const prompts = (v: { turns: Turn[] }) => v.turns.flatMap((t) => (t.prompt ? [t.prompt.text] : []));
+
+describe("usage.summary", () => {
+    test("the offered ranges, from the transcripts", async () => {
+        const c = await client();
+        const id = await c.create(project());
+        await c.call("session.send", { id, text: "hello there" });
+        await c.until(() => done(c.view(id)));
+        const s = await c.call<UsageSummary>("usage.summary", { days: 1 });
+        expect(s.days).toBe(1);
+        const mock = s.rows.find((r) => r.provider === "mock" && r.model === "mock-opus")!;
+        expect(mock.sessions).toBe(1);
+        expect(mock.inputTokens + mock.outputTokens).toBeGreaterThan(0);
+        expect(s.sessions).toBeGreaterThanOrEqual(1);
+        // Every new record is dated.
+        expect(s.approxDated).toBe(0);
+        c.close();
+    });
+
+    test("anything else is the client's mistake", async () => {
+        const c = await client();
+        for (const days of [3, "7", null]) {
+            const e = await c.call("usage.summary", { days }).catch((x) => x);
+            expect(e).toBeInstanceOf(Error);
+            expect(e.message).toBe("days must be one of 1, 7, 30");
+            expect(e.code).toBe("bad_request");
+        }
+        c.close();
+    });
+});
+
+describe("plan limits", () => {
+    test("after a Codex turn, every client has its windows, and limits.get returns them", async () => {
+        const bin = tempDir("harness-usage-cli-");
+        writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-codex.ts")}" "$@"\n`);
+        chmodSync(join(bin, "codex"), 0o755);
+        for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+        saveAgentConfig("codex", { path: join(bin, "codex") });
+        process.env.FAKE_SCENARIO = "web";
+        process.env.FAKE_RATE_LIMITS = join(import.meta.dir, "fixtures", "limits", "codex-read.json");
+        process.env.FAKE_LIMIT_UPDATE = join(import.meta.dir, "fixtures", "limits", "codex-update-normal.json");
+        try {
+            const c = await client();
+            const other = await client();
+            expect(await c.call<PlanLimits[]>("limits.get", {})).toEqual([]);
+            const id = await c.create(project());
+            await c.call("session.setModel", { id, ref: "codex:default", persist: false });
+            await c.call("session.send", { id, text: "search the web" });
+            await c.until(() => done(c.view(id)), 30_000);
+            const limits = await c.call<PlanLimits[]>("limits.get", {});
+            expect(limits.length).toBe(1);
+            // The read (weekly 14%) and then the update's windows (5-hour 62%, weekly 30%), whichever came last for each slot.
+            expect(limits[0]!.provider).toBe("codex");
+            expect(limits[0]!.windows.map((w) => w.label).sort()).toEqual(["5-hour", "Weekly"]);
+            const seen = other.events.filter((e): e is Extract<ServerEvent, { type: "limits" }> => e.type === "limits");
+            expect(seen.length).toBeGreaterThan(0);
+            expect(seen.at(-1)!.limits).toEqual(limits[0]!);
+            c.close();
+            other.close();
+        } finally {
+            for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+        }
+    });
+});
+
+describe("slash commands the server doesn't know", () => {
+    test("/nonsense isn't sent to the model; sent as a message, it is", async () => {
+        const c = await client();
+        const id = await c.create(project());
+        expect(await c.call("session.send", { id, text: "/nonsense please" })).toEqual({ queued: false, unknown: "nonsense" });
+        // From an older GUI that doesn't handle it itself, /cost isn't a prompt either.
+        expect(await c.call("session.send", { id, text: "/cost" })).toEqual({ queued: false, unknown: "cost" });
+        await Bun.sleep(100);
+        expect(c.view(id).turns).toEqual([]);
+        await c.call("session.send", { id, text: "/nonsense please", literal: true });
+        await c.until(() => done(c.view(id)));
+        expect(prompts(c.view(id))).toEqual(["/nonsense please"]);
+        c.close();
+    });
+
+    test("a message that starts with a path is a prompt", async () => {
+        const c = await client();
+        const id = await c.create(project());
+        expect(await c.call("session.send", { id, text: "/Users/me/app.ts fails to build" })).toEqual({ queued: false });
+        await c.until(() => done(c.view(id)));
+        expect(prompts(c.view(id))).toEqual(["/Users/me/app.ts fails to build"]);
+        c.close();
+    });
+
+    test("custom commands still run, and are listed before a session opens the project", async () => {
+        const c = await client();
+        const cwd = project();
+        expect((await c.call<{ name: string }[]>("commands.list", { cwd })).map((x) => x.name)).toEqual(expect.arrayContaining(["hello", "cost", "context", "compact"]));
+        const id = await c.create(cwd);
+        expect(await c.call("session.send", { id, text: "/hello world" })).toEqual({ queued: false });
+        await c.until(() => done(c.view(id)));
+        expect(c.view(id).turns[0]!.prompt).toMatchObject({ text: "/hello world", command: true });
+        c.close();
+    });
+});

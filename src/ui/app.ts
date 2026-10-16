@@ -46,6 +46,8 @@ import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { mergeLimits } from "../backends/limits";
+import type { PlanLimits } from "../server/protocol";
 
 export interface AppInit {
     cwd: string;
@@ -128,6 +130,8 @@ export class App {
     private detached = new Map<string, ActiveTool>();
     private turnStart = 0;
     private turnTokens = 0;
+    /** The agent CLIs' plan limits as last reported, by provider (/cost shows them). */
+    planLimits = new Map<string, PlanLimits>();
     private streamChars = 0;
     /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
     private thinkingNow = false;
@@ -828,6 +832,9 @@ export class App {
                 this.thinkingNow = false;
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
+                break;
+            case "limits":
+                this.planLimits.set(e.limits.provider, mergeLimits(this.planLimits.get(e.limits.provider), e.limits, e.partial));
                 break;
             case "usage":
                 this.turnTokens += e.usage.outputTokens;

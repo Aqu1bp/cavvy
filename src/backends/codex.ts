@@ -20,6 +20,8 @@ import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
+import { codexReachedType, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
+import type { PlanLimits } from "../server/protocol";
 import { gitRoot } from "../util/git";
 import { canonical } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
@@ -382,6 +384,10 @@ class CodexTurn {
     private status?: string;
     private billedToPlan = false;
     private limitNoted = false;
+    /** The turn failed on the plan's usage limit (usageLimitExceeded). */
+    private limitHit = false;
+    /** The plan's limits as this turn has heard them. */
+    private limits?: PlanLimits;
     /** Reviewer noes shown from item/autoApprovalReview/completed, by thread and reason, whose guardianWarning hasn't come yet. */
     private noesShown = new Map<string, number>();
     /** What the user said when declining something, when it can't go into the running turn: it starts the next one. */
@@ -440,6 +446,8 @@ class CodexTurn {
                 return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.` };
             }
             this.billedToPlan = account.type === "chatgpt";
+            // Where the plan stands before the first update comes (they come only as it changes).
+            if (this.billedToPlan) void this.readLimits();
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
             const o = t.orchestrator;
@@ -524,6 +532,8 @@ class CodexTurn {
                     text = next.join("\n\n");
                 }
             }
+            // Codex's error may not say when the limit resets; its limits do.
+            if (this.limitHit && !this.limits?.resetsAt && !this.aborted) await this.readLimits();
         } catch (e) {
             if (!this.aborted) this.failure = redact((e as Error).message);
         } finally {
@@ -537,8 +547,30 @@ class CodexTurn {
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.failure };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${this.failure.replace(/[\s.]*$/, ".")} ${resetSentence(this.limits?.resetsAt, "Codex")}` : this.failure };
         return { reason: "done", text, answer, actions: this.actions };
+    }
+
+    /** Ask Codex where the plan stands (account/rateLimits/read); an older Codex without it is left be. */
+    private async readLimits() {
+        try {
+            const r = await withTimeout(this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex didn't answer account/rateLimits/read");
+            const parsed = parseCodexRateLimits(r);
+            if (parsed) this.noteLimits(parsed);
+        } catch {
+            // Not known, then: the meter waits for an update.
+        }
+    }
+
+    private noteLimits(parsed: { limits: PlanLimits; partial: boolean }) {
+        this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
+        this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+    }
+
+    /** A failed turn's error (TurnError: message, codexErrorInfo). */
+    private fail(err: any, fallback: string) {
+        this.failure = redact(String(err?.message ?? fallback));
+        if (err?.codexErrorInfo === "usageLimitExceeded") this.limitHit = true;
     }
 
     private input(text: string, images: BackendTurn["images"]): unknown[] {
@@ -607,7 +639,7 @@ class CodexTurn {
             case "turn/completed":
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
                 this.status = p.turn?.status;
-                if (p.turn?.status === "failed") this.failure = redact(String(p.turn?.error?.message ?? "Codex reported a failed turn"));
+                if (p.turn?.status === "failed") this.fail(p.turn?.error, "Codex reported a failed turn");
                 this.turnDone?.();
                 break;
             case "thread/compacted":
@@ -617,7 +649,7 @@ class CodexTurn {
                 break;
             case "error":
                 if (p.willRetry) this.host.emit({ type: "retry", attempt: 1, delayMs: 0, reason: redact(String(p.error?.message ?? "Codex is retrying")) });
-                else this.failure = redact(String(p.error?.message ?? "Codex reported an error"));
+                else this.fail(p.error, "Codex reported an error");
                 break;
             case "warning":
             case "configWarning":
@@ -661,10 +693,12 @@ class CodexTurn {
                 this.host.emit({ type: "notice", level: "info", message: `Codex switched models: ${String(p.reason ?? p.toModel ?? "").trim() || "rerouted"}` });
                 break;
             case "account/rateLimits/updated": {
-                const reached = p.rateLimits?.rateLimitReachedType;
+                const parsed = parseCodexRateLimits(p, { update: true });
+                if (parsed) this.noteLimits(parsed);
+                const reached = codexReachedType(p?.rateLimits);
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
-                    this.host.emit({ type: "notice", level: "warn", message: `Your Codex usage limit has been reached (${String(reached)}).` });
+                    this.host.emit({ type: "notice", level: "warn", message: `Your Codex usage limit has been reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
                 }
                 break;
             }

@@ -71,6 +71,7 @@ import { suggestBashRules } from "../permissions/bash-safety";
 import { trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { expandPath } from "../util/files";
+import type { PlanLimits } from "../server/protocol";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -93,6 +94,8 @@ export type AgentEvent =
     | { type: "compact_start"; auto: boolean }
     | { type: "compact_end"; summary: string }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
+    /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
+    | { type: "limits"; limits: PlanLimits; partial: boolean }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
@@ -1163,7 +1166,7 @@ export class Agent {
         this.emit({ type: "compact_start", auto: opts.auto });
         const host: BackendHost = {
             emit: (e) => {
-                if (e.type === "notice" || e.type === "retry") this.emit(e);
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
             },
             mode: () => this.o.mode.get(),
             permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),

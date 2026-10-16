@@ -4,7 +4,7 @@ import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, composerDrafts, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
+import { contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
 import { cost, tokens } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
 import { EffortMenu, FastModeToggle, ModelPicker } from "./ModelPicker";
@@ -14,6 +14,7 @@ import { Popover } from "./ui/Popover";
 import { Ring } from "./ui/bits";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
+import { PlanMeter } from "./PlanMeter";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
@@ -24,7 +25,8 @@ const history: string[] = [];
 function ContextRing(p: { sessionId: string }) {
     let btn: HTMLButtonElement | undefined;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
-    const [open, setOpen] = createSignal(false);
+    // Shared so /context can open it.
+    const [open, setOpen] = [contextCardOpen, setContextCardOpen];
     const st = () => handleFor(p.sessionId)?.view.state;
     const win = () => st()?.model?.contextWindow;
     const pct = () => (st() && win() ? st()!.contextTokens / win()! : 0);
@@ -223,7 +225,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (!canSend() || sending()) return;
         setSending(true);
         const atts = attachments();
-        const ok = await send(t, atts);
+        const key = draftKey();
+        // Sent later as a message (it looked like an unknown command): clear the box if it still holds just that.
+        const sent = () => {
+            if (draftKey() !== key || text() !== t || attachments() !== atts) return;
+            setText("");
+            setAttachments([]);
+            composerDrafts.delete(key);
+            requestAnimationFrame(resize);
+        };
+        const ok = await send(t, atts, { sent });
         setSending(false);
         if (!ok) return;
         if (ok === "command" && atts.length) {
@@ -500,6 +511,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="hb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
+                    <PlanMeter provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show when={p.sessionId}>
                         <ContextRing sessionId={p.sessionId!} />
                     </Show>

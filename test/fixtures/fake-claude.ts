@@ -35,6 +35,10 @@
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error, like a CLI without it
 // FAKE_LOG_ENV=1     logs its whole environment at start
+// FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
+//                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
+//                    after the "rate-limit" scenario's error instead
+// FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -425,6 +429,13 @@ async function turn(content: any[], uuid?: string) {
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
+    }
+    const rateLimit = () => process.env.FAKE_RATE_LIMIT && out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT, "utf-8")), session_id: sessionId });
+    if (process.env.FAKE_RATE_LIMIT_LATE !== "1") rateLimit();
+    if (scenario === "rate-limit") {
+        out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "You've hit your limit" }] }, error: "rate_limit", parent_tool_use_id: null, session_id: sessionId });
+        if (process.env.FAKE_RATE_LIMIT_LATE === "1") rateLimit();
+        return result("success", { is_error: true, result: "You've hit your limit" });
     }
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });

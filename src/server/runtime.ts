@@ -11,7 +11,7 @@ import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
-import { expandCommand } from "../commands/custom";
+import { expandCommand, slashCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
@@ -77,7 +77,12 @@ interface Queued {
     id: number;
     text: string;
     attachments?: AttachedPart[];
+    /** Sent as a message even though it starts with a /word. */
+    literal?: boolean;
 }
+
+/** The slash commands the server runs itself (the GUI runs the others). */
+const SERVER_COMMANDS = new Set(["compact", "init", "review"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -1026,7 +1031,12 @@ export class Runtime {
                 this.compacted(e.summary);
                 break;
             case "subagent":
-                this.subagentEvent(e.parentId, e.label, e.event);
+                // A sub-agent on an agent CLI reports the same account's limits.
+                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial);
+                else this.subagentEvent(e.parentId, e.label, e.event);
+                break;
+            case "limits":
+                this.engine.limitsReported(e.limits, e.partial);
                 break;
             case "turn_end":
                 this.closeOpen();
@@ -1498,7 +1508,7 @@ export class Runtime {
     }
 
     /** A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy. */
-    async send(text: string, attachments?: AttachedPart[]): Promise<{ queued: boolean }> {
+    async send(text: string, attachments?: AttachedPart[], literal = false): Promise<{ queued: boolean; unknown?: string }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
         if (this.closed) throw new Error("This session was closed.");
@@ -1507,17 +1517,28 @@ export class Runtime {
         if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
-        if (attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
+        if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
+        // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
+        const unknown = literal ? undefined : this.unknownCommand(text);
+        if (unknown) return { queued: false, unknown };
         if (this.busy) {
-            this.queued.push({ id: ++this.queueSeq, text, attachments });
+            this.queued.push({ id: ++this.queueSeq, text, attachments, literal: literal || undefined });
             this.setState(this.queueState());
             return { queued: true };
         }
-        void this.dispatch(text, attachments).catch((e) => this.notice(redact((e as Error).message), "error"));
+        void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
     }
 
-    private async dispatch(text: string, attachments?: AttachedPart[]) {
+    /** The /name a message starts with when it names no command this server or the project has. */
+    unknownCommand(text: string): string | undefined {
+        const c = slashCommand(text);
+        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name)) return undefined;
+        return c.name;
+    }
+
+    private async dispatch(text: string, attachments?: AttachedPart[], literal = false) {
+        if (literal) return this.startTurn(text, { attachments });
         const trimmed = text.trim();
         if (trimmed.startsWith("!") && !attachments?.length) return this.runUserShell(trimmed.slice(1).trim());
         if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
@@ -1621,7 +1642,7 @@ export class Runtime {
         const next = this.queued.shift();
         if (!next) return;
         this.setState(this.queueState());
-        await this.dispatch(next.text, next.attachments).catch((e) => this.notice(redact((e as Error).message), "error"));
+        await this.dispatch(next.text, next.attachments, next.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
     /** After an interrupt, unsent messages go back to the input box instead of running. */

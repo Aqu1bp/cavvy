@@ -36,6 +36,9 @@ import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validC
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
+
+import { usageDays, usageSummary } from "./usage";
+import { mergeLimits } from "../backends/limits";
 import type {
     CliSessionInfo,
     CliSessionsList,
@@ -45,6 +48,7 @@ import type {
     GuiSettings,
     HelloResult,
     McpStatus,
+    PlanLimits,
     Method,
     Methods,
     PermissionModeId,
@@ -212,6 +216,8 @@ export class Engine {
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     private purgeTimer?: ReturnType<typeof setInterval>;
+    /** The agent CLIs' plan limits as last reported, by provider: the account's, so every session shares them. */
+    private limits = new Map<string, PlanLimits>();
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -243,6 +249,15 @@ export class Engine {
 
     broadcast(ev: ServerEvent) {
         for (const c of this.clients) c.send(ev);
+    }
+
+    /** An agent CLI reported where the plan stands (an older report doesn't replace a newer one). */
+    limitsReported(l: PlanLimits, partial: boolean) {
+        const prev = this.limits.get(l.provider);
+        if (prev && prev.at > l.at) return;
+        const merged = mergeLimits(prev, l, partial);
+        this.limits.set(l.provider, merged);
+        this.broadcast({ type: "limits", limits: merged });
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -986,9 +1001,12 @@ export class Engine {
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
+            { name: "context", description: "How full the context window is, and your plan's limits" },
         ];
         const ws = this.workspaces.get(resolve(cwd));
-        const custom = (ws?.commands ?? []).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
+        // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
+        const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
         return [...builtin, ...custom];
     }
 
@@ -1109,7 +1127,7 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined);
+                return rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();
@@ -1302,6 +1320,10 @@ export class Engine {
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+            case "limits.get":
+                return [...this.limits.values()];
+            case "usage.summary":
+                return usageSummary(usageDays(p.days));
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }

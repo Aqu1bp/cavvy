@@ -35,6 +35,7 @@ import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
 import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
+import { parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
 import type { TurnEndReason } from "../agent/agent";
@@ -239,6 +240,9 @@ class ClaudeTurn {
     private failure?: string;
     private reason?: BackendResult["reason"];
     private signedOut = false;
+    /** The turn failed on the plan's usage limit; when that resets (ms), if Claude Code said. */
+    private limitHit = false;
+    private limitResetsAt?: number;
     /** Control requests sent to Claude Code, waiting for its answer. */
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
@@ -735,7 +739,10 @@ class ClaudeTurn {
         if (error === "authentication_failed") {
             this.signedOut = true;
             this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
-        } else if (error === "rate_limit") this.failure = "Your Claude usage limit was reached. Claude Code says when it resets; switch models with /model meanwhile.";
+        } else if (error === "rate_limit") {
+            this.limitHit = true;
+            this.failure = this.limitFailure();
+        }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
         else this.failure = `Claude Code reported an error: ${error}`;
     }
@@ -879,11 +886,22 @@ class ClaudeTurn {
     }
 
     private onRateLimit(info: Record<string, any>) {
+        const parsed = parseClaudeRateLimit(info);
+        if (parsed) this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
         if (info.status !== "rejected" && info.status !== "allowed_warning") return;
-        const when = typeof info.resetsAt === "number" ? ` It resets ${new Date(info.resetsAt * 1000).toLocaleString()}.` : "";
-        const which = typeof info.rateLimitType === "string" ? ` (${info.rateLimitType.replace(/_/g, " ")})` : "";
-        if (info.status === "rejected") this.host.emit({ type: "notice", level: "warn", message: `Your Claude usage limit${which} has been reached.${when}` });
-        else this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude usage limit${which}.${when}` });
+        const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
+        const which = w ? `${w.label.charAt(0).toLowerCase()}${w.label.slice(1)} ` : "";
+        if (info.status === "rejected") {
+            this.limitResetsAt = parsed?.limits.resetsAt;
+            // The turn's error (it may have come first) says when, now that it's known.
+            if (this.limitHit) this.failure = this.limitFailure();
+            this.host.emit({ type: "notice", level: "warn", message: `Your Claude ${which}usage limit has been reached. ${resetSentence(this.limitResetsAt, "Claude Code")}` });
+        } else this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+    }
+
+    /** A turn that failed on the plan's limit: when it resets, if Claude Code said. */
+    private limitFailure(): string {
+        return `Your Claude usage limit was reached. ${resetSentence(this.limitResetsAt, "Claude Code")} Switch models with /model meanwhile.`;
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */

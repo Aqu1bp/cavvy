@@ -80,3 +80,15 @@ export function expandCommand(body: string, args: string): string {
     if (args && !/\$ARGUMENTS\b|\$[1-9]\b/.test(body)) text += `\n\nArguments: ${args}`;
     return text;
 }
+
+/**
+ * The command a message starts with: "/review 12" is review, but "//x" and a
+ * path ("/Users/me/app.ts fails to build") are messages, not commands.
+ */
+export function slashCommand(text: string): { name: string; args: string } | undefined {
+    const t = text.trim();
+    if (!t.startsWith("/") || t.startsWith("//")) return undefined;
+    const [, name = "", args = ""] = t.match(/^\/(\S+)\s*([\s\S]*)$/) ?? [];
+    if (!name || name.includes("/") || name.includes(".")) return undefined;
+    return { name: name.toLowerCase(), args: args.trim() };
+}

@@ -9,7 +9,8 @@ import { toWire, type Attachment } from "../lib/attachments";
 import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { requestComposerFocus, setAgentFocus, setContextCardOpen, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { clientAction, slashName } from "../lib/commands";
 
 export type { Attachment } from "../lib/attachments";
 
@@ -69,10 +70,10 @@ export async function openProject(path: string) {
 
 /** Run a slash command the GUI handles itself. Returns false when it's the server's (or a prompt). */
 function clientCommand(id: string | undefined, text: string): boolean {
-    const m = text.trim().match(/^\/(\S+)\s*([\s\S]*)$/);
-    if (!m) return false;
-    const [, name = "", args = ""] = m;
-    switch (name.toLowerCase()) {
+    const c = clientAction(text);
+    if (!c) return false;
+    const args = c.args;
+    switch (c.action) {
         case "model":
             setModelPickerOpen(true);
             return true;
@@ -80,15 +81,20 @@ function clientCommand(id: string | undefined, text: string): boolean {
             setModePickerOpen(true);
             return true;
         case "new":
-        case "clear":
             newSession(app.homeCwd);
             return true;
         case "rewind":
             if (id) setRewindOpen(true);
             return true;
         case "settings":
-        case "config":
             setSettingsTab("general");
+            return true;
+        case "usage":
+            setSettingsTab("usage");
+            return true;
+        case "context":
+            if (id) setContextCardOpen(true);
+            else setSettingsTab("usage");
             return true;
         case "rename":
             if (id && args.trim()) void rpc.call("session.rename", { id, title: args.trim() }).catch(reportError);
@@ -108,8 +114,6 @@ function clientCommand(id: string | undefined, text: string): boolean {
             openAgents();
             return true;
         }
-        default:
-            return false;
     }
 }
 
@@ -144,23 +148,36 @@ export async function exportSession(id: string) {
     }
 }
 
-/** Send from the composer: to the open session, or a new one in the home screen's project. */
-export async function send(text: string, attachments: Attachment[] = []): Promise<boolean | "command"> {
-    let id = app.activeId;
-    // Done here, without sending: what's attached stays in the box.
-    if (text.startsWith("/") && clientCommand(id, text)) return "command";
+/**
+ * Send from the composer: to the open session, or a new one in the home
+ * screen's project. A /word that names no command isn't sent (false keeps it
+ * in the box); the toast offers to send it as a message, and `sent` runs if it is.
+ */
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; to?: { id?: string; cwd?: string } } = {}): Promise<boolean | "command"> {
+    // Where it was typed, even if the user has moved on by the time the toast is clicked.
+    let id = opts.to ? opts.to.id : app.activeId;
+    const cwd = opts.to ? opts.to.cwd : app.homeCwd;
+    if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
+    const unknown = (name: string) => {
+        const to = { id, cwd };
+        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => ok && opts.sent?.()) });
+        return false;
+    };
     try {
         if (!id) {
-            const cwd = app.homeCwd;
             if (!cwd) {
                 toast("Choose a project folder first", "warn");
                 return false;
             }
+            // Checked before there's a session, so a typo doesn't start one.
+            const name = opts.literal ? undefined : slashName(text);
+            if (name && !(await rpc.call("commands.list", { cwd })).some((c) => c.name === name)) return unknown(name);
             const h = await startIn(cwd);
             if (!h) return false;
             id = h.id;
         }
-        await rpc.call("session.send", { id, text, ...toWire(attachments) });
+        const r = await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
+        if (r.unknown) return unknown(r.unknown);
         return true;
     } catch (e) {
         reportError(e);

@@ -40,6 +40,10 @@
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
+// FAKE_RATE_LIMITS    a JSON file: account/rateLimits/read's result (without it, the method is unknown, as to an
+//                     older Codex); FAKE_LIMIT_UPDATE a JSON file: an account/rateLimits/updated's params, sent as a
+//                     turn starts (shapes from Codex 0.163.0's schema and a capture, test/fixtures/limits)
+// FAKE_SCENARIO=usage-limit  the turn fails on the plan's limit (codexErrorInfo usageLimitExceeded)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 //
 // Token usage is each thread's running total, kept beside the log as Codex keeps it with the thread. Like
@@ -135,6 +139,12 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     current = t;
     const finish = (status: string) => notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
+    if (process.env.FAKE_LIMIT_UPDATE) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
+    if (scenario === "usage-limit") {
+        const error = { message: "You've hit your usage limit. Upgrade to Pro or try again later.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
+        notify("error", { error, willRetry: false, threadId, turnId });
+        return notify("turn/completed", { threadId, turn: { id: turnId, status: "failed", error } });
+    }
     notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "", ...phase("commentary") } });
     notify("item/agentMessage/delta", { threadId, turnId, itemId: `msg-${turnId}`, delta: "Running it." });
     notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "Running it.", ...phase("commentary") } });
@@ -411,6 +421,9 @@ async function handle(m: any) {
             notify("turn/completed", { threadId: p.threadId, turn: { id: turnId, status: "completed", error: null } });
             return;
         }
+        case "account/rateLimits/read":
+            if (!process.env.FAKE_RATE_LIMITS) return fail(`unknown method ${m.method}`);
+            return reply(JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS, "utf-8")));
         default:
             return fail(`unknown method ${m.method}`);
     }
