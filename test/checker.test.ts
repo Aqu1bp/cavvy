@@ -362,6 +362,23 @@ describe("harness and git config edits", () => {
         expect(check(T("Write"), write(join(W, ".claude", "hooks.json")), "acceptEdits").behavior).toBe("ask");
     });
 
+    test("a worktree kept inside protected config is still protected, and its name keeps its case", () => {
+        // Inside .git (as core.hooksPath could point git at), and inside a project's .harness.
+        const pkg = join(W, "pkg");
+        for (const parent of [join(pkg, ".git", "hooks"), join(pkg, ".harness")]) {
+            const tree = join(parent, ".claude", "worktrees", "x");
+            mkdirSync(tree, { recursive: true });
+            writeFileSync(join(tree, ".git"), "gitdir: x\n");
+            expect(check(T("Write"), write(join(tree, "pre-commit")), "acceptEdits").behavior).toBe("ask");
+        }
+        rmSync(pkg, { recursive: true, force: true });
+        const mixed = join(W, ".claude", "worktrees", "Feature");
+        mkdirSync(mixed, { recursive: true });
+        writeFileSync(join(mixed, ".git"), "gitdir: x\n");
+        expect(check(T("Write"), write(join(mixed, "src", "a.ts")), "acceptEdits").behavior).toBe("allow");
+        expect(check(T("Write"), write(join(mixed, ".Claude", "settings.json")), "acceptEdits").behavior).toBe("ask");
+    });
+
     test.each([".gitignore", ".gitattributes", ".github/workflows/ci.yml", "harness/settings.json", ".mcp.json.bak", "src/.git-keep"])("look-alike %p is a normal edit", (rel) => {
         expect(check(T("Write"), write(join(W, rel)), "acceptEdits").behavior).toBe("allow");
     });

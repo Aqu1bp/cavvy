@@ -64,19 +64,16 @@ function pathForms(p: string): string[] {
 }
 
 /**
- * The part of a path inside the innermost git checkout Claude Code keeps at
- * …/.claude/worktrees/<name>/: that's a project of its own, so the .claude/
- * above it says nothing about its files (its own .claude/, .git and .mcp.json
- * still count). Other paths are judged whole, so a git repo elsewhere in
- * ~/.claude (a plugin's hooks) stays protected.
+ * The path with each git checkout Claude Code keeps at …/.claude/worktrees/<name>
+ * put aside: that's a project of its own, so the .claude/ it sits in says nothing
+ * about its files. Everything else in the path still counts: the checkout's own
+ * .claude/, .git and .mcp.json, and anything protected around it (one kept inside
+ * a .git/ is still in there). A git repo elsewhere in ~/.claude (a plugin's hooks)
+ * isn't one of these. Looked up as given: folding case first would find another
+ * folder on a case-sensitive volume.
  */
-function withinWorktree(p: string): string {
-    let cut = -1;
-    for (const m of p.matchAll(/\/\.claude\/worktrees\/[^/]+(?=\/|$)/gi)) {
-        const end = m.index + m[0].length;
-        if (existsSync(join(p.slice(0, end), ".git"))) cut = end;
-    }
-    return cut < 0 ? p : p.slice(cut);
+function withoutWorktrees(p: string): string {
+    return p.replace(/\/\.claude\/worktrees\/[^/]+(?=\/|$)/gi, (segment, at: number) => (existsSync(join(p.slice(0, at + segment.length), ".git")) ? "/<worktree>" : segment));
 }
 
 export class PermissionChecker {
@@ -322,7 +319,8 @@ export class PermissionChecker {
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
         // .claude/ and .codex/ configure the agent CLIs the harness can run (hooks, skills, rules).
-        return forms.map(withinWorktree).some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
+        const judged = [...new Set([p, canonical(p)])].map((f) => FOLD(withoutWorktrees(f)));
+        return judged.some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
     }
 
     private isSensitive(p: string): boolean {
