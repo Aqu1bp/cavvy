@@ -58,6 +58,19 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("a commit-msg hook leaving only whitespace aborts without changing HEAD or staging", async () => {
+        const dir = repo({ "selected.txt": "old\n" });
+        write(dir, "selected.txt", "new\n");
+        hook(dir, "commit-msg", 'writeFileSync(process.argv[2], " \\t\\r\\n\\n");');
+        const before = index(dir);
+        const head = git(dir, "rev-parse", "HEAD");
+
+        await expect(gitCommit(dir, ["selected.txt"], "user message")).rejects.toThrow("empty commit message");
+
+        expect(index(dir)).toBe(before);
+        expect(git(dir, "rev-parse", "HEAD")).toBe(head);
+    });
+
     test("an absent skip-worktree selection is refused without committing a deletion", async () => {
         const dir = repo({ "sparse.txt": "old\n" });
         write(dir, "sparse.txt", "staged\n");

@@ -214,7 +214,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         await hook("pre-commit");
         await hook("prepare-commit-msg", [messageFile, "message"]);
         await hook("commit-msg", [messageFile]);
-        if (!(await readFile(messageFile)).length) throw new RpcError("Aborting commit due to empty commit message.\n", "git");
+        if (!(await readFile(messageFile, "utf-8")).trim()) throw new RpcError("Aborting commit due to empty commit message.\n", "git");
         if (!(await validateTree())) {
             // Get Git's own nothing-to-commit diagnostic; dry-run runs no hooks.
             await git(root, ["commit", "--dry-run", "-F", messageFile], { index: privateIndex });
@@ -229,7 +229,8 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         const sign = await git(root, ["config", "--type=bool", "--get", "commit.gpgsign"], { allowFailure: true });
         if (sign.code > 1) throw new RpcError(sign.err + sign.out, "git");
         // commit-tree retains the message verbatim and honors Git's identity,
-        // encoding and signing configuration. The object is not published yet.
+        // encoding and signing configuration. Only the empty-message check trims;
+        // nonempty messages receive no cleanup. The object is not published yet.
         const hash = (
             await git(
                 root,
