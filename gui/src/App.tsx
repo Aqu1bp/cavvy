@@ -23,6 +23,7 @@ import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
+import { CommitDialog } from "./components/CommitDialog";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function Toasts() {
@@ -233,6 +234,7 @@ export function App() {
             <FolderPicker />
             <TrustDialog />
             <DeleteSessionDialog />
+            <CommitDialog />
             <Toasts />
         </div>
     );
