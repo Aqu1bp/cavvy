@@ -158,6 +158,20 @@ export interface AppState {
 }
 
 const SEEN_KEY = "harness.seen";
+const NAVIGATION_KEY = "harness.navigation";
+
+/** Per webview/tab, separate from device-wide preferences and auth links. */
+function loadNavigation(): Pick<AppState, "activeId" | "homeCwd"> {
+    try {
+        const saved = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY) ?? "null");
+        return {
+            activeId: typeof saved?.activeId === "string" && saved.activeId ? saved.activeId : undefined,
+            homeCwd: typeof saved?.homeCwd === "string" && saved.homeCwd ? saved.homeCwd : undefined,
+        };
+    } catch {
+        return {};
+    }
+}
 
 function loadSeen(): Record<string, number> {
     try {
@@ -180,7 +194,19 @@ export const [app, setApp] = createStore<AppState>({
     settings: {},
     seen: loadSeen(),
     limits: {},
+    ...loadNavigation(),
 });
+
+// Observe the store so all navigation paths (Home, send, import, deletion and
+// sidebar activation) persist together, including direct setApp callers.
+createRoot(() => createEffect(() => {
+    const saved = JSON.stringify({ activeId: app.activeId, homeCwd: app.homeCwd });
+    try {
+        sessionStorage.setItem(NAVIGATION_KEY, saved);
+    } catch {
+        // Storage can be disabled; navigation still works in memory.
+    }
+}));
 
 function saveSeen() {
     try {
@@ -351,6 +377,31 @@ export async function activate(id: string | undefined, cwd?: string) {
         if (e instanceof RpcError && e.code === "not_found") forgetSession(id);
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
         reportError(e);
+    }
+}
+
+/** Restore only after bootstrap. Lists are capped, so absence is not deletion. */
+export async function restoreActiveSession() {
+    const id = app.activeId;
+    if (!id || handles.has(id)) return;
+    const cwd = app.homeCwd;
+    const current = () => app.activeId === id && app.homeCwd === cwd;
+    try {
+        const h = await openSession(id);
+        // A slow restore must not undo navigation performed in the meantime.
+        if (!current()) return;
+        setApp("homeCwd", h.view.state.cwd);
+        markSeen(id);
+    } catch (e) {
+        if (!current()) return;
+        if (e instanceof RpcError && e.code === "not_found") {
+            forgetSession(id);
+        } else if (e instanceof RpcError && e.code === "needs_trust" && cwd) {
+            requestTrust(cwd, () => { if (current()) void restoreActiveSession(); });
+        } else {
+            // Keep the selection on transient failures for the next reconnect.
+            reportError(e);
+        }
     }
 }
 
@@ -551,6 +602,7 @@ export function start() {
                 void refreshLimits().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
+                await restoreActiveSession();
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();
             } catch (e) {
