@@ -7,7 +7,7 @@ import { createSignal, onCleanup, Show } from "solid-js";
 import { AlertTriangle, Info } from "lucide-solid";
 import { tildify } from "../lib/format";
 import { app, rpc } from "../state/app";
-import { archivedWithWorktree, setArchived } from "../state/actions";
+import { archivedWithWorktree } from "../state/actions";
 import { archiveRequest, setArchiveRequest } from "../state/ui";
 import { errorOf, IgnoredFiles, type FormError } from "./WorktreeDialogs";
 import { Dialog } from "./ui/Dialog";
@@ -28,8 +28,17 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
 
     const archiveOnly = async () => {
         if (busy()) return;
-        setArchiveRequest(undefined);
-        await setArchived(p.id, true);
+        setBusy(true);
+        setError(undefined);
+        try {
+            await rpc.call("session.archive", { id: p.id, archived: true });
+            setArchiveRequest(undefined);
+            archivedWithWorktree(p.id, { archived: true, removed: false, kept: p.offer.reason ?? "you chose Archive only." });
+        } catch (e) {
+            setError(errorOf(e));
+        } finally {
+            setBusy(false);
+        }
     };
 
     /** Busy from start to end: two clicks start one removal. `trust`: a folder the user just agreed to trust, trusted first. */

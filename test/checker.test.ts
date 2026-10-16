@@ -564,6 +564,13 @@ describe("Bash", () => {
                 expect(auto(withSandbox(true), { command: "source .env && npm install", allowedHosts: ["registry.npmjs.org"] })).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true });
             });
 
+            test("git worktree add skips the sandbox (it can't write .git/worktrees there) and goes to the classifier", () => {
+                const d = auto(withSandbox(true), bash("git worktree add -b fix-x .claude/worktrees/fix-x origin/main"));
+                expect(d).toMatchObject({ behavior: "ask", needsClassifier: true });
+                expect(d.sandbox).toBeFalsy();
+                expect(auto(withSandbox(true), bash("git worktree list"))).toEqual({ behavior: "allow", reason: "read-only command", sandbox: true });
+            });
+
             test("a version check needs nothing", () => {
                 expect(auto(withSandbox(true), bash("curl --version"))).toMatchObject({ behavior: "allow", sandbox: true });
             });

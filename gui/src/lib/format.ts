@@ -35,6 +35,12 @@ export function usd(n: number): string {
     return `$${n.toFixed(1)}`;
 }
 
+/** Spend where some usage may have had no known price: "—" for none priced, "$X+" for part. Never "$0" for unknown. */
+export function cost(n: number, unknown?: boolean): string {
+    if (!unknown) return usd(n);
+    return n > 0 ? `${usd(n)}+` : "—";
+}
+
 export function price(p?: { input: number; output: number }): string {
     if (!p) return "";
     const f = (x: number) => (x >= 10 ? x.toFixed(0) : x >= 1 ? x.toFixed(2).replace(/\.?0+$/, "") : x.toFixed(2));
@@ -112,4 +118,20 @@ export function monogram(name: string): string {
     if (!words.length) return "?";
     const s = words.length > 1 ? words[0]![0]! + words[words.length - 1]![0]! : words[0]!.slice(0, 2);
     return s.toUpperCase();
+}
+
+/**
+ * Where a diff's first change is in the new file: the line of the first added
+ * or removed line (a removal, where its text was). A hunk starts with up to
+ * three lines of context, so its newStart is above the change.
+ */
+export function firstChangedLine(diff?: { hunks?: { newStart: number; lines: { t: string; b?: number }[] }[] }): number | undefined {
+    for (const h of diff?.hunks ?? []) {
+        let next = h.newStart;
+        for (const l of h.lines) {
+            if (l.t !== "ctx") return Math.max(1, l.t === "add" ? (l.b ?? next) : next);
+            next = (l.b ?? next) + 1;
+        }
+    }
+    return undefined;
 }

@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { ChevronDown, FileMinus2, FilePlus2, FileText } from "lucide-solid";
 import type { DiffLine, FileDiff } from "@shared/protocol";
 import { highlightLines } from "../../lib/highlight";
@@ -58,7 +58,8 @@ export function FileIcon(p: { status: FileDiff["status"]; size?: number }) {
     );
 }
 
-export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolean; split?: boolean; class?: string }) {
+/** `headerAction`: a control at the end of the header (e.g. "Open in editor"). */
+export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolean; headerAction?: JSX.Element; split?: boolean; class?: string }) {
     const [expanded, setExpanded] = createSignal(false);
     const [visible, setVisible] = createSignal(false);
     const [oldHl, setOldHl] = createSignal<string[]>();
@@ -119,6 +120,7 @@ export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolea
                     <FileIcon status={p.diff.status} />
                     <span class="diff-path">{p.diff.path}</span>
                     <DiffStat added={p.diff.added} removed={p.diff.removed} />
+                    {p.headerAction}
                 </div>
             </Show>
             <Show when={p.diff.note && !p.diff.hunks.length}>

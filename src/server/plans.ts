@@ -129,6 +129,7 @@ export function writePlanFile(o: { cwd: string; home: string; input: string; tex
         { path: resolve(o.cwd), real: real(o.cwd), private: false },
     ];
     const { root, parts } = place(o.input, roots, o.cwd);
+    if (join(root.real, ...parts).split(sep).some((p) => p.toLowerCase() === ".git")) throw outside("Plans can't be saved inside a .git folder.");
     const name = parts.at(-1);
     if (!name || !/\.md$/i.test(name) || name.length < 4) throw new RpcError("Plans are saved as Markdown: the file name must end in .md.", "bad_name");
     if (parts.some((p) => p.toLowerCase() === ".git")) throw outside("Plans can't be saved inside a .git folder.");

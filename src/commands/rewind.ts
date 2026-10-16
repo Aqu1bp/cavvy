@@ -5,7 +5,7 @@
 import type { App } from "../ui/app";
 import { SelectDialog } from "../ui/dialogs";
 import { theme, truncate } from "../ui/ansi";
-import { canonical, FileHistory, resetToolState, rewindTargets, type RestoreItem, type RewindTarget } from "../agent/checkpoints";
+import { backendsIn, canonical, FileHistory, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem, type RewindTarget } from "../agent/checkpoints";
 import { APP_TITLE } from "../config/paths";
 import { textOf, type Message } from "../providers/types";
 import { displayPath } from "../util/files";
@@ -21,9 +21,12 @@ function plural(n: number, word: string): string {
 }
 
 function changedLabel(history: FileHistory | undefined, t: RewindTarget): string {
-    if (!history || t.checkpoint === undefined) return "file changes not tracked";
+    // Claude Code and Codex change files with their own tools, which the file history doesn't see.
+    const untracked = t.backends.length ? `${t.backends.join(" and ")} changes not tracked` : undefined;
+    if (!history || t.checkpoint === undefined) return untracked ?? "file changes not tracked";
     const n = history.filesIn(t.checkpoint).length;
-    return n ? `${plural(n, "file")} changed` : "no file changes";
+    if (n) return untracked ? `${plural(n, "file")} changed · ${untracked}` : `${plural(n, "file")} changed`;
+    return untracked ?? "no file changes";
 }
 
 function fileLine(rel: (p: string) => string, it: RestoreItem): string {
@@ -69,6 +72,7 @@ export async function rewindCommand(app: App) {
     const chosen = messages[target.index];
 
     const plan = history && target.checkpoint !== undefined ? history.plan(target.checkpoint) : undefined;
+    const backends = backendsIn(messages, target.index);
     const restore = plan?.filter((i) => i.action !== "skip") ?? [];
     const skipped = plan?.filter((i) => i.action === "skip") ?? [];
     // History paths are real paths; show them against the real working folder.
@@ -83,6 +87,10 @@ export async function rewindCommand(app: App) {
     if (skipped.length) {
         lines.push(theme.warning(`Can't be restored:`));
         lines.push(...listed(skipped.map((it) => theme.warning(`  ${rel(it.path)} (${it.reason})`))));
+    }
+    if (backends.length) {
+        const except = restore.length ? ", except in the files listed above, which go back to how they were then" : "";
+        lines.push(theme.warning(`${backends.join(" and ")} answered since then. ${APP_TITLE} doesn't track what ${backends.length === 1 ? "it changes" : "they change"} in files with ${backends.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it${except}. Use git to review or undo the rest.`));
     }
     lines.push(theme.subtle("Changes made by shell commands aren't tracked and won't be undone."));
 
@@ -130,8 +138,10 @@ export async function rewindCommand(app: App) {
     }
 
     let rewindConversation = conversation;
+    let restoredPaths: string[] = [];
     if (code) {
         const { done, failed } = history!.restore(restore);
+        restoredPaths = done.map(rel);
         // Their content changed under the model: it must read them again.
         const restored = new Set(done);
         for (const p of [...app.toolState.fileState.keys()]) if (restored.has(canonical(p))) app.toolState.fileState.delete(p);
@@ -160,5 +170,6 @@ export async function rewindCommand(app: App) {
         if (kept.length) {
             app.agent?.addReminder(`The user rewound the conversation to an earlier point (/rewind), but these files weren't restored and still have changes made after that point:\n${kept.map((it) => `- ${rel(it.path)}`).join("\n")}`);
         }
+        if (backends.length) app.agent?.addReminder(untrackedChangesNote(backends, restoredPaths));
     }
 }

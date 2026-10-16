@@ -1019,6 +1019,63 @@ a.prow:hover,
     font-weight: 600;
 }
 
+/* Which changes: Git views, recorded turns or Harness's own edits. */
+.review-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 4px 10px 4px 16px;
+    flex: none;
+    border-bottom: 1px solid var(--hairline);
+    min-width: 0;
+}
+
+.review-turn {
+    height: 28px;
+    flex: 1 1 160px;
+    max-width: 280px;
+    font-size: 0.857rem;
+}
+
+.review-scope-note {
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.review-branch {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.review-branch > svg {
+    flex: none;
+}
+
+.review-branch .arrow {
+    flex: none;
+    color: var(--fg-subtle);
+}
+
+.review-branch .base-ctl {
+    max-width: 220px;
+    color: var(--fg);
+}
+
+.base-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 6px;
+}
+
 .review-body {
     flex: 1;
     min-height: 0;
@@ -1031,6 +1088,23 @@ a.prow:hover,
     overflow-y: auto;
     padding: 8px;
     border-right: 1px solid var(--hairline);
+}
+
+.rf-row {
+    display: flex;
+    align-items: center;
+    border-radius: 8px;
+    min-width: 0;
+}
+
+.rf-row > span {
+    display: flex;
+    padding-left: 6px;
+    flex: none;
+}
+
+.rf-row.on {
+    background: var(--bg-active);
 }
 
 .rf {
@@ -1050,6 +1124,37 @@ a.prow:hover,
 
 .rf.on {
     background: var(--bg-active);
+}
+
+/* git status's letter for the file. */
+.rf-change {
+    flex: none;
+    width: 14px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: center;
+    color: var(--warning);
+}
+
+.rf-change.added,
+.rf-change.untracked {
+    color: var(--success);
+}
+
+.rf-change.deleted {
+    color: var(--danger);
+}
+
+.rf-change.renamed,
+.rf-change.typechange {
+    color: var(--info);
+}
+
+.rf-more {
+    padding: 8px;
+    font-size: 0.786rem;
+    color: var(--fg-subtle);
 }
 
 .rf-text {
@@ -1094,6 +1199,11 @@ a.prow:hover,
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 35%, transparent);
 }
 
+.file-tag.modified {
+    color: var(--fg-muted);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
 .file-tag.deleted {
     color: var(--danger);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent);
@@ -1126,6 +1236,10 @@ a.prow:hover,
         scrollbar-width: none;
     }
 
+    .rf-row {
+        flex: none;
+    }
+
     .rf {
         width: auto;
         flex: none;
@@ -1134,6 +1248,11 @@ a.prow:hover,
 
     .rf-dir {
         display: none;
+    }
+
+    .rf-more {
+        flex: none;
+        align-self: center;
     }
 
     .rf-stat {
@@ -1472,6 +1591,105 @@ button.strip-ctl[aria-expanded="true"] {
     color: var(--accent);
 }
 
+/* Claude Code / Codex sessions of this project, to carry on here. */
+.cli-sessions {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.cli-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    color: var(--fg-muted);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.cli-head:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+
+.cli-head .chv {
+    transition: transform var(--dur-fast);
+}
+
+.cli-head .chv.open {
+    transform: rotate(90deg);
+}
+
+.cli-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 420px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+}
+
+.cli-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+}
+
+.cli-row + .cli-row {
+    border-top: 1px solid var(--border);
+}
+
+.cli-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.cli-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.cli-source {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--accent-softer);
+    color: var(--fg-muted);
+}
+
+.cli-meta {
+    margin-top: 2px;
+}
+
+.cli-warn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    color: var(--warning);
+}
+
+.cli-warn svg {
+    flex: none;
+}
+
+.cli-off {
+    flex: none;
+    max-width: 45%;
+    text-align: right;
+}
+
+.cli-more {
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+}
+
 /* ---- Splash, toasts ------------------------------------------------- */
 
 .splash {
@@ -1499,7 +1717,10 @@ button.strip-ctl[aria-expanded="true"] {
 .toasts {
     position: fixed;
     right: 20px;
-    bottom: 20px;
+    top: 60px;
+    /* The two-toast limit fits two 52px rows and an 8px gap without scrolling. */
+    max-height: 112px;
+    width: min(440px, calc(100vw - 40px));
     z-index: 80;
     display: flex;
     flex-direction: column;
@@ -1508,13 +1729,27 @@ button.strip-ctl[aria-expanded="true"] {
     pointer-events: none;
 }
 
+.toast-region {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-end;
+    max-width: 100%;
+}
+
+.toast-region:empty {
+    display: none;
+}
+
 .toast {
+    flex: none;
     pointer-events: auto;
     display: flex;
     align-items: center;
     gap: 10px;
-    max-width: 440px;
-    padding: 11px 10px 11px 15px;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 8px 10px;
     border-radius: 14px;
     background: var(--bg-elev);
     box-shadow: var(--shadow-float);
@@ -1540,9 +1775,21 @@ button.strip-ctl[aria-expanded="true"] {
 }
 
 .toast-msg {
+    display: -webkit-box;
     flex: 1;
     min-width: 0;
+    overflow: hidden;
     overflow-wrap: anywhere;
+    line-height: 18px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.toast-count,
+.toast .link-btn,
+.toast .icon-btn {
+    flex: none;
+    white-space: nowrap;
 }
 
 
@@ -2005,4 +2252,194 @@ button.strip-ctl[aria-expanded="true"] {
 .sc-keys .kbd-row {
     display: inline-flex;
     gap: 3px;
+}
+
+/* ---- MCP servers dialog ---- */
+
+/* Lines up with the icon column of the rows above. */
+.prow .mcp-spacer {
+    width: 16px;
+    flex: none;
+}
+
+/* ---- Project scripts (title line) ----------------------------------- */
+
+/* Run the main script | open the menu: one control, split by a hairline. */
+.script-split {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    border-radius: 8px;
+    transition: background var(--dur-fast);
+}
+
+.script-split:has(.script-split-main):hover,
+.script-split.open:has(.script-split-main) {
+    background: var(--bg-hover);
+}
+
+.script-split .script-split-main {
+    width: auto;
+    max-width: 160px;
+    display: inline-flex;
+    gap: 6px;
+    padding: 0 8px 0 9px;
+    border-radius: 8px 0 0 8px;
+    font-size: 0.893rem;
+    font-weight: 500;
+}
+
+.script-split .script-split-more {
+    width: 20px;
+    border-radius: 0 8px 8px 0;
+    position: relative;
+}
+
+.script-split .script-split-more::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 1px;
+    background: var(--hairline);
+}
+
+.script-split .script-split-main:hover:not(:disabled),
+.script-split .script-split-more:hover:not(:disabled),
+.script-split .script-split-more[aria-expanded="true"] {
+    background: var(--bg-active);
+}
+
+.script-split-label {
+    min-width: 0;
+}
+
+.scripts-note {
+    white-space: normal;
+    line-height: 1.45;
+    padding: 4px 8px 8px;
+}
+
+.scripts-note code {
+    font-size: 0.95em;
+}
+
+/* A script: run it by clicking the row; edit, reorder and delete on hover. */
+.script-row {
+    position: relative;
+}
+
+.script-row .menu-desc {
+    margin-top: 1px;
+}
+
+.script-acts {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    align-items: center;
+    gap: 2px;
+}
+
+/* Room for the actions: the command truncates sooner while they show. */
+.script-row:hover .script-run,
+.script-row:focus-within .script-run,
+.script-row.confirming .script-run {
+    background: var(--bg-hover);
+    padding-right: 84px;
+}
+
+.script-row.confirming .script-run {
+    padding-right: 136px;
+}
+
+.script-row:hover .script-acts,
+.script-row:focus-within .script-acts,
+.script-row.confirming .script-acts {
+    display: flex;
+}
+
+/* ---- Settings → Usage ------------------------------------------------------ */
+
+.usage-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.usage-plan {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.usage-plan-name {
+    font-weight: 500;
+}
+
+.usage-plan-line {
+    margin-top: 3px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.usage-table-wrap {
+    margin-top: 8px;
+    overflow-x: auto;
+}
+
+.usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.893rem;
+}
+
+.usage-table th {
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 0.786rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap;
+}
+
+.usage-table td {
+    padding: 8px;
+    vertical-align: top;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.usage-table .num {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.usage-table tfoot td {
+    font-weight: 600;
+    border-bottom: 0;
+}
+
+.usage-model {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.usage-sub {
+    margin-top: 2px;
+    font-size: 0.786rem;
+    color: var(--fg-muted);
+}
+
+.usage-unknown {
+    color: var(--fg-muted);
+    font-style: italic;
 }

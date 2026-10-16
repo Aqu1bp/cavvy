@@ -529,6 +529,8 @@ export async function unpushedReason(o: { path: string; worktree: string }): Pro
     const wanted = resolve(o.worktree);
     const record = repo.records.find((r) => resolve(r.path) === wanted || canonical(r.path) === canonical(wanted));
     if (!record) throw new RpcError(`${wanted} isn't one of this repository's worktrees.`, "not_found");
+    if (isDir(record.path)) checkIdentity(repo, [record.path]);
+    checkConfigTrust(repo, cwd, isDir(record.path) ? [record.path] : [], "remove");
     const what = record.branch ? `Branch ${record.branch}` : "Its detached HEAD";
     const unchecked = `Couldn't check whether ${record.path}'s commits are on a remote, so it's kept.`;
     const head = record.head;

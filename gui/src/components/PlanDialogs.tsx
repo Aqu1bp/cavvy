@@ -10,7 +10,7 @@ import { IMPLEMENT_MODES, type ImplementMode, type ImplementPlanResult, type Pla
 import { RpcError } from "../lib/rpc";
 import { basename, tildify } from "../lib/format";
 import { canReveal, copyText, revealPath } from "../lib/platform";
-import { activate, app, reportError, rpc, toast } from "../state/app";
+import { activate, app, rpc, toast } from "../state/app";
 import { chooseFolder } from "../state/actions";
 import { planDialog, setPlanDialog } from "../state/ui";
 import { errorOf, type FormError } from "./WorktreeDialogs";
@@ -29,8 +29,8 @@ const home = (p: string) => tildify(p, app.hello?.homeDir);
 /** "Saved …" with what can be done with the file here. */
 export function savedToast(path: string) {
     const actions = [
-        ...(canReveal ? [{ label: "Reveal in Finder", run: () => void revealPath(path).catch(reportError) }] : []),
-        { label: "Copy path", run: () => void copyText(path).then((ok) => ok && toast(`Copied ${home(path)}`, "success")) },
+        ...(canReveal ? [{ label: "Reveal in Finder", run: () => revealPath(path) }] : []),
+        { label: "Copy path", run: () => copyText(path) },
     ];
     toast(`Saved the plan to ${home(path)}`, "success", actions);
 }
@@ -292,7 +292,9 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                                 <div>
                                     Created worktree <span class="mono">{home(made()!.path)}</span> on branch <span class="mono">{made()!.branch}</span>, but {made()!.sessionId ? "its session didn't get the plan" : "the session couldn't start"}: {f().message}
                                 </div>
-                                <div>The worktree is kept, as it's yours now: start again to use it, or remove it from the worktree picker. Nothing was answered in this session.</div>
+                                <div>
+                                    The worktree is kept, as it's yours now. {made()!.sessionId ? "Open its session to inspect what happened and send the plan again." : "Start again to use it, or remove it from the worktree picker."} Nothing was answered in this session.
+                                </div>
                             </div>
                         </div>
                     )}

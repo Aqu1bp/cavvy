@@ -4,7 +4,7 @@ import { ReadTool, WriteTool, EditTool, MultiEditTool, NotebookEditTool } from "
 import { BashTool, BashOutputTool, KillShellTool } from "./bash";
 import { GlobTool, GrepTool, LSTool } from "./search-tools";
 import { WebFetchTool, WebSearchTool } from "./web-tools";
-import { TodoWriteTool, ExitPlanModeTool, AskUserQuestionTool, TaskTool, ListModelsTool } from "./meta-tools";
+import { TodoWriteTool, ExitPlanModeTool, AskUserQuestionTool, RequestSecretTool, TaskTool, ListModelsTool } from "./meta-tools";
 
 export const BUILTIN_TOOLS: Tool<any>[] = [
     TaskTool,
@@ -24,6 +24,7 @@ export const BUILTIN_TOOLS: Tool<any>[] = [
     WebSearchTool,
     TodoWriteTool,
     AskUserQuestionTool,
+    RequestSecretTool,
     ExitPlanModeTool,
 ];
 

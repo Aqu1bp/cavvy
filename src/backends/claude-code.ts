@@ -31,15 +31,19 @@ import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
+import type { PlanLimits } from "../server/protocol";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { APP_TITLE, paths } from "../config/paths";
+import { paths } from "../config/paths";
 import { redact } from "../util/redact";
+import { limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { cliCommandNames } from "../commands/custom";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
+import { claudeMcpPolicy } from "./claude-mcp-policy";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
-/** How long Claude Code may take to connect to the harness's MCP server before the prompt goes without it (changeable for tests). */
+/** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background sub-agents once the prompt is answered (changeable for tests). */
@@ -140,6 +144,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
      * resumed run after one counts the earlier runs' spend again.)
      */
     private spent = new Map<string, number>();
+    /** Each limit window's last status and reset, so "close to the limit" is said once for each (Claude Code repeats it per request). */
+    private limitSeen = new Map<string, string>();
 
     constructor(readonly def: ProviderDef) {}
 
@@ -184,10 +190,11 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined);
+        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined, this.limitSeen);
         this.turns.add(turn);
         try {
-            return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } }))]);
+            const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
+            return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })), ...documents]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
@@ -233,11 +240,17 @@ class ClaudeTurn {
     private actions: string[] = [];
     private sessionId?: string;
     private billedToPlan = false;
+    private resolvedModel?: string;
     private contextTokens?: number;
     private aborted = false;
     private failure?: string;
     private reason?: BackendResult["reason"];
     private signedOut = false;
+    /** The turn failed on the plan's usage limit; when that resets (ms), if Claude Code said. */
+    private limitHit = false;
+    private limits?: PlanLimits;
+    /** This turn said the limit was reached (its error says it again, with when it resets). */
+    private reachedNoted = false;
     /** Control requests sent to Claude Code, waiting for its answer. */
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
@@ -279,6 +292,8 @@ class ClaudeTurn {
         private t: BackendTurn,
         /** What the session it resumes had spent before (its totals include that). */
         private spent?: number,
+        /** The client's: each limit window's last status and reset (limitNews). */
+        private limitSeen = new Map<string, string>(),
     ) {}
 
     /** The session's spend so far, as its last result put it. */
@@ -305,18 +320,20 @@ class ClaudeTurn {
         if (t.appendSystemPrompt) a.push("--append-system-prompt", t.appendSystemPrompt);
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
-        if (!t.trusted) a.push("--setting-sources", "user", "--strict-mcp-config");
+        if (!t.trusted) a.push("--setting-sources", "user");
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
         // Always override external preferences: an unsupported model must not silently switch to Opus.
         const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
+        const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
+        if (mcp.strict) a.push("--strict-mcp-config");
+        if (mcp.warning) this.host.emit({ type: "notice", level: "warn", message: mcp.warning });
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
         a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-        if (t.trusted) a.push("--strict-mcp-config");
         const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
         a.push("--settings", JSON.stringify(settings));
         return a;
@@ -327,6 +344,7 @@ class ClaudeTurn {
     }
 
     private sendUser(content: unknown[]) {
+        if (this.aborted || this.finishing) return;
         this.prompted = true;
         this.busy = true;
         // Its answer is waited for now, not a report turn.
@@ -380,15 +398,27 @@ class ClaudeTurn {
      * it waits while sub-agents run in the background, and for Claude Code's
      * turn with the reports of those that ended.
      */
-    private idle(): boolean {
+    private idlePending?: Promise<boolean>;
+
+    private idle(): Promise<boolean> {
+        // Timer callbacks and the message loop can both check while a snapshot is being captured.
+        return (this.idlePending ??= this.checkIdle().finally(() => {
+            this.idlePending = undefined;
+        }));
+    }
+
+    private async checkIdle(): Promise<boolean> {
         if (this.busy || this.unanswered.size || !this.answered || this.aborted || this.finishing) return false;
-        const queued = this.host.drainQueued();
+        const queued = await this.host.drainQueued();
+        if (this.aborted || this.finishing) return false;
         if (queued.length) {
             // The turn now ends with the queued prompt's result; without one, it failed.
             this.reason = undefined;
             this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
             return false;
         }
+        // A timer may have awaited a snapshot while the message loop received fresh work.
+        if (this.busy || this.unanswered.size || !this.answered) return false;
         const left = this.inBackground();
         if (left.length) {
             // Work it lists after a report came: the report turn is waited for with it, not before it's done.
@@ -407,8 +437,15 @@ class ClaudeTurn {
         if (this.reportsDue) {
             this.settleTimer ??= setTimeout(() => {
                 this.settleTimer = undefined;
+                // A queued prompt may still be waiting for its start snapshot.
+                if (this.idlePending) {
+                    void this.idlePending.then((done) => {
+                        if (done) this.finish();
+                    });
+                    return;
+                }
                 // It didn't come: the run is over, unless something started since (then that's waited for).
-                if (this.busy || this.unanswered.size || this.inBackground().length) this.idle();
+                if (this.busy || this.unanswered.size || this.inBackground().length) void this.idle();
                 else this.finish();
             }, backgroundTiming.settleMs);
             return false;
@@ -422,7 +459,9 @@ class ClaudeTurn {
         this.host.emit({ type: "notice", level: "info", message: `Waiting for ${describeBackground(left)} to report back: the turn ends once Claude Code has the results (Esc stops them).` });
         // Messages the user sends meanwhile go to Claude Code now, not after the wait; and the wait has an end.
         this.pollTimer = setInterval(() => {
-            if (this.idle()) this.finish();
+            void this.idle().then((done) => {
+                if (done) this.finish();
+            });
         }, backgroundTiming.pollMs);
     }
 
@@ -442,40 +481,36 @@ class ClaudeTurn {
         void this.proc.stop(this.aborted ? 1000 : 3000).then(() => this.proc.kill());
     }
 
-    /**
-     * Give Claude Code the harness's MCP server for this run. It goes over
-     * stdin (mcp_set_servers, as the Agent SDK sends it), so the token is in
-     * neither its arguments, which other local users can list, nor the
-     * environment its commands inherit. Claude Code answers once it has
-     * connected (or given up); the harness's tools need no prompt.
-     */
-    private async attach(o: OrchestratorServer) {
+    /** Keep delegation credentials on stdin; native project/user/plugin MCP servers load through Claude Code. */
+    private async attach() {
+        const o = this.t.orchestrator;
+        if (!o || this.t.readOnly) return;
+        const warn = (message: string) => this.host.emit({ type: "notice", level: "warn", message });
+        const servers = {
+            [o.name]: {
+                type: "http",
+                url: o.url,
+                headers: { Authorization: o.authorization },
+                timeout: o.toolTimeoutSec * 1000,
+                alwaysLoad: true,
+                tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
+            },
+        };
         const id = requestId();
         const answered = new Promise<Record<string, any>>((resolve) => this.controls.set(id, resolve));
-        this.proc.send({
-            type: "control_request",
-            request_id: id,
-            request: {
-                subtype: "mcp_set_servers",
-                servers: {
-                    [o.name]: {
-                        type: "http",
-                        url: o.url,
-                        headers: { Authorization: o.authorization },
-                        timeout: o.toolTimeoutSec * 1000,
-                        alwaysLoad: true,
-                        tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
-                    },
-                },
-            },
-        });
+        this.proc.send({ type: "control_request", request_id: id, request: { subtype: "mcp_set_servers", servers } });
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const r = await Promise.race([answered, this.proc.exited.then(() => undefined), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), attachTiming.timeoutMs)))]);
+        let timedOut = false;
+        const r = await Promise.race([answered, this.proc.exited.then(() => undefined), new Promise<undefined>((resolve) => (timer = setTimeout(() => {
+            timedOut = true;
+            resolve(undefined);
+        }, attachTiming.timeoutMs)))]);
         clearTimeout(timer);
         this.controls.delete(id);
         if (this.aborted) return;
-        const why = !r ? "it didn't answer" : r.subtype !== "success" ? String(r.error ?? "it refused") : r.response?.errors?.[o.name];
-        if (why) this.host.emit({ type: "notice", level: "warn", message: `Claude Code couldn't connect to ${APP_TITLE}'s delegation tools (${redact(String(why))}); this turn runs without them.` });
+        // CLI errors may echo arbitrary env/header values; names and static reasons only.
+        const failed = !r || r.subtype !== "success" ? Object.keys(servers) : Object.keys(servers).filter((name) => r.response?.errors?.[name]);
+        if (failed.length) warn(`Claude Code ${timedOut ? "timed out waiting for" : "couldn't connect to"} MCP servers: ${failed.map((name) => redact(name)).join(", ")}.`);
     }
 
     async run(content: unknown[]): Promise<BackendResult> {
@@ -494,9 +529,7 @@ class ClaudeTurn {
         signal.addEventListener("abort", onAbort, { once: true });
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
-        const o = this.t.orchestrator;
-        if (o) void this.attach(o).then(() => this.aborted || this.sendUser(content));
-        else this.sendUser(content);
+        void this.attach().then(() => this.aborted || this.sendUser(content));
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {
@@ -504,18 +537,21 @@ class ClaudeTurn {
                     const ours = this.answers(m);
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
-                    if (this.aborted || this.idle()) break;
+                    if (this.aborted || (await this.idle())) break;
                     continue;
                 }
                 this.onMessage(m);
                 // Between turns, what changes in the background can end the run.
-                if (!this.busy && this.idle()) break;
+                if (!this.busy && (await this.idle())) break;
             }
         } finally {
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
+            this.finishing = true;
             await this.proc.stop(this.aborted ? 1000 : 3000);
+            // Polling may still be recording a queued prompt's start. Finish it before Agent records the end.
+            await this.idlePending;
             if (killTimer) clearTimeout(killTimer);
         }
         // Anything still open never got a result. Sub-agents still working (in the background) stopped with Claude Code.
@@ -602,6 +638,9 @@ class ClaudeTurn {
                 }
                 // No API key behind it: the turn runs on the user's plan, not per-token billing.
                 this.billedToPlan = m.apiKeySource === "none";
+                if (typeof m.model === "string") this.resolvedModel = m.model;
+                // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
+                if (cliCommandNames(m.slash_commands)) this.host.emit({ type: "cli_commands", provider: this.def.id, names: cliCommandNames(m.slash_commands)! });
                 break;
             case "background_tasks_changed":
                 if (Array.isArray(m.tasks)) this.background = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
@@ -734,7 +773,10 @@ class ClaudeTurn {
         if (error === "authentication_failed") {
             this.signedOut = true;
             this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
-        } else if (error === "rate_limit") this.failure = "Your Claude usage limit was reached. Claude Code says when it resets; switch models with /model meanwhile.";
+        } else if (error === "rate_limit") {
+            this.limitHit = true;
+            this.failure = this.limitFailure();
+        }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
         else this.failure = `Claude Code reported an error: ${error}`;
     }
@@ -878,11 +920,29 @@ class ClaudeTurn {
     }
 
     private onRateLimit(info: Record<string, any>) {
+        const parsed = parseClaudeRateLimit(info);
+        if (parsed) {
+            // A sparse rejection must not forget another window that still blocks this turn.
+            this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
+            this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+        }
+        const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
+        // Every status counts, so a warning after the window was fine again (or reset) is news again.
+        const news = typeof info.status === "string" && limitNews(this.limitSeen, String(info.rateLimitType ?? ""), info.status, w?.resetsAt);
         if (info.status !== "rejected" && info.status !== "allowed_warning") return;
-        const when = typeof info.resetsAt === "number" ? ` It resets ${new Date(info.resetsAt * 1000).toLocaleString()}.` : "";
-        const which = typeof info.rateLimitType === "string" ? ` (${info.rateLimitType.replace(/_/g, " ")})` : "";
-        if (info.status === "rejected") this.host.emit({ type: "notice", level: "warn", message: `Your Claude usage limit${which} has been reached.${when}` });
-        else this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude usage limit${which}.${when}` });
+        const which = w ? `${w.label.charAt(0).toLowerCase()}${w.label.slice(1)} ` : "";
+        if (info.status === "rejected") {
+            // The turn's error (it may have come first) says when, now that it's known.
+            if (this.limitHit) this.failure = this.limitFailure();
+            if (this.reachedNoted) return;
+            this.reachedNoted = true;
+            this.host.emit({ type: "notice", level: "warn", message: `Your Claude ${which}usage limit has been reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
+        } else if (news) this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+    }
+
+    /** A turn that failed on the plan's limit: when it resets, if Claude Code said. */
+    private limitFailure(): string {
+        return `Your Claude usage limit was reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")} Switch models with /model meanwhile.`;
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
@@ -901,6 +961,7 @@ class ClaudeTurn {
             // Fast service uses paid credits even on a subscription. A final cooldown
             // must not erase earlier fast spend; the CLI only gives a whole-turn total.
             cost: this.billedToPlan && !this.fastModeObserved ? 0 : spent,
+            billing: this.billedToPlan && !this.fastModeObserved ? "plan" : "api",
         };
         // A turn of Claude Code's own that made no request (a report it passes on from an earlier run): nothing to count.
         const nothing = !ours && !usage.inputTokens && !usage.outputTokens && !usage.cacheReadTokens && !usage.cacheWriteTokens && !spent;
@@ -908,6 +969,10 @@ class ClaudeTurn {
             const mixedPlanCost = this.billedToPlan && this.fastModeObserved && m.fast_mode_state !== "on";
             if (mixedPlanCost) this.host.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
             if (mixedPlanCost) usage.costEstimated = true;
+            const models = Object.keys(m.modelUsage ?? {});
+            // A result can include several models; its init identifies the main one.
+            const served = models.length === 1 ? models[0] : models.find((id) => id === this.resolvedModel);
+            if (served) usage.resolvedModel = `${this.def.id}:${served}`;
             const window = Object.values((m.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).find((x) => typeof x?.contextWindow === "number")?.contextWindow;
             this.host.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });
         }
@@ -963,7 +1028,7 @@ class ClaudeTurn {
             if (r.handoff) return { behavior: "deny", message: `The user is carrying out this plan in another session instead. ${fb ?? ""} Don't continue it here.`, interrupt: true };
             return fb ? { behavior: "deny", message: `The user wants changes to the plan:\n${fb}` } : { behavior: "deny", message: "The user rejected the plan. Wait for them to say how to proceed.", interrupt: true };
         }
-        // The harness's own tools (delegating to other models): what a delegated agent does is checked when it does it.
+        // The harness's own tools: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
         const own = this.t.orchestrator;
         if (own && String(req.tool_name ?? "").startsWith(`mcp__${own.name}__`)) return { behavior: "allow", updatedInput: raw };
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);

@@ -628,6 +628,33 @@ describe("review fixes", () => {
         }
     });
 
+    test("#7 a session being deleted from the worktree keeps it from being removed until it's closed", async () => {
+        const main = repo("rm-deleting");
+        const engine = new Engine({ listModels: async () => [] });
+        const client = { subs: new Set<string>(), send: () => {} };
+        engine.clients.add(client);
+        let release = () => {};
+        const gate = new Promise<void>((r) => (release = r));
+        try {
+            const made = (await engine.handle(client, "projects.createWorktree", { path: main, branch: "wt" })) as { path: string };
+            await engine.handle(client, "session.create", { cwd: made.path });
+            const rt = [...engine.runtimes.values()][0]!;
+            rt.session.push({ role: "user", content: [{ type: "text", text: "hello" }], meta: { kind: "prompt" } });
+            const close = rt.close.bind(rt);
+            rt.close = () => gate.then(close);
+            const deleting = engine.handle(client, "session.delete", { id: rt.id });
+            for (let i = 0; i < 100 && engine.runtimes.size; i++) await Bun.sleep(10);
+            expect(engine.runtimes.size).toBe(0);
+            await expect(engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path })).rejects.toMatchObject({ code: "in_use" });
+            release();
+            await deleting;
+            expect(await engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path })).toEqual({ removed: true });
+        } finally {
+            release();
+            await engine.stop();
+        }
+    });
+
     test("second review #1: trusting a sibling worktree doesn't accept another worktree's own config", async () => {
         const { main, mark, script } = withFilterScript("rm-sibling");
         const a = await createWorktree({ path: main, branch: "a" });
