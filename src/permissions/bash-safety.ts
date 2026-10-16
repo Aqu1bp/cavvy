@@ -588,6 +588,11 @@ export function isReadOnlyCommand(cmd: string): boolean {
             if (a.commands.slice(i + 1).some((d) => d.argv.some((w) => use.test(w)))) return false;
         }
     }
+    // zsh evaluates an integer-typed parameter's value as arithmetic when it's assigned (COLUMNS, LINES,
+    // SECONDS, …), running a command substitution written into it (`COLUMNS='a[$(cmd)]=1'`). A real
+    // substitution already fails the hasSubstitution check above; a quoted-literal one (single quotes) does
+    // not, so reject any assignment whose value carries one.
+    if (a.commands.some((c) => c.argv.some((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w) && /\$\(|`/.test(w.slice(w.indexOf("=") + 1))))) return false;
     // The checks read words as written. An expansion inside other text can be empty and leave text they
     // never saw (an option, say); one standing alone, or before a path, is a value, not hidden text.
     if (a.commands.some((c) => c.expands?.some((i) => !STANDALONE_EXPANSION.test(c.argv[i]!)))) return false;
@@ -598,8 +603,8 @@ export function isReadOnlyCommand(cmd: string): boolean {
 /** A word that's one parameter (`$x`, `${x}`, `$1`, `${#x}`, `$?`), alone or before a path: its value, nothing spliced into text. */
 const STANDALONE_EXPANSION = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\d|[#?$!@*-]|\{#?(?:[A-Za-z_][A-Za-z0-9_]*|\d+|[#?$!@*-])\})(?:\/.*)?$/;
 
-/** Read-only whatever options or operands they're given (none runs a program or writes a file). */
-const GLOB_SAFE = new Set(["cat", "head", "tail", "wc", "ls", "echo", "stat", "du", "df", "grep", "egrep", "fgrep", "cut", "tr", "diff", "cmp", "comm", "nl", "column", "basename", "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "sha1sum", "hexdump", "od", "strings", "true", "false", "which", "whereis", "type", "sleep", "seq", "expr", "cd", "pwd"]);
+/** Read-only whatever options or operands they're given (none runs a program or writes a file). Not stat: zsh/stat's -A names a parameter. */
+const GLOB_SAFE = new Set(["cat", "head", "tail", "wc", "ls", "echo", "du", "df", "grep", "egrep", "fgrep", "cut", "tr", "diff", "cmp", "comm", "nl", "column", "basename", "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "sha1sum", "hexdump", "od", "strings", "true", "false", "which", "whereis", "type", "sleep", "seq", "expr", "cd", "pwd"]);
 
 /**
  * The read-only checks see the words as written, but a glob becomes the
@@ -642,7 +647,11 @@ function mathRuns(c: SimpleCommand): boolean {
     const plain = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && PLAIN_NUMBER.test(words[i]!);
     // bash (4.2+) reads `-v`'s and `-R`'s operand as a name, `a[$(cmd)]` included: it must be a plain name.
     const name = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(words[i]!);
-    if (base === "test" || base === "[") return words.some((w, i) => i + 1 < words.length && words[i + 1] !== "]" && ((w === "-t" && !plain(i + 1)) || ((w === "-v" || w === "-R") && !name(i + 1))));
+    // An operator we can't read (an expansion or glob: `echo -t; test $_ …`) could be `-t`/`-v`/`-R`; if the
+    // operand it would govern is a literal carrying a command substitution, that substitution runs.
+    const hiddenOp = (i: number) => !!(c.expands?.includes(off + i) || c.globbed?.includes(off + i));
+    const inject = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && /\$\(|`/.test(words[i]!);
+    if (base === "test" || base === "[") return words.some((w, i) => i + 1 < words.length && words[i + 1] !== "]" && ((w === "-t" && !plain(i + 1)) || ((w === "-v" || w === "-R") && !name(i + 1)) || (hiddenOp(i) && inject(i + 1))));
     if (base !== "printf") return false;
     const f = words[1] === "--" ? 2 : 1;
     if (f >= words.length) return false;
