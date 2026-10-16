@@ -35,7 +35,7 @@ import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
 import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
-import { parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { limitNews, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { cliCommandNames } from "../commands/custom";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
@@ -142,6 +142,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
      * resumed run after one counts the earlier runs' spend again.)
      */
     private spent = new Map<string, number>();
+    /** Each limit window's last status and reset, so "close to the limit" is said once for each (Claude Code repeats it per request). */
+    private limitSeen = new Map<string, string>();
 
     constructor(readonly def: ProviderDef) {}
 
@@ -186,7 +188,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined);
+        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined, this.limitSeen);
         this.turns.add(turn);
         try {
             const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
@@ -244,6 +246,8 @@ class ClaudeTurn {
     /** The turn failed on the plan's usage limit; when that resets (ms), if Claude Code said. */
     private limitHit = false;
     private limitResetsAt?: number;
+    /** This turn said the limit was reached (its error says it again, with when it resets). */
+    private reachedNoted = false;
     /** Control requests sent to Claude Code, waiting for its answer. */
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
@@ -285,6 +289,8 @@ class ClaudeTurn {
         private t: BackendTurn,
         /** What the session it resumes had spent before (its totals include that). */
         private spent?: number,
+        /** The client's: each limit window's last status and reset (limitNews). */
+        private limitSeen = new Map<string, string>(),
     ) {}
 
     /** The session's spend so far, as its last result put it. */
@@ -891,15 +897,19 @@ class ClaudeTurn {
     private onRateLimit(info: Record<string, any>) {
         const parsed = parseClaudeRateLimit(info);
         if (parsed) this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
-        if (info.status !== "rejected" && info.status !== "allowed_warning") return;
         const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
+        // Every status counts, so a warning after the window was fine again (or reset) is news again.
+        const news = typeof info.status === "string" && limitNews(this.limitSeen, String(info.rateLimitType ?? ""), info.status, w?.resetsAt);
+        if (info.status !== "rejected" && info.status !== "allowed_warning") return;
         const which = w ? `${w.label.charAt(0).toLowerCase()}${w.label.slice(1)} ` : "";
         if (info.status === "rejected") {
             this.limitResetsAt = parsed?.limits.resetsAt;
             // The turn's error (it may have come first) says when, now that it's known.
             if (this.limitHit) this.failure = this.limitFailure();
+            if (this.reachedNoted) return;
+            this.reachedNoted = true;
             this.host.emit({ type: "notice", level: "warn", message: `Your Claude ${which}usage limit has been reached. ${resetSentence(this.limitResetsAt, "Claude Code")}` });
-        } else this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+        } else if (news) this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
     }
 
     /** A turn that failed on the plan's limit: when it resets, if Claude Code said. */

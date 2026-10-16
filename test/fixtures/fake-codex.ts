@@ -43,6 +43,7 @@
 // FAKE_RATE_LIMITS    a JSON file: account/rateLimits/read's result (without it, the method is unknown, as to an
 //                     older Codex); FAKE_LIMIT_UPDATE a JSON file: an account/rateLimits/updated's params, sent as a
 //                     turn starts (shapes from Codex 0.163.0's schema and a capture, test/fixtures/limits)
+//                     (FAKE_LIMIT_REPEAT=n: n times)
 // FAKE_SCENARIO=usage-limit  the turn fails on the plan's limit (codexErrorInfo usageLimitExceeded)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 //
@@ -139,7 +140,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     current = t;
     const finish = (status: string) => notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
-    if (process.env.FAKE_LIMIT_UPDATE) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
+    for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
     if (scenario === "usage-limit") {
         const error = { message: "You've hit your usage limit. Upgrade to Pro or try again later.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
         notify("error", { error, willRetry: false, threadId, turnId });

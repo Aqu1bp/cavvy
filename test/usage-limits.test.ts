@@ -15,7 +15,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
-const { parseClaudeRateLimit, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines } = await import("../src/backends/limits");
+const { parseClaudeRateLimit, parseCodexRateLimits, mergeLimits, resetPhrase, resetSentence, untilText, limitLines, limitNews } = await import("../src/backends/limits");
 const { usageSummary, usageDays, usageBounds, clearUsageCache } = await import("../src/server/usage");
 const { slashCommand } = await import("../src/commands/custom");
 const { meterOf, costText, windowLine, resetLabel, emptyText } = await import("../gui/src/lib/limits");
@@ -376,6 +376,63 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         const key = await runTurn("codex");
         expect(key.limits).toEqual([]);
         expect(received().some((m) => m.method === "account/rateLimits/read")).toBe(false);
+    });
+});
+
+describe("limit notices aren't repeated", () => {
+    const close = (n: string[]) => n.filter((x) => x.includes("You're close to your Claude")).length;
+    const reached = (n: string[]) => n.filter((x) => /usage limit has been reached/.test(x)).length;
+
+    test("Claude Code's warning: once per window and reset, again when its status or reset changes", async () => {
+        const at = soon();
+        process.env.FAKE_RATE_LIMIT_REPEAT = "6";
+        process.env.FAKE_RATE_LIMIT = shifted("claude-warning.json", at);
+        // One per request in a turn: said once.
+        const first = await runTurn("claude-code");
+        expect(close(first.notices)).toBe(1);
+        expect(first.limits.length).toBe(6); // the meter still hears each
+        // The next turn, nothing changed: not again.
+        expect(close((await runTurn("claude-code")).notices)).toBe(0);
+        // Fine again, then close again (same reset): said again.
+        process.env.FAKE_RATE_LIMIT = shifted("claude-normal.json", at);
+        expect(close((await runTurn("claude-code")).notices)).toBe(0);
+        process.env.FAKE_RATE_LIMIT = shifted("claude-warning.json", at);
+        expect(close((await runTurn("claude-code")).notices)).toBe(1);
+        // The window reset (a new reset time): said again.
+        process.env.FAKE_RATE_LIMIT = shifted("claude-warning.json", at + 5 * 3_600_000);
+        expect(close((await runTurn("claude-code")).notices)).toBe(1);
+    });
+
+    test("Claude Code's limit reached: once per turn, and the error still says when", async () => {
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT_REPEAT = "4";
+        process.env.FAKE_RATE_LIMIT = shifted("claude-rejected.json", soon());
+        for (let turn = 0; turn < 2; turn++) {
+            const r = await runTurn("claude-code");
+            expect(reached(r.notices)).toBe(1);
+            expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)/);
+        }
+    });
+
+    test("Codex's limit reached: once per turn however many updates say so", async () => {
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_LIMIT_REPEAT = "4";
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-reached.json", soon());
+        const r = await runTurn("codex");
+        expect(reached(r.notices)).toBe(1);
+        expect(r.limits.length).toBeGreaterThanOrEqual(4);
+    });
+
+    test("limitNews: by window, status and reset", () => {
+        const seen = new Map<string, string>();
+        expect(limitNews(seen, "five_hour", "allowed_warning", 1)).toBe(true);
+        expect(limitNews(seen, "five_hour", "allowed_warning", 1)).toBe(false);
+        expect(limitNews(seen, "seven_day", "allowed_warning", 1)).toBe(true);
+        expect(limitNews(seen, "five_hour", "allowed_warning", 2)).toBe(true);
+        expect(limitNews(seen, "five_hour", "allowed", 2)).toBe(true);
+        expect(limitNews(seen, "five_hour", "allowed_warning", 2)).toBe(true);
+        for (let i = 0; i < 100; i++) limitNews(seen, `w${i}`, "allowed", 1);
+        expect(seen.size).toBeLessThanOrEqual(50);
     });
 });
 

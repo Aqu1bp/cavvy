@@ -37,7 +37,8 @@
 // FAKE_LOG_ENV=1     logs its whole environment at start
 // FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
 //                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
-//                    after the "rate-limit" scenario's error instead
+//                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
+//                    Claude Code sends one per request)
 // FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
@@ -431,7 +432,9 @@ async function turn(content: any[], uuid?: string) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
     }
-    const rateLimit = () => process.env.FAKE_RATE_LIMIT && out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT, "utf-8")), session_id: sessionId });
+    const rateLimit = () => {
+        for (let i = 0; process.env.FAKE_RATE_LIMIT && i < Number(process.env.FAKE_RATE_LIMIT_REPEAT ?? 1); i++) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT, "utf-8")), session_id: sessionId });
+    };
     if (process.env.FAKE_RATE_LIMIT_LATE !== "1") rateLimit();
     if (scenario === "rate-limit") {
         out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "You've hit your limit" }] }, error: "rate_limit", parent_tool_use_id: null, session_id: sessionId });

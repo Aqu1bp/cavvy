@@ -207,3 +207,17 @@ export function limitLines(l: PlanLimits, now = Date.now()): string[] {
     if (l.reached && !l.windows.some((w) => w.reached)) lines.unshift(`Limit reached${l.resetsAt ? ` · resets ${resetPhrase(l.resetsAt, now)}` : ""}`);
     return lines;
 }
+
+/**
+ * Whether a window's status is news: not the status and reset it had when
+ * last reported. `seen` (by window) remembers it, across turns and sessions,
+ * since the CLI repeats it with every request.
+ */
+export function limitNews(seen: Map<string, string>, window: string, status: string, resetsAt: number | undefined): boolean {
+    const now = `${status}:${resetsAt ?? ""}`;
+    const was = seen.get(window);
+    seen.delete(window);
+    seen.set(window, now);
+    if (seen.size > 50) seen.delete(seen.keys().next().value!);
+    return was !== now;
+}
