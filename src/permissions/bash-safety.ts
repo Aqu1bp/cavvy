@@ -335,7 +335,10 @@ export function effectiveArgv(argv: string[]): string[] {
 
 // Variables that only change formatting. Anything else (GIT_EXTERNAL_DIFF,
 // PAGER, LD_PRELOAD, NODE_OPTIONS, ...) can make a harmless command run code.
-const SAFE_ENV = /^(LANG|LANGUAGE|LC_[A-Z]+|TZ|NO_COLOR|FORCE_COLOR|CLICOLOR|CLICOLOR_FORCE|COLUMNS|LINES|TERM)=/;
+// COLUMNS and LINES are integers to zsh, which evaluates their value as
+// arithmetic: `COLUMNS='PATH=0'` empties PATH, `COLUMNS='a[$(cmd)]'` runs cmd.
+// So only a number, written out.
+const SAFE_ENV = /^(?:(?:LANG|LANGUAGE|LC_[A-Z]+|TZ|NO_COLOR|FORCE_COLOR|CLICOLOR|CLICOLOR_FORCE|TERM)=|(?:COLUMNS|LINES)=\d*$)/;
 
 /** True when every leading `NAME=value` (including after time/nice/command) is a formatting-only variable. */
 export function onlySafeAssignments(argv: string[]): boolean {
@@ -588,11 +591,6 @@ export function isReadOnlyCommand(cmd: string): boolean {
             if (a.commands.slice(i + 1).some((d) => d.argv.some((w) => use.test(w)))) return false;
         }
     }
-    // zsh evaluates an integer-typed parameter's value as arithmetic when it's assigned (COLUMNS, LINES,
-    // SECONDS, …), running a command substitution written into it (`COLUMNS='a[$(cmd)]=1'`). A real
-    // substitution already fails the hasSubstitution check above; a quoted-literal one (single quotes) does
-    // not, so reject any assignment whose value carries one.
-    if (a.commands.some((c) => c.argv.some((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w) && /\$\(|`/.test(w.slice(w.indexOf("=") + 1))))) return false;
     // `$_` is the last word of the command before, which the line itself chose: `echo -delete; find . $_`.
     if (a.commands.some((c) => c.expands?.some((i) => /\$\{?_(?![A-Za-z0-9_])/.test(c.argv[i]!)))) return false;
     // The checks read words as written. An expansion inside other text can be empty and leave text they
