@@ -192,7 +192,7 @@ export function McpDialog() {
                             {(s) => {
                                 const st = () => statusLabel(s);
                                 return (
-                                    <button class={`rw-item ${chosen() === s.name ? "on" : ""}`} onClick={() => setChosen(s.name)}>
+                                    <button class={`rw-item ${chosen() === s.name ? "on" : ""}`} aria-pressed={chosen() === s.name} onClick={() => setChosen(s.name)}>
                                         <Plug size={14} />
                                         <span class="truncate">{s.label}</span>
                                         <span class="muted small">{s.source === "project" ? ".mcp.json" : "settings"}</span>

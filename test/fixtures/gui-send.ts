@@ -49,7 +49,7 @@ mock.module("../../gui/src/state/app", () => ({
             composer = mount(value ?? "home");
         }
     },
-    activate: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
+    activate: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
     refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop,
 }));
 mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
