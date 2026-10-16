@@ -56,6 +56,26 @@ describe("Claude native project MCP policy", () => {
         expect(claudeMcpPolicy(cwd, snapshot({ approved: cfg })).settings?.enabledMcpjsonServers).toEqual(["approved"]);
     });
 
+    test("approved server cwd must match Claude's project root and skipped servers get a notice", () => {
+        const tools = join(root, "private-sentinel");
+        mkdirSync(tools);
+        const alias = join(root, "workspace-alias");
+        symlinkSync(cwd, alias);
+        const servers = {
+            elsewhere: { ...config(), cwd: tools },
+            same: { ...config(), cwd },
+            alias: { ...config(), cwd: alias },
+            default: config(),
+        };
+        write(servers);
+        const policy = claudeMcpPolicy(cwd, snapshot(servers));
+        expect(policy.settings?.disabledMcpjsonServers).toEqual(["elsewhere", "harness"]);
+        expect(policy.settings?.enabledMcpjsonServers).toEqual(["alias", "default", "same"]);
+        expect(policy.strict).toBe(false);
+        expect(policy.warning).toMatch(/skipped.*working directory.*ignores server cwd/);
+        expect(policy.warning).not.toContain("private-sentinel");
+    });
+
     for (const [change, update] of Object.entries({
         command: { command: "other" },
         args: { args: ["./other.js"] },

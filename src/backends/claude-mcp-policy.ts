@@ -43,8 +43,12 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
         if (!record(approved.servers)) return fallback("the MCP manager snapshot is invalid");
         const enabled: string[] = [];
         const disabled = new Set([MCP_SERVER_NAME]);
+        let incompatibleCwd = false;
         const file = join(cwd, ".mcp.json");
         if (exists(file)) {
+            // Claude rereads this file after our check: a race requires a concurrent
+            // writer in that narrow window. Accepted for now only in trusted writable
+            // turns; untrusted and read-only turns stay strict.
             const parsed: unknown = JSON.parse(readFileSync(file, "utf-8"));
             if (!record(parsed) || !record(parsed.mcpServers)) return fallback("the project MCP configuration is malformed");
             for (const [name, config] of Object.entries(parsed.mcpServers)) {
@@ -52,13 +56,23 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
                 if (!/^[a-zA-Z0-9_-]+$/.test(name) || ["__proto__", "constructor", "prototype"].includes(name)) return fallback("a project MCP server name cannot be expressed safely");
                 if (!record(config)) return fallback("a project MCP server definition is malformed");
                 const entry = Object.hasOwn(approved.servers, name) ? approved.servers[name] : undefined;
-                if (name !== MCP_SERVER_NAME && entry?.source === "project" && isDeepStrictEqual(config, entry.config)) enabled.push(name);
-                else disabled.add(name);
+                if (name !== MCP_SERVER_NAME && entry?.source === "project" && isDeepStrictEqual(config, entry.config)) {
+                    // Claude ignores server cwd; compare the directory Harness would actually use.
+                    if (realpathSync(entry.config.cwd ?? approved.cwd) === real) enabled.push(name);
+                    else {
+                        disabled.add(name);
+                        incompatibleCwd = true;
+                    }
+                } else disabled.add(name);
             }
         }
         // disabledMcpjsonServers rejects entries in every mode, including -p; enableAll from other settings cannot override it.
         // https://code.claude.com/docs/en/mcp#project-server-approvals-and-workspace-trust
-        return { strict: false, settings: { enabledMcpjsonServers: enabled.sort(), disabledMcpjsonServers: [...disabled].sort() } };
+        return {
+            strict: false,
+            settings: { enabledMcpjsonServers: enabled.sort(), disabledMcpjsonServers: [...disabled].sort() },
+            ...(incompatibleCwd ? { warning: "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd." } : {}),
+        };
     } catch {
         // Paths, file contents and parser errors can contain credentials. Report only a static reason.
         return fallback("project MCP configuration or its directory could not be read");
