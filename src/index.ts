@@ -26,6 +26,7 @@ import { modelRef } from "./providers/types";
 import { findSession, listSessions } from "./agent/session";
 import { pruneFileHistory } from "./agent/checkpoints";
 import { McpManager } from "./mcp/manager";
+import { mcpFingerprint, saveApproval, visible } from "./mcp/approval";
 import { maskKey, redact } from "./util/redact";
 import { bold, padEnd, theme, truncate } from "./ui/ansi";
 import type { OutputFormat } from "./headless";
@@ -489,9 +490,11 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
         }
         await Promise.race([mgr.startAll(), new Promise((r) => setTimeout(r, 20_000))]);
         for (const s of mgr.servers.values()) {
-            const target = s.config.url ?? `${s.config.command ?? ""} ${(s.config.args ?? []).join(" ")}`;
-            const status = s.status === "connected" ? theme.success(`✔ ${s.tools.length} tools · ${s.era ?? ""}`) : s.status === "failed" ? theme.error(`✘ ${(s.error ?? "").split("\n")[0]}`) : theme.warning(s.status);
-            process.stdout.write(`  ${padEnd(bold(s.name), 20)}${padEnd(theme.muted(truncate(target, 50)), 52)}${status}\n`);
+            // As /mcp shows it: secrets masked, invisible characters visible.
+            const d = mgr.describe(s.name)!;
+            const target = d.url ?? [d.command, ...(d.args ?? [])].join(" ");
+            const status = s.status === "connected" ? theme.success(`✔ ${s.tools.length} tools · ${s.era ?? ""}`) : s.status === "failed" ? theme.error(`✘ ${visible((s.error ?? "").split("\n")[0]!).text}`) : theme.warning(s.status);
+            process.stdout.write(`  ${padEnd(bold(d.label), 20)}${padEnd(theme.muted(truncate(target, 50)), 52)}${status}\n`);
         }
         await mgr.closeAll();
         return 0;
@@ -543,7 +546,8 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
                 const f = readJsonForUpdate<{ mcpServers?: Record<string, McpServerConfig> }>(file) ?? {};
                 (f.mcpServers ??= {})[name] = cfg;
                 writeJson(file, f);
-                updateSettings("local", cwd, (s) => (s.enabledMcpjsonServers = [...new Set([...(s.enabledMcpjsonServers ?? []), name])]));
+                // You added it yourself: approved for exactly this configuration, as /mcp would save it.
+                saveApproval(cwd, name, mcpFingerprint(cfg, cwd));
             } catch (e) {
                 die((e as Error).message);
             }

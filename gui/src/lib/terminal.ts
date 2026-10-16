@@ -1,3 +1,5 @@
+import type { Rpc } from "./rpc";
+
 /** RPC-sized pieces without splitting a Unicode surrogate pair during UTF-8 encoding. */
 export function* terminalInputChunks(data: string): Generator<string> {
     for (let start = 0; start < data.length;) {
@@ -54,6 +56,8 @@ export interface SavedTabs {
     /** The panel was showing. */
     open: boolean;
     selected?: string;
+    /** Explicit tab closes still to send after a disconnect (also survive a reload). */
+    closed?: string[];
 }
 
 const TABS_KEY = "harness.terminals";
@@ -89,7 +93,8 @@ export function parseTabs(raw: string | null): SavedTabs {
         && (t.script === undefined || (t.script && typeof t.script.id === "string" && typeof t.script.name === "string")))
         .map((t: any) => ({ id: t.id, cwd: t.cwd, number: t.number, terminal: t.terminal, ...(t.script ? { script: { id: t.script.id, name: t.script.name } } : {}) }));
     const next = Math.max(Number.isSafeInteger(v.next) ? v.next : 1, ...tabs.map((t) => t.number + 1));
-    return { tabs, next, open: v.open === true, ...(isId(v.selected) ? { selected: v.selected } : {}) };
+    const closed = Array.isArray(v.closed) ? [...new Set<string>(v.closed.filter(isId))] : [];
+    return { tabs: tabs.filter((t) => !closed.includes(t.terminal)), next, open: v.open === true, ...(isId(v.selected) ? { selected: v.selected } : {}), ...(closed.length ? { closed } : {}) };
 }
 
 /**
@@ -99,10 +104,51 @@ export function parseTabs(raw: string | null): SavedTabs {
  * window by the server) gets a tab, named after its script if it has one.
  */
 export function restoreTabs(saved: SavedTabs, listed: { id: string; cwd: string; script?: { id: string; name: string } }[]): SavedTabs {
+    listed = listed.filter((t) => !saved.closed?.includes(t.id));
     const live = new Set(listed.map((t) => t.id));
     const tabs = saved.tabs.filter((t) => live.has(t.terminal));
     let next = saved.next;
     const known = new Set(tabs.map((t) => t.terminal));
     for (const t of listed) if (!known.has(t.id)) tabs.push({ id: t.id, cwd: t.cwd, number: next++, terminal: t.id, ...(t.script ? { script: t.script } : {}) });
     return { ...saved, tabs, next };
+}
+
+/** Only explicit closes wait for reconnection; arbitrary offline RPC mutations never do. */
+export class TerminalClosures {
+    private pending: Set<string>;
+    private flushing?: Promise<void>;
+    constructor(ids: string[], private rpc: Pick<Rpc, "call" | "state">, private changed: () => void) {
+        this.pending = new Set(ids);
+    }
+    get ids() { return [...this.pending]; }
+    close(id: string) {
+        this.pending.add(id);
+        this.changed();
+        void this.flush();
+    }
+    flush(): Promise<void> {
+        if (this.flushing) return this.flushing;
+        if (this.rpc.state !== "open") return Promise.resolve();
+        return this.flushing = this.drain().finally(() => { this.flushing = undefined; });
+    }
+    private async drain() {
+        for (const id of this.pending) {
+            try {
+                // Close first: this also cancels a scripts.run still looking up its command.
+                // Attaching first leaves a gap where that lookup can create a shell on the old socket.
+                try { await this.rpc.call("terminal.close", { id }); }
+                catch (e) {
+                    if ((e as { code?: string }).code !== "terminal_not_open") throw e;
+                    // The old socket may still own an already-open shell. Claim it before closing.
+                    await this.rpc.call("terminal.attach", { id });
+                    await this.rpc.call("terminal.close", { id });
+                }
+                this.pending.delete(id);
+            } catch (e) {
+                if ((e as { code?: string }).code !== "terminal_not_open") return;
+                this.pending.delete(id);
+            }
+            this.changed();
+        }
+    }
 }

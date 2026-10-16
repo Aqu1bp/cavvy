@@ -12,7 +12,7 @@ export function FolderPicker() {
     const [path, setPath] = createSignal("");
     const [typed, setTyped] = createSignal("");
     const [listing] = createResource(
-        () => (folderPickerOpen() ? path() || "~" : undefined),
+        () => (app.conn === "open" && folderPickerOpen() ? path() || "~" : undefined),
         (p) => rpc.call("fs.dirs", { path: p }).catch(() => undefined),
     );
     createEffect(

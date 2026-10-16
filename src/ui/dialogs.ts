@@ -137,6 +137,8 @@ export interface InputDialogOptions {
     header?: string[];
     placeholder?: string;
     secret?: boolean;
+    /** With secret: the value as typed, spaces and all (a password rather than a key). */
+    exact?: boolean;
     initial?: string;
     multiline?: boolean;
     color?: (s: string) => string;
@@ -153,6 +155,7 @@ export class InputDialog implements Dialog {
 
     constructor(private o: InputDialogOptions) {
         this.editor.secret = Boolean(o.secret);
+        this.editor.keepSpaces = Boolean(o.exact);
         if (o.initial) this.editor.set(o.initial);
         this.done = new Promise((r) => (this.resolve = r));
     }

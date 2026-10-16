@@ -7,6 +7,8 @@ import { basename, resolve, isAbsolute } from "path";
 import { userInfo } from "os";
 import { childEnv } from "../util/env";
 import { RpcError } from "./rpc-error";
+import { isTerminalReply } from "./terminal-reply";
+export { isTerminalReply } from "./terminal-reply";
 import type { ServerEvent, TerminalInfo, TerminalScript } from "./protocol";
 
 /** A window's connection: where output goes while it's attached. */
@@ -30,10 +32,13 @@ interface Shell {
     script?: TerminalScript;
     process: ReturnType<typeof Bun.spawn>;
     terminal: Bun.Terminal;
+    guard: ReturnType<typeof parentGuard>;
     size: { cols: number; rows: number };
     timer?: ReturnType<typeof setTimeout>;
     /** Recent output (SCROLLBACK), from a clean cut, for a window that attaches. */
     out: string;
+    outState: EscapeState;
+    discard: boolean;
     /** Characters of output so far: `out` ends there. */
     total: number;
     /** Where the output sent to the window ends. */
@@ -151,26 +156,6 @@ export class Typist {
     }
 }
 
-/**
- * What xterm.js sends by itself, answering the shell or reporting focus:
- * device attributes (CSI ? … c, CSI > … c), status (CSI 0 n), cursor position
- * (CSI y;x R, CSI ? y;x R), mode reports (CSI … $ y), focus (CSI I, CSI O),
- * window reports (CSI 4|6|8 ; … t), OSC colour replies and DCS replies. Anything
- * else (keys, Escape, Alt+key, arrows, paste, mouse) is the user.
- */
-const REPLY = /\x1b(?:\[[?>][\d;]*c|\[0n|\[\??\d+;\d+R|\[\??\d+;\d+\$y|\[[IO]|\[[468];\d+;\d+t|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)/y;
-
-/** All of `data` is the terminal's own replies (one or several). */
-export function isTerminalReply(data: string): boolean {
-    let at = 0;
-    while (at < data.length) {
-        REPLY.lastIndex = at;
-        if (!REPLY.test(data)) return false;
-        at = REPLY.lastIndex;
-    }
-    return data.length > 0;
-}
-
 /** The terminal the shell was started from (an outer tmux, an editor's or another app's) isn't this one. */
 const OUTER_TERMINAL = /^(TMUX|TMUX_PANE|STY|TERM_PROGRAM|TERM_PROGRAM_VERSION|TERM_SESSION_ID|COLUMNS|LINES|WINDOWID|ITERM_.*|LC_TERMINAL|LC_TERMINAL_VERSION|VSCODE_.*|KITTY_.*|WEZTERM_.*|ALACRITTY_.*|GHOSTTY_.*|WT_SESSION|WT_PROFILE_ID|KONSOLE_.*|INSIDE_EMACS|ZED_TERM)$/;
 
@@ -194,15 +179,78 @@ export function terminalEnv(): Record<string, string> {
     return env;
 }
 
-/**
- * Where output may be cut, at or after `from`: the start of the next line, so
- * what follows doesn't begin inside an escape sequence; failing that (a very
- * long line), not between the halves of a surrogate pair.
- */
-function cleanCut(text: string, from: number): number {
+/** Parser state at a buffer boundary; control strings can span reads and contain newlines. */
+type EscapeState = "ground" | "escape" | "csi" | "osc" | "oscEscape" | "string" | "stringEscape";
+function advanceEscape(state: EscapeState, char: string): EscapeState {
+    if (char === "\x18" || char === "\x1a" || char === "\x9c") return "ground";
+    if (state === "osc" || state === "oscEscape" || state === "string" || state === "stringEscape") {
+        const osc = state === "osc" || state === "oscEscape";
+        if ((osc && char === "\x07") || ((state === "stringEscape" || state === "oscEscape") && char === "\\")) return "ground";
+        return char === "\x1b" ? (osc ? "oscEscape" : "stringEscape") : (osc ? "osc" : "string");
+    }
+    if (char === "\x1b") return "escape";
+    if (char === "\x9b") return "csi";
+    if (char === "\x9d") return "osc";
+    if ("\x90\x98\x9e\x9f".includes(char)) return "string";
+    if (state === "escape") {
+        if (char === "[") return "csi";
+        if (char === "]") return "osc";
+        if ("PX^_".includes(char)) return "string";
+        return char >= "0" && char <= "~" ? "ground" : "escape";
+    }
+    if (state === "csi") return char >= "@" && char <= "~" ? "ground" : "csi";
+    return "ground";
+}
+
+/** Prefer a line boundary, but never cut inside ANSI controls or a surrogate pair. */
+function cleanCut(text: string, from: number, state: EscapeState = "ground") {
+    if (from === 0 && state === "ground") return { at: 0, state };
     const line = text.indexOf("\n", from);
-    if (line !== -1 && line - from < 4096) return line + 1;
-    return /[\uDC00-\uDFFF]/.test(text[from] ?? "") ? from + 1 : from;
+    const target = line !== -1 && line - from < 4096 ? line + 1 : from;
+    for (let at = 0; at < text.length; at++) {
+        if (at >= target && state === "ground" && !/[\uDC00-\uDFFF]/.test(text[at]!)) return { at, state };
+        state = advanceEscape(state, text[at]!);
+    }
+    return { at: text.length, state };
+}
+
+/** Descendants, deepest first, from ps's numeric-only process table. */
+export function terminalDescendants(table: string, root: number): number[] {
+    const rows = table.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
+    const found = new Set([root]);
+    const descendants: number[] = [];
+    for (let at = 0; at <= descendants.length; at++) {
+        const parent = at === 0 ? root : descendants[at - 1]!;
+        for (const [pid, ppid] of rows) if (Number.isSafeInteger(pid) && pid! > 0 && ppid === parent && !found.has(pid!)) {
+            found.add(pid!);
+            descendants.push(pid!);
+        }
+    }
+    return descendants.reverse();
+}
+
+async function childProcesses(pid: number): Promise<number[]> {
+    try {
+        const ps = Bun.spawn(["/bin/ps", "-axo", "pid=,ppid="], { stdout: "pipe", stderr: "ignore", timeout: 500, killSignal: "SIGKILL" });
+        const table = await new Response(ps.stdout).text();
+        return await ps.exited === 0 ? terminalDescendants(table, pid) : [];
+    } catch { return []; } // Restricted sandboxes can deny process enumeration.
+}
+
+/** A private pipe closes even if the server is SIGKILLed; the interactive shell never inherits it. */
+function parentGuard(pid: number) {
+    return Bun.spawn(["/bin/sh", "-c", `
+        if IFS= read -r action && [ "$action" = done ]; then exit 0; fi
+        kill -HUP -- "-$1" 2>/dev/null
+        sleep 1
+        kill -KILL -- "-$1" 2>/dev/null
+        exit 0
+    `, "terminal-parent-guard", String(pid)], { stdin: "pipe", stdout: "ignore", stderr: "ignore", detached: true });
+}
+
+async function disarmGuard(guard: ReturnType<typeof parentGuard>) {
+    try { guard.stdin.write("done\n"); guard.stdin.end(); } catch {}
+    await guard.exited;
 }
 
 const notOpen = () => new RpcError("That terminal is not open in this window", "terminal_not_open");
@@ -210,6 +258,7 @@ const windowOf = (owner: Owner): string | Owner => owner.window ?? owner;
 
 export class Terminals {
     private shells = new Map<string, Shell>();
+    private stopping = new Set<Promise<void>>();
 
     /** `graceMs`: how long a window's terminals wait for it to come back (tests shorten it). */
     constructor(private o: { graceMs?: number } = {}) {}
@@ -263,7 +312,10 @@ export class Terminals {
             terminal.close();
             throw e;
         }
-        const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, process: proc, terminal, size, out: "", total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
+        let guard: ReturnType<typeof parentGuard>;
+        try { guard = parentGuard(proc.pid); }
+        catch (e) { terminal.close(); proc.kill("SIGKILL"); throw e; }
+        const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, process: proc, terminal, guard, size, out: "", outState: "ground", discard: false, total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
         void proc.exited.then((exitCode) => {
@@ -273,6 +325,8 @@ export class Terminals {
             typist?.cancel();
             terminal.close();
             shellEntry.exitCode = exitCode;
+            const cleanup = disarmGuard(guard).finally(() => this.stopping.delete(cleanup));
+            this.stopping.add(cleanup);
             // Nothing follows: what was held back goes now. With no window attached, it waits for one.
             this.sendRest(id, shellEntry);
             shellEntry.sink?.send({ type: "terminal.exit", id, exitCode });
@@ -288,7 +342,11 @@ export class Terminals {
         s.tail = seen.slice(-7);
         s.out += text;
         s.total += text.length;
-        if (s.out.length > SCROLLBACK * 1.25) s.out = s.out.slice(cleanCut(s.out, s.out.length - SCROLLBACK));
+        if (s.out.length > SCROLLBACK * 1.25) {
+            const cut = cleanCut(s.out, s.out.length - SCROLLBACK, s.outState);
+            s.out = s.out.slice(cut.at);
+            s.outState = cut.state;
+        }
     }
 
     /** What the window hasn't been sent yet: its latest part only (KEEP), if it's fallen far behind. */
@@ -297,11 +355,14 @@ export class Terminals {
         const start = s.total - s.out.length;
         let from = s.sent;
         let note = "";
-        if (s.total - from > KEEP) {
-            from = start + cleanCut(s.out, s.out.length - KEEP);
-            note = `\r\n\x1b[0m[${(from - s.sent).toLocaleString("en-US")} characters of output skipped while the terminal caught up]\r\n`;
+        const skipped = s.total - from > KEEP || from < start;
+        if (skipped || s.discard) {
+            const cut = cleanCut(s.out, Math.max(0, (skipped ? s.out.length - KEEP : from - start)), s.outState);
+            from = start + cut.at;
+            s.discard = cut.state !== "ground";
+            if (skipped) note = `\r\n\x1b[0m[${(from - s.sent).toLocaleString("en-US")} characters of output skipped while the terminal caught up]\r\n`;
         }
-        this.send(id, s, note + s.out.slice(from - start));
+        this.send(id, s, note + s.out.slice(from - start), skipped);
     }
 
     /** `pos`: where in the output the window now is, which it gives back when it attaches again. */
@@ -377,8 +438,12 @@ export class Terminals {
         s.unacked = 0;
         s.holding = false;
         const start = s.total - s.out.length;
-        const fits = have != null && Number(have) >= start && Number(have) <= s.total;
-        s.sent = fits ? Number(have) : start;
+        // A prior reset may have discarded an unfinished control string: that
+        // offset describes a ground-state screen, not the original parser state.
+        const fits = !s.discard && have != null && Number(have) >= start && Number(have) <= s.total;
+        const cut = fits ? undefined : cleanCut(s.out, 0, s.outState);
+        s.discard = cut !== undefined && cut.state !== "ground";
+        s.sent = fits ? Number(have) : start + cut!.at;
         if (s.sent < s.total || !fits) this.send(id, s, s.out.slice(s.sent - start), !fits);
         // A full-screen program draws itself again only when the size changes: the same size again doesn't tell it.
         if (s.exitCode === undefined && s.alt) {
@@ -401,16 +466,40 @@ export class Terminals {
 
     private kill(id: string, s: Shell) {
         this.shells.delete(id);
+        s.sink = undefined;
         if (s.timer) clearTimeout(s.timer);
         if (s.expires) clearTimeout(s.expires);
         s.typist?.cancel();
         if (s.exitCode !== undefined) return;
-        // Closing the PTY hangs up the foreground job as well as its interactive shell.
+        const cleanup = this.terminate(s).finally(() => this.stopping.delete(cleanup));
+        this.stopping.add(cleanup);
+    }
+
+    private async terminate(s: Shell) {
+        const signalPid = (pid: number, sig: NodeJS.Signals) => { try { process.kill(pid, sig); } catch {} };
+        const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+        // Job-control shells use a different group for each job. Capture their
+        // descendants before the shell exits and reparents them, and keep the
+        // shell alive briefly to reap children that ignore the first signal.
+        const children = await childProcesses(s.process.pid);
+        for (const pid of children) signalPid(pid, "SIGHUP");
+        const survivors = new Set(children);
+        const deadline = Date.now() + 1000;
+        while (survivors.size) {
+            // Never signal a PID again once it has exited: it can be reused.
+            for (const pid of survivors) if (!alive(pid)) survivors.delete(pid);
+            if (!survivors.size || Date.now() >= deadline) break;
+            await Bun.sleep(20);
+        }
+        for (const pid of survivors) signalPid(pid, "SIGKILL");
+        if (children.length) await Bun.sleep(20);
+        // PTY hangup and the shell's group also work when ps is unavailable.
         s.terminal.close();
-        s.process.kill("SIGHUP");
-        const kill = setTimeout(() => { if (s.process.exitCode === null) s.process.kill("SIGKILL"); }, 1000);
-        kill.unref();
-        void s.process.exited.then(() => clearTimeout(kill));
+        signalPid(-s.process.pid, "SIGHUP");
+        await Promise.race([s.process.exited, Bun.sleep(1000)]);
+        if (s.process.exitCode === null) signalPid(-s.process.pid, "SIGKILL");
+        await s.process.exited;
+        await disarmGuard(s.guard);
     }
 
     /**
@@ -438,5 +527,6 @@ export class Terminals {
 
     stop() {
         for (const [id, s] of this.shells) this.kill(id, s);
+        return Promise.all([...this.stopping]).then(() => undefined);
     }
 }

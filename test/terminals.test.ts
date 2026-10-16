@@ -96,7 +96,7 @@ describe("embedded terminals", () => {
             shells.close(owner, "hangup");
             await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
         } finally { shells.stop(); }
-    });
+    }, 20_000);
     test("output the window hasn't drawn is held back, keeping its latest part, until it catches up", async () => {
         const shells = new Terminals(); const owner = client();
         const done = join(tempDir("terminal-flood-"), "done");
@@ -259,6 +259,7 @@ describe("terminals that outlive their window's connection", () => {
             shells.ack(back, "reflood", sent());
             await until(() => back.output().includes("__end__\r\n"));
             expect(back.output()).toMatch(/\[[\d,]+ characters of output skipped while the terminal caught up\]/);
+            expect(back.events.filter((e) => e.type === "terminal.data").at(-1)).toMatchObject({ reset: true });
             expect(sent()).toBeLessThan(1_400_000);
         } finally { shells.stop(); }
     }, 20_000);
@@ -364,4 +365,81 @@ describe("a window's tabs across a reload", () => {
         expect(back.next).toBe(5);
         for (const raw of [null, "", "{", "[]", JSON.stringify({ tabs: "no" })]) expect(parseTabs(raw)).toEqual({ tabs: [], next: 1, open: false });
     });
+});
+
+describe("terminal cleanup and replay boundaries", () => {
+    test("the total cap includes detached and exited terminals from other windows", () => {
+        const shells = new Terminals();
+        // Exercise the global admission check without launching 48 interactive shells.
+        const entries = (shells as unknown as { shells: Map<string, { window: string; exitCode?: number }> }).shells;
+        for (let i = 0; i < 48; i++) entries.set(String(i), { window: `window-${i}`, ...(i % 2 ? { exitCode: 0 } : {}) });
+        expect(() => shells.open(client("new-window"), "new", iso.home, 80, 24)).toThrow("Close a terminal");
+        entries.clear();
+    });
+
+    test("shutdown waits for a HUP-ignoring shell, including a tab already closing", async () => {
+        const shells = new Terminals(); const owner = client("cleanup");
+        try {
+            shells.open(owner, "stubborn", iso.home, 80, 24);
+            shells.write(owner, "stubborn", "trap '' HUP; printf '__ready__%s\\n' $$\n");
+            await until(() => /__ready__\d+/.test(owner.output()));
+            const pid = Number(owner.output().match(/__ready__(\d+)/)![1]);
+            shells.close(owner, "stubborn");
+            await shells.stop();
+            expect(gone(pid)).toBe(true);
+        } finally { await shells.stop(); }
+    });
+
+    test.each([
+        { name: "OSC", start: "\\033]0;", end: "\\007" },
+        { name: "DCS with embedded BEL", start: "\\033P1;2|\\007", end: "\\033\\\\" },
+    ])("an oversized $name is discarded through its terminator on replay", async ({ start, end }) => {
+        const shells = new Terminals(); const owner = client("ansi");
+        const done = join(tempDir("terminal-ansi-"), "done");
+        try {
+            shells.open(owner, "ansi", iso.home, 80, 24);
+            shells.write(owner, "ansi", `printf '${start}'; yes control | head -c 1500000; touch '${done}'\n`);
+            shells.drop(owner);
+            await until(() => existsSync(done));
+            await Bun.sleep(100);
+            const firstBack = client("ansi");
+            shells.attach(firstBack, "ansi");
+            expect(firstBack.events[0]).toMatchObject({ reset: true, data: "" });
+            shells.drop(firstBack);
+            const back = client("ansi");
+            shells.attach(back, "ansi", firstBack.pos());
+            expect(back.events[0]).toMatchObject({ reset: true, data: "" });
+            shells.write(back, "ansi", `printf '${end}__%s__\\n' safe\n`);
+            await until(() => back.output().includes("__safe__\r\n"));
+            expect(back.output()).not.toContain("control");
+            expect(back.output()).not.toContain("printf");
+        } finally { await shells.stop(); }
+    }, 15_000);
+
+    test("a killed server leaves no HUP-ignoring terminal shell", async () => {
+        const fixture = join(tempDir("terminal-parent-"), "parent.ts");
+        const module = new URL("../src/server/terminals.ts", import.meta.url).pathname;
+        writeFileSync(fixture, `import { Terminals } from ${JSON.stringify(module)};
+            const shells = new Terminals();
+            const owner = { send(e: any) { if (e.type === 'terminal.data') process.stdout.write(e.data); } };
+            shells.open(owner, 'guarded', process.cwd(), 80, 24);
+            shells.write(owner, 'guarded', "trap '' HUP; printf '__guarded__%s\\\\n' $$\\n");
+            setInterval(() => {}, 1000);
+        `);
+        const parent = Bun.spawn([process.execPath, "--no-env-file", fixture], { cwd: iso.home, env: { ...process.env, SHELL: "/bin/sh" }, stdout: "pipe", stderr: "ignore" });
+        let output = ""; let pid = 0;
+        const reading = (async () => { for await (const chunk of parent.stdout) output += new TextDecoder().decode(chunk); })();
+        try {
+            await until(() => /__guarded__\d+/.test(output));
+            pid = Number(output.match(/__guarded__(\d+)/)![1]);
+            parent.kill("SIGKILL");
+            await parent.exited;
+            await until(() => gone(pid));
+        } finally {
+            parent.kill("SIGKILL");
+            await parent.exited;
+            if (pid && !gone(pid)) process.kill(pid, "SIGKILL");
+            await reading;
+        }
+    }, 15_000);
 });

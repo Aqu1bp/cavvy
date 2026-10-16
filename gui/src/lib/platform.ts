@@ -30,20 +30,21 @@ let memoryWindow: string | undefined;
  * window gets its own (a duplicated tab gets a copy, which the server handles).
  */
 export function windowKey(): string {
+    if (memoryWindow) return memoryWindow;
     let key: string | null | undefined;
     try {
         key = sessionStorage.getItem(WINDOW_KEY);
     } catch {
         key = memoryWindow;
     }
-    if (key && /^[0-9a-f]{32}$/.test(key)) return key;
+    if (key && /^[0-9a-f]{32}$/.test(key)) return memoryWindow = key;
     key = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
     try {
         sessionStorage.setItem(WINDOW_KEY, key);
     } catch {
         memoryWindow = key;
     }
-    return key;
+    return memoryWindow = key;
 }
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

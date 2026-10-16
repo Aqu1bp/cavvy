@@ -4,6 +4,8 @@
 // - HARNESS_HOME points at a fresh temp dir, so ~/.harness is never touched.
 // - HARNESS_NO_KEYCHAIN keeps the credential store off the OS keychain.
 // - Every API-key-like variable is removed from the environment.
+// - CLAUDE_CONFIG_DIR and CODEX_HOME point at fresh empty folders, so nothing
+//   (listing CLI sessions, say) can reach the real Claude Code or Codex stores.
 //
 // This module must not import anything from src.
 
@@ -19,10 +21,20 @@ export function isolate(): { home: string; cleanup: () => void } {
     if (!resolve(home).startsWith(resolve(tmpdir()) + sep)) throw new Error(`refusing to use ${home} as HARNESS_HOME`);
     process.env.HARNESS_HOME = home;
     process.env.HARNESS_NO_KEYCHAIN = "1";
+    const claude = mkdtempSync(join(tmpdir(), "harness-test-claude-"));
+    const codex = mkdtempSync(join(tmpdir(), "harness-test-codex-"));
+    process.env.CLAUDE_CONFIG_DIR = claude;
+    process.env.CODEX_HOME = codex;
+    delete process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
     for (const k of Object.keys(process.env)) {
         if (SECRETISH.test(k) || EXTRA.includes(k)) delete process.env[k];
     }
-    return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+    return {
+        home,
+        cleanup: () => {
+            for (const d of [home, claude, codex]) rmSync(d, { recursive: true, force: true });
+        },
+    };
 }
 
 /** A fresh temp directory (project dirs, .env files, ...). */

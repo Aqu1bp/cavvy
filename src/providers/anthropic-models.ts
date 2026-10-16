@@ -61,6 +61,11 @@ export function anthropicTraits(id: string): AnthropicTraits {
     return TABLE.find(([re]) => re.test(id))?.[1] ?? UNKNOWN;
 }
 
+/** A model's list price when it's one this table knows (not the guess anthropicTraits falls back to). */
+export function anthropicPricing(id: string): AnthropicTraits["pricing"] | undefined {
+    return TABLE.find(([re]) => re.test(id))?.[1].pricing;
+}
+
 /** Known current models, offered when the Models API can't be reached. */
 export const ANTHROPIC_FALLBACK_MODELS: { id: string; name: string }[] = [
     { id: "claude-fable-5-1", name: "Claude Fable 5.1" },

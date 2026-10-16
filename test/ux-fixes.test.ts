@@ -18,7 +18,7 @@ const { setKey } = await import("../src/auth/credentials");
 const { ReadTool, WriteTool } = await import("../src/tools/file-tools");
 const { Session, listSessions, findSession } = await import("../src/agent/session");
 const { stopGroup, KillShellTool } = await import("../src/tools/bash");
-const { transcriptText } = await import("../src/agent/compact");
+const { compactTranscriptText } = await import("../src/agent/compact");
 const { Agent } = await import("../src/agent/agent");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { AutoClassifier } = await import("../src/permissions/classifier");
@@ -340,10 +340,10 @@ describe("compacting a history too long to summarize", () => {
         expect(sent.length).toBeLessThan(32_000 * 3);
         expect(JSON.stringify(session.messages)).toContain("Primary request: fix the login redirect bug");
     });
-    test("transcriptText keeps the first message and the most recent ones", () => {
+    test("compactTranscriptText keeps the first message and the most recent ones", () => {
         const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "FIRST REQUEST" }] } as any];
         for (let i = 0; i < 50; i++) msgs.push({ role: "assistant", content: [{ type: "text", text: `step ${i} ` + "y".repeat(200) }] } as any);
-        const t = transcriptText(msgs, 3000);
+        const t = compactTranscriptText(msgs, 3000);
         expect(t.startsWith("User: FIRST REQUEST")).toBe(true);
         expect(t).toContain("step 49");
         expect(t).not.toContain("step 0 ");
@@ -355,7 +355,7 @@ describe("compacting a history too long to summarize", () => {
         msgs.push({ role: "user", content: [{ type: "text", text: "LATER REQUIREMENT: keep the API stable" }] } as any);
         msgs.push({ role: "assistant", content: [{ type: "text", text: "Reading the files now." }] } as any);
         msgs.push({ role: "user", content: Array.from({ length: 40 }, (_, i) => ({ type: "tool_result", toolCallId: `c${i}`, toolName: "Read", content: `result ${i} ` + "z".repeat(3000) })) } as any);
-        const t = transcriptText(msgs, 20_000);
+        const t = compactTranscriptText(msgs, 20_000);
         expect(t).toContain("FIRST REQUEST");
         expect(t).toContain("LATER REQUIREMENT");
         expect(t).toContain("result 39");

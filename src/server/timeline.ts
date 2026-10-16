@@ -159,12 +159,62 @@ export function applyOp(view: SessionView, op: SessionOp): void {
     }
 }
 
-/** Merge consecutive appends to the same field, so a burst of tokens goes out as one op. */
+/** The turn blocks an op changes or reads (by id), or "all" for one that may touch any; none for the rest. */
+function blocksTouched(op: SessionOp): string[] | "all" {
+    switch (op.op) {
+        case "state":
+        case "agent":
+        case "agent.patch":
+        case "agent.block":
+        case "agent.block.patch":
+        case "agent.append":
+            return [];
+        case "append":
+        case "block.remove":
+            return [op.blockId];
+        case "block.patch":
+            return op.parent ? [op.blockId, op.parent] : [op.blockId];
+        case "block":
+            return op.parent ? [op.block.id, op.parent] : [op.block.id];
+        default:
+            return "all";
+    }
+}
+
+/**
+ * Merge what a batch can say in fewer ops: consecutive appends to the same
+ * field (a burst of tokens), consecutive agent and state patches, and patches
+ * to the same block (a tool's input counter as it streams, a delegate's row
+ * as its sub-agent works). A block's patch is merged into its earlier one
+ * when nothing between touches that block, so the batch builds the same.
+ */
 export function coalesce(ops: SessionOp[]): SessionOp[] {
     const out: SessionOp[] = [];
+    /** Each block's latest patch in `out` that a later one can still be merged into. */
+    const patches = new Map<string, number>();
+    const key = (turnId: string, blockId: string, parent?: string) => `${turnId}\u0000${blockId}\u0000${parent ?? ""}`;
     for (const op of ops) {
+        if (op.op === "block.patch") {
+            const k = key(op.turnId, op.blockId, op.parent);
+            const at = patches.get(k);
+            const into = at !== undefined ? out[at] : undefined;
+            if (into?.op === "block.patch") {
+                out[at!] = { ...into, patch: { ...into.patch, ...op.patch } as Partial<Block> };
+                continue;
+            }
+        }
+        const touched = blocksTouched(op);
+        if (touched === "all") patches.clear();
+        else if (touched.length)
+            for (const [k, i] of patches) {
+                const p = out[i] as Extract<SessionOp, { op: "block.patch" }>;
+                if (touched.includes(p.blockId) || (p.parent !== undefined && touched.includes(p.parent))) patches.delete(k);
+            }
         const last = out[out.length - 1];
-        if (op.op === "append" && last?.op === "append" && last.turnId === op.turnId && last.blockId === op.blockId && last.field === op.field) {
+        if (op.op === "block.patch") {
+            out.push(op);
+            patches.set(key(op.turnId, op.blockId, op.parent), out.length - 1);
+        } else if (op.op === "append" && last?.op === "append" && last.turnId === op.turnId && last.blockId === op.blockId && last.field === op.field) {
             out[out.length - 1] = { ...last, text: last.text + op.text };
         } else if (op.op === "agent.append" && last?.op === "agent.append" && last.id === op.id && last.blockId === op.blockId && last.field === op.field) {
             out[out.length - 1] = { ...last, text: last.text + op.text };
