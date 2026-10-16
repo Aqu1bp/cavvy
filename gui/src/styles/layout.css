@@ -259,11 +259,13 @@
 }
 
 .card:hover .card-more,
+.card:focus-within .card-more,
 .card.menu-open .card-more {
     display: inline-grid;
 }
 
 .card:hover .st,
+.card:focus-within .st,
 .card.menu-open .st {
     visibility: hidden;
 }
@@ -368,11 +370,13 @@
 }
 
 .slim:hover .t,
+.slim:focus-within .t,
 .slim.menu-open .t {
     visibility: hidden;
 }
 
 .slim:hover .slim-acts,
+.slim:focus-within .slim-acts,
 .slim.menu-open .slim-acts {
     display: flex;
 }

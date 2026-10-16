@@ -7,11 +7,13 @@ import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import * as order from "../gui/src/lib/session-order";
 import * as format from "../gui/src/lib/format";
+import { rowMenuKey } from "../gui/src/lib/menu";
 import { sessionStatus } from "../gui/src/lib/session-status";
 import type { SessionSummary } from "../src/server/protocol";
 
 function fixture(count = 60) {
     const nodes: any[] = [];
+    const menus: any[] = [];
     const frames = new Map<number, () => void>();
     const animations: any[] = [];
     let sequence = 0;
@@ -30,19 +32,26 @@ function fixture(count = 60) {
     const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], conn: "open" };
     const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
+    const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
     const renderer = {
         ...solid, effect: solid.createRenderEffect, memo: solid.createMemo, use: (fn: (el: any) => void, el: any) => fn(el),
         createElement: (tag: string) => {
-            const node: any = { tag, props: {}, dataset: {}, focus() {}, select() {},
+            const node: any = { tag, props: {}, dataset: {}, children: [] as any[], focus() {}, select() {},
+                closest: () => ["input", "textarea"].includes(tag) ? node : null,
+                querySelector: () => descendants(node).find((n) => ["card-hit", "slim-hit"].includes(n.props?.class)),
                 getBoundingClientRect: () => ({ top: ids.indexOf(node.dataset.sessionRow) * 100 }),
                 querySelectorAll: () => ids.map((id) => nodes.findLast((n) => n.dataset.sessionRow === id)).filter(Boolean),
                 animate: () => { const a = { paused: false, cancelled: false, pause() { this.paused = true; }, play() { this.paused = false; }, cancel() { this.cancelled = true; } }; animations.push(a); return a; },
             };
             nodes.push(node); return node;
         },
-        createTextNode: (text: string) => ({ text }), insertNode() {},
+        createTextNode: (text: string) => ({ text }), insertNode(parent: any, child: any) { parent.children.push(child); },
         setProp: (node: any, key: string, value: any) => { node.props[key] = value; if (key === "data-session-row") node.dataset.sessionRow = value; },
-        insert: (node: any, value: any) => solid.createRenderEffect(() => { node.content = resolve(value); }),
+        insert: (node: any, value: any) => {
+            const slot: any = {};
+            node.children.push(slot);
+            solid.createRenderEffect(() => { slot.content = node.content = resolve(value); });
+        },
     };
     const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
     const compiled = transformSync(source, { filename: "Sidebar.tsx", parserOpts: { plugins: ["typescript", "jsx"] },
@@ -50,7 +59,7 @@ function fixture(count = 60) {
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "FolderPlus", "Layers", "ListFilter", "MoreHorizontal", "PanelLeftClose", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "ProviderIcon"].map((name) => [name, () => null]));
-    const scope = { renderer, ...solid, ...order, ...format, ...icons, sessionStatus, app, prefs,
+    const scope = { renderer, ...solid, ...order, ...format, ...icons, sessionStatus, rowMenuKey, app, prefs,
         // Count work against layout keys, rather than timing a machine-dependent render.
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
             ...entry, get key() { entryKeyReads++; return entry.key; },
@@ -58,7 +67,7 @@ function fixture(count = 60) {
         setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
         handleFor: () => undefined, isUnread: () => true, activate: setActiveId,
-        Popover: (p: any) => solid.createMemo(() => p.open ? p.children : null),
+        Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         isTauri: false, mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {},
         setDeleteRequest() {}, chooseProject() {}, newSession() {}, openProject() {}, pin() {}, rename() {}, archive() {}, settle() {},
         requestAnimationFrame: (fn: () => void) => { frames.set(++sequence, fn); return sequence; },
@@ -71,7 +80,8 @@ function fixture(count = 60) {
     const nav = nodes.find((n) => n.tag === "nav");
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
-    return { nodes, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, setArchived, setMotion, animations,
+    const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
+    return { nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -90,7 +100,7 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         expect(f.ids[0]).toBe("40");
         expect(f.nodes.some((n) => String(n.props.class).includes("st tone-muted unread"))).toBe(true);
         const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
-        card.props.onContextMenu({ preventDefault() {} });
+        f.contextMenu(card);
         const held = f.ids;
         f.update("50", { status: "waiting" });
         expect(f.ids.slice(0, held.length)).toEqual(held);
@@ -160,7 +170,7 @@ test("deleting a held row releases its lock without reading a removed summary", 
     const f = fixture();
     try {
         const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
-        card.props.onContextMenu({ preventDefault() {} });
+        f.contextMenu(card);
         const removed = f.ids.at(-1)!;
         f.setSessions(f.sessions().filter((s) => s.id !== removed));
         expect(f.ids).not.toContain(removed);
@@ -226,8 +236,8 @@ for (const view of ["date", "project"]) {
             expect(f.nodes.some((n) => n.props.class === "run-group" && n.props["aria-label"] === "2 models: Fix the login redirect")).toBe(true);
             expect(f.nodes.some((n) => n.props.class === "run-head" && n.props.title === run.label)).toBe(true);
             for (const name of ["Model A", "Model B"]) expect(f.nodes.some((n) => Array.isArray(n.content) ? n.content.includes(name) : n.content === name)).toBe(true);
-            const modelCard = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
-            modelCard.props.onContextMenu({ preventDefault() {} });
+            const modelCard = f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith("Session 30\n"));
+            f.contextMenu(modelCard);
             const held = f.ids;
             f.update("50", { status: "waiting", waitingKind: "permission" });
             expect(f.ids.slice(0, held.length)).toEqual(held);
@@ -243,4 +253,59 @@ for (const view of ["date", "project"]) {
             expect(f.ids).not.toContain("31");
         } finally { f.dispose(); }
     });
+}
+
+for (const layout of ["card", "settled", "archived"] as const) {
+    for (const grouped of [false, true]) {
+        test(`${layout} ${grouped ? "run member" : "standalone"} menus preserve keyboard targets and hold`, () => {
+            const f = fixture(3);
+            try {
+                const run = { id: "compare", cwd: "/original", label: "Compare models", model: "mock:a", modelName: "Model A" };
+                f.setSessions(f.sessions().map((s) => ({ ...s, settled: layout === "settled", ...(grouped && s.id !== "0" ? { run } : {}) })));
+                if (layout === "archived") {
+                    f.setArchived(f.sessions().map((s) => ({ ...s, archived: true })));
+                    f.setSessions([]);
+                    f.nodes.find((n) => n.props.title === "View options").props.onClick();
+                    f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
+                }
+                const row = f.nodes.findLast((n) => String(n.props.class).startsWith(layout === "card" ? "card " : "slim ") && n.querySelector()?.props.title?.startsWith("Session 2\n"));
+                expect(row).toBeDefined();
+                const hit = row.querySelector();
+                const more = f.descendants(row).find((n) => n.props?.["aria-haspopup"] === "menu");
+                const menu = f.menus.findLast((p) => p.label === "Session actions" && p.anchor() === more);
+                expect(menu).toBeDefined();
+                f.contextMenu(row);
+                expect(menu.point).toEqual({ x: 40, y: 60 });
+                expect(menu.returnFocus()).toBe(hit);
+                menu.onClose();
+                for (const key of ["ContextMenu", "F10"]) {
+                    let prevented = false;
+                    let stopped = false;
+                    row.props.onKeyDown({ key, shiftKey: key === "F10", target: hit, preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+                    expect(prevented && stopped).toBe(true);
+                    expect(menu.open).toBe(true);
+                    expect(menu.point).toBeUndefined();
+                    expect(menu.returnFocus()).toBe(hit);
+                    expect(more.props["aria-expanded"]).toBe(true);
+                    const held = f.ids;
+                    // Reordering must wait while a standalone or grouped row menu is open.
+                    if (layout === "archived") f.setArchived(f.archived().map((s) => s.id === "0" ? { ...s, updatedAt: -100 } : s));
+                    else f.update("0", { updatedAt: -100 });
+                    expect(f.ids).toEqual(held);
+                    expect(menu.open).toBe(true);
+                    menu.onClose();
+                    expect(menu.open).toBe(false);
+                }
+                more.props.onClick();
+                expect(menu.open).toBe(true);
+                expect(menu.returnFocus()).toBe(more);
+                expect(menu.point).toBeUndefined();
+                const actions = f.descendants({ content: menu.children }).filter((n) => n.tag === "button");
+                expect(actions.length).toBeGreaterThanOrEqual(5);
+                expect(actions.every((n) => n.props.role === "menuitem")).toBe(true);
+                menu.onClose();
+                expect(f.ids[0]).not.toBe("0");
+            } finally { f.dispose(); }
+        });
+    }
 }
