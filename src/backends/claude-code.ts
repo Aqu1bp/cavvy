@@ -341,6 +341,7 @@ class ClaudeTurn {
     }
 
     private sendUser(content: unknown[]) {
+        if (this.aborted || this.finishing) return;
         this.prompted = true;
         this.busy = true;
         // Its answer is waited for now, not a report turn.
@@ -394,15 +395,27 @@ class ClaudeTurn {
      * it waits while sub-agents run in the background, and for Claude Code's
      * turn with the reports of those that ended.
      */
-    private idle(): boolean {
+    private idlePending?: Promise<boolean>;
+
+    private idle(): Promise<boolean> {
+        // Timer callbacks and the message loop can both check while a snapshot is being captured.
+        return (this.idlePending ??= this.checkIdle().finally(() => {
+            this.idlePending = undefined;
+        }));
+    }
+
+    private async checkIdle(): Promise<boolean> {
         if (this.busy || this.unanswered.size || !this.answered || this.aborted || this.finishing) return false;
-        const queued = this.host.drainQueued();
+        const queued = await this.host.drainQueued();
+        if (this.aborted || this.finishing) return false;
         if (queued.length) {
             // The turn now ends with the queued prompt's result; without one, it failed.
             this.reason = undefined;
             this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
             return false;
         }
+        // A timer may have awaited a snapshot while the message loop received fresh work.
+        if (this.busy || this.unanswered.size || !this.answered) return false;
         const left = this.inBackground();
         if (left.length) {
             // Work it lists after a report came: the report turn is waited for with it, not before it's done.
@@ -421,8 +434,15 @@ class ClaudeTurn {
         if (this.reportsDue) {
             this.settleTimer ??= setTimeout(() => {
                 this.settleTimer = undefined;
+                // A queued prompt may still be waiting for its start snapshot.
+                if (this.idlePending) {
+                    void this.idlePending.then((done) => {
+                        if (done) this.finish();
+                    });
+                    return;
+                }
                 // It didn't come: the run is over, unless something started since (then that's waited for).
-                if (this.busy || this.unanswered.size || this.inBackground().length) this.idle();
+                if (this.busy || this.unanswered.size || this.inBackground().length) void this.idle();
                 else this.finish();
             }, backgroundTiming.settleMs);
             return false;
@@ -436,7 +456,9 @@ class ClaudeTurn {
         this.host.emit({ type: "notice", level: "info", message: `Waiting for ${describeBackground(left)} to report back: the turn ends once Claude Code has the results (Esc stops them).` });
         // Messages the user sends meanwhile go to Claude Code now, not after the wait; and the wait has an end.
         this.pollTimer = setInterval(() => {
-            if (this.idle()) this.finish();
+            void this.idle().then((done) => {
+                if (done) this.finish();
+            });
         }, backgroundTiming.pollMs);
     }
 
@@ -518,18 +540,21 @@ class ClaudeTurn {
                     const ours = this.answers(m);
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
-                    if (this.aborted || this.idle()) break;
+                    if (this.aborted || (await this.idle())) break;
                     continue;
                 }
                 this.onMessage(m);
                 // Between turns, what changes in the background can end the run.
-                if (!this.busy && this.idle()) break;
+                if (!this.busy && (await this.idle())) break;
             }
         } finally {
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
+            this.finishing = true;
             await this.proc.stop(this.aborted ? 1000 : 3000);
+            // Polling may still be recording a queued prompt's start. Finish it before Agent records the end.
+            await this.idlePending;
             if (killTimer) clearTimeout(killTimer);
         }
         // Anything still open never got a result. Sub-agents still working (in the background) stopped with Claude Code.

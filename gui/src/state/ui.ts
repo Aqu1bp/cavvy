@@ -24,7 +24,7 @@ export const [contextCardOpen, setContextCardOpen] = createSignal(false);
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */
 export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */
-export const [review, setReview] = createSignal<{ path?: string; scope?: ReviewScope } | undefined>();
+export const [review, setReview] = createSignal<{ path?: string; scope?: ReviewScope; turnId?: number } | undefined>();
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);

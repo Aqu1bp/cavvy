@@ -526,6 +526,7 @@ export function replay(o: ReplayInput): Turn[] {
                         else if (p.type === "text" && p.text.startsWith(STEERING)) {
                             const rec = o.ui.turn(si, index);
                             const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at, index);
+                            t.snapshotId = m.meta?.checkpoint;
                             if (rec?.end) t.endedAt = rec.end;
                             if (rec?.status && rec.status !== "running") t.status = rec.status;
                         }
@@ -535,6 +536,7 @@ export function replay(o: ReplayInput): Turn[] {
                 const rec = o.ui.turn(si, index);
                 const imported = Boolean(m.meta?.imported);
                 const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at, index);
+                t.snapshotId = m.meta?.checkpoint;
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;

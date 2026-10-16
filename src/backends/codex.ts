@@ -544,7 +544,7 @@ class CodexTurn {
                     }
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
-                    const next = followUp ? [followUp] : this.host.drainQueued();
+                    const next = followUp ? [followUp] : await this.host.drainQueued();
                     if (!next.length) break;
                     text = next.join("\n\n");
                 }

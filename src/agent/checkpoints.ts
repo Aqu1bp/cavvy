@@ -200,10 +200,15 @@ export class FileHistory {
         renameSync(tmp, file);
     }
 
+    /** Allocate a snapshot id without changing which checkpoint owns edit-tool copies. */
+    nextId(): number {
+        this.load();
+        return (this.last = Math.max(Date.now(), this.last + 1));
+    }
+
     /** Start the checkpoint for a new user prompt. Ids are increasing timestamps. */
     begin(): number {
-        this.load();
-        this.current = this.last = Math.max(Date.now(), this.last + 1);
+        this.current = this.nextId();
         this.snapped.clear();
         return this.current;
     }
@@ -525,7 +530,7 @@ export async function pruneFileHistory(opts: { keep?: string; now?: number; maxA
             try {
                 const st = await lstat(dir);
                 if (!st.isDirectory()) continue;
-                const touched = Math.max(st.mtimeMs, await mtime(join(dir, "index.jsonl")), await mtime(join(root, project, `${id}.jsonl`)));
+                const touched = Math.max(st.mtimeMs, await mtime(join(dir, "index.jsonl")), await mtime(join(dir, "turn-snapshots.jsonl")), await mtime(join(root, project, `${id}.jsonl`)));
                 if (now - touched < maxAge) continue;
                 await rm(dir, { recursive: true, force: true });
                 open.delete(dir);

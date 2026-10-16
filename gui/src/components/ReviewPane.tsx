@@ -40,6 +40,8 @@ const changeOf = (f: Row): GitFileDiff["change"] => f.change ?? f.status;
 const SCOPE_NOTE: Record<ReviewScope, string> = {
     uncommitted: "Everything that differs from the last commit: staged, unstaged and untracked files, whoever changed them.",
     branch: "Everything on this branch since it left its base, committed or not.",
+    "last-turn": "The last recorded turn’s start and end snapshots. Ignored files are excluded. Changes from other sessions in this folder are included.",
+    turn: "This turn’s start and end snapshots. Ignored files are excluded. Changes from other sessions in this folder are included.",
     harness: "Only what Harness's own edit tools changed in this session. Shell commands and Claude Code or Codex edits aren't included.",
 };
 
@@ -106,6 +108,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
     const saved = lastView.get(p.handle.id);
     const [scope, setScope] = createSignal<ReviewScope>(review()?.scope ?? saved?.scope ?? "uncommitted");
+    const [turnId, setTurnId] = createSignal<number | undefined>(review()?.turnId ?? saved?.turnId);
     const [base, setBase] = createSignal<string | undefined>(saved?.base);
     const [picked, setPicked] = createSignal<string>();
     const [unchecked, setUnchecked] = createSignal(new Set<string>());
@@ -114,13 +117,14 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     createEffect(
         on(review, (r) => {
             if (r?.scope) setScope(r.scope);
+            if (r?.turnId !== undefined) setTurnId(r.turnId);
             setPicked(r?.path);
         }),
     );
-    createEffect(() => lastView.set(id(), { scope: scope(), base: base() }));
+    createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId() }));
 
     const gitScope = (): GitScope => (scope() === "harness" ? "uncommitted" : (scope() as GitScope));
-    const [git, { refetch: refetchGit }] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined));
+    const [git, { refetch: refetchGit }] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined));
     /** Outside a Git repository, Harness's own record is all there is. */
     const noRepo = () => git()?.repo === false;
     const shownScope = (): ReviewScope => (noRepo() ? "harness" : scope());
@@ -162,15 +166,15 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // counts only for the view, base and path it was asked for; the resource keeps its last.
     const unlistedKey = () => {
         const want = picked();
-        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), want]) : undefined;
+        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), want]) : undefined;
     };
     const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
             const key = unlistedKey();
-            return key ? { key, id: id(), scope: gitScope(), base: base(), path: picked()! } : false;
+            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), path: picked()! } : false;
         },
         async (k) => {
-            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path);
+            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId);
             const f = r.files[0];
             return { key: k.key, file: f, error: r.error ?? (f ? undefined : "This file has no changes in this view.") };
         },
@@ -186,15 +190,15 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // Like the unlisted file, its answer counts only for the session, view, base and path it was asked for.
     const fullKey = () => {
         const f = file();
-        return shownScope() !== "harness" && f?.deferred ? JSON.stringify([id(), gitScope(), base(), f.path]) : undefined;
+        return shownScope() !== "harness" && f?.deferred ? JSON.stringify([id(), gitScope(), base(), turnId(), f.path]) : undefined;
     };
     const [full, { refetch: refetchFull }] = createResource(
         () => {
             const key = fullKey();
-            return key ? { key, id: id(), scope: gitScope(), base: base(), path: file()!.path } : false;
+            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), path: file()!.path } : false;
         },
         async (k) => {
-            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path);
+            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId);
             const f = r.files[0];
             return { key: k.key, file: f && !f.deferred ? f : undefined, error: r.error ?? (f ? "Couldn't load this diff." : "This file no longer has changes. Refresh the list.") };
         },
@@ -243,6 +247,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         if (!v) return undefined;
         if (shownScope() === "harness") return v.tracked === false ? "This session isn't saved yet." : "No file changes yet. Edits Harness's tools make show up here as a reviewable diff.";
         if (shownScope() === "branch") return `Nothing has changed since ${branchLabel()} left ${git()?.base?.ref ?? "its base"}.`;
+        if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "This turn’s snapshot is incomplete." : "No file changes in this turn.";
         return "Nothing to commit: the working tree matches the last commit.";
     };
 
@@ -296,9 +301,26 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         options={[
                             { value: "uncommitted", label: "Uncommitted", title: "The working tree against the last commit" },
                             { value: "branch", label: "Branch", title: "Everything since this branch left its base" },
+                            { value: "last-turn", label: "Last turn", title: "Changes during the last recorded turn" },
                             { value: "harness", label: "Harness edits", title: "Only what Harness's edit tools changed in this session" },
                         ]}
                     />
+                    <Show when={git()?.turns?.length}>
+                        <select
+                            class="select review-turn"
+                            aria-label="Review a recorded turn"
+                            value={scope() === "turn" ? String(turnId() ?? "") : ""}
+                            onChange={(e) => {
+                                if (!e.currentTarget.value) return;
+                                setTurnId(Number(e.currentTarget.value));
+                                setScope("turn");
+                                setPicked(undefined);
+                            }}
+                        >
+                            <option value="">Earlier turns</option>
+                            <For each={git()?.turns}>{(t, i) => <option value={String(t.id)}>Turn {i() + 1} · {new Date(t.startedAt).toLocaleString()} · {t.prompt.slice(0, 80)}</option>}</For>
+                        </select>
+                    </Show>
                     <span class="grow" />
                     <Show when={scope() === "branch"}>
                         <span class="review-branch">
@@ -371,6 +393,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </div>
                 </div>
             </Show>
+            <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}><div class="review-note">{git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}{git()?.notes?.join(" ")}</div></Show>
             <div class="review-note">{SCOPE_NOTE[shownScope()]}</div>
         </section>
     );

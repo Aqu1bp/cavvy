@@ -79,7 +79,7 @@ export interface BackendHost {
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
     /** Messages the user typed while the backend was working. */
-    drainQueued(): string[];
+    drainQueued(): string[] | Promise<string[]>;
 }
 
 export interface BackendTurn {
