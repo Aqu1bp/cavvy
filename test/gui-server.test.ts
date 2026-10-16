@@ -1039,6 +1039,20 @@ describe("continuing a Claude Code session", () => {
             expect(v.turns[0]!.blocks[0]).toMatchObject({ t: "imported", source: "Claude Code" });
             expect(v.turns[1]).toMatchObject({ imported: true, prompt: { text: "map the auth module" } });
             expect(v.turns[1]!.prompt!.index).toBeUndefined();
+            // The palette can find an imported reply, including after archive,
+            // then open it at its turn rather than the unpositioned import banner.
+            await c.call("session.archive", { id: sid, archived: true });
+            const found = await c.call("sessions.search", { query: "Here's the map." });
+            const hit = found.hits.find((h: { id: string }) => h.id === sid);
+            expect(hit).toMatchObject({ id: sid, archived: true, role: "assistant", seg: 0, index: 1 });
+            await c.open("session.open", { id: hit.id, cwd: hit.cwd });
+            const opened = c.view(sid).turns;
+            expect(opened[0]!.pos).toBeUndefined();
+            const target = opened.filter((t) => t.pos && (t.pos.seg < hit.seg || (t.pos.seg === hit.seg && t.pos.index <= hit.index))).at(-1)!;
+            expect(target).toMatchObject({ imported: true, pos: { seg: 0, index: 0 }, prompt: { text: "map the auth module" } });
+            expect(texts(target)).toContain("Here's the map.");
+            expect(target.prompt!.index).toBeUndefined();
+            await c.call("session.archive", { id: sid, archived: false });
             await expect(c.call("cliSessions.import", { cwd, source: "claude-code", id: "../etc" })).rejects.toThrow(/session id/);
             const again = await c.call<CliSessionsList>("cliSessions.list", { cwd });
             expect(again.sessions[0]!.harnessId).toBe(sid);

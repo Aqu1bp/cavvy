@@ -13,6 +13,7 @@ const { paths, projectStateDir } = await import("../src/config/paths");
 const { readSegments, replay, STEERING, UiLog } = await import("../src/server/history");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { Engine } = await import("../src/server/engine");
+const { writeImportedSession } = await import("../src/server/cli-import");
 import type { SessionSearchResult, Turn } from "../src/server/protocol";
 
 afterAll(() => iso.cleanup());
@@ -53,6 +54,46 @@ function turnFor(file: string, seg: number, index: number): Turn | undefined {
 }
 
 describe("searching session files", () => {
+    test.each(["claude-code", "codex"] as const)("%s imports keep searchable message positions without enabling rewind", async (source) => {
+        const cwd = tempDir("harness-search-import-");
+        const title = `Imported ${source} conversation`;
+        const key = `import-${source}-search`;
+        const id = writeImportedSession({
+            cwd, title, model: `${source}:default`,
+            entry: { source, id: "native-session", file: join(cwd, "native.jsonl"), cwd, title, named: true, startedAt: 1000, updatedAt: 4000, size: 0, messages: 7, partial: false },
+            transcript: { omitted: 12, turns: [
+                { prompt: `${key} opening`, replies: [`${key} first reply`], actions: [`Bash(${key}-tool-only)`], at: 1000 },
+                { prompt: `${key} actions only`, replies: [], actions: [`Read(${key}-tool-only)`], at: 2000 },
+                { prompt: `${key} command`, command: true, replies: [], actions: [], at: 3000 },
+                { prompt: `${key} last prompt`, replies: [`${key} last reply`], actions: [], at: 4000 },
+            ] },
+        });
+        const file = join(projectStateDir(cwd), `${id}.jsonl`);
+        // The banner adds no message slot; action notes share the assistant's
+        // slot. A prompt without a reply takes one; an action-only turn takes two.
+        for (const [index, start, at, text, query] of [
+            [0, 0, 1000, "opening", "opening"], [1, 0, 1000, "opening", "first reply"],
+            [2, 2, 2000, "actions only", "actions only"], [4, 4, 3000, "command", "command"],
+            [5, 5, 4000, "last prompt", "last prompt"], [6, 5, 4000, "last prompt", "last reply"],
+        ] as const) {
+            const r = await searchSessions(`${key} ${query}`);
+            expect(r.partial).toBe(false);
+            expect(r.hits).toHaveLength(1);
+            const hit = r.hits[0]!;
+            expect(hit).toMatchObject({ id, cwd, title, seg: 0, index, at });
+            const turn = turnFor(file, hit.seg, hit.index)!;
+            expect(turn).toMatchObject({ imported: true, pos: { seg: 0, index: start }, prompt: { text: `${key} ${text}` } });
+            expect(turn.prompt!.index).toBeUndefined();
+            if (index === 4) expect(turn.prompt!.command).toBe(true);
+        }
+        expect((await searchSessions(`${key}-tool-only`)).hits).toEqual([]);
+        // The trailing backend/import metadata must not shift the next live turn.
+        appendFileSync(file, [prompt(`${key} continued`), reply(`${key} new reply`)].map((r) => JSON.stringify(r) + "\n").join(""));
+        const next = (await searchSessions(`${key} new reply`)).hits[0]!;
+        expect(next).toMatchObject({ id, seg: 0, index: 8 });
+        expect(turnFor(file, next.seg, next.index)).toMatchObject({ pos: { seg: 0, index: 7 }, prompt: { text: `${key} continued`, index: 7 } });
+    });
+
     test("finds prompts and replies, with the turn they're in", async () => {
         const s = write([prompt("how do I configure the frobnicator?"), reply("The Frobnicator is configured in settings.toml under [frob]."), prompt("thanks"), reply("Anything else?")]);
         const user = await searchSessions("configure the frob");
