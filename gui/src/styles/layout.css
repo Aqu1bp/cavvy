@@ -2324,3 +2324,85 @@ button.strip-ctl[aria-expanded="true"] {
 .script-row.confirming .script-acts {
     display: flex;
 }
+
+/* ---- Settings → Usage ------------------------------------------------------ */
+
+.usage-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.usage-plan {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.usage-plan-name {
+    font-weight: 500;
+}
+
+.usage-plan-line {
+    margin-top: 3px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.usage-table-wrap {
+    margin-top: 8px;
+    overflow-x: auto;
+}
+
+.usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.893rem;
+}
+
+.usage-table th {
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 0.786rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap;
+}
+
+.usage-table td {
+    padding: 8px;
+    vertical-align: top;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.usage-table .num {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.usage-table tfoot td {
+    font-weight: 600;
+    border-bottom: 0;
+}
+
+.usage-model {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.usage-sub {
+    margin-top: 2px;
+    font-size: 0.786rem;
+    color: var(--fg-muted);
+}
+
+.usage-unknown {
+    color: var(--fg-muted);
+    font-style: italic;
+}

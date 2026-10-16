@@ -72,6 +72,7 @@ import { suggestBashRules } from "../permissions/bash-safety";
 import { trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { expandPath } from "../util/files";
+import type { PlanLimits } from "../server/protocol";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -94,6 +95,10 @@ export type AgentEvent =
     | { type: "compact_start"; auto: boolean }
     | { type: "compact_end"; summary: string }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
+    /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
+    | { type: "limits"; limits: PlanLimits; partial: boolean }
+    /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
+    | { type: "cli_commands"; provider: string; names: string[] }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
@@ -1174,7 +1179,7 @@ export class Agent {
         this.emit({ type: "compact_start", auto: opts.auto });
         const host: BackendHost = {
             emit: (e) => {
-                if (e.type === "notice" || e.type === "retry") this.emit(e);
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
             },
             mode: () => this.o.mode.get(),
             permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),
@@ -1806,8 +1811,8 @@ export class Agent {
         // Fold the child's spend into the parent session's totals.
         let tokens = 0;
         let cost = 0;
-        for (const [m, u] of session.usageByModel) {
-            this.session.recordUsage(m, u.usage, u.cost, u.unknown);
+        for (const u of session.usageRecords) {
+            this.session.recordUsage(u.model, u.usage, u.cost, u.unknown);
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }
