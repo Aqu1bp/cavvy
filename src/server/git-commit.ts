@@ -167,15 +167,18 @@ async function checkOperation(root: string, signal?: AbortSignal) {
     }
 }
 
+/** A path as one literal shell word, safe to paste whatever it contains. */
+const sh = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
+
 /** What to do when a commit was made but the index it prepared couldn't be installed. Git stays locked until one of these is done. */
 function recoverySteps(hash: string, lock: string, index: string, dir: string | undefined): string {
     const short = hash.slice(0, 7);
     return [
         "Git stays locked until you finish this from a terminal:",
         `1. Check that ${short} is on your branch: git branch --contains ${short}`,
-        `2. If it is, install the index Harness prepared (your other staged changes kept): mv "${lock}" "${index}"`,
-        `   If it isn't, discard it (your index stays as it was before the commit): rm "${lock}"`,
-        ...(dir ? [`3. Then remove the recovery files: rm -r "${dir}"`] : []),
+        `2. If it is, install the index Harness prepared (your other staged changes kept): mv ${sh(lock)} ${sh(index)}`,
+        `   If it isn't, discard it (your index stays as it was before the commit): rm ${sh(lock)}`,
+        ...(dir ? [`3. Then remove the recovery files: rm -r ${sh(dir)}`] : []),
     ].join("\n");
 }
 
