@@ -3,7 +3,7 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { ArrowLeft, ArrowUp, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
+import { ArrowLeft, ArrowUp, ChartColumn, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
@@ -15,11 +15,13 @@ import { MODES } from "./ModePicker";
 import { CrumbSep, TitleBar } from "./Header";
 import { SidebarFrame } from "./Sidebar";
 import { Kbd, Segmented, Spinner, Toggle } from "./ui/bits";
+import { UsageView } from "./UsageView";
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Palette }[] = [
     { id: "general", label: "General", icon: SlidersHorizontal },
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "providers", label: "Providers", icon: Plug },
+    { id: "usage", label: "Usage", icon: ChartColumn },
     { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
     { id: "about", label: "About", icon: Info },
 ];
@@ -570,6 +572,7 @@ const INTRO: Record<SettingsTab, string> = {
     general: "Defaults for new sessions, and how Harness behaves.",
     appearance: "How Harness looks on this computer. Changes apply as you pick.",
     providers: "Where the models come from: API keys, and the CLIs signed in on this computer.",
+    usage: "Your plans' limits, and the tokens and cost of your sessions by model.",
     shortcuts: "Keys that work across the app.",
     about: "This build, and where it keeps its data.",
 };
@@ -599,6 +602,9 @@ export function SettingsPage() {
                         </Match>
                         <Match when={tab() === "providers"}>
                             <Providers />
+                        </Match>
+                        <Match when={tab() === "usage"}>
+                            <UsageView />
                         </Match>
                         <Match when={tab() === "shortcuts"}>
                             <Shortcuts />

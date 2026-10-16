@@ -10,7 +10,8 @@ import { activate, app, createSession, handleFor, importCliSession, markSeen, re
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { requestComposerFocus, setAgentFocus, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { clientAction, slashName } from "../lib/commands";
 
 export type { Attachment } from "../lib/attachments";
 
@@ -70,10 +71,10 @@ export async function openProject(path: string) {
 
 /** Run a slash command the GUI handles itself. Returns false when it's the server's (or a prompt). */
 function clientCommand(id: string | undefined, text: string): boolean {
-    const m = text.trim().match(/^\/(\S+)\s*([\s\S]*)$/);
-    if (!m) return false;
-    const [, name = "", args = ""] = m;
-    switch (name.toLowerCase()) {
+    const c = clientAction(text);
+    if (!c) return false;
+    const args = c.args;
+    switch (c.action) {
         case "model":
             setModelPickerOpen(true);
             return true;
@@ -81,7 +82,6 @@ function clientCommand(id: string | undefined, text: string): boolean {
             setModePickerOpen(true);
             return true;
         case "new":
-        case "clear":
             newSession(app.homeCwd);
             return true;
         case "rewind":
@@ -91,8 +91,14 @@ function clientCommand(id: string | undefined, text: string): boolean {
             if (id) setMcpOpen({ focus: args.trim() || undefined });
             return true;
         case "settings":
-        case "config":
             setSettingsTab("general");
+            return true;
+        case "usage":
+            setSettingsTab("usage");
+            return true;
+        case "context":
+            if (id) setContextCardOpen(true);
+            else setSettingsTab("usage");
             return true;
         case "rename":
             if (id && args.trim()) void rpc.call("session.rename", { id, title: args.trim() }).catch(reportError);
@@ -112,8 +118,6 @@ function clientCommand(id: string | undefined, text: string): boolean {
             openAgents();
             return true;
         }
-        default:
-            return false;
     }
 }
 
@@ -148,35 +152,54 @@ export async function exportSession(id: string) {
     }
 }
 
-/** Send from the composer: to the open session, or a new one in the home screen's project. */
-export async function send(text: string, attachments: Attachment[] = []): Promise<boolean | "command"> {
-    let id = app.activeId;
-    // Done here, without sending: what's attached stays in the box.
-    if (text.startsWith("/") && clientCommand(id, text)) return "command";
+/**
+ * Send from the composer: to the open session, or a new one in the home
+ * screen's project. A /word that names no command isn't sent (false keeps it
+ * in the box); the toast offers to send it as a message, and `sent` runs if it is.
+ */
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; to?: { id?: string; cwd?: string } } = {}): Promise<boolean | "command"> {
+    // Where it was typed, even if the user has moved on by the time the toast is clicked.
+    let id = opts.to ? opts.to.id : app.activeId;
+    const cwd = opts.to ? opts.to.cwd : app.homeCwd;
+    let created = false;
+    if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
+    const unknown = (name: string) => {
+        const to = { id, cwd };
+        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => {
+            if (!ok) return;
+            if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
+            opts.sent?.();
+        }) });
+        return false;
+    };
     try {
         if (!id) {
-            const cwd = app.homeCwd;
             if (!cwd) {
                 toast("Choose a project folder first", "warn");
                 return false;
             }
-            const h = await startIn(cwd);
+            // Check before creating a session, so a typo on Home doesn't start one.
+            const command = opts.literal ? undefined : slashName(text);
+            if (command) await rpc.call("commands.list", { cwd, command });
+            const h = await createIn(cwd);
             if (!h) return false;
             id = h.id;
+            created = true;
         }
-        await rpc.call("session.send", { id, text, ...toWire(attachments) });
+        await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
+        // A final server refusal leaves the original Home composer and its draft in place.
+        if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);
         return true;
     } catch (e) {
+        if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
         reportError(e);
         return false;
     }
 }
 
-async function startIn(cwd: string) {
+async function createIn(cwd: string) {
     try {
-        const h = await createSession(cwd, app.homeMode);
-        setApp("activeId", h.id);
-        return h;
+        return await createSession(cwd, app.homeMode);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.
