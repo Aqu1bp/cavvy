@@ -230,7 +230,7 @@ export function seatbeltProfile(p: SandboxPolicy): string {
     const subpaths = (list: string[]) => list.map((x) => `(subpath ${sb(x)})`).join(" ");
     const cli = p.cliConfig ?? [];
     const worktrees = (p.worktrees ?? []).filter((t) => cli.some((c) => isWithin(t, c)));
-    const fixed = [...new Set([...p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors), ...p.unreadable.flatMap(withAncestors), ...worktrees])].filter((f) => p.writable.some((w) => isWithin(f, w)));
+    const fixed = [...new Set([...p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors), ...accountProtectedPaths().flatMap((a) => withAncestors(canonical(a))), ...worktrees])].filter((f) => p.writable.some((w) => isWithin(f, w)));
     return [
         "(version 1)",
         "(allow default)",
@@ -254,7 +254,7 @@ export function seatbeltProfile(p: SandboxPolicy): string {
         // Paths that can't be moved, replaced or repointed, only written inside:
         // the git dirs and `.git` pointer files, the writable directories
         // above them (the workspace roots, say), the worktrees, and unreadable
-        // account/config folders and their writable ancestors. Moved away,
+        // account paths and their writable ancestors. Moved away,
         // edited and moved back, they'd get round the rules above.
         ...(fixed.length ? [`(deny file-write* ${fixed.map((f) => `(literal ${sb(f)})`).join(" ")})`] : []),
         // Submodules (.git/modules/<name>/…) and other worktrees (.git/worktrees/<name>/…)

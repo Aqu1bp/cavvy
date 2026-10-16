@@ -1264,48 +1264,93 @@ function recursiveGrep(args: string[]): boolean {
     return args.some((a, i) => /^-[^-]*[rR]/.test(a) || /^--(recursive|dereference-recursive|directories=recurse)$/.test(a) || ((a === "-d" || a === "--directories") && args[i + 1] === "recurse"));
 }
 
-/** Whether a search uses cwd when no path operand is supplied. Unknown options stay conservative. */
-function searchUsesCwd(program: string, args: string[]): boolean {
+/** Search operands and file-valued options, keeping patterns and formatting values out of path checks. */
+function accountSearchArgs(program: string, args: string[]) {
     if (program === "find") {
         const first = args.find((a) => !["-H", "-L", "-P"].includes(a));
-        return first === undefined || /^[-!(]/.test(first);
+        return { paths: args, files: [], cwd: first === undefined || /^[-!(]/.test(first), flags: args };
     }
     const listing = program === "ls" || program === "tree";
     const grep = /^(grep|egrep|fgrep)$/.test(program);
-    const options = SEARCH_OPTIONS[program === "rg" ? "rg" : grep ? "grep" : ""];
-    const flags = options?.flags ?? (program === "ls" ? "ABCFGHLOPRSTUW@abcdefghiklmnopqrstuwx1" : program === "tree" ? "adfFlpqrstuxACDSQNhv" : "");
-    // GNU ls takes values for these even where BSD ls treats them as flags.
-    const valued = options?.valued ?? (program === "ls" ? "ITw" : program === "tree" ? "LPIo" : "");
+    const valued = program === "rg" ? RG_VALUE_SHORT : grep ? SEARCH_OPTIONS.grep!.valued + "dD" : program === "ls" ? "ITw" : program === "tree" ? "LPIo" : program === "fd" ? "eEtdj" : "";
+    const longValued = program === "rg" ? RG_VALUE_LONG : grep ? SEARCH_OPTIONS.grep!.longValued : new Set(["glob", "iglob", "include", "exclude", "ignore", "hide", "type", "extension", "max-depth", "threads"]);
+    const knownFlags = program === "rg" ? SEARCH_OPTIONS.rg!.flags : grep ? SEARCH_OPTIONS.grep!.flags : program === "ls" ? "ABCFGHLOPRSTUW@abcdefghiklmnopqrstuwx1" : program === "tree" ? "adfFlpqrstuxACDSQNhv" : "";
+    const operands: string[] = [];
+    const files: string[] = [];
+    const flags: string[] = [];
     let pattern = listing;
-    let operands = 0;
     let end = false;
+    let uncertain = false;
+    const value = (name: string, v: string | undefined) => {
+        if (/^(rg|grep|egrep|fgrep|ag|ack)$/.test(program) && ["e", "f", "regexp", "file"].includes(name)) pattern = true;
+        if (v !== undefined && ["f", "file", "exclude-from", "ignore-file", "pre"].includes(name)) files.push(v);
+        if ((name === "d" || name === "directories") && v === "recurse") flags.push("--recursive");
+    };
     for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
-        if (end || !a.startsWith("-") || a === "-") { operands++; continue; }
+        if (end || !a.startsWith("-") || a === "-") { operands.push(a); continue; }
         if (a === "--") { end = true; continue; }
         if (a.startsWith("--")) {
             const eq = a.indexOf("=");
             const name = a.slice(2, eq < 0 ? undefined : eq);
-            if (program === "rg" && name === "files") { pattern = true; continue; }
-            if (name === "regexp" || name === "file") pattern = true;
-            if (options?.longValued.has(name)) {
-                if (eq < 0 && (!grep || !["color", "colour", "context"].includes(name))) i++;
-            } else if (!options?.long.has(name)) return true;
+            flags.push("--" + name);
+            if (program === "rg" && name === "files") pattern = true;
+            if (longValued.has(name)) {
+                // grep's optional long values only follow '='.
+                const v = eq >= 0 ? a.slice(eq + 1) : grep && ["color", "colour", "context"].includes(name) ? undefined : args[++i];
+                value(name, v);
+            } else if (program !== "rg" && !grep) uncertain = true;
+            // rg/grep's unknown long flags do not turn explicit paths into a cwd search.
+            // Other tools retain the conservative fallback for options we cannot parse.
             continue;
         }
         for (let k = 1; k < a.length; k++) {
             const ch = a[k]!;
+            flags.push("-" + ch);
             if (valued.includes(ch)) {
-                if (ch === "e" || ch === "f") pattern = true;
-                if (k + 1 === a.length) i++;
+                value(ch, k + 1 < a.length ? a.slice(k + 1) : args[++i]);
                 break;
             }
-            if (!flags.includes(ch) && !/\d/.test(ch)) return true;
+            if (!knownFlags.includes(ch) && !/\d/.test(ch)) uncertain = true;
         }
     }
+    const paths = operands.slice(pattern ? 0 : 1);
     // Plain grep without files reads stdin; recursive grep defaults to cwd.
-    if (grep && !recursiveGrep(args)) return false;
-    return operands <= (pattern ? 0 : 1);
+    const cwd = (!grep || recursiveGrep(flags)) && (uncertain || paths.length === 0);
+    return { paths, files, cwd, flags };
+}
+
+/** Copying or archiving a directory reads its descendants even without naming them. */
+function accountRecursiveRead(program: string, args: string[]): boolean {
+    if (["rsync", "ditto", "cpio", "pax", "rclone"].includes(program)) return true;
+    if (program === "tar") return args.some((a, i) => /^--(create|append|update)$/.test(a) || (/^-[^-]*[cru]/.test(a)) || (i === 0 && /^[a-zA-Z]+$/.test(a) && /[cru]/.test(a)));
+    const flags = program === "cp" ? "rRa" : program === "zip" || program === "scp" ? "r" : "";
+    return (!!flags && args.some((a) => a.startsWith("-") && !a.startsWith("--") && [...a.slice(1)].some((c) => flags.includes(c))))
+        || (program === "cp" && args.some((a) => ["--recursive", "--archive"].includes(a)));
+}
+
+/** Copy/archive exclusion patterns are not paths, even when they look like cwd globs. */
+function accountCopyPaths(args: string[]): string[] {
+    const paths: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (a === "--") { paths.push(...args.slice(i + 1)); break; }
+        if (/^--(exclude|include)(=|$)/.test(a)) {
+            if (!a.includes("=")) i++;
+        } else paths.push(a);
+    }
+    return paths;
+}
+
+/** A later stage can turn a name-only listing into reads or execution. */
+function accountListingConsumer(commands: SimpleCommand[], index: number): boolean {
+    for (let i = index + 1; i < commands.length && commands[i]!.after === "|"; i++) {
+        const c = commands[i]!;
+        const words = analyzeCommand(c.text.replace(/^[\s({]+/, "")).commands[0]?.argv ?? [];
+        if (runLevels(words).some(({ argv }) => runs(argv[0], "xargs", "parallel", ...SHELLS))) return true;
+        if (words[0] === "while" && words.slice(1).some((w) => w === "read")) return true;
+    }
+    return false;
 }
 
 /** Account directories are private even when a command has an explicit allow rule. */
@@ -1328,27 +1373,39 @@ export function accountTarget(cmd: string, cwd: string): boolean {
             files.some((a) => f === a || ((contents || (at >= 0 && !namesOnly)) && isInside(a, f))));
     };
     let dirs = [cwd];
-    for (const c of analysis.commands) {
-        const argv = effectiveArgv(c.argv);
-        // Inspect embedded paths too (python -c 'open("/private/account/auth.json")').
-        const texts = [c.text, ...argv].flatMap(spellings);
-        if ([...folders, ...files].some((f) => texts.some((t) => t.includes(f)))) return true;
-        const program = argv[0]?.split("/").at(-1) ?? "";
+    for (const [index, c] of analysis.commands.entries()) {
+        const levels = runLevels(c.argv);
+        const argv = effectiveArgv(levels.at(-1)?.argv ?? c.argv);
+        // Wrappers can open files of their own (xargs -a, time -o). Keep their operands.
+        const wrappers = levels.flatMap((l, i) => i + 1 < levels.length ? l.argv.slice(0, Math.max(1, l.argv.length - levels[i + 1]!.argv.length)) : []);
+        const program = programNames(argv[0] ?? "").at(-1)!;
         const search = /^(rg|grep|egrep|fgrep|ag|ack|find|fd|ls|tree)$/.test(program);
         const args = argv.slice(1);
+        const parsed = search ? accountSearchArgs(program, args) : undefined;
+        const recursive = accountRecursiveRead(program, args);
+        const operands = parsed?.paths ?? (recursive ? accountCopyPaths(args) : args);
+        const flags = parsed?.flags ?? args;
+        // Inspect embedded paths too (python -c 'open("/private/account/auth.json")').
+        // Search patterns and option values are not filesystem operands.
+        const texts = (parsed || recursive ? [...wrappers, ...operands, ...(parsed?.files ?? [])] : [c.text, ...argv]).flatMap(spellings);
+        if ([...folders, ...files].some((f) => texts.some((t) => t.includes(f)))) return true;
         const executes = program === "find" ? args.some((a) => /^-(exec|execdir|ok|okdir|delete)$/.test(a))
-            : program === "fd" && args.some((a) => /^-[^-]*[xX]/.test(a) || /^--exec(?:-batch)?(=|$)/.test(a));
-        const namesOnly = /^(ls|tree)$/.test(program) || (/^(find|fd)$/.test(program) && !executes) || (program === "rg" && args[0] === "--files");
-        const contents = executes || (/^(rg|ag|ack)$/.test(program) && !namesOnly) || (/^(grep|egrep|fgrep)$/.test(program) && recursiveGrep(args));
+            : program === "fd" ? flags.some((a) => /^-[xX]$|^--exec(?:-batch)?$/.test(a))
+            : program === "rg" && flags.includes("--pre");
+        const namesOnly = !executes && (/^(ls|tree|find|fd)$/.test(program) || (program === "rg" && flags.includes("--files")));
+        const contents = executes || (namesOnly && accountListingConsumer(analysis.commands, index)) || recursive
+            || (/^(rg|ag|ack)$/.test(program) && !namesOnly) || (/^(grep|egrep|fgrep)$/.test(program) && recursiveGrep(flags));
         if (dirs.some((d) => touches(d, d))) return true;
-        if (search && searchUsesCwd(program, args) && dirs.some((d) => touches(d, d, true, contents, namesOnly))) return true;
-        for (const word of args) {
-            if (dirs.some((d) => touches(word, d, search, contents, namesOnly))) return true;
+        if (parsed?.cwd && dirs.some((d) => touches(d, d, true, contents, namesOnly))) return true;
+        for (const word of operands) {
+            if (dirs.some((d) => touches(word, d, search || contents, contents, namesOnly))) return true;
+        }
+        for (const word of [...wrappers, ...(parsed?.files ?? [])]) {
+            if (dirs.some((d) => touches(word, d))) return true;
         }
         if (analysis.redirects.some((p) => dirs.some((d) => touches(p, d)))) return true;
-        if ((argv[0] === "cd" || argv[0] === "pushd") && argv[1] && settledCd(argv, c.text)) {
-            dirs = [...new Set([...dirs, ...dirs.map((d) => expandPath(argv[1]!, d))])].slice(0, 32);
-        }
+        const to = cdDestination(effectiveArgv(c.argv), c.text);
+        if (to !== undefined) dirs = [...new Set([...dirs, ...dirs.map((d) => expandPath(to, d))])].slice(0, 32);
     }
     return analysis.redirects.some((p) => dirs.some((d) => touches(p, d)));
 }
@@ -1553,8 +1610,8 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     for (const c of commands) {
         const argv = effectiveArgv(c.argv);
         if (argv[0] === "cd" || argv[0] === "pushd") {
-            const to = argv[1];
-            if (!settledCd(argv, c.text)) dirs = null;
+            const to = cdDestination(argv, c.text);
+            if (to === undefined) dirs = null;
             else if (dirs) dirs = [...new Set([...dirs, ...dirs.map((d) => resolve(d, to!))])];
             if (dirs && dirs.length > 32) dirs = null;
             continue;
@@ -1725,14 +1782,18 @@ export function headBranch(dir: string): string | undefined {
  * `cd -`, `cd ~x`, `cd pri*`, `pushd +1` (the directory stack), or zsh's
  * `cd old new` (which swaps text in the current path).
  */
-function settledCd(argv: string[], text: string): boolean {
-    const to = argv[1];
-    return to !== undefined && argv.length === 2 && !/^[-~+]|\$|[*?[]/.test(to) && !/\$/.test(text);
+function cdDestination(argv: string[], text: string): string | undefined {
+    if (argv[0] !== "cd" && argv[0] !== "pushd") return undefined;
+    let i = 1;
+    while (/^-[PL]+$/.test(argv[i] ?? "")) i++;
+    if (argv[i] === "--") i++;
+    const to = argv[i];
+    return to !== undefined && argv.length === i + 1 && !/^[-~+]|\$|[*?[]/.test(to) && !/\$/.test(text) ? to : undefined;
 }
 
 /**
  * The commands of a command line with the directory each runs in, following
- * `cd`. null: a `cd` the text doesn't settle (see settledCd). `programs`: what
+ * `cd`. null: a `cd` the text doesn't settle (see cdDestination). `programs`: what
  * each one runs, through its wrappers (runLevels). `cd` is matched exactly:
  * `CD x` is /usr/bin/cd, which changes the directory of its own process only.
  */
@@ -1742,7 +1803,8 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: 
     for (const c of analyzeCommand(cmd).commands) {
         const argv = effectiveArgv(c.argv);
         if (argv[0] === "cd" || argv[0] === "pushd") {
-            if (dir !== undefined) dir = dir === null || !settledCd(argv, c.text) ? null : resolve(dir, argv[1]!);
+            const to = cdDestination(argv, c.text);
+            if (dir !== undefined) dir = dir === null || to === undefined ? null : resolve(dir, to);
             continue;
         }
         out.push({ argv, programs: runLevels(c.argv).map((l) => l.argv), dir, text: c.text });

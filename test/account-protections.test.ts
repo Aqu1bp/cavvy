@@ -172,11 +172,28 @@ test("searches with explicit unrelated targets do not inherit cwd account contai
         `ls '${unrelated}'`, `ls -la '${unrelated}'`, `tree '${unrelated}'`, `find '${unrelated}' -type f`,
         `rg marker '${unrelated}'`, `rg -m 2 marker '${unrelated}'`, `rg -e marker '${unrelated}'`, `rg --context 2 marker '${unrelated}'`, `rg --color always marker '${unrelated}'`, `rg --files --color never '${unrelated}'`,
         `grep -R marker '${unrelated}'`, `fd marker '${unrelated}'`,
+        `rg -g '*.ts' marker '${unrelated}'`, `rg --glob '*.ts' --stats marker '${unrelated}'`,
+        `rg --iglob '*.TS' -t ts marker '${unrelated}'`, `rg --glob='*.ts' --type=ts marker '${unrelated}'`,
+        `rg --stats marker '${unrelated}'`, `env rg --stats -g '*.ts' marker '${unrelated}'`,
+        `grep -R --include '*.ts' --exclude '*.json' marker '${unrelated}'`,
+        `grep -R --include='*.ts' --exclude='*.json' marker '${unrelated}'`,
+        `ls --ignore '*.ts' '${unrelated}'`, `rsync -a --exclude '*.ts' '${unrelated}' /tmp/copy`,
+        `tar -cf /tmp/copy.tar --exclude '*.ts' '${unrelated}'`,
     ]) expect({ command, blocked: accountTarget(command, outside) }).toEqual({ command, blocked: false });
-    for (const command of ["ls", "ls -la", "ls -w 80", "ls -T 8", "tree", "find -type f", "rg marker", "rg -g '*.ts' marker", "rg -e marker", "rg --files", "rg --context 2 marker", "rg --color always marker", "rg --files --color never", "grep -R marker", "fd marker"]) {
+    for (const command of ["ls", "ls -la", "ls -w 80", "ls -T 8", "tree", "find -type f", "rg marker", "rg -g '*.ts' marker", "rg -e marker", "rg --files", "rg --context 2 marker", "rg --color always marker", "rg --files --color never", "grep -R marker", "fd marker", "ag --depth 2 marker", "ack --max-count 2 marker", "fd --max-results 1 marker", "ls --width 80", "tree --sort name"]) {
         expect(accountTarget(command, outside)).toBe(true);
     }
     for (const command of [`ls '${folder}'`, `rg marker '${outside}'`, `find '${outside}' -type f`, `ls '${unrelated}' '${folder}'`]) {
         expect(accountTarget(command, outside)).toBe(true);
     }
+});
+
+
+test("recursive copies and archives cannot read a folder containing a named account", () => {
+    for (const command of [
+        "cp -r . /tmp/copy", "cp -R . /tmp/copy", "cp -a . /tmp/copy", "cp --recursive . /tmp/copy",
+        "rsync -a . /tmp/copy", "tar cf /tmp/copy.tar .", "tar -rf /tmp/copy.tar .", "tar --update -f /tmp/copy.tar .",
+        "zip -r /tmp/copy.zip .", "ditto . /tmp/copy", "cpio -o .", "pax -w .", "scp -r . host:copy", "rclone copy . remote:copy",
+    ]) expect({ command, blocked: accountTarget(command, outside) }).toEqual({ command, blocked: true });
+    expect(accountTarget("cp source.ts /tmp/copy", outside)).toBe(false);
 });
