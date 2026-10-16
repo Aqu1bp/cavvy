@@ -165,11 +165,12 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
         const to = { id, cwd };
-        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => {
-            if (!ok) return;
+        // The toast stays, with its action, until the send succeeds.
+        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: async () => {
+            if (!(await send(text, attachments, { literal: true, to }))) return false;
             if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
             opts.sent?.();
-        }) });
+        } });
         return false;
     };
     try {

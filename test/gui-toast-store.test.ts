@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { toast, toasts, pauseToast, dismissToast, runToastAction, rpc } from "../gui/src/state/app";
-import { deleteSession } from "../gui/src/state/actions";
+import { deleteSession, send } from "../gui/src/state/actions";
 import { UNDO_DELETE_MS } from "../gui/src/lib/toasts";
-import type { Credentials } from "../gui/src/lib/rpc";
+import { RpcError, type Credentials } from "../gui/src/lib/rpc";
 import { Socket } from "./helpers/gui-socket";
 
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -185,6 +185,52 @@ test("pending actions neither expire nor run twice, and dismiss after success", 
     resolve();
     await pending;
     expect(toasts.some((t) => t.id === id)).toBe(false);
+});
+
+test("Send as message stays pending, retains a failed retry, and dismisses after success", async () => {
+    let pending = Promise.withResolvers<any>();
+    let sent = 0;
+    const call = spyOn(rpc, "call")
+        .mockImplementation(() => pending.promise)
+        .mockRejectedValueOnce(new RpcError("Unknown command /oops", "unknown_command"));
+    try {
+        expect(await send("/oops", [], { to: { id: "original" }, sent: () => sent++ })).toBe(false);
+        const notice = toasts.find((t) => t.action?.label === "Send as message")!;
+        expect(notice).toBeDefined();
+        const action = notice.action;
+        const sending = runToastAction(notice.id);
+        await runToastAction(notice.id);
+        advance(20_000);
+        expect(toasts.find((t) => t.id === notice.id)?.running).toBe(true);
+        expect(call).toHaveBeenCalledTimes(2);
+        expect(call).toHaveBeenLastCalledWith("session.send", expect.objectContaining({ id: "original", text: "/oops", literal: true }));
+        expect(sent).toBe(0);
+
+        pending.reject(new Error("Disconnected"));
+        await sending;
+        const failed = toasts.find((t) => t.id === notice.id)!;
+        expect(failed).toBeDefined();
+        expect(failed.level).toBe("error");
+        expect(failed.running).toBe(false);
+        expect(failed.action).toBe(action);
+        expect(sent).toBe(0);
+
+        pending = Promise.withResolvers<any>();
+        const retrying = runToastAction(notice.id);
+        await runToastAction(notice.id);
+        advance(20_000);
+        expect(toasts.find((t) => t.id === notice.id)?.running).toBe(true);
+        expect(call).toHaveBeenCalledTimes(3);
+        expect(call).toHaveBeenLastCalledWith("session.send", expect.objectContaining({ id: "original", text: "/oops", literal: true }));
+        expect(sent).toBe(0);
+        pending.resolve({ queued: false });
+        await retrying;
+        expect(toasts.some((t) => t.id === notice.id)).toBe(false);
+        await runToastAction(notice.id);
+        expect(sent).toBe(1);
+    } finally {
+        call.mockRestore();
+    }
 });
 
 test("both running actions queue a new toast instead of losing it", async () => {
