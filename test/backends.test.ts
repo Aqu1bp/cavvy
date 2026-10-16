@@ -79,6 +79,8 @@ interface Opts {
     model?: Partial<ModelInfo>;
     mode?: PermissionMode;
     settings?: any;
+    approvedMcpServers?: () => Record<string, import("../src/config/settings").McpServerConfig>;
+    readOnly?: boolean;
     ask?: (req: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>;
     ui?: any;
     /** The user trusts the folder (otherwise it's only trusted implicitly, as a folder with nothing to protect is). */
@@ -104,6 +106,8 @@ async function makeAgent(o: Opts) {
         model: { provider: o.provider, id: "default", ...o.model },
         client,
         settings: () => settings,
+        approvedMcpServers: o.approvedMcpServers,
+        readOnly: o.readOnly,
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -1530,4 +1534,102 @@ describe("fast mode backend wiring", () => {
             }
         });
     }
+});
+
+
+describe("Claude Code MCP approval boundary", () => {
+    const payloads = () => received().filter((m) => m.request?.subtype === "mcp_set_servers").map((m) => m.request.servers);
+    const sentinel = "private-env-sentinel-123";
+    const config = () => ({ command: process.execPath, args: ["--no-env-file", join(import.meta.dir, "fixtures/mcp-stdio-server.ts")], env: { MCP_FIXTURE_ERA: "legacy", SENTINEL: sentinel } });
+
+    for (const trusted of [false, true]) for (const readOnly of [false, true]) {
+        test(`strict MCP for trusted=${trusted}, readOnly=${readOnly}, with no manager`, async () => {
+            const { run } = await makeAgent({ provider: "claude-code", trusted, readOnly });
+            await run("hello");
+            expect(starts()[0].argv).toContain("--strict-mcp-config");
+            expect(payloads()).toEqual([]);
+        });
+    }
+
+    test("extra variadic MCP configs cannot bypass the manager in strict mode", async () => {
+        registry.saveAgentConfig("claude-code", { path: claudeBin, args: ["--mcp-config", "secret-config-a", "secret-config-b", "--debug", "--mcp-config=secret-config-c", "secret-config-d"] });
+        const { run, events } = await makeAgent({ provider: "claude-code", trusted: true });
+        await run("hello");
+        expect(starts()[0].argv).toContain("--strict-mcp-config");
+        expect(starts()[0].argv).toContain("--debug");
+        expect(JSON.stringify(starts())).not.toContain("secret-config");
+        expect(payloads()).toEqual([]);
+        expect(notices(events).join("\n")).toContain("Ignored extra Claude Code --mcp-config");
+    });
+
+    test("only the manager's approved set reaches stdin, and approval changes apply next turn", async () => {
+        const { McpManager } = await import("../src/mcp/manager");
+        const cfg = config();
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
+            approved: { ...cfg, headersHelper: "must-never-cross-boundary" }, pending: cfg, rejected: cfg,
+            disabled: { ...cfg, disabled: true }, "same name": cfg, harness: cfg,
+        } }));
+        const settings = { mcpServers: { settings: cfg, "same_name": cfg }, enabledMcpjsonServers: ["approved", "disabled", "same name", "harness"], disabledMcpjsonServers: ["rejected"] };
+        const manager = new McpManager(cwd, () => settings, true);
+        manager.load();
+        const { run, events, session } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => manager.approvedServers() });
+        await run("hello");
+        expect(Object.keys(payloads()[0]).sort()).toEqual(["approved", "same_name", "settings"]);
+        expect(payloads()[0].approved).toEqual({ type: "stdio", ...cfg });
+        expect(logLines().filter((l) => l.mcpConnected).map((l) => l.mcpConnected).sort()).toEqual(["approved", "same_name", "settings"]);
+        expect(logLines().find((l) => l.mcpConnected === "approved").tools).toContain("echo");
+        expect(notices(events).join("\n")).toContain("harness (reserved for Harness delegation)");
+        expect(JSON.stringify(starts())).not.toContain(sentinel);
+        expect(JSON.stringify(events)).not.toContain(sentinel);
+        expect(JSON.stringify(session.messages)).not.toContain(sentinel);
+        expect(starts()[0].argv).not.toContain("--mcp-config"); // No secret file to leave behind.
+        settings.enabledMcpjsonServers.push("pending");
+        manager.load();
+        await run("again");
+        expect(payloads()[1].pending).toEqual({ type: "stdio", ...cfg });
+    });
+
+    test("a throwing manager or translator fails closed without echoing its error", async () => {
+        for (const approvedMcpServers of [() => { throw new Error(sentinel); }, () => ({ broken: { command: 42 } as any })]) {
+            rmSync(LOG, { force: true });
+            const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers });
+            await run("hello");
+            expect(starts()[0].argv).toContain("--strict-mcp-config");
+            expect(payloads()).toEqual([]);
+            expect(notices(events).some((n) => n.startsWith("warn:"))).toBe(true);
+            expect(JSON.stringify(events)).not.toContain(sentinel);
+        }
+    });
+
+    test("incompatible cwd and interpolated HTTP headers are omitted in one warning", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => ({
+            elsewhere: { ...config(), cwd }, expanded: { url: "https://example.invalid/mcp", headers: { Authorization: "${SECRET}" } },
+        }) });
+        await run("hello");
+        expect(payloads()).toEqual([]);
+        const warnings = notices(events).filter((n) => n.includes("MCP servers omitted"));
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain("elsewhere");
+        expect(warnings[0]).toContain("expanded");
+        expect(warnings[0]).not.toContain("SECRET");
+    });
+
+    for (const ending of ["normal", "failed", "aborted"]) test(`stdin keeps secrets out of argv/files when ${ending}`, async () => {
+        process.env.FAKE_SCENARIO = ending === "aborted" ? "hang" : "write";
+        if (ending === "failed") process.env.FAKE_CRASH_ON_SECOND = "1";
+        const ac = new AbortController();
+        const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, queued: ending === "failed" ? [["again"]] : [], approvedMcpServers: () => ({ approved: config() }) });
+        const done = run("hello", ac.signal);
+        if (ending === "aborted") {
+            while (!events.some((e) => e.type === "tool_start")) await Bun.sleep(10);
+            ac.abort();
+        }
+        expect(await done).toBe(ending === "failed" ? "error" : ending === "aborted" ? "aborted" : "done");
+        expect(payloads()[0].approved.env.SENTINEL).toBe(sentinel);
+        for (const start of starts()) {
+            expect(start.argv).toContain("--strict-mcp-config");
+            expect(start.argv).not.toContain("--mcp-config");
+            expect(JSON.stringify(start.argv)).not.toContain(sentinel);
+        }
+    });
 });

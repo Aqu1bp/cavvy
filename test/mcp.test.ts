@@ -546,6 +546,13 @@ describe("McpManager.load and project .mcp.json approval", () => {
         expect(m.needsApproval().map((s) => s.name)).toEqual(["unapproved"]);
     });
 
+    test("approved set follows manager state, including failures but excluding collision refusals", () => {
+        const m = new McpManager(proj, () => ({ ...base, mcpServers: { ...base.mcpServers, "same name": cfg("first"), same_name: cfg("collision") } }), true);
+        m.load();
+        m.servers.get("approved")!.status = "failed";
+        expect(m.approvedServers()).toEqual({ fromSettings: cfg("s"), dup: cfg("from-settings"), approved: cfg("approved"), "same name": cfg("first") });
+    });
+
     test("enableAllProjectMcpServers approves every project server (rejections still win)", () => {
         const m = new McpManager(proj, () => ({ ...base, enabledMcpjsonServers: [], enableAllProjectMcpServers: true }), true);
         m.load();

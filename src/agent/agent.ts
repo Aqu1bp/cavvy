@@ -24,7 +24,7 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
-import type { Settings } from "../config/settings";
+import type { McpServerConfig, Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
@@ -147,6 +147,8 @@ export interface AgentOptions {
     model: ModelInfo;
     client: ProviderClient;
     settings: () => Settings;
+    /** Read the current manager at each turn (including after approval changes). */
+    approvedMcpServers?: () => Record<string, McpServerConfig>;
     checker: PermissionChecker;
     classifier?: AutoClassifier;
     /** Fixed list, or a getter (MCP tools appear once their servers connect). */
@@ -827,6 +829,16 @@ export class Agent {
 
     private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
         const s = this.o.settings();
+        let trusted = false;
+        let approvedMcpServers: Record<string, McpServerConfig> = {};
+        try {
+            // Implicit session trust does not authorize CLI project configuration.
+            trusted = trustedByUser(this.state.cwd);
+            approvedMcpServers = this.o.approvedMcpServers?.() ?? {};
+        } catch {
+            trusted = false;
+            host.emit({ type: "notice", level: "warn", message: "Could not check folder trust or approved MCP servers; this turn runs without project configuration or MCP servers." });
+        }
         return {
             cwd: this.state.cwd,
             model: this.model,
@@ -835,8 +847,8 @@ export class Agent {
             fastMode: this.fastMode(),
             appendSystemPrompt: this.o.appendSystemPrompt,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
-            // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.
-            trusted: trustedByUser(this.state.cwd),
+            trusted,
+            approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
             orchestrator: this.orchestrator(),

@@ -144,6 +144,7 @@ const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "not
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
 interface Opts {
+    approvedMcpServers?: () => Record<string, import("../src/config/settings").McpServerConfig>;
     provider: string;
     model?: Partial<ModelInfo>;
     client?: unknown;
@@ -168,6 +169,7 @@ async function makeAgent(o: Opts) {
         model: { provider: o.provider, id: "default", ...o.model },
         client: client as any,
         settings: () => settings,
+        approvedMcpServers: o.approvedMcpServers,
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -979,6 +981,16 @@ describe("Claude Code as the main agent", () => {
         expect(result.text).toContain("Codex didn't list its MCP servers (config/read failed: invalid configuration), so a read-only task can't run on it");
     });
 
+    test("an approved server named harness cannot replace the delegation server", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", approvedMcpServers: () => ({ harness: { command: "must-not-run" } }) });
+        expect(await run("hi")).toBe("done");
+        expect(setServers()).toHaveLength(1);
+        expect(setServers()[0].request.servers.harness.type).toBe("http");
+        expect(setServers()[0].request.servers.harness.command).toBeUndefined();
+        expect(logLines().some((l) => l.mcpConnected === "harness")).toBe(true);
+        expect(notices(events).join("\n")).toContain("reserved for Harness delegation");
+    });
+
     test("without the server (turned off, nobody to delegate to, or Claude Code refusing it) the turn runs as before", async () => {
         const { run } = await makeAgent({ provider: "claude-code", settings: { delegation: false } });
         expect(await run("hi")).toBe("done");
@@ -996,7 +1008,7 @@ describe("Claude Code as the main agent", () => {
         const third = await makeAgent({ provider: "claude-code" });
         expect(await third.run("hi")).toBe("done");
         expect(setServers()).toHaveLength(1);
-        expect(notices(third.events)).toContain("warn: Claude Code couldn't connect to Harness's delegation tools (Unsupported control request subtype: mcp_set_servers); this turn runs without them.");
+        expect(notices(third.events)).toContain("warn: Claude Code couldn't connect to MCP servers: harness.");
         expect(readFileSync(join(cwd, "out.txt"), "utf-8")).toBe("hi\n");
     });
 });

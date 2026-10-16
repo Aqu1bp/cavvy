@@ -135,6 +135,13 @@ export class McpManager {
         this.servers = next;
     }
 
+    /** The configured servers load() permits starting, including ones still connecting or temporarily failed. */
+    approvedServers(): Record<string, McpServerConfig> {
+        return Object.fromEntries([...this.servers.values()]
+            .filter((s) => !s.config.disabled && s.collidesWith === undefined && ["pending", "connecting", "connected", "failed"].includes(s.status))
+            .map((s) => [s.name, s.config]));
+    }
+
     async startAll(signal?: AbortSignal) {
         await Promise.all([...this.servers.values()].filter((s) => s.status === "pending").map((s) => this.start(s, signal)));
     }

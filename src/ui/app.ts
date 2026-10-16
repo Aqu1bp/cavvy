@@ -493,6 +493,7 @@ export class App {
             model: this.model,
             client: this.client,
             settings: () => this.settings,
+            approvedMcpServers: () => this.mcp.approvedServers(),
             checker: this.checker,
             classifier: this.classifier,
             tools: () => this.tools(),

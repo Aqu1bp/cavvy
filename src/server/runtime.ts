@@ -747,6 +747,7 @@ export class Runtime {
             model: this.model,
             client: this.client,
             settings: () => this.settings(),
+            approvedMcpServers: () => this.ws.mcp.approvedServers(),
             checker: this.checker,
             classifier: this.classifier,
             tools: () => this.tools(),
