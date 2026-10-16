@@ -22,6 +22,7 @@ import { RewindDialog } from "./components/RewindDialog";
 import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
+import { RunSheet } from "./components/RunSheet";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { CommitDialog } from "./components/CommitDialog";
 import { Logo, Spinner } from "./components/ui/bits";
@@ -291,6 +292,7 @@ export function App() {
             <McpDialog />
             <FolderPicker />
             <TrustDialog />
+            <RunSheet />
             <DeleteSessionDialog />
             <CommitDialog />
             <Toasts />
