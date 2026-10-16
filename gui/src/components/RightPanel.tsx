@@ -1,329 +1,213 @@
-import { createEffect, createMemo, createResource, createSignal, For, Match, on, Show, Switch, type Resource } from "solid-js";
-import { Check, ChevronRight, CircleAlert, CircleCheck, ExternalLink, FolderOpen, GitBranch, Hand, Plug, RefreshCw, Sparkles, SquareTerminal, TextQuote, X } from "lucide-solid";
-import type { ChangesInfo, FileDiff, TodoEntry } from "@shared/protocol";
+// The session's side card: where it works (folder, branch, changes), and
+// only what's live besides: the plan, running shells, MCP servers that
+// failed, and its sub-agents. Sections with nothing to say aren't drawn.
+
+import { createMemo, createSignal, For, Show } from "solid-js";
+import { Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, Plug, SquarePen, Terminal, X } from "lucide-solid";
+import type { AgentRun } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { reportError, rpc } from "../state/app";
-import { prefs, setPrefs } from "../state/prefs";
-import { canReveal, revealPath } from "../lib/platform";
-import { ago, plural, tokens, usd } from "../lib/format";
+import { app, reportError, rpc, toast } from "../state/app";
+import { newSession, openAgents, openReview, stopAgent } from "../state/actions";
+import { useChanges } from "../state/changes";
+import { canReveal, copyText, revealPath } from "../lib/platform";
+import { duration, tildify } from "../lib/format";
 import { now } from "../lib/clock";
-import { DiffStat, DiffView, FileIcon } from "./blocks/DiffView";
-import { Ring, Segmented, Spinner } from "./ui/bits";
-import { MODE_LABELS } from "@shared/protocol";
-import { agentFocus } from "../state/ui";
-import { AgentDetail, AgentsList } from "./Agents";
+import { Popover } from "./ui/Popover";
 
-function ChangeFile(p: { file: FileDiff; cwd: string; open: boolean; toggle: () => void }) {
+const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
+const ran = (a: AgentRun) => duration((a.endedAt ?? (live(a) ? now() : a.startedAt)) - a.startedAt);
+
+function Workspace(p: { handle: SessionHandle }) {
+    let row: HTMLButtonElement | undefined;
+    const [menu, setMenu] = createSignal(false);
+    const st = () => p.handle.view.state;
+    const [changes] = useChanges(() => p.handle);
+    const close = () => setMenu(false);
     return (
-        <div class={`cf ${p.open ? "open" : ""}`}>
-            <button class="cf-line" onClick={p.toggle}>
-                <ChevronRight size={13} class="cf-chev" />
-                <FileIcon status={p.file.status} size={14} />
-                <span class="cf-path truncate" title={p.file.path}>
-                    <span class="cf-dir">{p.file.path.includes("/") ? p.file.path.slice(0, p.file.path.lastIndexOf("/") + 1) : ""}</span>
-                    <span class="cf-name">{p.file.path.split("/").pop()}</span>
+        <div class="sec">
+            <button ref={row} class="prow" aria-haspopup="menu" aria-expanded={menu()} title={tildify(st().cwd, app.hello?.homeDir)} onClick={() => setMenu(!menu())}>
+                <FolderGit2 size={16} />
+                <span class="truncate grow">{st().projectName}</span>
+                <span class="cell" aria-hidden="true">
+                    <ChevronDown size={16} />
                 </span>
-                <DiffStat added={p.file.added} removed={p.file.removed} />
             </button>
-            <Show when={p.open}>
-                <div class="cf-body">
-                    <DiffView diff={p.file} maxLines={400} />
-                    <Show when={canReveal}>
-                        <button class="link-btn cf-reveal" onClick={() => void revealPath(p.file.path.startsWith("/") ? p.file.path : `${p.cwd}/${p.file.path}`)}>
-                            <FolderOpen size={12} /> Reveal in file manager
-                        </button>
-                    </Show>
-                </div>
-            </Show>
-        </div>
-    );
-}
-
-function Changes(p: { handle: SessionHandle; data: Resource<ChangesInfo>; refetch: () => void }) {
-    const [openFiles, setOpenFiles] = createSignal<Set<string>>(new Set());
-    const data = () => p.data();
-    // Open the only file automatically.
-    createEffect(on(data, (d) => d?.files.length === 1 && setOpenFiles(new Set([d.files[0]!.path]))));
-    return (
-        <div class="panel-section">
-            <div class="panel-sum" classList={{ hidden: data()?.files.length === 0 }}>
-                <Show when={data()} fallback={<Spinner size={14} />}>
-                    <span class="panel-sum-title">{plural(data()!.files.length, "file")} changed</span>
-                    <DiffStat added={data()!.added} removed={data()!.removed} />
+            <Popover open={menu()} anchor={() => row} onClose={close} width={232}>
+                <Show when={canReveal}>
+                    <button class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
+                        <FolderOpen size={14} /> Reveal in Finder
+                    </button>
                 </Show>
-                <span class="grow" />
-                <button class="icon-btn" title="Refresh" onClick={() => p.refetch()}>
-                    <RefreshCw size={14} />
+                <button class="menu-item compact" onClick={async () => (close(), (await copyText(st().cwd)) && toast(`Copied ${tildify(st().cwd, app.hello?.homeDir)}`, "success"))}>
+                    <Copy size={14} /> Copy folder path
                 </button>
-            </div>
-            <Show when={data()?.files.length} fallback={<div class="panel-empty">{data()?.tracked === false ? "This session isn't saved yet." : "No file changes yet. Edits the agent makes show up here as a reviewable diff."}</div>}>
-                <div class="cf-list">
-                    <For each={data()!.files}>
-                        {(f) => (
-                            <ChangeFile
-                                file={f}
-                                cwd={p.handle.view.state.cwd}
-                                open={openFiles().has(f.path)}
-                                toggle={() =>
-                                    setOpenFiles((s) => {
-                                        const n = new Set(s);
-                                        if (n.has(f.path)) n.delete(f.path);
-                                        else n.add(f.path);
-                                        return n;
-                                    })
-                                }
-                            />
-                        )}
-                    </For>
-                </div>
-                <div class="panel-note">Changes made by the agent's edit tools in this session. Shell commands' changes aren't tracked.</div>
+                <button class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
+                    <SquarePen size={14} /> New session in {st().projectName}
+                </button>
+            </Popover>
+            <Show when={st().branch}>
+                <span class="prow lock" title="Git branch">
+                    <GitBranch size={16} />
+                    <span class="truncate">{st().branch}</span>
+                </span>
             </Show>
+            <button class="prow" title="Review changes" onClick={() => openReview()}>
+                <FileDiff size={16} />
+                <span class="grow">Changes</span>
+                <Show when={changes()?.files.length} fallback={<span class="meta">{changes.loading && !changes() ? "" : "None yet"}</span>}>
+                    <span class="stat">
+                        <span class="add">+{changes()!.added}</span>
+                        <span class="del">−{changes()!.removed}</span>
+                    </span>
+                </Show>
+            </button>
         </div>
     );
 }
 
-/** The latest reply as a few plain sentences. */
-function summaryOf(text: string): string {
-    const plain = text
-        .replace(/```[\s\S]*?```/g, " ")
-        .replace(/^\s*\|.*\|\s*$/gm, " ")
-        .replace(/^#{1,6}\s+/gm, "")
-        .replace(/^\s*([-*+]|\d+\.)\s+/gm, "")
-        .replace(/[*_`>#]/g, "")
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-        .replace(/\s+/g, " ")
-        .trim();
-    if (plain.length <= 320) return plain;
-    const cut = plain.slice(0, 320);
-    const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
-    return end > 120 ? cut.slice(0, end + 1) : `${cut.replace(/\s+\S*$/, "")}…`;
-}
-
-function Overview(p: { handle: SessionHandle; changes?: ChangesInfo }) {
-    const st = () => p.handle.view.state;
-    const turns = () => p.handle.view.turns;
-    const title = () => st().title ?? turns().find((t) => t.prompt)?.prompt?.text.slice(0, 80) ?? "New session";
-    const last = () => [...turns()].reverse().find((t) => t.prompt && !t.archived);
-    const kind = () => (st().status === "running" ? "running" : st().status === "waiting" ? "waiting" : st().status === "error" || last()?.status === "error" ? "error" : last() ? "done" : "new");
-    const summary = createMemo(() => {
-        const t = [...turns()].reverse().find((x) => x.status !== "running" && x.blocks.some((b) => b.t === "text"));
-        const text = t?.blocks.filter((b) => b.t === "text").map((b) => (b as { text: string }).text).pop();
-        return text ? summaryOf(text) : undefined;
-    });
+function Plan(p: { handle: SessionHandle }) {
+    const todos = () => p.handle.view.state.todos;
+    const done = () => todos().filter((t) => t.status === "completed").length;
     return (
-        <div class="overview">
-            <div class={`status-chip ${kind()}`}>
-                <Switch fallback={<Sparkles size={15} />}>
-                    <Match when={kind() === "running"}>
-                        <Spinner size={14} />
-                    </Match>
-                    <Match when={kind() === "waiting"}>
-                        <Hand size={15} />
-                    </Match>
-                    <Match when={kind() === "error"}>
-                        <CircleAlert size={15} />
-                    </Match>
-                    <Match when={kind() === "done"}>
-                        <CircleCheck size={15} />
-                    </Match>
-                </Switch>
-                <span>{{ running: st().activity?.label ?? "Working", waiting: "Needs your input", error: "Stopped with an error", done: "Ready", new: "New session" }[kind()]}</span>
-                <span class="sep">·</span>
-                <span class="muted">{st().projectName}</span>
-            </div>
-            <h2 class="overview-title">{title()}</h2>
-            <div class="overview-meta">
-                <Show when={st().model}>
-                    <span class="meta">
-                        <Sparkles size={14} /> {st().model!.name}
-                    </span>
-                </Show>
-                <Show when={st().branch}>
-                    <span class="pill">
-                        <GitBranch size={12} /> {st().branch}
-                    </span>
-                </Show>
-                <Show when={p.changes?.files.length}>
-                    <span class="meta">
-                        {plural(p.changes!.files.length, "file")} changed <DiffStat added={p.changes!.added} removed={p.changes!.removed} />
-                    </span>
-                </Show>
-            </div>
-            <Show when={summary()}>
-                <div class="overview-section">
-                    <div class="overview-label">
-                        <TextQuote size={15} /> Latest summary
-                    </div>
-                    <div class="overview-summary">{summary()}</div>
+        <Show when={todos().length}>
+            <div class="sec">
+                <div class="sh">
+                    Plan · {done()} of {todos().length}
                 </div>
-            </Show>
-        </div>
-    );
-}
-
-function Plan(p: { todos: TodoEntry[] }) {
-    const done = () => p.todos.filter((t) => t.status === "completed").length;
-    return (
-        <div class="panel-section">
-            <Show when={p.todos.length} fallback={<div class="panel-empty">No plan yet. For multi-step work the agent keeps a checklist here as it goes.</div>}>
-                <div class="panel-sum">
-                    <span class="panel-sum-title">
-                        {done()} of {p.todos.length} done
-                    </span>
-                </div>
-                <div class="progress">
-                    <div class="progress-bar" style={{ width: `${(done() / p.todos.length) * 100}%` }} />
-                </div>
-                <ul class="todo-list big">
-                    <For each={p.todos}>
-                        {(t) => (
-                            <li class={t.status}>
-                                <span class="todo-box">
-                                    <Show when={t.status === "completed"} fallback={<Show when={t.status === "in_progress"}><Spinner size={11} /></Show>}>
-                                        <Check size={11} />
-                                    </Show>
-                                </span>
-                                <span>{t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}</span>
-                            </li>
-                        )}
-                    </For>
-                </ul>
-            </Show>
-        </div>
-    );
-}
-
-function Context(p: { handle: SessionHandle }) {
-    const st = () => p.handle.view.state;
-    const pct = () => (st().model?.contextWindow ? st().contextTokens / st().model!.contextWindow! : 0);
-    return (
-        <div class="panel-section">
-            <div class="ctx-card">
-                <Ring value={pct()} size={54} stroke={5} title="Context used" />
-                <div>
-                    <div class="ctx-big">{Math.round(pct() * 100)}%</div>
-                    <div class="muted small">
-                        {tokens(st().contextTokens)} of {st().model?.contextWindow ? tokens(st().model!.contextWindow!) : "?"} tokens in context
-                    </div>
-                </div>
-            </div>
-            <dl class="kv">
-                <dt>Model</dt>
-                <dd>{st().model?.name ?? "—"}</dd>
-                <dt>Provider</dt>
-                <dd>{st().model?.providerName ?? st().model?.provider ?? "—"}</dd>
-                <dt>Mode</dt>
-                <dd>{MODE_LABELS[st().mode].label}</dd>
-                <dt>Effort</dt>
-                <dd>{st().effort ?? "default"}</dd>
-                <dt>Spent</dt>
-                <dd>{usd(st().cost)}</dd>
-                <dt>Tokens</dt>
-                <dd>
-                    {tokens(st().tokensIn)} in · {tokens(st().tokensOut)} out
-                </dd>
-            </dl>
-            <Show when={st().shells.length}>
-                <div class="panel-sub">Background shells</div>
-                <For each={st().shells}>
-                    {(sh) => (
-                        <div class="shell-row">
-                            <SquareTerminal size={13} />
-                            <code class="truncate" title={sh.command}>
-                                {sh.command}
-                            </code>
-                            <span class="muted small">{sh.running ? (now(), ago(sh.startedAt)) : `exit ${sh.exitCode ?? "?"}`}</span>
-                            <Show when={sh.running}>
-                                <button class="icon-btn" title="Stop" onClick={() => void rpc.call("session.killShell", { id: p.handle.id, shellId: sh.id }).catch(reportError)}>
-                                    <X size={13} />
-                                </button>
+                <For each={todos()}>
+                    {(t) => (
+                        <span class={`prow lock ${t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : ""}`}>
+                            <Show when={t.status === "completed"} fallback={<Show when={t.status === "in_progress"} fallback={<Circle size={16} class="todo-pending" />}><CircleDashed size={16} class="todo-now" /></Show>}>
+                                <CircleCheck size={16} class="todo-done" />
                             </Show>
-                        </div>
+                            <span class="truncate" title={t.content}>
+                                {t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}
+                            </span>
+                        </span>
                     )}
                 </For>
-            </Show>
-            <Show when={st().mcp.length}>
-                <div class="panel-sub">MCP servers</div>
-                <For each={st().mcp}>
-                    {(m) => (
-                        <div class="mcp-row" title={m.error}>
-                            <Plug size={13} />
-                            <span class="truncate">{m.name}</span>
-                            <span class={`dot ${m.status === "connected" ? "ok" : m.status === "failed" ? "err" : m.status === "needs-approval" ? "warn" : ""}`} />
-                            <span class="muted small">{m.status === "connected" ? plural(m.tools, "tool") : m.status.replace("-", " ")}</span>
-                        </div>
-                    )}
-                </For>
-            </Show>
-            <div class="panel-note">
-                Session <code>{st().id}</code> · <a href="#" onClick={(e) => (e.preventDefault(), void navigator.clipboard?.writeText(`harness --resume ${st().id}`))}>copy resume command <ExternalLink size={11} /></a>
             </div>
+        </Show>
+    );
+}
+
+function Shells(p: { handle: SessionHandle }) {
+    const running = () => p.handle.view.state.shells.filter((s) => s.running);
+    return (
+        <Show when={running().length}>
+            <div class="sec">
+                <div class="sh">Shells</div>
+                <For each={running()}>
+                    {(sh) => (
+                        <div class="prow swap" title={sh.command}>
+                            <Terminal size={16} class="shell-live" />
+                            <span class="mono truncate grow shell-cmd">{sh.command}</span>
+                            <span class="meta">{duration(now() - sh.startedAt)}</span>
+                            <button class="act hb sm" title="Stop" aria-label="Stop shell" onClick={() => void rpc.call("session.killShell", { id: p.handle.id, shellId: sh.id }).catch(reportError)}>
+                                <X size={14} />
+                            </button>
+                        </div>
+                    )}
+                </For>
+            </div>
+        </Show>
+    );
+}
+
+/** Healthy servers stay out of the way; one that failed shows with why. */
+function Mcp(p: { handle: SessionHandle }) {
+    const broken = () => p.handle.view.state.mcp.filter((m) => m.status === "failed" || m.status === "needs-approval");
+    return (
+        <Show when={broken().length}>
+            <div class="sec">
+                <div class="sh">MCP</div>
+                <For each={broken()}>
+                    {(m) => (
+                        <>
+                            <span class="prow lock" title={m.error}>
+                                <Plug size={16} />
+                                <span class="truncate grow">{m.name}</span>
+                                <span class={`meta ${m.status === "failed" ? "tone-err" : "tone-warn"}`}>{m.status === "failed" ? "Failed" : "Needs approval"}</span>
+                            </span>
+                            <Show when={m.error}>
+                                <div class="panel-error">{m.error}</div>
+                            </Show>
+                        </>
+                    )}
+                </For>
+            </div>
+        </Show>
+    );
+}
+
+function AgentRow(p: { handle: SessionHandle; a: AgentRun }) {
+    const waiting = () => p.a.status === "waiting";
+    const stoppable = () => live(p.a) && Boolean(p.a.taskId);
+    return (
+        <div class={`prow ${stoppable() ? "swap" : ""} agent-row`}>
+            <button class="agent-hit" onClick={() => openAgents(p.a.id)} title={waiting() ? "It's asking you something in the composer" : p.a.description} aria-label={p.a.description || "Sub-agent"} />
+            <span class="lic">
+                <Bot size={16} />
+                <span class={`nd st-${p.a.status}`} />
+            </span>
+            <span class="lt truncate grow">{p.a.description || "Sub-agent"}</span>
+            <span class={`meta ${waiting() ? "tone-warn" : p.a.status === "failed" ? "tone-err" : ""}`}>{waiting() ? "Needs you" : p.a.status === "failed" ? "Failed" : p.a.status === "stopped" ? "Stopped" : ran(p.a)}</span>
+            <Show when={stoppable()}>
+                <button class="act hb sm stop" title="Stop sub-agent" aria-label="Stop sub-agent" onClick={() => void stopAgent(p.handle.id, p.a.id)}>
+                    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                        <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
+                    </svg>
+                </button>
+            </Show>
         </div>
+    );
+}
+
+/** The sub-agents: live ones on top, finished ones folded away. */
+function Lineage(p: { handle: SessionHandle }) {
+    const [showPrev, setShowPrev] = createSignal(false);
+    const agents = () => p.handle.view.agents;
+    const current = createMemo(() => agents().filter(live));
+    const previous = createMemo(() => agents().filter((a) => !live(a)).reverse());
+    const failed = () => previous().filter((a) => a.status === "failed").length;
+    const waiting = () => current().filter((a) => a.status === "waiting").length;
+    return (
+        <Show when={agents().length}>
+            <div class="sec">
+                <div class="sh">
+                    Lineage
+                    <Show when={current().length}>· {waiting() ? `${waiting()} needs you` : `${current().length} running`}</Show>
+                </div>
+                <For each={current()}>{(a) => <AgentRow handle={p.handle} a={a} />}</For>
+                <Show when={previous().length}>
+                    <Show when={current().length || previous().length > 3} fallback={<For each={previous()}>{(a) => <AgentRow handle={p.handle} a={a} />}</For>}>
+                        <button class="divi" aria-expanded={showPrev()} onClick={() => setShowPrev(!showPrev())}>
+                            <span>Previous agents{showPrev() ? "" : ` (${previous().length})`}</span>
+                            <i />
+                            <Show when={failed()}>
+                                <span class="tone-err divi-tag">{failed()} failed</span>
+                            </Show>
+                            <ChevronRight size={14} class="chev" />
+                        </button>
+                        <Show when={showPrev()}>
+                            <For each={previous()}>{(a) => <AgentRow handle={p.handle} a={a} />}</For>
+                        </Show>
+                    </Show>
+                </Show>
+            </div>
+        </Show>
     );
 }
 
 export function RightPanel(p: { handle: SessionHandle }) {
-    let dragStart = 0;
-    let widthStart = 0;
-    const onResize = (e: PointerEvent) => {
-        dragStart = e.clientX;
-        widthStart = prefs.panelWidth;
-        const move = (ev: PointerEvent) => setPrefs("panelWidth", Math.max(340, Math.min(900, widthStart - (ev.clientX - dragStart))));
-        const up = () => {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", up);
-            document.body.classList.remove("resizing");
-        };
-        document.body.classList.add("resizing");
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", up);
-    };
-    const todos = () => p.handle.view.state.todos;
-    const agents = () => p.handle.view.agents;
-    const focused = () => (prefs.panelTab === "agents" ? agents().find((a) => a.id === agentFocus()) : undefined);
-    const [changes, { refetch }] = createResource(
-        () => ({ id: p.handle.id, n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy }),
-        async ({ id }) => rpc.call("session.changes", { id }).catch((e): ChangesInfo => (reportError(e), { files: [], added: 0, removed: 0, tracked: true })),
-    );
     return (
-        <aside class="panel">
-            <div class="resize-handle left" onPointerDown={onResize} />
-            <div class="panel-card">
-                <button class="icon-btn panel-close" title="Close panel" onClick={() => setPrefs("panel", false)}>
-                    <X size={17} />
-                </button>
-                <div class="panel-scroll">
-                    <Show when={focused()} keyed>
-                        {(a) => <AgentDetail handle={p.handle} agent={a} />}
-                    </Show>
-                    <Show when={!focused()}>
-                        <Overview handle={p.handle} changes={changes()} />
-                        <div class="panel-tabs">
-                            <Segmented
-                                value={prefs.panelTab}
-                                onChange={(v) => setPrefs("panelTab", v)}
-                                options={[
-                                    { value: "changes", label: <>Changes{p.handle.view.state.filesChanged ? <span class="tab-count">{p.handle.view.state.filesChanged}</span> : null}</> },
-                                    { value: "plan", label: <>Plan{todos().length ? <span class="tab-count">{todos().filter((t) => t.status === "completed").length}/{todos().length}</span> : null}</> },
-                                    ...(agents().length || prefs.panelTab === "agents" ? [{ value: "agents" as const, label: <>Agents{agents().length ? <span class="tab-count">{agents().length}</span> : null}</> }] : []),
-                                    { value: "context", label: "Context" },
-                                ]}
-                            />
-                        </div>
-                        <Show when={prefs.panelTab === "changes"}>
-                            <Changes handle={p.handle} data={changes} refetch={() => void refetch()} />
-                        </Show>
-                        <Show when={prefs.panelTab === "plan"}>
-                            <Plan todos={todos()} />
-                        </Show>
-                        <Show when={prefs.panelTab === "agents"}>
-                            <AgentsList handle={p.handle} />
-                        </Show>
-                        <Show when={prefs.panelTab === "context"}>
-                            <Context handle={p.handle} />
-                        </Show>
-                    </Show>
-                </div>
+        <aside class="panel" aria-label="Session details">
+            <div class="panel-scroll">
+                <Workspace handle={p.handle} />
+                <Plan handle={p.handle} />
+                <Shells handle={p.handle} />
+                <Mcp handle={p.handle} />
+                <Lineage handle={p.handle} />
             </div>
         </aside>
     );

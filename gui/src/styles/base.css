@@ -80,7 +80,7 @@ pre,
 }
 
 a {
-    color: var(--accent);
+    color: var(--link);
     text-decoration: none;
 }
 
@@ -165,12 +165,6 @@ h3 {
     color: var(--del-fg);
 }
 
-.row-gap {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
 /* ---- Motion ---- */
 
 @keyframes spin {
@@ -196,21 +190,30 @@ h3 {
 
 @keyframes shimmer {
     from {
-        background-position: 150% 0;
+        background-position: -72px 0, 0 0;
     }
     to {
-        background-position: -50% 0;
+        background-position: calc(100% + 72px) 0, 0 0;
     }
 }
 
-/* Text that sweeps while something is in progress. */
+/* Text that sweeps while something is in progress: a narrow highlight that
+   steps across (stepped, so it costs a few frames a second, not sixty). */
 .shimmer {
-    background: linear-gradient(90deg, var(--fg-muted) 0%, var(--fg-muted) 40%, var(--fg) 50%, var(--fg-muted) 60%, var(--fg-muted) 100%);
-    background-size: 220% 100%;
+    color: transparent;
+    background: linear-gradient(90deg, transparent, var(--fg), transparent) no-repeat, linear-gradient(var(--fg-muted), var(--fg-muted));
+    background-size: 72px 100%, 100% 100%;
     -webkit-background-clip: text;
     background-clip: text;
-    color: transparent;
-    animation: shimmer 2.4s linear infinite;
+    animation: shimmer 2.2s steps(30) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .shimmer {
+        animation: none;
+        background: none;
+        color: var(--fg-muted);
+    }
 }
 
 .shimmer svg {
@@ -280,19 +283,18 @@ h3 {
 }
 
 .btn.primary {
-    background: var(--bg-inverse);
-    color: var(--fg-inverse);
-    box-shadow: var(--shadow-sm);
+    background: var(--accent);
+    color: var(--accent-fg);
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.14), 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .btn.primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--bg-inverse) 88%, var(--accent));
+    background: color-mix(in srgb, var(--accent) 88%, #fff);
 }
 
 .btn.secondary {
-    background: var(--bg-elev);
-    border-color: var(--border-strong);
-    box-shadow: var(--shadow-sm);
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 .btn.secondary:hover:not(:disabled) {
@@ -406,41 +408,6 @@ h3 {
     color: var(--success);
 }
 
-.chip-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 28px;
-    padding: 0 10px;
-    border-radius: 999px;
-    font-size: 0.857rem;
-    font-weight: 520;
-    color: var(--fg-muted);
-    max-width: 260px;
-    transition: background var(--dur-fast), color var(--dur-fast);
-    min-width: 0;
-}
-
-.chip-btn:hover,
-.chip-btn.active {
-    background: var(--bg-hover);
-    color: var(--fg);
-}
-
-.chip-btn .chev {
-    opacity: 0.6;
-    flex: none;
-}
-
-.chip-btn svg {
-    flex: none;
-}
-
-.chip-sub {
-    color: var(--fg-subtle);
-    font-weight: 500;
-}
-
 kbd {
     display: inline-flex;
     align-items: center;
@@ -449,14 +416,110 @@ kbd {
     height: 20px;
     padding: 0 5px;
     border-radius: 5px;
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    background: var(--bg-elev);
+    background: var(--bg-hover);
     color: var(--fg-muted);
-    font-size: 0.72rem;
+    font-size: 0.786rem;
     font-family: var(--font-ui);
-    font-weight: 550;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
     line-height: 1;
+    flex: none;
+}
+
+/* The square icon buttons of the title line, the sidebar and the composer. */
+.hb {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    color: var(--fg-muted);
+    flex: none;
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.hb:hover:not(:disabled),
+.hb.on,
+.hb[aria-expanded="true"] {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+
+.hb[aria-pressed="true"] {
+    background: var(--bg-active);
+    color: var(--fg);
+}
+
+.hb:disabled {
+    opacity: 0.4;
+}
+
+.hb.sm {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+}
+
+.hb.lg {
+    width: 32px;
+    height: 32px;
+}
+
+/* A project's two letters on a tinted tile. */
+.mg {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    font: 700 7.5px/1 var(--font-mono);
+    letter-spacing: -0.03em;
+    color: var(--shell);
+    background: color-mix(in srgb, var(--shell) 14%, transparent);
+}
+
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 6px;
+    font-size: 0.786rem;
+    font-weight: 500;
+    white-space: nowrap;
+    flex: none;
+    color: var(--fg-muted);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.pill.warn {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 26%, transparent);
+}
+
+/* +12 −3 */
+.stat {
+    display: inline-flex;
+    gap: 6px;
+    font: 500 0.786rem/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex: none;
+}
+
+.stat .add {
+    color: var(--add-fg);
+}
+
+.stat .del {
+    color: var(--del-fg);
+}
+
+.num {
+    font-variant-numeric: tabular-nums;
 }
 
 .kbd-row {
@@ -567,16 +630,7 @@ input[type="range"] {
     color: var(--fg);
 }
 
-.tab-count {
-    font-size: 0.72rem;
-    padding: 0 5px;
-    border-radius: 999px;
-    background: var(--bg-active);
-    color: var(--fg-muted);
-    font-variant-numeric: tabular-nums;
-}
-
-/* ---- Dots and badges ---- */
+/* ---- Dots ---- */
 
 .dot {
     width: 7px;
@@ -603,22 +657,6 @@ input[type="range"] {
     background: var(--accent);
 }
 
-.badge {
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 999px;
-    font-size: 0.72rem;
-    font-weight: 650;
-    display: inline-grid;
-    place-items: center;
-}
-
-.badge.warn {
-    background: var(--warning);
-    color: #fff;
-}
-
 .ring {
     flex: none;
 }
@@ -628,12 +666,15 @@ input[type="range"] {
 .popover {
     position: fixed;
     z-index: 60;
-    background: var(--bg-elev);
-    border-radius: 12px;
-    box-shadow: var(--shadow-lg);
-    padding: 5px;
+    background: var(--pop);
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
+    backdrop-filter: blur(16px) saturate(1.08);
+    border-radius: 10px;
+    box-shadow: var(--shadow-pop);
+    padding: 4px;
     overflow: auto;
-    animation: pop 140ms var(--ease-out);
+    color: var(--fg);
+    animation: pop var(--dur-panel) var(--ease-out);
     transform-origin: top left;
 }
 
@@ -645,29 +686,38 @@ input[type="range"] {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 7px 10px 5px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--fg-subtle);
-    text-transform: none;
-    letter-spacing: 0.01em;
+    gap: 8px;
+    padding: 6px 8px 4px;
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg-muted);
 }
 
 .menu-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     width: 100%;
-    padding: 8px 10px;
-    border-radius: 9px;
+    padding: 6px 8px;
+    border-radius: 6px;
     text-align: left;
     color: var(--fg);
     min-width: 0;
+    font-size: 0.964rem;
+    font-weight: 500;
 }
 
 .menu-item.compact {
-    padding: 6px 10px;
-    font-size: 0.93rem;
+    align-items: center;
+    padding: 6px 8px;
+}
+
+.menu-item > svg:first-child {
+    margin-top: 2px;
+}
+
+.menu-item.compact > svg:first-child {
+    margin-top: 0;
 }
 
 .menu-item svg {
@@ -680,8 +730,9 @@ input[type="range"] {
     background: var(--bg-hover);
 }
 
-.menu-item.current {
-    background: var(--accent-softer);
+.menu-item.current,
+.menu-item.on {
+    background: var(--bg-active);
 }
 
 .menu-item:disabled {
@@ -696,13 +747,15 @@ input[type="range"] {
 }
 
 .menu-label {
-    font-weight: 540;
+    font-weight: 500;
 }
 
 .menu-desc {
-    font-size: 0.8rem;
+    font-size: 0.857rem;
     color: var(--fg-muted);
-    line-height: 1.35;
+    line-height: 16px;
+    font-weight: 400;
+    margin-top: 2px;
 }
 
 .menu-check {
@@ -712,8 +765,8 @@ input[type="range"] {
 
 .menu-sep {
     height: 1px;
-    background: var(--border);
-    margin: 5px 6px;
+    background: var(--hairline);
+    margin: 4px -4px;
 }
 
 .menu-note {
@@ -737,7 +790,7 @@ select:focus-visible {
 
 /* Icons: a lighter stroke than the library's default reads calmer at UI sizes. */
 svg.lucide {
-    stroke-width: 1.65;
+    stroke-width: 2;
 }
 
 .btn svg.lucide,

@@ -125,6 +125,8 @@ export interface SessionHandle {
     scheduled: boolean;
     draft: () => Draft | undefined;
     setDraft: (d: Draft | undefined) => void;
+    /** Hand back a draft, added to one no input box has taken yet. */
+    addDraft: (d: Draft) => void;
     lastUsed: number;
 }
 
@@ -149,7 +151,9 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     const h = createRoot(() => {
         const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
         const [draft, setDraft] = createSignal<Draft | undefined>();
-        return { id, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, lastUsed: Date.now() };
+        // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
+        const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])] } : d));
+        return { id, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
     trim();
@@ -308,7 +312,7 @@ function onEvent(ev: ServerEvent) {
             setApp("sessions", (l) => l.filter((s) => s.id !== ev.id));
             return;
         case "draft":
-            handles.get(ev.sessionId)?.setDraft({ text: ev.text, images: ev.images });
+            handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images });
             return;
         case "toast":
             toast(ev.message, ev.level);

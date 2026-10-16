@@ -16,7 +16,7 @@ import { anthropicTraits } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
-import { backendModel } from "../backends/types";
+import { backendModel, isAgentBackend } from "../backends/types";
 import { readJson, writeJson } from "../config/settings";
 import { ensureDir, paths } from "../config/paths";
 import { dirname } from "path";
@@ -133,6 +133,8 @@ export interface ListOptions {
     /** Include providers without a key (as "no-key" rows) for onboarding UIs. */
     includeUnconfigured?: boolean;
     onProvider?: (l: ProviderListing) => void;
+    /** Only what's cached, of any age, without asking any provider; those with nothing cached for their credential are left out. */
+    cachedOnly?: boolean;
 }
 
 export async function listAllModels(opts: ListOptions = {}): Promise<ProviderListing[]> {
@@ -146,6 +148,7 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
             }
             const fp = cred.fp;
             const cached = cache.providers[def.id];
+            if (opts.cachedOnly) return cached && cached.fp === fp && !def.local ? { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt } : undefined;
             if (!def.local && !opts.refresh && cached && cached.fp === fp && Date.now() - cached.fetchedAt < TTL_MS) {
                 const l: ProviderListing = { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt };
                 opts.onProvider?.(l);
@@ -336,7 +339,33 @@ export function defaultModelFrom(listings: ProviderListing[]): ModelInfo | undef
     return undefined;
 }
 
-/** A cheap model on the same provider, for the classifier, titles and summaries. */
+/** The auto-mode reviewer when none is set and there's an Anthropic key. */
+export const DEFAULT_REVIEW_MODEL = "anthropic:claude-sonnet-5-5";
+
+/**
+ * Who reviews auto-mode actions: the reviewModel setting, else Claude Sonnet
+ * 5.5 when there's an Anthropic key. Undefined: the session's own model does.
+ * Never Claude Code or Codex, which can't answer one-off requests. A reviewer
+ * the user chose that can't be used throws, so its actions go to the user
+ * rather than quietly to another model.
+ */
+export async function reviewTarget(setting: string | undefined): Promise<{ client: ProviderClient; model: ModelInfo } | undefined> {
+    const ref = setting || ((await getKey("anthropic")) ? DEFAULT_REVIEW_MODEL : undefined);
+    if (!ref) return undefined;
+    try {
+        const p = parseModelRef(ref);
+        const model = resolveModelInfo(ref);
+        if (!p || !model) throw new ProviderError(`"${ref}" isn't a model ("provider:model")`);
+        const client = await clientFor(p.provider);
+        if (isAgentBackend(client)) throw new ProviderError(`${getProvider(p.provider)?.name ?? p.provider} can't review actions; pick an API model`);
+        return { client, model };
+    } catch (e) {
+        if (setting) throw new ProviderError(`the reviewer you chose (${setting}) can't be used: ${(e as Error).message}`);
+        return undefined;
+    }
+}
+
+/** A cheap model on the same provider, for titles and summaries. */
 export function smallModelFor(provider: string, listings?: ProviderListing[]): ModelInfo | undefined {
     if (provider === "anthropic") {
         const cached = listings?.find((l) => l.provider.id === "anthropic")?.models;

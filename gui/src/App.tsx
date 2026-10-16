@@ -1,21 +1,21 @@
-import { createEffect, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { createEffect, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
-import { app, attentionCount, dismissToast, handleFor, toasts } from "./state/app";
+import { app, attentionCount, dismissToast, handleFor, toasts, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
-import { paletteOpen, requestComposerFocus, setModelPickerOpen, setPaletteOpen, setSettingsTab, settingsTab } from "./state/ui";
+import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
 import { isMod, isTauri, os } from "./lib/platform";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
-import { InteractionDock } from "./components/InteractionDock";
-import { AgentsBar } from "./components/Agents";
+import { AgentView } from "./components/Agents";
 import { RightPanel } from "./components/RightPanel";
+import { ReviewPane } from "./components/ReviewPane";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsNav, SettingsPage } from "./components/Settings";
 import { RewindDialog } from "./components/RewindDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
@@ -86,8 +86,66 @@ function Disconnected() {
     );
 }
 
+/** A session: the conversation, the composer floating over its end, and the panel card. */
+function SessionView(p: { handle: SessionHandle }) {
+    let stage: HTMLDivElement | undefined;
+    // The card steps aside while the review pane is open.
+    const panel = () => prefs.panel && !review();
+    let dock: HTMLDivElement | undefined;
+    onMount(() => {
+        // The transcript scrolls under the composer; it keeps that much room at its end.
+        const ro = new ResizeObserver(() => stage?.style.setProperty("--dock-h", `${dock?.offsetHeight ?? 0}px`));
+        if (dock) ro.observe(dock);
+        onCleanup(() => ro.disconnect());
+    });
+    return (
+        <>
+            <Header handle={p.handle} />
+            <Reconnecting />
+            <div ref={stage} class={`stage ${panel() ? "with-panel" : ""}`}>
+                <Transcript handle={p.handle} />
+                <div class="composer-dock" ref={dock}>
+                    <div class="composer-col">
+                        <Composer sessionId={p.handle.id} />
+                    </div>
+                </div>
+                <Show when={panel()}>
+                    <RightPanel handle={p.handle} />
+                </Show>
+            </div>
+        </>
+    );
+}
+
+function Reconnecting() {
+    return (
+        <Show when={app.conn !== "open"}>
+            <div class="banner">
+                <Spinner size={12} /> Reconnecting…
+            </div>
+        </Show>
+    );
+}
+
 export function App() {
     const active = () => handleFor(app.activeId);
+    const agent = () => {
+        const id = agentFocus();
+        return id ? active()?.view.agents.find((a) => a.id === id) : undefined;
+    };
+    const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
+
+    // Another session: its own view, not the last one's sub-agent or review.
+    createEffect(
+        on(
+            () => app.activeId,
+            () => {
+                setAgentFocus(undefined);
+                setReview(undefined);
+            },
+            { defer: true },
+        ),
+    );
 
     // Global shortcuts.
     onMount(() => {
@@ -98,7 +156,7 @@ export function App() {
                 if (k === ",") return e.preventDefault(), setSettingsTab(settingsTab() ? undefined : "general");
                 // Nothing behind an open dialog changes (it may be about the session in view).
                 if (document.querySelector(".dialog-backdrop")) return;
-                if (k === "n" && !e.shiftKey) return e.preventDefault(), newSession(app.homeCwd);
+                if (k === "n" && !e.shiftKey) return e.preventDefault(), setSettingsTab(undefined), newSession(app.homeCwd);
                 if (k === "b") return e.preventDefault(), toggleSidebar();
                 if (k === ".") return e.preventDefault(), togglePanel();
                 if (k === "/") return e.preventDefault(), setModelPickerOpen(true);
@@ -106,10 +164,13 @@ export function App() {
                 if (k === "[" || (e.altKey && k === "arrowup")) return e.preventDefault(), cycleSession(-1);
                 if (k === "]" || (e.altKey && k === "arrowdown")) return e.preventDefault(), cycleSession(1);
             }
-            // Esc anywhere interrupts a working session (when nothing else wants it).
-            if (e.key === "Escape" && !e.defaultPrevented && active()?.view.state.busy && !active()?.view.state.interactions.length && !document.querySelector(".dialog-backdrop, .popover")) {
-                interrupt();
-            }
+            if (e.key !== "Escape" || e.defaultPrevented || blocked()) return;
+            const typing = (document.activeElement as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable]");
+            // Esc leaves Settings, a sub-agent's view and the review, and otherwise interrupts a working session.
+            if (settingsTab()) return typing ? undefined : (e.preventDefault(), setSettingsTab(undefined));
+            if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(undefined));
+            if (review()) return e.preventDefault(), setReview(undefined);
+            if (active()?.view.state.busy && !active()?.view.state.interactions.length) interrupt();
         };
         window.addEventListener("keydown", onKey);
         onCleanup(() => window.removeEventListener("keydown", onKey));
@@ -125,39 +186,39 @@ export function App() {
     });
 
     return (
-        <div class={`app ${prefs.sidebar ? "" : "no-sidebar"} ${prefs.panel && active() ? "with-panel" : ""} ${isTauri ? `tauri os-${os}` : "browser"}`}>
+        <div class={`app ${prefs.sidebar ? "" : "no-sidebar"} ${isTauri ? `tauri os-${os}` : "browser"}`}>
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
                 <Show when={prefs.sidebar}>
-                    <Sidebar />
+                    <Show when={settingsTab()} fallback={<Sidebar />}>
+                        <SettingsNav />
+                    </Show>
                 </Show>
                 <main class="main">
-                    <Header handle={active()} />
-                    <Show when={app.conn !== "open"}>
-                        <div class="banner">
-                            <Spinner size={12} /> Reconnecting…
-                        </div>
-                    </Show>
-                    <Show when={active()} fallback={<Home />} keyed>
-                        {(h) => (
-                            <div class="session">
-                                <Transcript handle={h} />
-                                <div class="bottom">
-                                    <div class="bottom-col">
-                                        <InteractionDock sessionId={h.id} items={h.view.state.interactions} />
-                                        <AgentsBar handle={h} />
-                                        <Composer sessionId={h.id} />
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                    </Show>
+                    <Switch
+                        fallback={
+                            <>
+                                <Header />
+                                <Reconnecting />
+                                <Home />
+                            </>
+                        }
+                    >
+                        <Match when={settingsTab()}>
+                            <SettingsPage />
+                        </Match>
+                        <Match when={active() && agent()}>
+                            <AgentView handle={active()!} agent={agent()!} />
+                        </Match>
+                        <Match when={active()} keyed>
+                            {(h) => <SessionView handle={h} />}
+                        </Match>
+                    </Switch>
                 </main>
-                <Show when={prefs.panel && active()}>
-                    <RightPanel handle={active()!} />
+                <Show when={review() && active() && !settingsTab()}>
+                    <ReviewPane handle={active()!} />
                 </Show>
             </Show>
             <CommandPalette />
-            <SettingsDialog />
             <RewindDialog />
             <FolderPicker />
             <TrustDialog />

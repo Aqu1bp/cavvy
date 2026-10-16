@@ -39,8 +39,9 @@ export interface Prefs {
     fontSize: number;
     sidebar: boolean;
     panel: boolean;
-    panelTab: "changes" | "plan" | "agents" | "context";
     groupBy: "date" | "project";
+    /** The sidebar's Settled list is open. */
+    settledOpen: boolean;
     /** Enter sends (shift+enter for a newline); otherwise mod+enter sends. */
     enterSends: boolean;
     notifications: boolean;
@@ -48,8 +49,16 @@ export interface Prefs {
     expandActivity: boolean;
     showThinking: boolean;
     sidebarWidth: number;
-    panelWidth: number;
+    /** The docked review pane. */
+    reviewWidth: number;
+    /** Model refs, in the order they were starred. */
+    favoriteModels: string[];
+    chatWidth: "narrow" | "default" | "wide";
+    /** How panels and menus open and close. */
+    motion: "instant" | "quick" | "smooth";
 }
+
+export const CHAT_WIDTHS: Record<Prefs["chatWidth"], number> = { narrow: 640, default: 736, wide: 880 };
 
 const KEY = "harness.prefs";
 const DEFAULTS: Prefs = {
@@ -60,15 +69,20 @@ const DEFAULTS: Prefs = {
     fontSize: 14,
     sidebar: true,
     panel: false,
-    panelTab: "changes",
     groupBy: "date",
+    settledOpen: true,
     enterSends: true,
     notifications: true,
     expandActivity: false,
     showThinking: true,
-    sidebarWidth: 268,
-    panelWidth: 440,
+    sidebarWidth: 260,
+    reviewWidth: 720,
+    favoriteModels: [],
+    chatWidth: "default",
+    motion: "instant",
 };
+
+export { DEFAULTS as PREF_DEFAULTS };
 
 function load(): Prefs {
     try {
@@ -103,7 +117,9 @@ createRoot(() => {
         d.dataset.density = prefs.density;
         d.style.setProperty("--font-scale", String(prefs.fontSize / 14));
         d.style.setProperty("--sidebar-w", `${prefs.sidebarWidth}px`);
-        d.style.setProperty("--panel-w", `${prefs.panelWidth}px`);
+        d.style.setProperty("--review-w", `${prefs.reviewWidth}px`);
+        d.style.setProperty("--column-w", `${CHAT_WIDTHS[prefs.chatWidth] ?? 736}px`);
+        d.dataset.motion = prefs.motion;
     });
     createEffect(() => {
         const snapshot = JSON.stringify(prefs);

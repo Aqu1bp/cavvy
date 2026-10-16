@@ -53,7 +53,8 @@ const NON_CHAT = /embed|embedding|whisper|tts|dall-e|davinci|babbage|moderation|
 export const BUILTIN_PROVIDERS: ProviderDef[] = [
     {
         id: "anthropic",
-        name: "Anthropic",
+        // Next to Claude Code (your plan), so it's clear which one bills the key.
+        name: "Anthropic API",
         kind: "anthropic",
         baseUrl: "https://api.anthropic.com",
         baseUrlEnv: "ANTHROPIC_BASE_URL",

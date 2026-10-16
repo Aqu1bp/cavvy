@@ -1,8 +1,8 @@
 import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
-import { Archive, ArrowRight, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, Share, Shrink, Sparkles, Sun } from "lucide-solid";
+import { Archive, ArrowRight, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, Share, Shrink, Sparkles, Sun } from "lucide-solid";
 import { MODE_LABELS } from "@shared/protocol";
 import { activate, app, reportError, rpc } from "../state/app";
-import { archive, chooseProject, exportSession, newSession, openProject, setMode, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, chooseProject, exportSession, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs, THEMES } from "../state/prefs";
 import { paletteOpen, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
@@ -63,7 +63,7 @@ export function CommandPalette() {
         ];
         if (id()) {
             out.push(
-                { id: "changes", section: "Session", label: "Show changes", icon: <PanelRight size={15} />, run: () => togglePanel("changes") },
+                { id: "changes", section: "Session", label: "Review changes", icon: <FileDiff size={15} />, run: () => openReview() },
                 { id: "rewind", section: "Session", label: "Rewind…", icon: <History size={15} />, run: () => setRewindOpen(true) },
                 { id: "compact", section: "Session", label: "Compact conversation", icon: <Shrink size={15} />, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },
                 { id: "export", section: "Session", label: "Copy conversation as Markdown", icon: <Share size={15} />, run: () => void exportSession(id()!) },

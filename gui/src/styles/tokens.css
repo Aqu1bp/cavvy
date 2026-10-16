@@ -9,20 +9,22 @@
 
 :root {
     --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter Variable", "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-    --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono Variable", "JetBrains Mono", Consolas, monospace;
     --font-scale: 1;
 
-    --radius-xs: 5px;
-    --radius-sm: 7px;
+    --radius-xs: 6px;
+    --radius-sm: 8px;
     --radius-md: 10px;
     --radius-lg: 14px;
-    --radius-xl: 20px;
+    --radius-xl: 18px;
+    --radius-2xl: 22px;
     --radius-card: 14px;
 
     --gutter: 8px;
-    --sidebar-w: 268px;
-    --panel-w: 440px;
-    --column-w: 740px;
+    --sidebar-w: 260px;
+    --panel-w: 280px;
+    --review-w: 720px;
+    --column-w: 736px;
     --header-h: 52px;
     --row-h: 34px;
     --gap: 1;
@@ -31,6 +33,16 @@
     --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
     --dur-fast: 120ms;
     --dur: 200ms;
+    /* Panels and menus opening and closing (Settings → Panel animations). */
+    --dur-panel: 160ms;
+}
+
+[data-motion="instant"] {
+    --dur-panel: 0ms;
+}
+
+[data-motion="smooth"] {
+    --dur-panel: 260ms;
 }
 
 [data-density="compact"] {
@@ -43,21 +55,21 @@
 :root,
 [data-theme="light"] {
     color-scheme: light;
-    --bg: #f8f8f8;
+    --bg: #ffffff;
     --bg-card: #ffffff;
-    --bg-sidebar: #ffffff;
+    --bg-sidebar: #f7f7f8;
     --bg-panel: #ffffff;
     --bg-elev: #ffffff;
     --bg-input: #ffffff;
-    --bg-code: #ffffff;
+    --bg-code: #fafafa;
     --bg-subtle: rgba(0, 0, 0, 0.022);
     --bg-hover: rgba(0, 0, 0, 0.04);
-    --bg-active: rgba(0, 0, 0, 0.062);
-    --bg-user: #efefef;
-    --bg-inline-code: rgba(0, 0, 0, 0.05);
-    --bg-overlay: rgba(248, 248, 248, 0.55);
-    --border: #e9e9e9;
-    --border-strong: #dadada;
+    --bg-active: rgba(0, 0, 0, 0.065);
+    --bg-user: #f1f1f2;
+    --bg-inline-code: rgba(0, 0, 0, 0.035);
+    --bg-overlay: rgba(250, 250, 250, 0.6);
+    --border: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.14);
     --fg: #1d1d1f;
     --fg-muted: #6e6e73;
     --fg-subtle: #a1a1a6;
@@ -65,10 +77,10 @@
     --bg-inverse: #2a2a2c;
     --accent: #2f6bff;
     --accent-fg: #ffffff;
-    --success: #1f9d55;
+    --success: #12a26b;
     --warning: #c27c0e;
     --danger: #d83b3b;
-    --info: #2f6bff;
+    --info: #2563eb;
     --plan: #7c4dff;
     --auto: #b8620b;
     --add-fg: #1a7f37;
@@ -95,6 +107,18 @@
     --shiki-token-parameter: #953800;
     --shiki-token-punctuation: #57606a;
     --shiki-token-link: #0969da;
+}
+
+/* Light only: the base above also backs the other themes, these would leak into them. */
+[data-theme="light"] {
+    --glass: rgba(255, 255, 255, 0.86);
+    --pop: rgba(255, 255, 255, 0.96);
+    --hairline: rgba(0, 0, 0, 0.08);
+    --fg-prose: rgba(29, 29, 31, 0.86);
+    --link: #2563eb;
+    --stop: #e5484d;
+    --shell: #0d9488;
+    --shadow-pop: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 12px 32px -12px rgba(0, 0, 0, 0.22);
 }
 
 /* ---- Paper (warm light) ---------------------------------------------- */
@@ -153,49 +177,59 @@
     --shiki-token-link: #3b6ea8;
 }
 
-/* ---- Dark (graphite) -------------------------------------------------- */
+/* ---- Dark ------------------------------------------------------------
+   Near-black canvas; the sidebar a step darker, raised things a step
+   lighter. Text steps down by opacity, not by hue. */
 [data-theme="dark"] {
     color-scheme: dark;
-    --bg: #131315;
-    --bg-card: #1c1c1f;
-    --bg-sidebar: #1a1a1d;
-    --bg-panel: #1c1c1f;
-    --bg-elev: #222226;
-    --bg-input: #1c1c1f;
-    --bg-code: #19191c;
-    --bg-subtle: rgba(255, 255, 255, 0.028);
+    --bg: #0b0b0c;
+    --bg-card: #111112;
+    --bg-sidebar: #070708;
+    --bg-panel: #111112;
+    --bg-elev: #161617;
+    --bg-input: #111112;
+    --bg-code: rgba(255, 255, 255, 0.022);
+    --bg-subtle: rgba(255, 255, 255, 0.022);
     --bg-hover: rgba(255, 255, 255, 0.05);
-    --bg-active: rgba(255, 255, 255, 0.085);
-    --bg-user: #252528;
-    --bg-inline-code: rgba(255, 255, 255, 0.08);
-    --bg-overlay: rgba(8, 8, 10, 0.55);
-    --border: #2a2a2e;
-    --border-strong: #37373d;
-    --fg: #ececee;
-    --fg-muted: #a0a0a8;
-    --fg-subtle: #686870;
-    --fg-inverse: #131315;
-    --bg-inverse: #ececee;
-    --accent: #6e9bff;
-    --accent-fg: #0b0b10;
-    --success: #43b874;
-    --warning: #e2ab3f;
-    --danger: #f06b6b;
-    --info: #6e9bff;
+    --bg-active: rgba(255, 255, 255, 0.08);
+    --bg-user: #161617;
+    --bg-inline-code: rgba(255, 255, 255, 0.03);
+    --bg-overlay: rgba(0, 0, 0, 0.55);
+    --glass: rgba(17, 17, 18, 0.84);
+    --pop: rgba(20, 20, 21, 0.94);
+    --hairline: rgba(255, 255, 255, 0.06);
+    --border: rgba(255, 255, 255, 0.07);
+    --border-strong: rgba(255, 255, 255, 0.12);
+    --fg: #f2f2f3;
+    --fg-prose: rgba(242, 242, 243, 0.8);
+    --fg-muted: #86868b;
+    --fg-subtle: #5d5d62;
+    --fg-inverse: #0b0b0c;
+    --bg-inverse: #f2f2f3;
+    --accent: #3b72f6;
+    --accent-fg: #ffffff;
+    --link: #6ea2ff;
+    --success: #2fd49a;
+    --warning: #ffb224;
+    --danger: #ff6b6e;
+    --stop: #ef4444;
+    --info: #6ea2ff;
+    --shell: #5eead4;
     --plan: #a78bfa;
     --auto: #f0a24a;
-    --add-fg: #5bd174;
-    --add-bg: rgba(46, 160, 67, 0.13);
-    --add-bg-strong: rgba(46, 160, 67, 0.3);
-    --del-fg: #f47a72;
-    --del-bg: rgba(229, 83, 75, 0.13);
-    --del-bg-strong: rgba(229, 83, 75, 0.3);
+    --add-fg: #2fd49a;
+    --add-bg: rgba(47, 212, 154, 0.1);
+    --add-bg-strong: rgba(47, 212, 154, 0.24);
+    --del-fg: #ff6b6e;
+    --del-bg: rgba(255, 107, 110, 0.1);
+    --del-bg-strong: rgba(255, 107, 110, 0.24);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -6px rgba(0, 0, 0, 0.45);
     --shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 12px rgba(0, 0, 0, 0.3), 0 24px 56px -12px rgba(0, 0, 0, 0.6);
     --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.55);
     --shadow-float: 0 0 0 1px rgba(255, 255, 255, 0.075), 0 4px 12px rgba(0, 0, 0, 0.3), 0 28px 64px -18px rgba(0, 0, 0, 0.75);
-    --scrollbar: rgba(255, 255, 255, 0.14);
+    --shadow-pop: inset 0 0 0 1px rgba(255, 255, 255, 0.08), inset 0 1px rgba(255, 255, 255, 0.05), 0 18px 44px -18px rgba(0, 0, 0, 0.8);
+    --scrollbar: rgba(255, 255, 255, 0.12);
 
     --shiki-foreground: #d6dbe1;
     --shiki-token-keyword: #ff7b72;
@@ -399,6 +433,18 @@
 [data-scheme="dark"][data-accent="teal"] { --accent: #2dd4bf; }
 [data-scheme="dark"][data-accent="graphite"] { --accent: #d4d4d8; }
 [data-scheme="dark"][data-accent] { --accent-fg: #0b0b10; }
+
+/* Fallbacks for the themes that don't set these; zero specificity, so a theme's own value always wins. */
+:where(:root) {
+    --fg-prose: color-mix(in srgb, var(--fg) 84%, transparent);
+    --link: var(--info);
+    --glass: color-mix(in srgb, var(--bg-card) 88%, transparent);
+    --pop: color-mix(in srgb, var(--bg-elev) 96%, transparent);
+    --hairline: var(--border);
+    --stop: var(--danger);
+    --shell: var(--success);
+    --shadow-pop: var(--shadow-lg);
+}
 
 :root {
     --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);

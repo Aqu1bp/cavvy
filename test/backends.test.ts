@@ -56,7 +56,7 @@ beforeEach(() => {
     symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -411,11 +411,27 @@ describe("Codex backend", () => {
     });
 
     test("modes map to Codex's approval policy and sandbox", () => {
-        expect(codexPolicy("default", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only" });
-        expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only" });
-        expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] } });
-        expect(codexPolicy("auto", [])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write" });
-        expect(codexPolicy("bypassPermissions", [])).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access" });
+        expect(codexPolicy("default", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
+        expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
+        expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] }, approvalsReviewer: "user" });
+        expect(codexPolicy("auto", [])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
+        expect(codexPolicy("bypassPermissions", [])).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" });
+    });
+
+    test("auto mode: Codex's own reviewer answers what leaves its sandbox, and its no is shown; other modes take it back", async () => {
+        process.env.FAKE_REVIEW_DENY = "1";
+        const a = await makeAgent({ provider: "codex", mode: "auto", ask: () => ({ allow: true }) });
+        expect(await a.run("make x")).toBe("done");
+        expect(a.asked).toEqual([]);
+        expect(received().find((m) => m.method === "thread/start")?.params.approvalsReviewer).toBe("auto_review");
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "on-request", approvalsReviewer: "auto_review" });
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        expect(notices(a.events)).toContain("warn: Codex's reviewer blocked `touch x`: It sends the project to an unknown host.");
+        // The reviewer stays with the thread: manual mode says it's the user again, and the harness asks.
+        a.setMode("default");
+        expect(await a.run("make x again")).toBe("done");
+        expect(turnStarts().at(-1)).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user" });
+        expect(a.asked).toHaveLength(1);
     });
 
     test("headless: the command is declined with the reason, and the turn goes on", async () => {

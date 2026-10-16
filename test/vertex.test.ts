@@ -16,6 +16,7 @@ const { toOpenAIMessages } = await import("../src/providers/openai-compat");
 const { redact } = await import("../src/util/redact");
 const { sensitiveTarget } = await import("../src/permissions/bash-safety");
 const { checkVertex } = await import("../src/auth/gcloud");
+const { paths } = await import("../src/config/paths");
 
 const ACCOUNT = "me@example.com";
 const CFG = { project: "my-project-123", location: "global", account: ACCOUNT };
@@ -289,6 +290,23 @@ describe("Vertex AI models", () => {
         registry.saveVertexConfig({ ...CFG, project: "other-project-9" });
         const other = (await listAllModels()).find((l) => l.provider.id === "vertex")!;
         expect(other.status).toBe("ok");
+    });
+
+    test("cachedOnly: the cached list however old, without asking gcloud or Vertex; another setup's list isn't used", async () => {
+        stubFetch(() => Response.json(catalog));
+        await listAllModels({ refresh: true });
+        const c = JSON.parse(readFileSync(paths.modelCache(), "utf-8"));
+        c.providers.vertex.fetchedAt = Date.now() - 48 * 3600_000;
+        writeFileSync(paths.modelCache(), JSON.stringify(c));
+        writeFileSync(log, "");
+        stubFetch(() => Response.json(catalog));
+        const old = (await listAllModels({ cachedOnly: true })).find((l) => l.provider.id === "vertex");
+        expect(old).toMatchObject({ status: "cached" });
+        expect(old!.models[0]!.id).toBe("google/gemini-4-argon");
+        expect(requests.length).toBe(0);
+        expect(readFileSync(log, "utf-8")).toBe("");
+        registry.saveVertexConfig({ ...CFG, project: "other-project-9" });
+        expect((await listAllModels({ cachedOnly: true })).find((l) => l.provider.id === "vertex")).toBeUndefined();
     });
 });
 

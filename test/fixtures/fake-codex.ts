@@ -14,6 +14,8 @@
 // FAKE_LOG            each line: what it was started with, and what it received
 // FAKE_ACCOUNT        chatgpt (default) | apikey | none
 // FAKE_DECLINE=1      offer "decline" among the command's availableDecisions
+// FAKE_REVIEW_DENY=1  with approvalsReviewer auto_review, the command leaves the sandbox and Codex's
+//                     reviewer turns it down (the client isn't asked)
 // FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
 //                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
 //                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
@@ -82,7 +84,7 @@ function serverRequest(method: string, params: unknown): Promise<any> {
 
 const notify = (method: string, params: unknown) => out({ method, params });
 
-async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string } }) {
+async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }) {
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
     current = t;
     const finish = (status: string) => notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
@@ -134,7 +136,12 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         notify("item/started", { threadId, turnId, item: cmd });
         // Its own policy: in a workspace-write sandbox with on-request, or never, it just runs it.
         const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
-        if (!runsItself) {
+        if (process.env.FAKE_REVIEW_DENY === "1" && policy.approvalsReviewer === "auto_review") {
+            const review = { threadId, turnId, reviewId: `rev-${turnId}`, targetItemId: cmd.id, startedAtMs: 1, action: { type: "command", command: shown, cwd: cmd.cwd, source: "shell" } };
+            notify("item/autoApprovalReview/started", { ...review, review: { status: "inProgress" } });
+            notify("item/autoApprovalReview/completed", { ...review, completedAtMs: 2, decisionSource: "agent", review: { status: "denied", riskLevel: "high", userAuthorization: "low", rationale: "It sends the project to an unknown host." } });
+            decision = "decline";
+        } else if (!runsItself) {
             const r = await serverRequest("item/commandExecution/requestApproval", {
                 threadId,
                 turnId,

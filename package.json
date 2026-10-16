@@ -19,7 +19,8 @@
     "gui:typecheck": "cd gui && bun run typecheck",
     "desktop:dev": "cd desktop && bun install && bun run dev",
     "desktop:build": "cd desktop && bun install && bun run build",
-    "desktop:install": "bun --no-env-file --config=bunfig.toml scripts/install-desktop.ts"
+    "desktop:install": "bun --no-env-file --config=bunfig.toml scripts/install-desktop.ts",
+    "review:eval": "bun --no-env-file --config=bunfig.toml scripts/review-eval.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

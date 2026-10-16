@@ -12,7 +12,10 @@
         if (p.density) d.dataset.density = p.density;
         if (p.fontSize) d.style.setProperty("--font-scale", String(p.fontSize / 14));
         if (p.sidebarWidth) d.style.setProperty("--sidebar-w", p.sidebarWidth + "px");
-        if (p.panelWidth) d.style.setProperty("--panel-w", p.panelWidth + "px");
+        if (p.reviewWidth) d.style.setProperty("--review-w", p.reviewWidth + "px");
+        var column = { narrow: 640, default: 736, wide: 880 }[p.chatWidth];
+        if (column) d.style.setProperty("--column-w", column + "px");
+        if (p.motion) d.dataset.motion = p.motion;
     } catch (e) {
         document.documentElement.dataset.theme = "light";
         document.documentElement.dataset.scheme = "light";

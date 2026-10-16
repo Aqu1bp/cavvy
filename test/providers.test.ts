@@ -981,6 +981,51 @@ describe("Anthropic streaming", () => {
     });
 });
 
+describe("quick requests (the auto-mode reviewer's first step)", () => {
+    const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+    const answer = (model: string) => () =>
+        new Response(
+            [
+                ev("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }),
+                ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+                ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "ALLOW" } }),
+                ev("content_block_stop", { index: 0 }),
+                ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } }),
+                ev("message_stop", {}),
+            ].join(""),
+            { headers: { "content-type": "text/event-stream" } },
+        );
+    const ask = async (id: string, extra: Partial<ChatRequest>) => {
+        const { AnthropicProvider } = await import("../src/providers/anthropic");
+        respond = answer(id);
+        const m: ModelInfo = { provider: "anthropic", id, maxOutput: 64_000, supportsReasoning: true, adaptiveThinking: true };
+        await new AnthropicProvider(builtin("anthropic", { baseUrl: `http://127.0.0.1:${server.port}` }), FAKE.anthropic).stream(req(m, [{ role: "user", content: [{ type: "text", text: "q" }] }], { tools: [], lightweight: true, ...extra }), () => {});
+        return seen.at(-1)!.body;
+    };
+
+    test("Sonnet 5.5 turns extended thinking off with between_tools (it refuses disabled), with nothing else inside, and effort no higher than high", async () => {
+        const body = await ask("claude-sonnet-5-5", { noThinking: true, effort: "xhigh" });
+        expect(body.thinking).toEqual({ type: "between_tools" });
+        expect(body.output_config).toEqual({ effort: "high" });
+        const low = await ask("claude-sonnet-5-5", { noThinking: true, effort: "low" });
+        expect(low.output_config).toEqual({ effort: "low" });
+    });
+
+    test("a model with no way to turn thinking off keeps adaptive thinking", async () => {
+        const body = await ask("claude-haiku-5-5", { noThinking: true, effort: "low" });
+        expect(body.thinking).toMatchObject({ type: "adaptive" });
+    });
+
+    test("cacheSystem caches the instructions even on a lightweight request; otherwise lightweight caches nothing", async () => {
+        const cached = await ask("claude-sonnet-5-5", { cacheSystem: true });
+        expect(cached.system).toEqual([{ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } }]);
+        expect(cached.cache_control).toBeUndefined();
+        const plain = await ask("claude-sonnet-5-5", {});
+        expect(plain.system).toEqual([{ type: "text", text: "You are a test." }]);
+        expect(plain.cache_control).toBeUndefined();
+    });
+});
+
 describe("stop reasons and cut-off streams", () => {
     const rdef = builtin("openai");
     const rmodel: ModelInfo = { provider: "openai", id: "gpt-6-sol", maxOutput: 128_000 };
@@ -1035,5 +1080,16 @@ describe("stop reasons and cut-off streams", () => {
         seen.length = 0;
         await new OpenAICompatProvider(CUSTOM, "k-123456789").stream(req(cmodel, [hi]), () => {});
         expect(seen[0]!.body.max_completion_tokens).toBeUndefined();
+    });
+});
+
+describe("the auto-mode reviewer's model", () => {
+    test("one you chose that can't be used is an error (so you decide), not a quiet switch to the session's model", async () => {
+        const { reviewTarget } = await import("../src/providers/models");
+        // Nothing chosen and no Anthropic key: the session's own model reviews.
+        expect(await reviewTarget(undefined)).toBeUndefined();
+        await expect(reviewTarget("openrouter:some/model")).rejects.toThrow(/^the reviewer you chose \(openrouter:some\/model\) can't be used: /);
+        await expect(reviewTarget("not a model")).rejects.toThrow(/can't be used/);
+        await expect(reviewTarget("claude-code:claude-opus-5-5")).rejects.toThrow(/can't be used/);
     });
 });

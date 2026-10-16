@@ -11,6 +11,7 @@ import { redactedJson } from "../util/redact";
 import { fileDiff, trimInput, truncateText } from "./diffs";
 import type { AgentRun, Block, FileDiff, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
+import { allProviders, getProvider } from "../providers/registry";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
 export const INLINE_OUTPUT = 4000;
@@ -189,6 +190,23 @@ export function agentFromCall(b: ToolBlock, turnId: string, ownModel?: string): 
     };
 }
 
+let actionsNote: RegExp | undefined;
+
+/**
+ * Text without the note Claude Code or Codex leave after their reply in history,
+ * "[Claude Code used: Bash(…), Edit(…)]" (Agent.recordBackendTurn). It's there so
+ * other models know what was done; the transcript shows the steps themselves.
+ */
+export function withoutActionsNote(text: string): string {
+    if (!actionsNote) {
+        const names = allProviders()
+            .filter((p) => p.kind === "agent")
+            .map((p) => p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        actionsNote = new RegExp(`(^|\\n\\n)\\[(?:${names.join("|")}) used: [\\s\\S]*?\\](?=\\n\\n|$)`, "g");
+    }
+    return text.replace(actionsNote, "").trim();
+}
+
 /** A reopened session's sub-agents: their calls and results (what they did along the way isn't kept). */
 export function agentsFromTurns(turns: Turn[], ownModel?: string): AgentRun[] {
     const out: AgentRun[] = [];
@@ -196,7 +214,7 @@ export function agentsFromTurns(turns: Turn[], ownModel?: string): AgentRun[] {
         for (const b of t.blocks) {
             if (b.t !== "tool" || !b.agent) continue;
             const status = b.status === "ok" ? "done" : b.status === "error" || b.status === "denied" ? "failed" : "stopped";
-            out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt: b.startedAt ?? t.startedAt ?? 0, report: b.output, replayed: true });
+            out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt: b.startedAt ?? t.startedAt ?? 0, report: b.output && withoutActionsNote(b.output), replayed: true });
         }
     }
     return out;
@@ -261,11 +279,13 @@ export function replay(o: ReplayInput): Turn[] {
                 return;
             }
             const t = ensure();
+            const backend = getProvider(m.provider ?? "")?.kind === "agent";
             for (const p of m.content) {
                 if (p.type === "thinking") {
                     if (p.text.trim()) t.blocks.push({ t: "thinking", id: o.newId(), text: p.text });
                 } else if (p.type === "text") {
-                    if (p.text.trim()) t.blocks.push({ t: "text", id: o.newId(), text: p.text });
+                    const text = backend ? withoutActionsNote(p.text) : p.text;
+                    if (text.trim()) t.blocks.push({ t: "text", id: o.newId(), text });
                 } else if (p.type === "tool_call") {
                     const b = toolBlockFromCall(p, o.meta(p));
                     const rec = o.ui.tools.get(p.id);

@@ -178,14 +178,17 @@ export class AnthropicProvider implements ProviderClient {
         const params: BetaParams = {
             model: m.id,
             max_tokens: maxOut,
-            system: req.system ? [{ type: "text", text: req.system }] : undefined,
+            system: req.system ? [{ type: "text", text: req.system, ...(req.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}) }] : undefined,
             messages: toAnthropicMessages(req.messages, stripThinking),
             tools: tools.length ? tools : undefined,
             stream: true,
         };
         if (!req.lightweight) params.cache_control = { type: "ephemeral" };
 
-        if (adaptive) {
+        if (adaptive && req.noThinking && t.thinkingOff === "between_tools") {
+            // Sonnet 5.5's "off": nothing else may go inside it, and effort must be high or below.
+            params.thinking = { type: "between_tools" };
+        } else if (adaptive) {
             let display: "summarized" | "omitted" | "updates" = req.showThinking ? "summarized" : "omitted";
             if (!req.showThinking && t.displayUpdates && use("display_updates")) {
                 display = "updates";
@@ -200,7 +203,8 @@ export class AnthropicProvider implements ProviderClient {
         }
         const effort = req.effort;
         if (effort && effortLevels.length) {
-            const chosen = effortLevels.includes(effort) ? effort : nearestEffort(effort, effortLevels);
+            let chosen = effortLevels.includes(effort) ? effort : nearestEffort(effort, effortLevels);
+            if (params.thinking?.type === "between_tools" && (chosen === "xhigh" || chosen === "max")) chosen = "high";
             params.output_config = { effort: chosen };
         }
         if (t.fallbacks && this.official && !req.lightweight && use("fallbacks")) {

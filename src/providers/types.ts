@@ -96,6 +96,10 @@ export interface ChatRequest {
     signal?: AbortSignal;
     /** Small one-off requests (classifier, titles) skip caching/fallback extras. */
     lightweight?: boolean;
+    /** No extended thinking, where the model can turn it off (a quick answer matters more). */
+    noThinking?: boolean;
+    /** Cache the system prompt even when lightweight: it's the same on every call (the auto-mode reviewer's). */
+    cacheSystem?: boolean;
     /** Anthropic server-side web search. */
     webSearch?: boolean;
     /** Stable per-session key for providers with keyed prompt caches (OpenAI). */

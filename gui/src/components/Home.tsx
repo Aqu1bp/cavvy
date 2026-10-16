@@ -1,96 +1,81 @@
+// Home: one question, the composer, and where the session will run. The
+// project is picked in the question itself; the folder and branch sit in a
+// strip under the composer.
+
 import { createResource, createSignal, For, Show } from "solid-js";
-import { Bug, ChevronDown, Compass, FlaskConical, FolderGit2, FolderOpen, GitPullRequest, KeyRound, ShieldAlert } from "lucide-solid";
-import { activate, app, refreshProjects, rpc } from "../state/app";
-import { chooseProject, connectCli, openProject, send, trustAndContinue } from "../state/actions";
+import { ChevronDown, Folder, FolderGit2, FolderOpen, GitBranch, KeyRound, ShieldAlert } from "lucide-solid";
+import { app, refreshProjects, rpc } from "../state/app";
+import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { requestComposerFocus, setSettingsTab } from "../state/ui";
 import { ago, basename, tildify } from "../lib/format";
 import { now } from "../lib/clock";
 import { Composer } from "./Composer";
 import { Popover } from "./ui/Popover";
-import { Logo } from "./ui/bits";
-
-const SUGGESTIONS = [
-    { icon: Compass, label: "Explain this codebase", text: "Give me a tour of this codebase: what it does, how it's structured, and where the important pieces live." },
-    { icon: Bug, label: "Find and fix a bug", text: "Find a bug in this project, explain it, and fix it." },
-    { icon: FlaskConical, label: "Add missing tests", text: "Find an important piece of logic without tests and write good tests for it." },
-    { icon: GitPullRequest, label: "Review my changes", text: "/review" },
-];
-
-function greeting(): string {
-    const h = new Date().getHours();
-    return h < 5 ? "Working late?" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
-}
 
 export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
-    let projBtn: HTMLButtonElement | undefined;
+    /** The question's project name or the strip's folder: the menu opens by the one you used. */
+    const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
     const [info, { refetch }] = createResource(
         () => app.homeCwd,
         (path) => rpc.call("projects.inspect", { path }),
     );
-    const recent = () => app.sessions.filter((s) => s.cwd === app.homeCwd).slice(0, 5);
-    const [pending, setPending] = createSignal<string>();
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
     const clis = () => app.providers.filter((p) => p.agentCli?.installed && !p.configured);
     const [connecting, setConnecting] = createSignal<string>();
 
+    const togglePicker = (e: MouseEvent) => {
+        setPickerAnchor(e.currentTarget as HTMLElement);
+        setPickerOpen(!pickerOpen());
+    };
     const pick = async () => {
         setPickerOpen(false);
         const path = await chooseProject();
         if (path) await openProject(path);
     };
+    const projectButton = () => (
+        <button class="inline-pick" aria-haspopup="menu" aria-expanded={pickerOpen()} onClick={togglePicker}>
+            <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
+        </button>
+    );
 
     return (
         <div class="home">
             <div class="home-inner">
-                <div class="home-hero">
-                    <Logo size={40} />
-                    <h1>{greeting()}</h1>
-                    <p class="muted">What should we work on{app.homeCwd ? ` in ${basename(app.homeCwd)}` : ""}?</p>
-                </div>
-
-                <div class="home-project">
-                    <button ref={projBtn} class="project-btn" onClick={() => setPickerOpen(!pickerOpen())}>
-                        <FolderGit2 size={15} />
-                        <Show when={app.homeCwd} fallback={<span>Choose a project folder</span>}>
-                            <span class="project-name">{basename(app.homeCwd!)}</span>
-                            <span class="project-path truncate">{tildify(app.homeCwd!, app.hello?.homeDir)}</span>
-                            <Show when={info()?.branch}>
-                                <span class="chip tiny">{info()!.branch}</span>
-                            </Show>
-                        </Show>
-                        <ChevronDown size={13} />
+                <h1 class="home-q" aria-label={app.homeCwd ? `What should we build in ${basename(app.homeCwd)}?` : "Choose a project to start"}>
+                    <Show when={app.homeCwd} fallback={<>{projectButton()} to start</>}>
+                        What should we build in {projectButton()}?
+                    </Show>
+                </h1>
+                <Popover open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
+                    <div class="menu-head">Recent projects</div>
+                    <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
+                        {(pr) => (
+                            <button
+                                class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
+                                onClick={() => {
+                                    setPickerOpen(false);
+                                    void openProject(pr.path);
+                                    requestComposerFocus();
+                                }}
+                            >
+                                <FolderGit2 size={15} />
+                                <span class="menu-text">
+                                    <span class="menu-label">{pr.name}</span>
+                                    <span class="menu-desc mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
+                                </span>
+                                <Show when={pr.openedAt}>
+                                    <span class="muted small">{(now(), ago(pr.openedAt!))}</span>
+                                </Show>
+                            </button>
+                        )}
+                    </For>
+                    <div class="menu-sep" />
+                    <button class="menu-item" onClick={() => void pick()}>
+                        <FolderOpen size={15} />
+                        <span class="menu-label">Open folder…</span>
                     </button>
-                    <Popover open={pickerOpen()} anchor={() => projBtn} onClose={() => setPickerOpen(false)} width={420}>
-                        <div class="menu-head">Recent projects</div>
-                        <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
-                            {(pr) => (
-                                <button
-                                    class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
-                                    onClick={() => {
-                                        setPickerOpen(false);
-                                        void openProject(pr.path);
-                                        requestComposerFocus();
-                                    }}
-                                >
-                                    <FolderGit2 size={15} />
-                                    <span class="menu-text">
-                                        <span class="menu-label">{pr.name}</span>
-                                        <span class="menu-desc mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
-                                    </span>
-                                    <Show when={pr.openedAt}>
-                                        <span class="muted small">{(now(), ago(pr.openedAt!))}</span>
-                                    </Show>
-                                </button>
-                            )}
-                        </For>
-                        <div class="menu-sep" />
-                        <button class="menu-item" onClick={() => void pick()}>
-                            <FolderOpen size={15} />
-                            <span class="menu-label">Open folder…</span>
-                        </button>
-                    </Popover>
-                </div>
+                </Popover>
 
                 <Show when={info()?.needsTrust.length}>
                     <div class="trust-callout">
@@ -140,40 +125,29 @@ export function Home() {
                     </div>
                 </Show>
 
-                <Composer variant="home" autofocus placeholder={app.homeCwd ? "Describe a task, ask a question, or paste an error…" : "Choose a project folder to start"} />
-                <Show when={pending()}>{(t) => <div class="muted small">{t()}</div>}</Show>
-
-                <div class="suggestions">
-                    <For each={SUGGESTIONS}>
-                        {(s) => (
-                            <button
-                                class="suggestion"
-                                disabled={!app.homeCwd || Boolean(info()?.needsTrust.length)}
-                                onClick={() => {
-                                    setPending(undefined);
-                                    void send(s.text);
-                                }}
-                            >
-                                <s.icon size={15} />
-                                <span>{s.label}</span>
-                            </button>
-                        )}
-                    </For>
-                </div>
-
-                <Show when={recent().length}>
-                    <div class="home-recent">
-                        <div class="home-recent-head">Recent in {basename(app.homeCwd!)}</div>
-                        <For each={recent()}>
-                            {(s) => (
-                                <button class="home-recent-item" onClick={() => void activate(s.id)}>
-                                    <span class="truncate">{s.title}</span>
-                                    <span class="muted small">{(now(), ago(s.updatedAt))}</span>
+                <Composer
+                    variant="home"
+                    autofocus
+                    placeholder={app.homeCwd ? "Describe a task, ask a question, or paste an error…" : "Choose a project folder to start"}
+                    strip={
+                        app.homeCwd ? (
+                            <>
+                                <button class="strip-ctl" title={`${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder`} aria-haspopup="menu" onClick={togglePicker}>
+                                    <Folder size={13} />
+                                    <span class="truncate">{tildify(app.homeCwd, app.hello?.homeDir)}</span>
+                                    <ChevronDown size={12} class="chv" />
                                 </button>
-                            )}
-                        </For>
-                    </div>
-                </Show>
+                                <span class="grow" />
+                                <Show when={info()?.branch}>
+                                    <span class="strip-ctl static" title="The branch it starts on">
+                                        <GitBranch size={13} />
+                                        <span class="truncate">{info()!.branch}</span>
+                                    </span>
+                                </Show>
+                            </>
+                        ) : undefined
+                    }
+                />
             </div>
         </div>
     );

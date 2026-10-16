@@ -24,14 +24,15 @@ import {
     Wrench,
     X,
 } from "lucide-solid";
-import type { Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
+import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, plural, splitTitle, stripAnsi, tokens } from "../../lib/format";
+import { now } from "../../lib/clock";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
 import { openAgents } from "../../state/actions";
 import { Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
-import { DiffStat, DiffView } from "./DiffView";
+import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 
 export type Item =
@@ -255,14 +256,33 @@ function Inline(p: { text: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// The work log: one sentence per run of tool calls, opening into a plain line
+// per call; sub-agents get their own row; the call running now shimmers.
 
-export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean }) {
+/** The icon for a run of calls: what it mostly did. */
+function groupIcon(tools: ToolBlock[]): string {
+    const names = new Set(tools.map((t) => t.name));
+    if (["Edit", "MultiEdit", "Write", "NotebookEdit"].some((n) => names.has(n))) return "Edit";
+    if (names.has("Bash")) return "Bash";
+    if (names.has("WebSearch") || names.has("WebFetch")) return "WebFetch";
+    if (names.has("Grep") || names.has("Glob")) return "Grep";
+    if (names.has("Read")) return "Read";
+    return tools[0]?.name ?? "";
+}
+
+const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streaming" || t.status === "awaiting";
+
+export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; agents?: AgentRun[] }) {
     const [open, setOpen] = createSignal(prefs.expandActivity);
-    const running = createMemo(() => p.tools.find((t) => t.status === "running" || t.status === "streaming" || t.status === "awaiting"));
+    const runs = createMemo(() => (p.agents ?? []).filter((a) => p.tools.some((t) => t.agent && t.id === a.id)));
+    const plain = createMemo(() => p.tools.filter((t) => !runs().some((a) => a.id === t.id)));
+    const running = createMemo(() => plain().find(isLive));
+    const done = createMemo(() => plain().filter((t) => t !== running()));
+    const steps = createMemo(() => p.steps.filter((b) => b.t === "thinking" || done().includes(b)));
     const stats = createMemo(() => {
         let added = 0;
         let removed = 0;
-        for (const t of p.tools) {
+        for (const t of done()) {
             if (t.diff && t.status === "ok") {
                 added += t.diff.added;
                 removed += t.diff.removed;
@@ -270,64 +290,184 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
         }
         return { added, removed };
     });
-    const failed = () => p.tools.filter((t) => t.status === "error").length;
-    const denied = () => p.tools.filter((t) => t.status === "denied").length;
-    const live = () => {
-        const r = running();
-        if (!r) return undefined;
-        if (r.status === "awaiting") return r.name === "AskUserQuestion" || r.name === "ExitPlanMode" ? RUNNING[r.name] : "Waiting for approval";
-        if (r.status === "streaming") return `Preparing ${VERBS[r.name]?.toLowerCase() ?? r.name}${r.receiving ? ` · ${tokens(r.receiving)} chars` : ""}`;
-        const { arg } = toolLabel(r);
-        if (r.agent) return `${r.name === "Task" ? RUNNING.Task : "Delegated agent working"}${arg ? `: ${arg}` : ""}`;
-        return `${RUNNING[r.name] ?? `Running ${r.name}`}${arg ? ` ${arg}` : ""}`;
-    };
-    const tail = () => {
-        const r = running();
-        if (!r?.progress) return undefined;
-        return stripAnsi(r.progress).trimEnd().split("\n").slice(-4).join("\n");
-    };
+    const failed = () => done().filter((t) => t.status === "error").length;
+    const denied = () => done().filter((t) => t.status === "denied").length;
+    const single = () => done().length === 1 && steps().length === 1;
 
     return (
-        <div class={`activity ${open() ? "open" : ""} ${running() ? "live" : ""}`}>
-            <button class="activity-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                <span class="activity-chevron">
-                    <ChevronRight size={14} />
-                </span>
-                <Show when={running()} fallback={<span class="activity-text"><Inline text={summarize(p.tools)} /></span>}>
-                    <span class={`activity-text shimmer ${running()?.status === "awaiting" ? "awaiting" : ""}`}>
-                        <Show when={running()?.status === "awaiting"} fallback={<Spinner size={12} />}>
-                            <Hand size={13} />
+        <>
+            <Show when={done().length}>
+                <div class={`wgroup ${open() ? "open" : ""}`}>
+                    <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                        <span class="slot">
+                            <ToolIcon name={groupIcon(done())} size={16} />
+                        </span>
+                        <span class="wtext truncate">
+                            <Inline text={summarize(done())} />
+                        </span>
+                        <Show when={stats().added || stats().removed}>
+                            <span class="stat">
+                                <span class="add">+{stats().added}</span>
+                                <span class="del">−{stats().removed}</span>
+                            </span>
                         </Show>
-                        <span class="truncate">{live()}</span>
-                    </span>
-                </Show>
-                <Show when={stats().added || stats().removed}>
-                    <DiffStat added={stats().added} removed={stats().removed} />
-                </Show>
-                <Show when={failed()}>
-                    <span class="activity-flag err" title={`${plural(failed(), "call")} failed`}>
-                        <AlertTriangle size={12} /> {failed()}
-                    </span>
-                </Show>
-                <Show when={denied()}>
-                    <span class="activity-flag warn" title={`${plural(denied(), "call")} declined`}>
-                        <X size={12} /> {denied()}
-                    </span>
-                </Show>
-            </button>
-            <Show when={!open() && tail()}>
-                <pre class="activity-tail">{tail()}</pre>
-            </Show>
-            <Show when={open() && p.tools.length === 1 && p.steps.length === 1}>
-                {/* One call: its details straight away, no second row to open. */}
-                <div class="activity-single">
-                    <ToolDetails tool={p.tools[0]!} />
+                        <Show when={failed()}>
+                            <span class="wflag err" title={`${plural(failed(), "call")} failed`}>
+                                <AlertTriangle size={12} /> {failed()}
+                            </span>
+                        </Show>
+                        <Show when={denied()}>
+                            <span class="wflag warn" title={`${plural(denied(), "call")} declined`}>
+                                <X size={12} /> {denied()}
+                            </span>
+                        </Show>
+                        <span class="end">
+                            <ChevronRight size={14} class="chev" />
+                        </span>
+                    </button>
+                    <Show when={open()}>
+                        <div class="wkids">
+                            <Show when={single()} fallback={<For each={steps()}>{(b) => (b.t === "tool" ? <ToolRow tool={b} /> : <div class="wthought">{(b as ThinkingBlock).text.trim().split("\n")[0]}</div>)}</For>}>
+                                <div class="tool-detail">
+                                    <ToolDetails tool={done()[0]!} />
+                                </div>
+                            </Show>
+                        </div>
+                    </Show>
                 </div>
             </Show>
-            <Show when={open() && !(p.tools.length === 1 && p.steps.length === 1)}>
-                <div class="activity-rows">
-                    <For each={p.steps}>
-                        {(b) => (b.t === "tool" ? <ToolRow tool={b} /> : <div class="activity-thought">{(b as ThinkingBlock).text.trim().split("\n")[0]}</div>)}
+            <Show when={runs().length}>
+                <SubAgentsRow runs={runs()} />
+            </Show>
+            <Show when={running()} keyed>
+                {(t) => <RunningRow tool={t} />}
+            </Show>
+        </>
+    );
+}
+
+/** The call running now: what it's doing, shimmering, and for how long. */
+function RunningRow(p: { tool: ToolBlock }) {
+    const label = () => toolLabel(p.tool);
+    const verb = () => {
+        const t = p.tool;
+        if (t.status === "awaiting") return t.name === "AskUserQuestion" || t.name === "ExitPlanMode" ? RUNNING[t.name]! : "Waiting for approval";
+        if (t.status === "streaming") return `Preparing ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
+        return RUNNING[t.name] ?? `Running ${t.name}`;
+    };
+    const tail = () => (p.tool.progress ? stripAnsi(p.tool.progress).trimEnd().split("\n").slice(-4).join("\n") : undefined);
+    return (
+        <>
+            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""}`}>
+                <span class="slot">
+                    <Show when={p.tool.status === "awaiting"} fallback={<ToolIcon name={p.tool.name} size={16} />}>
+                        <Hand size={16} />
+                    </Show>
+                </span>
+                <span class={p.tool.status === "awaiting" ? "wverb" : "wverb shimmer"}>{verb()}</span>
+                <Show when={label().arg && p.tool.status !== "streaming"}>
+                    <span class="warg mono truncate">{label().arg}</span>
+                </Show>
+                <Show when={p.tool.status === "streaming" && p.tool.receiving}>
+                    <span class="warg truncate">{tokens(p.tool.receiving!)} chars</span>
+                </Show>
+                <Show when={p.tool.startedAt}>
+                    <span class="wtime num">{duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}</span>
+                </Show>
+            </div>
+            <Show when={tail()}>
+                <pre class="activity-tail">{tail()}</pre>
+            </Show>
+        </>
+    );
+}
+
+const AGENT_STATUS: Record<AgentRun["status"], string> = {
+    running: "Working",
+    waiting: "Needs your approval",
+    done: "Done",
+    failed: "Failed",
+    stopped: "Stopped",
+};
+
+const agentLive = (a: AgentRun) => a.status === "running" || a.status === "waiting";
+
+export function agentElapsed(a: AgentRun): string {
+    return duration(Math.max(0, (a.endedAt ?? (agentLive(a) ? now() : a.startedAt)) - a.startedAt)).replace(/^(\d+)ms$/, "0s");
+}
+
+/** One line of what a sub-agent is up to, or what it found. */
+export function agentLine(a: AgentRun): string {
+    if (a.status === "waiting") return AGENT_STATUS.waiting;
+    if (agentLive(a)) return a.activity ?? "Working";
+    const report = a.report
+        ?.replace(/```[\s\S]*?```/g, " ")
+        .replace(/[*_`>#]/g, "")
+        .split("\n")
+        .map((l) => l.trim())
+        .find(Boolean);
+    return report ?? AGENT_STATUS[a.status];
+}
+
+/** "2 sub-agents · 1 working · 1 done", opening into a row per agent that opens its own view. */
+export function SubAgentsRow(p: { runs: AgentRun[] }) {
+    const [open, setOpen] = createSignal(p.runs.some(agentLive));
+    const counts = () => {
+        const n = (s: AgentRun["status"][]) => p.runs.filter((a) => s.includes(a.status)).length;
+        return [
+            n(["running"]) && `${n(["running"])} working`,
+            n(["waiting"]) && `${n(["waiting"])} waiting for you`,
+            n(["done"]) && `${n(["done"])} done`,
+            n(["failed"]) && `${n(["failed"])} failed`,
+            n(["stopped"]) && `${n(["stopped"])} stopped`,
+        ].filter(Boolean) as string[];
+    };
+    const tone = () => (p.runs.some((a) => a.status === "waiting") ? "warn" : p.runs.some((a) => a.status === "running") ? "info" : p.runs.some((a) => a.status === "failed") ? "err" : "muted");
+    const span = () => {
+        const start = Math.min(...p.runs.map((a) => a.startedAt));
+        const end = p.runs.some(agentLive) ? now() : Math.max(...p.runs.map((a) => a.endedAt ?? a.startedAt));
+        return duration(Math.max(0, end - start)).replace(/^(\d+)ms$/, "0s");
+    };
+    return (
+        <div class="subagents">
+            <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                <span class="stack">
+                    <For each={p.runs.slice(0, 3)}>
+                        {() => (
+                            <span class="av">
+                                <Bot size={14} />
+                            </span>
+                        )}
+                    </For>
+                </span>
+                <span class="ag-text">
+                    <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
+                    <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
+                </span>
+                <span class="grow" />
+                <span class="ag-time num">{span()}</span>
+                <ChevronRight size={14} class="chev" />
+            </button>
+            <Show when={open()}>
+                <div class="agl">
+                    <For each={p.runs}>
+                        {(a) => (
+                            <button class="agr" onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
+                                <span class="av">
+                                    <Bot size={14} />
+                                    <span class={`nd st-${a.status}`} />
+                                </span>
+                                <span class="agr-text">
+                                    <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>
+                                    <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`}>
+                                        {a.model ? `${shortModelRef(a.model)} · ` : ""}
+                                        {agentLine(a)}
+                                    </span>
+                                </span>
+                                <span class="ag-time num">{agentElapsed(a)}</span>
+                                <ChevronRight size={14} class="chev" />
+                            </button>
+                        )}
                     </For>
                 </div>
             </Show>
@@ -341,24 +481,22 @@ function StatusIcon(p: { tool: ToolBlock }) {
     return (
         <Switch>
             <Match when={p.tool.status === "running" || p.tool.status === "streaming"}>
-                <Spinner size={13} class="tone-accent" />
+                <Spinner size={12} class="tone-accent" />
             </Match>
             <Match when={p.tool.status === "awaiting"}>
-                <Hand size={13} class="tone-warn pulse" />
-            </Match>
-            <Match when={p.tool.status === "ok"}>
-                <Check size={13} class="tone-ok" />
+                <Hand size={12} class="tone-warn pulse" />
             </Match>
             <Match when={p.tool.status === "error"}>
-                <X size={13} class="tone-err" />
+                <X size={12} class="tone-err" />
             </Match>
             <Match when={p.tool.status === "denied"}>
-                <X size={13} class="tone-warn" />
+                <X size={12} class="tone-warn" />
             </Match>
         </Switch>
     );
 }
 
+/** One call, as a plain line; opens into its details. */
 export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
     const [open, setOpen] = createSignal(false);
     const label = () => toolLabel(p.tool);
@@ -369,10 +507,10 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
         return t.summary;
     };
     return (
-        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status}`}>
+        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${p.nested ? "nested" : ""}`}>
             <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
                 <span class="tool-icon">
-                    <ToolIcon name={p.tool.name} agent={p.tool.agent} />
+                    <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
                 </span>
                 <span class="tool-verb">{label().verb}</span>
                 <Show when={label().arg}>
@@ -380,7 +518,7 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                 </Show>
                 <span class="tool-meta">
                     <Show when={p.tool.sandboxed}>
-                        <span class="chip tiny" title="Ran in the sandbox">
+                        <span class="tool-tag" title="Ran in the sandbox">
                             <ShieldCheck size={11} /> sandbox
                         </span>
                     </Show>
@@ -388,43 +526,25 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                         <span class="truncate">{meta()}</span>
                     </Show>
                     <Show when={p.tool.diff && p.tool.status === "ok"}>
-                        <DiffStat added={p.tool.diff!.added} removed={p.tool.diff!.removed} />
+                        <span class="stat">
+                            <span class="add">+{p.tool.diff!.added}</span>
+                            <span class="del">−{p.tool.diff!.removed}</span>
+                        </span>
                     </Show>
                     <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
-                        <span class="tool-dur">{duration(p.tool.durationMs!)}</span>
+                        <span class="tool-dur num">{duration(p.tool.durationMs!)}</span>
                     </Show>
                     <StatusIcon tool={p.tool} />
                 </span>
             </button>
-            <Show when={!open() && (p.tool.status === "running") && p.tool.progress}>
+            <Show when={!open() && p.tool.status === "running" && p.tool.progress}>
                 <pre class="activity-tail nested">{stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(-6).join("\n")}</pre>
-            </Show>
-            <Show when={!open() && p.tool.sub && p.tool.status === "running"}>
-                <SubagentPeek tool={p.tool} />
             </Show>
             <Show when={open()}>
                 <div class="tool-detail">
                     <ToolDetails tool={p.tool} />
                 </div>
             </Show>
-        </div>
-    );
-}
-
-function SubagentPeek(p: { tool: ToolBlock }) {
-    return (
-        <div class="sub-peek">
-            <For each={p.tool.sub!.tools.slice(-3)}>
-                {(t) => (
-                    <div class="sub-line">
-                        <ToolIcon name={t.name} size={12} />
-                        <span class="truncate">{t.title}</span>
-                    </div>
-                )}
-            </For>
-            <div class="sub-stats">
-                {plural(p.tool.sub!.toolCount, "tool use")} · {tokens(p.tool.sub!.tokens)} tokens
-            </div>
         </div>
     );
 }

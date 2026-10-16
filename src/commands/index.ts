@@ -1109,7 +1109,7 @@ async function effortCommand(app: App, args: string) {
 async function configCommand(app: App) {
     let index = 0;
     for (;;) {
-        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "defaultMode" | "allowBypass" | "smallModel" | "verbose";
+        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
         const s = app.settings;
         const onOff = (b: boolean | undefined) => (b ? theme.success("on") : theme.muted("off"));
         const items: SelectItem<K>[] = [
@@ -1119,7 +1119,8 @@ async function configCommand(app: App) {
             { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
             { label: "Default permission mode", value: "defaultMode", detail: MODE_INFO[s.permissions?.defaultMode ?? "default"].label, description: "mode at startup" },
             { label: "Bypass in shift+tab cycle", value: "allowBypass", detail: onOff(s.permissions?.allowBypass), description: "lets shift+tab reach bypass permissions" },
-            { label: "Small model", value: "smallModel", detail: s.smallModel ?? "auto", description: "for the auto-mode classifier and summaries" },
+            { label: "Small model", value: "smallModel", detail: s.smallModel ?? "auto", description: "for session titles and summaries" },
+            { label: "Auto-mode reviewer", value: "reviewModel", detail: s.reviewModel ?? "auto", description: "checks actions in auto mode (auto: Sonnet 5.5 with an Anthropic key)" },
             { label: "Verbose output", value: "verbose", detail: onOff(app.verbose), description: "this session only (ctrl+o)" },
         ];
         const d = new SelectDialog<K>({ title: "Settings", header: [theme.muted(`Saved to ${displayPath(settingsPath("user", app.cwd), app.cwd)}. Enter to change.`)], items, initial: index, numbers: true });
@@ -1164,6 +1165,14 @@ async function configCommand(app: App) {
                 const items2: SelectItem<string>[] = [{ label: "Auto", value: "", description: "the cheapest model from the current provider" }, ...(await modelItems(app)).filter((i) => !i.value.startsWith("login:") && !i.disabled)];
                 const pick = (await app.showDialog(new SelectDialog<string>({ title: "Small model", items: items2, searchable: true, current: (v) => v === (s.smallModel ?? "") }))) as string | undefined;
                 if (pick !== undefined) save((x) => (x.smallModel = pick || undefined));
+                break;
+            }
+            case "reviewModel": {
+                // Claude Code and Codex run whole turns: they can't answer a one-off request.
+                const api = (ref: string) => getProvider(ref.split(":")[0] ?? "")?.kind !== "agent";
+                const items2: SelectItem<string>[] = [{ label: "Auto", value: "", description: "Claude Sonnet 5.5 with an Anthropic key, else the session's model" }, ...(await modelItems(app)).filter((i) => !i.value.startsWith("login:") && !i.disabled && api(i.value))];
+                const pick = (await app.showDialog(new SelectDialog<string>({ title: "Auto-mode reviewer", items: items2, searchable: true, current: (v) => v === (s.reviewModel ?? "") }))) as string | undefined;
+                if (pick !== undefined) save((x) => (x.reviewModel = pick || undefined));
                 break;
             }
             case "verbose":

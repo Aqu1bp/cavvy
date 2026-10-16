@@ -74,14 +74,15 @@ export function Transcript(p: { handle: SessionHandle }) {
 
     return (
         <div class="transcript-wrap">
-            <div class="transcript" ref={scroller} onScroll={onScroll}>
+            <div class="transcript-fade" aria-hidden="true" />
+            <div class="transcript" ref={scroller} onScroll={onScroll} aria-label="Conversation">
                 <div class="transcript-col" ref={content}>
                     <Show when={hidden()}>
                         <button class="earlier" onClick={() => setShown((n) => n + PAGE)}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
-                    <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} last={t === turns()[turns().length - 1]} onRewind={rewind} />}</For>
+                    <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} />}</For>
                     <div class="transcript-end" />
                 </div>
             </div>

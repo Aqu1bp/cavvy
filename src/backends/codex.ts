@@ -6,7 +6,8 @@
 // and runs one turn. Codex runs it with its own tools and sandbox; the harness
 // maps its permission mode to Codex's approval policy and sandbox, shows the
 // items as they stream, and answers Codex's approval requests through the
-// harness's own permission rules and prompt. The harness never reads Codex's
+// harness's own permission rules and prompt (in auto mode, Codex's own
+// reviewer answers them instead). The harness never reads Codex's
 // credentials (~/.codex/auth.json) and never signs in on its behalf.
 
 import { existsSync, readFileSync } from "fs";
@@ -170,6 +171,8 @@ interface Policy {
     approvalPolicy: "untrusted" | "on-request" | "never";
     sandbox: "read-only" | "workspace-write" | "danger-full-access";
     sandboxPolicy: Record<string, unknown>;
+    /** Who answers its approval requests: the harness (its rules, then the user), or Codex's own reviewer. It stays with the thread, so every mode says. */
+    approvalsReviewer: "user" | "auto_review";
 }
 
 /** The harness's permission mode as Codex's approval policy and sandbox. */
@@ -178,22 +181,22 @@ export function codexPolicy(mode: PermissionMode, additionalDirectories: string[
     switch (mode) {
         case "acceptEdits":
             // Edits inside the workspace; commands other than known read-only ones still ask (the harness approves the edits).
-            return { approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: workspaceWrite };
+            return { approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: workspaceWrite, approvalsReviewer: "user" };
         case "auto":
-            // Edits and commands inside the workspace run in Codex's sandbox; it asks to go beyond it.
-            return { approvalPolicy: "on-request", sandbox: "workspace-write", sandboxPolicy: workspaceWrite };
+            // Edits and commands inside the workspace run in Codex's sandbox; going beyond it, Codex's own reviewer decides.
+            return { approvalPolicy: "on-request", sandbox: "workspace-write", sandboxPolicy: workspaceWrite, approvalsReviewer: "auto_review" };
         case "bypassPermissions":
-            return { approvalPolicy: "never", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" } };
+            return { approvalPolicy: "never", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
         default:
             // Manual and plan: commands other than known read-only ones, and every edit, ask.
-            return { approvalPolicy: "untrusted", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false } };
+            return { approvalPolicy: "untrusted", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" };
     }
 }
 
 /** Modes with the same Codex policy (plan adds instructions on top). */
 function codexPolicyKey(m: PermissionMode): string {
     const p = codexPolicy(m, []);
-    return `${p.approvalPolicy}|${p.sandbox}`;
+    return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
 const PLAN_NOTE =
@@ -373,7 +376,7 @@ class CodexTurn {
                 if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
                 config = off;
             }
-            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, developerInstructions, ...(config ? { config } : {}) };
+            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
@@ -414,7 +417,7 @@ class CodexTurn {
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
                     await this.waitFor(async () => {
-                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, summary: "auto" });
+                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                     });
                     this.turnId = undefined;
@@ -522,6 +525,21 @@ class CodexTurn {
             case "deprecationNotice": {
                 const msg = String(p.message ?? p.summary ?? "").trim();
                 if (msg) this.host.emit({ type: "notice", level: "info", message: `Codex: ${msg}` });
+                break;
+            }
+            case "item/autoApprovalReview/completed": {
+                // Codex's reviewer said no: the model hears it from Codex; the user hears it here.
+                const status = p.review?.status;
+                if (status !== "denied" && status !== "timedOut") break;
+                const what = reviewedAction(p.action);
+                const why = typeof p.review?.rationale === "string" ? p.review.rationale.trim() : "";
+                const verdict = status === "denied" ? "Codex's reviewer blocked" : "Codex's reviewer ran out of time on";
+                this.host.emit({ type: "notice", level: "warn", message: redact(`${verdict} ${what}${why ? `: ${why}` : "."}`) });
+                break;
+            }
+            case "guardianWarning": {
+                const msg = String(p.message ?? "").trim();
+                if (msg) this.host.emit({ type: "notice", level: "warn", message: redact(`Codex's reviewer: ${msg}`) });
                 break;
             }
             case "model/rerouted":
@@ -830,6 +848,29 @@ function fileChanges(item: any): FileChange[] {
 /** Every path a change writes: sources, and renames' destinations. */
 function writtenPaths(changes: FileChange[]): string[] {
     return [...new Set(changes.flatMap((c) => (c.movePath ? [c.path, c.movePath] : [c.path])))];
+}
+
+/** What Codex's reviewer looked at, in a few words. */
+export function reviewedAction(a: any): string {
+    const clip = (x: string) => (x.length > 160 ? `${x.slice(0, 160)}…` : x);
+    switch (a?.type) {
+        case "command":
+            return `\`${clip(String(a.command ?? ""))}\``;
+        case "execve":
+            return `\`${clip([a.program, ...(Array.isArray(a.argv) ? a.argv.slice(1) : [])].join(" "))}\``;
+        case "writeStdin":
+            return "input to a running command";
+        case "applyPatch":
+            return "a file change";
+        case "networkAccess":
+            return a.host ? `network access to ${String(a.host)}` : "network access";
+        case "mcpToolCall":
+            return a.server && a.toolName ? `${String(a.server)}'s ${String(a.toolName)} tool` : "an MCP tool call";
+        case "requestPermissions":
+            return "a request for more permissions";
+        default:
+            return "an action";
+    }
 }
 
 /** The folders a permissions request asks Codex's sandbox to open, for reading and writing. */

@@ -8,6 +8,13 @@
 // It goes to /Applications, or ~/Applications if that isn't writable. Builds
 // reuse desktop/src-tauri/target, so after the first only what changed is
 // rebuilt.
+//
+// It's signed with your Apple Development (or Developer ID) certificate when
+// you have one, so each build is the same app to macOS and keeps the keychain
+// access you allowed: Harness reads your API keys from there. Unsigned (ad hoc)
+// builds are a new app every time, and macOS asks again. With more than one
+// certificate it keeps to the one the installed copy has; to pick another,
+// set HARNESS_SIGNING_IDENTITY to its name or SHA-1 (security find-identity -v -p codesigning).
 
 import { accessSync, constants, existsSync, readdirSync, rmSync } from "fs";
 import { homedir, userInfo } from "os";
@@ -22,7 +29,7 @@ const restart = !process.argv.includes("--no-restart");
 const root = resolve(import.meta.dir, "..");
 const desktop = join(root, "desktop");
 const tauri = join(desktop, "src-tauri");
-const { productName } = (await Bun.file(join(tauri, "tauri.conf.json")).json()) as { productName: string };
+const { productName, identifier } = (await Bun.file(join(tauri, "tauri.conf.json")).json()) as { productName: string; identifier: string };
 
 /** Where Rust is when cargo isn't on PATH: rustup's shims, or a toolchain installed without them. */
 function rustBin(): string | undefined {
@@ -48,6 +55,16 @@ if (!Bun.which("cargo", { PATH: env.PATH })) {
 function run(cmd: string[], cwd: string) {
     const r = Bun.spawnSync(cmd, { cwd, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);
+}
+
+/** Its output, or its error and exit if it fails. */
+function output(cmd: string[]): string {
+    const r = Bun.spawnSync(cmd, { env, stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) {
+        console.error(r.stderr.toString().trim() || `${cmd[0]} failed`);
+        process.exit(r.exitCode ?? 1);
+    }
+    return r.stdout.toString() + r.stderr.toString();
 }
 
 run(["bun", "install"], root);
@@ -76,6 +93,52 @@ function writable(dir: string): boolean {
     }
 }
 const dest = join(writable("/Applications") ? "/Applications" : join(homedir(), "Applications"), `${productName}.app`);
+
+interface Identity {
+    hash: string;
+    name: string;
+}
+
+/** Who signed the installed copy's server (the part that reads the keychain). */
+function signedBy(app: string): string | undefined {
+    const server = join(app, "Contents", "MacOS", "harness");
+    if (!existsSync(server)) return undefined;
+    const r = Bun.spawnSync(["codesign", "-dvv", server], { stdout: "pipe", stderr: "pipe" });
+    return r.stderr.toString().match(/^Authority=(.+)$/m)?.[1];
+}
+
+/** A certificate Apple issued, so the keychain's trust carries over to the next build; none means ad hoc. */
+function signingIdentity(): Identity | undefined {
+    const valid = output(["security", "find-identity", "-v", "-p", "codesigning"])
+        .split("\n")
+        .flatMap((l) => {
+            // Revoked and expired ones are listed too, flagged CSSMERR_….
+            const m = l.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"(.*)$/);
+            return m && !m[3]!.includes("CSSMERR") ? [{ hash: m[1]!, name: m[2]! }] : [];
+        });
+    const want = process.env.HARNESS_SIGNING_IDENTITY?.trim();
+    if (want) {
+        const id = valid.find((i) => i.hash === want.toUpperCase() || i.name === want);
+        if (!id) {
+            console.error(`HARNESS_SIGNING_IDENTITY is "${want}", but there's no valid signing certificate by that name or SHA-1. security find-identity -v -p codesigning lists them.`);
+            process.exit(1);
+        }
+        return id;
+    }
+    const apple = valid.filter((i) => /^(Apple Development|Mac Developer|Developer ID Application): /.test(i.name));
+    const before = signedBy(dest);
+    return apple.find((i) => i.name === before) ?? apple[0];
+}
+
+// The server first: it's inside the app, whose own signature covers it. By SHA-1, as names can repeat (a revoked copy).
+const id = signingIdentity();
+if (id) {
+    output(["codesign", "--force", "--sign", id.hash, "--identifier", `${identifier}.server`, "--timestamp=none", join(built, "Contents", "MacOS", "harness")]);
+    output(["codesign", "--force", "--sign", id.hash, "--timestamp=none", built]);
+    console.log(`Signed with ${id.name}`);
+} else {
+    console.log("No Apple Development certificate, so this build is signed ad hoc: macOS asks again before it reads your keys from the keychain. Xcode → Settings → Accounts makes one.");
+}
 
 /** Your running copies, wherever they were opened from: the app, and the server each started. (Not another account's.) */
 function running(): { app: number[]; server: number[] } {

@@ -1,14 +1,16 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { ArrowUp, AtSign, FileText, Folder, ImagePlus, Slash, Square, SquareTerminal, X } from "lucide-solid";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { ArrowUp, FileText, Folder, ImagePlus, ListEnd, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, rpc } from "../state/app";
+import { app, handleFor, reportError, rpc, toast } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
-import { tokens } from "../lib/format";
+import { tokens, usd } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
-import { ModelPicker } from "./ModelPicker";
+import { EffortMenu, ModelPicker } from "./ModelPicker";
 import { ModePicker, nextMode } from "./ModePicker";
+import { InteractionTab } from "./InteractionDock";
+import { Popover } from "./ui/Popover";
 import { Ring } from "./ui/bits";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
@@ -20,9 +22,74 @@ const history: string[] = [];
 
 const MAX_IMAGE = 15 * 1024 * 1024;
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session" }) {
+/** The ring, and on hover what it stands for: tokens, spend, and compacting now. */
+function ContextRing(p: { sessionId: string }) {
+    let btn: HTMLButtonElement | undefined;
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    const [open, setOpen] = createSignal(false);
+    const st = () => handleFor(p.sessionId)?.view.state;
+    const win = () => st()?.model?.contextWindow;
+    const pct = () => (st() && win() ? st()!.contextTokens / win()! : 0);
+    const show = () => (clearTimeout(closeTimer), setOpen(true));
+    const hide = () => (closeTimer = setTimeout(() => setOpen(false), 160));
+    onCleanup(() => clearTimeout(closeTimer));
+    return (
+        <Show when={st() && win()}>
+            <button
+                ref={btn}
+                class="hb ctx-ring"
+                aria-haspopup="dialog"
+                aria-expanded={open()}
+                aria-label={`Context: ${Math.round(pct() * 100)}% used`}
+                onMouseEnter={show}
+                onMouseLeave={hide}
+                onClick={() => setOpen(!open())}
+            >
+                <Ring value={pct()} size={18} stroke={2.4} neutral />
+            </button>
+            <Popover open={open()} anchor={() => btn} onClose={() => setOpen(false)} placement="top" align="end" width={264} class="ctx-card">
+                <div onMouseEnter={show} onMouseLeave={hide}>
+                    <div class="ctx-label">Context window</div>
+                    <div class="ctx-line">
+                        <span class="num">
+                            {tokens(st()!.contextTokens)} of {tokens(win()!)} tokens
+                        </span>
+                        <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
+                    </div>
+                    <div class="ctx-bar">
+                        <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
+                    </div>
+                    <div class="ctx-grid">
+                        <span>Spent</span>
+                        <span class="num">{usd(st()!.cost)}</span>
+                        <span>Tokens</span>
+                        <span class="num">
+                            {tokens(st()!.tokensIn)} in · {tokens(st()!.tokensOut)} out
+                        </span>
+                    </div>
+                    <div class="ctx-foot">
+                        <span>{app.settings.autoCompact === false ? "Automatic compaction is off." : "Compacts on its own near the limit."}</span>
+                        <button
+                            class="ghost-btn outlined"
+                            disabled={st()!.busy}
+                            onClick={() => {
+                                setOpen(false);
+                                void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
+                            }}
+                        >
+                            Compact now
+                        </button>
+                    </div>
+                </div>
+            </Popover>
+        </Show>
+    );
+}
+
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element }) {
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
+    let box: HTMLDivElement | undefined;
     const [text, setText] = createSignal("");
     const [attachments, setAttachments] = createSignal<Attachment[]>([]);
     const [menu, setMenu] = createSignal<MenuItem[]>([]);
@@ -30,6 +97,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [menuDismissedFor, setMenuDismissedFor] = createSignal<string>();
     const [dragging, setDragging] = createSignal(false);
     const [sending, setSending] = createSignal(false);
+    const [effortOpen, setEffortOpen] = createSignal(false);
     let histIdx = -1;
     let commands: CommandInfo[] = [];
 
@@ -37,6 +105,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const st = () => h()?.view.state;
     const busy = () => Boolean(st()?.busy);
     const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
+    const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
     const shell = () => text().startsWith("!");
     const draftKey = () => p.sessionId ?? "home";
 
@@ -78,8 +147,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
 
     onMount(() => {
         if (p.autofocus) requestAnimationFrame(() => ta?.focus());
-        const cwd = st()?.cwd ?? app.homeCwd;
-        if (cwd) void rpc.call("commands.list", { cwd }).then((c) => (commands = c)).catch(() => undefined);
     });
     createEffect(
         on(
@@ -87,7 +154,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             (cwd) => {
                 if (cwd) void rpc.call("commands.list", { cwd }).then((c) => (commands = c)).catch(() => undefined);
             },
-            { defer: true },
         ),
     );
 
@@ -195,7 +261,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
         if (e.key === "Tab" && e.shiftKey) {
             e.preventDefault();
-            void setMode(nextMode(mode(), Boolean(st()?.bypassAllowed)));
+            void setMode(nextMode(mode(), bypassAllowed()));
             return;
         }
         if (e.key === "Enter" && !e.isComposing) {
@@ -246,21 +312,39 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
     };
 
-    const contextPct = () => {
-        const s = st();
-        const w = s?.model?.contextWindow;
-        return s && w ? s.contextTokens / w : 0;
+    /** A queued message back into the box, out of the queue. */
+    // By the message's id, so a queue that moved on meanwhile doesn't lose a different one. Edited, it
+    // comes back with its images, into this session's draft (even if another is shown by then).
+    const dequeue = async (i: number, edit: boolean) => {
+        const queueId = st()?.queueIds[i];
+        const handle = h();
+        if (queueId === undefined || !p.sessionId || !handle) return;
+        try {
+            const r = await rpc.call("session.dequeue", { id: p.sessionId, queueId, edit });
+            if (!r.removed) toast("That message has already been sent", "info");
+            else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images });
+        } catch (e) {
+            reportError(e);
+        }
     };
+
     const placeholder = () => {
         if (shell()) return "Run a shell command";
         if (busy()) return "Queue a message for the next step…";
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ for files, / for commands)";
     };
     const canSend = createMemo(() => Boolean(text().trim() || attachments().length));
+    /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
+    let root: HTMLDivElement | undefined;
+    const edge = () => root;
+    // Home's composer has the page below it; a session's sits at the bottom of the window.
+    const menuSide = () => (p.variant === "home" ? "bottom" : "top");
+    const interactions = () => st()?.interactions ?? [];
 
     return (
         <div
-            class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} mode-${mode()}`}
+            ref={root}
+            class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""}`}
             onDragOver={(e) => {
                 if (e.dataTransfer?.types.includes("Files")) {
                     e.preventDefault();
@@ -275,25 +359,41 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             }}
         >
             <Show when={st()?.queued.length}>
-                <div class="queued">
+                <div class="tab queue-tab">
                     <For each={st()!.queued}>
                         {(q, i) => (
-                            <div class="queued-item">
-                                <span class="queued-label">Queued</span>
-                                <span class="truncate">{q}</span>
-                                <button class="icon-btn" title="Remove from the queue" onClick={() => void rpc.call("session.dequeue", { id: p.sessionId!, index: i() })}>
-                                    <X size={12} />
+                            <div class="queue-row">
+                                <ListEnd size={14} class="queue-icon" />
+                                <span class="queue-text truncate">{q}</span>
+                                <Show when={i() === 0}>
+                                    <span class="queue-hint">Sends after this step</span>
+                                </Show>
+                                <button class="hb sm" title="Edit" aria-label="Edit queued message" onClick={() => void dequeue(i(), true)}>
+                                    <Pencil size={13} />
+                                </button>
+                                <button class="hb sm" title="Remove from the queue" aria-label="Remove from the queue" onClick={() => void dequeue(i(), false)}>
+                                    <X size={14} />
                                 </button>
                             </div>
                         )}
                     </For>
                 </div>
             </Show>
+            <Show when={p.sessionId && interactions().length}>
+                <InteractionTab sessionId={p.sessionId!} items={interactions()} />
+            </Show>
             <Show when={menu().length}>
                 <div class="composer-menu" role="listbox">
                     <For each={menu()}>
                         {(item, i) => (
-                            <button class={`cm-item ${i() === menuSel() ? "sel" : ""}`} onMouseDown={(e) => { e.preventDefault(); apply(item, true); }} onMouseMove={() => setMenuSel(i())}>
+                            <button
+                                class={`cm-item ${i() === menuSel() ? "sel" : ""}`}
+                                onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    apply(item, true);
+                                }}
+                                onMouseMove={() => setMenuSel(i())}
+                            >
                                 <Show
                                     when={item.kind === "command" && item}
                                     fallback={
@@ -323,14 +423,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </For>
                 </div>
             </Show>
-            <div class="composer-box">
+            <div class="composer-box" ref={box}>
                 <Show when={attachments().length}>
                     <div class="attachments">
                         <For each={attachments()}>
                             {(a, i) => (
                                 <div class="attachment">
                                     <img src={a.preview} alt={a.name} />
-                                    <button class="attachment-x" title="Remove" onClick={() => setAttachments((list) => list.filter((_, j) => j !== i()))}>
+                                    <button class="attachment-x" title="Remove" aria-label="Remove image" onClick={() => setAttachments((list) => list.filter((_, j) => j !== i()))}>
                                         <X size={11} />
                                     </button>
                                 </div>
@@ -341,7 +441,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <div class="composer-input">
                     <Show when={shell()}>
                         <span class="shell-badge" title="Runs in your shell; the output is shared with the model">
-                            <SquareTerminal size={13} />
+                            <SquareTerminal size={14} />
                         </span>
                     </Show>
                     <textarea
@@ -364,30 +464,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 </div>
                 <div class="composer-bar">
                     <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(e) => e.currentTarget.files && void addFiles(e.currentTarget.files)} />
-                    <button class="icon-btn" title="Attach images" onClick={() => fileInput?.click()}>
+                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} />
+                    <EffortMenu current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
+                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
+                    <span class="spacer" />
+                    <button class="hb" title="Attach images" aria-label="Attach images" onClick={() => fileInput?.click()}>
                         <ImagePlus size={16} />
                     </button>
                     <Show when={p.sessionId}>
-                        <button
-                            class="icon-btn"
-                            title="Mention a file (@)"
-                            onClick={() => {
-                                setText((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}@`);
-                                ta?.focus();
-                                requestAnimationFrame(updateMenu);
-                            }}
-                        >
-                            <AtSign size={15} />
-                        </button>
-                    </Show>
-                    <ModePicker mode={mode()} bypassAllowed={Boolean(st()?.bypassAllowed ?? app.settings.allowBypass)} open={modePickerOpen()} setOpen={setModePickerOpen} />
-                    <ModelPicker current={st()?.model} currentRef={app.settings.model} effort={st()?.effort ?? app.settings.effort} open={modelPickerOpen()} setOpen={setModelPickerOpen} />
-                    <span class="spacer" />
-                    <Show when={st() && st()!.contextTokens > 0 && st()!.model?.contextWindow}>
-                        <span class="ctx" title={`${tokens(st()!.contextTokens)} of ${tokens(st()!.model!.contextWindow!)} tokens of context used`}>
-                            <Ring value={contextPct()} size={16} />
-                            <span>{Math.round(contextPct() * 100)}%</span>
-                        </span>
+                        <ContextRing sessionId={p.sessionId!} />
                     </Show>
                     <Show
                         when={busy() && !canSend()}
@@ -398,11 +483,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         }
                     >
                         <button class="send stop" onClick={() => interrupt(p.sessionId)} title="Stop (Esc)" aria-label="Stop">
-                            <Square size={12} fill="currentColor" />
+                            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                                <rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor" />
+                            </svg>
                         </button>
                     </Show>
                 </div>
             </div>
+            <Show when={p.strip}>
+                <div class="composer-strip">{p.strip}</div>
+            </Show>
         </div>
     );
 }

@@ -6,6 +6,35 @@ import { langOf, plural } from "../../lib/format";
 import { escapeHtml } from "../../lib/markdown";
 
 type Row = { kind: "line"; line: DiffLine; old?: number; new?: number; idx: number } | { kind: "sep"; text: string };
+type Line = Extract<Row, { kind: "line" }>;
+/** Side by side: the old line on the left, the new one on the right; a lone side leaves the other blank. */
+type Pair = { kind: "pair"; left?: Line; right?: Line } | { kind: "sep"; text: string };
+
+function pairUp(rows: Row[]): Pair[] {
+    const out: Pair[] = [];
+    let dels: Line[] = [];
+    let adds: Line[] = [];
+    const flush = () => {
+        for (let i = 0; i < Math.max(dels.length, adds.length); i++) out.push({ kind: "pair", left: dels[i], right: adds[i] });
+        dels = [];
+        adds = [];
+    };
+    for (const r of rows) {
+        if (r.kind === "sep") {
+            flush();
+            out.push(r);
+        } else if (r.line.t === "del") {
+            if (adds.length) flush();
+            dels.push(r);
+        } else if (r.line.t === "add") adds.push(r);
+        else {
+            flush();
+            out.push({ kind: "pair", left: r, right: r });
+        }
+    }
+    flush();
+    return out;
+}
 
 export function DiffStat(p: { added: number; removed: number; class?: string }) {
     return (
@@ -29,7 +58,7 @@ export function FileIcon(p: { status: FileDiff["status"]; size?: number }) {
     );
 }
 
-export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolean; class?: string }) {
+export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolean; split?: boolean; class?: string }) {
     const [expanded, setExpanded] = createSignal(false);
     const [visible, setVisible] = createSignal(false);
     const [oldHl, setOldHl] = createSignal<string[]>();
@@ -77,7 +106,8 @@ export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolea
         }),
     );
 
-    const html = (r: Extract<Row, { kind: "line" }>) => {
+    const pairs = createMemo(() => (p.split ? pairUp(shown()) : []));
+    const html = (r: Line) => {
         const hl = r.line.t === "del" ? oldHl()?.[r.old ?? -1] : newHl()?.[r.new ?? -1];
         return hl ?? escapeHtml(r.line.text);
     };
@@ -94,7 +124,29 @@ export function DiffView(p: { diff: FileDiff; maxLines?: number; header?: boolea
             <Show when={p.diff.note && !p.diff.hunks.length}>
                 <div class="diff-note">{p.diff.note}</div>
             </Show>
-            <Show when={p.diff.hunks.length}>
+            <Show when={p.diff.hunks.length && p.split}>
+                <div class="diff-scroll">
+                    <div class="diff-rows split">
+                        <For each={pairs()}>
+                            {(r) =>
+                                r.kind === "sep" ? (
+                                    <div class="sl sep">
+                                        <span class="txt">{r.text}</span>
+                                    </div>
+                                ) : (
+                                    <div class="sl">
+                                        <span class={`ln ${r.left ? r.left.line.t : "none"}`}>{r.left?.line.a ?? ""}</span>
+                                        <span class={`txt ${r.left ? r.left.line.t : "none"}`} innerHTML={r.left ? html(r.left) : ""} />
+                                        <span class={`ln ${r.right ? r.right.line.t : "none"}`}>{r.right?.line.b ?? ""}</span>
+                                        <span class={`txt ${r.right ? r.right.line.t : "none"}`} innerHTML={r.right ? html(r.right) : ""} />
+                                    </div>
+                                )
+                            }
+                        </For>
+                    </div>
+                </div>
+            </Show>
+            <Show when={p.diff.hunks.length && !p.split}>
                 <div class="diff-scroll">
                     <div class="diff-rows">
                         <For each={shown()}>
