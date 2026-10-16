@@ -655,7 +655,7 @@ function ToolDetails(p: { tool: ToolBlock }) {
                         <Bot size={13} /> View its activity
                     </button>
                     <Show when={t().sub}>
-                        <Section label={`${t().sub!.label} · ${plural(t().sub!.toolCount, "tool use")} · ${tokens(t().sub!.tokens)} tokens`}>
+                        <Section label={`${t().sub!.label} · ${plural(t().sub!.toolCount, "tool use")}${t().sub!.tokens ? ` · ${tokens(t().sub!.tokens)} tokens` : ""}`}>
                             <div class="sub-rows">
                                 <For each={t().sub!.tools}>{(x) => <ToolRow tool={x} nested />}</For>
                             </div>

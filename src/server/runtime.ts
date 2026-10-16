@@ -718,9 +718,12 @@ export class Runtime {
                 this.activity(`Retrying in ${Math.ceil(e.delayMs / 1000)}s`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
                 break;
             }
-            case "usage":
-                this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, ...this.tokenTotals() });
+            case "usage": {
+                // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
+                const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
+                this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, ...this.tokenTotals(), ...window });
                 break;
+            }
             case "compact_start":
                 this.activity("Compacting conversation");
                 break;

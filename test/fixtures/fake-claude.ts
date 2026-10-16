@@ -10,9 +10,24 @@
 // everything else asks the host. Without --setting-sources excluding
 // "project", it loads .claude/settings.json and runs its SessionStart hooks.
 //
+// Like Claude Code 2.1.301 (checked with stream-json probes), a result names
+// the prompt it answers (user_message_uuid, from the user message's uuid); a
+// turn Claude Code starts itself to pass on a background sub-agent's result
+// has origin task-notification instead. A sub-agent in the background goes on
+// after the turn's result: Claude Code lists what runs in the background
+// (background_tasks_changed), says when the sub-agent is done
+// (task_notification, with its usage), and takes one more turn with it.
+//
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp | agent | agent-background | agent-background-late | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-hands-back-late
+// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
+// FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
+// FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
+// FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
+// FAKE_OLD_RESULTS=1  results don't say which prompt they answer (an older CLI)
+// FAKE_LIST_FIRST=ms  a background sub-agent leaves Claude Code's background list this long before its task_notification (1: 200 ms)
+// FAKE_LATE_TASK=ms   after a background sub-agent's notification, another background task is listed this long before the report turn
+// FAKE_HOLD_STDOUT=1  starts a command that keeps its stdout open for a while after it exits
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
@@ -37,6 +52,8 @@ if (argv[0] === "auth" && argv[1] === "status") {
     process.exit(on ? 0 : 1);
 }
 if (process.env.FAKE_IGNORE_STOP === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
+// Something it starts that holds its output open after it exits (a command left running with its stdout).
+if (process.env.FAKE_HOLD_STDOUT === "1") Bun.spawn(["sleep", "8"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }).unref();
 
 const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
 const flag = (name: string) => {
@@ -44,7 +61,7 @@ const flag = (name: string) => {
     return i >= 0 ? argv[i + 1] : undefined;
 };
 const resume = flag("--resume");
-const scenario = process.env.FAKE_SCENARIO ?? "write";
+const firstScenario = process.env.FAKE_SCENARIO ?? "write";
 if (resume?.startsWith("gone")) {
     out({ type: "result", subtype: "error_during_execution", is_error: true, errors: [`No conversation found with session ID: ${resume}`], usage: {}, session_id: resume });
     process.exit(1);
@@ -123,19 +140,46 @@ let interrupted = false;
 let wake: (() => void) | undefined;
 let seq = 0;
 let prompts = 0;
+/** The prompt the turn under way answers (its user message's uuid); none for a turn Claude Code starts itself. */
+let answering: string | undefined;
+/**
+ * What the session has spent so far: like Claude Code's, each result's
+ * total_cost_usd includes the earlier ones, those of the runs it resumes too.
+ */
+const spentFile = process.env.FAKE_LOG ? `${process.env.FAKE_LOG}.spent-${sessionId}` : undefined;
+let spent = spentFile && existsSync(spentFile) ? Number(readFileSync(spentFile, "utf-8")) : 0;
 
 function result(subtype: string, extra: Record<string, unknown> = {}) {
+    const old = process.env.FAKE_OLD_RESULTS === "1";
+    spent += 0.5;
+    if (spentFile) writeFileSync(spentFile, String(spent));
     out({
         type: "result",
         subtype,
         is_error: subtype !== "success",
         session_id: sessionId,
-        total_cost_usd: 0.5,
+        total_cost_usd: spent,
+        num_turns: 1,
+        ...(old ? {} : answering ? { user_message_uuid: answering, user_message_uuids: [answering] } : { user_message_uuid: null, origin: { kind: "task-notification" } }),
         ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: process.env.FAKE_FAST_MODE_END } : {}),
         usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
         modelUsage: { "claude-test-1": { contextWindow: 200000 } },
         ...extra,
     });
+}
+
+/** What Claude Code says runs in the background. */
+const bgTasks = new Map<string, { task_id: string; task_type: string; description: string }>();
+function backgroundChanged() {
+    out({ type: "system", subtype: "background_tasks_changed", tasks: [...bgTasks.values()], session_id: sessionId });
+}
+
+/** A turn Claude Code takes itself, to pass on what a background sub-agent reported. */
+function followUp(textOut: string) {
+    answering = undefined;
+    out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+    text(textOut);
+    result("success", { result: textOut });
 }
 
 function ask(toolName: string, input: Record<string, unknown>, id: string): Promise<any> {
@@ -151,6 +195,9 @@ function text(t: string) {
 }
 
 function toolUse(id: string, name: string, input: Record<string, unknown>) {
+    // Streamed first (--include-partial-messages), under the name Claude Code gives it.
+    out({ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id, name, input: {} } }, parent_tool_use_id: null, session_id: sessionId });
+    out({ type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }, parent_tool_use_id: null, session_id: sessionId });
     out({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id, name, input }] }, parent_tool_use_id: null, session_id: sessionId });
 }
 
@@ -173,20 +220,28 @@ const SUB_TOKEN = "ya29.subagentWroteThisToken1234567890";
  * sub-agent's own tool calls and results, its SubagentHandback, then
  * task_notification. In the foreground the Agent call's result comes last
  * and only says where the report went; in the background it comes first
- * ("async_launched") or, with `late`, after the sub-agent's first step, and
- * the sub-agent (here) never finishes before the turn does.
+ * ("async_launched") or, with `late`, after the sub-agent's first step. In
+ * the background the sub-agent goes on after the turn's result, as in
+ * 2.1.301: its last step, its last words (forwarded like its tool calls),
+ * task_notification with its usage and those words as the summary, and a
+ * turn Claude Code takes with them. A stuck one never finishes.
  */
-function agentCall(background: boolean, late = false) {
+function agentCall(background: boolean, late = false, stuck = false) {
     const id = "toolu_agent";
     const input = { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose", ...(background ? { run_in_background: true } : {}) };
     const launched = () =>
         out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "Async agent launched successfully. (This tool result is internal metadata.)\nagentId: agent-1" }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { isAsync: true, status: "async_launched", agentId: "agent-1" } });
     toolUse(id, "Agent", input);
+    if (background) {
+        bgTasks.set("agent-1", { task_id: "agent-1", task_type: "local_agent", description: input.description });
+        backgroundChanged();
+    }
     out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: input.description, is_backgrounded: background, session_id: sessionId });
     if (background && !late) launched();
     sub(id, "user", [{ type: "text", text: input.prompt }]);
     sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "export const strategies = [];", is_error: false }]);
+    out({ type: "system", subtype: "task_progress", task_id: "agent-1", tool_use_id: id, description: "Reading auth.ts", usage: { total_tokens: 1200, tool_uses: 1, duration_ms: 20 }, last_tool_name: "Read", session_id: sessionId });
     if (background && late) launched();
     if (!background) {
         // A file it writes (the diff shows), and an agent of its own, whose report goes to it.
@@ -199,13 +254,51 @@ function agentCall(background: boolean, late = false) {
         sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_nested", content: [{ type: "text", text: 'This agent\'s report was delivered to you as a message from "agent-2".' }] }]);
     }
     sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_glob", name: "Glob", input: { pattern: "src/auth/**" } }]);
-    if (background) return;
+    if (background) {
+        if (!stuck) afterResult = () => setTimeout(() => void backgroundAgentEnds(id), Number(process.env.FAKE_BACKGROUND_MS ?? 300));
+        return;
+    }
     // The Glob never gets a result: it's left open when the sub-agent ends.
     sub(id, "assistant", [{ type: "tool_use", id: "toolu_handback", name: "SubagentHandback", input: { message: REPORT } }]);
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_handback", content: [{ type: "text", text: '{"success":true,"message":"Report delivered to your caller."}' }] }]);
-    out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: 'This agent\'s report was delivered to you as a message from "agent-1".', handback: "send", handback_report: { text: REPORT }, session_id: sessionId });
+    out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: 'This agent\'s report was delivered to you as a message from "agent-1".', handback: "send", handback_report: { text: REPORT }, usage: { total_tokens: 2345, tool_uses: 4, duration_ms: 40 }, session_id: sessionId });
     const pointer = 'This agent\'s report was delivered to you as a message from "agent-1" (its SubagentHandback call). Read it there; it is not repeated here.';
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: pointer }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { status: "completed", agentId: "agent-1", handback: "send", handbackReport: { text: REPORT } } });
+}
+
+/** A turn's continuation once its result is out (a sub-agent in the background going on). */
+let afterResult: (() => void) | undefined;
+
+/**
+ * The background sub-agent's last step and words, Claude Code saying it's
+ * done, and the turn it takes with its report. With FAKE_LIST_FIRST=1 it
+ * stops listing the sub-agent a while before it says it's done; with
+ * FAKE_LATE_TASK=1 another background task runs for a while before that turn.
+ */
+async function backgroundAgentEnds(id: string) {
+    sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_glob", content: "src/auth/index.ts", is_error: false }]);
+    sub(id, "assistant", [{ type: "text", text: REPORT }]);
+    out({ type: "system", subtype: "task_updated", task_id: "agent-1", patch: { status: "completed" }, session_id: sessionId });
+    const unlist = () => {
+        bgTasks.delete("agent-1");
+        backgroundChanged();
+    };
+    const listFirst = Number(process.env.FAKE_LIST_FIRST ?? 0);
+    if (listFirst) {
+        unlist();
+        await Bun.sleep(listFirst === 1 ? 200 : listFirst);
+    }
+    out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", output_file: "/tmp/agent-1.output", summary: REPORT, usage: { total_tokens: 4321, tool_uses: 2, duration_ms: 300 }, session_id: sessionId });
+    if (!listFirst) unlist();
+    const lateTask = Number(process.env.FAKE_LATE_TASK ?? 0);
+    if (lateTask) {
+        bgTasks.set("workflow-1", { task_id: "workflow-1", task_type: "local_workflow", description: "Check the tests" });
+        backgroundChanged();
+        await Bun.sleep(lateTask);
+        bgTasks.delete("workflow-1");
+        backgroundChanged();
+    }
+    followUp("The explorer reported back: sign-in strategies are registered in one list.");
 }
 
 /**
@@ -247,7 +340,7 @@ function agentWaits() {
  * report and then the one that replaces it, or it hands its report back itself
  * (after it was said to be finished) and then is said to be finished with it.
  */
-function agentRenotified(how: "replaced" | "failed" | "handed-back") {
+function agentRenotified(how: "replaced" | "failed" | "failed-reported" | "handed-back") {
     const id = "toolu_agent";
     toolUse(id, "Agent", { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose", run_in_background: true });
     out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "Map auth", is_backgrounded: true, session_id: sessionId });
@@ -255,6 +348,10 @@ function agentRenotified(how: "replaced" | "failed" | "handed-back") {
     sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "export const strategies = [];", is_error: false }]);
     const notify = (status: string, report?: string) => out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status, summary: "", ...(report ? { handback: "send", handback_report: { text: report } } : {}), session_id: sessionId });
+    if (how === "failed-reported") {
+        notify("failed");
+        return notify("failed", REPORT);
+    }
     notify("completed");
     if (how === "failed") return notify("failed");
     if (how === "handed-back") sub(id, "assistant", [{ type: "tool_use", id: "toolu_handback", name: "SubagentHandback", input: { message: REPORT } }]);
@@ -304,15 +401,30 @@ async function use(id: string, tool: string, input: any): Promise<boolean> {
     return true;
 }
 
-async function turn(content: any[]) {
+let staleReported = false;
+
+async function turn(content: any[], uuid?: string) {
     interrupted = false;
     if (++prompts === 2 && process.env.FAKE_CRASH_ON_SECOND === "1") process.exit(3);
+    if (resume && process.env.FAKE_STALE_TASK === "1" && !staleReported) {
+        // The earlier run's background sub-agent, killed with it: a turn of its own, with no model call, before the prompt's.
+        staleReported = true;
+        out({ type: "system", subtype: "task_notification", task_id: "agent-0", status: "stopped", output_file: "", summary: 'Background agent "Map auth" didn\'t finish before the previous session ended', session_id: sessionId });
+        answering = undefined;
+        out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+        result("success", { result: "", num_turns: 0, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+        await Bun.sleep(50);
+    }
+    answering = uuid;
+    const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario;
     out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
     }
+    // A reply with nothing in it.
+    if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
     text("Working on it.");
     let go = true;
     if (scenario === "write") go = await use("toolu_1", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" });
@@ -325,8 +437,9 @@ async function turn(content: any[]) {
     else if (scenario === "agent-waits") agentWaits();
     else if (scenario === "agent-renotified") agentRenotified("replaced");
     else if (scenario === "agent-fails-later") agentRenotified("failed");
+    else if (scenario === "agent-fails-then-reports") agentRenotified("failed-reported");
     else if (scenario === "agent-hands-back-late") agentRenotified("handed-back");
-    else if (scenario.startsWith("agent")) agentCall(scenario !== "agent", scenario === "agent-background-late");
+    else if (scenario.startsWith("agent")) agentCall(scenario !== "agent", scenario === "agent-background-late", scenario === "agent-background-stuck");
     else if (scenario === "mcp") {
         const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
         const results: string[] = [];
@@ -376,6 +489,9 @@ async function turn(content: any[]) {
     if (!go) return;
     text("All done.");
     result("success", { result: "All done." });
+    const then = afterResult;
+    afterResult = undefined;
+    then?.();
 }
 
 let buf = "";
@@ -438,7 +554,7 @@ for await (const chunk of Bun.stdin.stream()) {
             const r = pending.get(m.response?.request_id);
             pending.delete(m.response?.request_id);
             r?.(m.response?.response ?? {});
-        } else if (m.type === "user") void turn(m.message?.content ?? []);
+        } else if (m.type === "user") void turn(m.message?.content ?? [], typeof m.uuid === "string" ? m.uuid : undefined);
     }
 }
 // stdin closed: like the real CLI, exit once nothing's left to do (unless it's stuck).

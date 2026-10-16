@@ -8,6 +8,15 @@
 // permission prompts Claude Code sends over stdio (can_use_tool). Sessions
 // continue with --resume.
 //
+// Claude Code runs sub-agents in the background by default. Their result
+// comes after the turn's: Claude Code says what runs in the background
+// (background_tasks_changed), when each is done (task_notification), and then
+// takes a turn of its own with the report (a result with origin
+// task-notification). So a run lasts until the prompts it sent are answered
+// (each result names the prompt it answers, by the uuid it was sent with) and
+// nothing it waits for is left in the background, at most
+// backgroundTiming.maxWaitMs past the answer.
+//
 // What this never does: read, copy or forward Claude Code's credentials (its
 // keychain entry, ~/.claude/.credentials.json, CLAUDE_CODE_OAUTH_TOKEN), call
 // Anthropic's API with them, or change the binary. Anthropic's terms allow an
@@ -32,6 +41,28 @@ import type { TurnEndReason } from "../agent/agent";
 
 /** How long Claude Code may take to connect to the harness's MCP server before the prompt goes without it (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
+
+/** Waiting on Claude Code's background sub-agents once the prompt is answered (changeable for tests). */
+export const backgroundTiming = {
+    /** At most this long; then they're stopped with Claude Code, and the user is told. */
+    maxWaitMs: 60 * 60_000,
+    /** After one ends, how long Claude Code has to start its turn with the report before the run ends without it. */
+    settleMs: 3000,
+    /** How often to look for messages the user sent meanwhile (they go to Claude Code in the same run). */
+    pollMs: 300,
+};
+
+/** What a background sub-agent's Agent call says when it ends without a report. */
+const LAUNCH_END: Record<string, string> = {
+    done: "Claude Code passed on no report from this sub-agent.",
+    error: "The sub-agent failed.",
+    aborted: "The sub-agent was stopped before it reported back.",
+};
+
+/** A sub-agent that ended this way failed or was stopped: its call's row says so, as its chip does. */
+const endedBadly = (reason: TurnEndReason) => reason !== "done" && reason !== "max_turns";
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 /** Claude Code's tools that change files, off for a read-only sub-agent. */
 const READ_ONLY_DENY = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
@@ -103,6 +134,12 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
     /** Turns running now: the main agent's, and sub-agents' on Claude Code. */
     private turns = new Set<ClaudeTurn>();
+    /**
+     * What each Claude Code session had spent at the end of its last run here:
+     * a resumed run's totals include it. (Not kept across restarts: the first
+     * resumed run after one counts the earlier runs' spend again.)
+     */
+    private spent = new Map<string, number>();
 
     constructor(readonly def: ProviderDef) {}
 
@@ -147,12 +184,14 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const turn = new ClaudeTurn(this.def, bin, t);
+        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined);
         this.turns.add(turn);
         try {
             return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } }))]);
         } finally {
             this.turns.delete(turn);
+            const s = turn.spending();
+            if (s) this.spent.set(s.sessionId, s.total);
         }
     }
 
@@ -203,12 +242,49 @@ class ClaudeTurn {
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
     private prompted = false;
+    /** Prompts sent and not answered yet, by the uuid they were sent with (a result names the ones it answers). */
+    private unanswered = new Set<string>();
+    /** A result has answered the run's prompts. */
+    private answered = false;
+    /** Claude Code is in a turn (from the prompt, or its own init, to the result). */
+    private busy = false;
+    /** What Claude Code says runs in the background, once it has said (background_tasks_changed). */
+    private background?: { id: string; type: string; description: string }[];
+    /** Agent calls whose sub-agent runs in the background. */
+    private backgroundAgents = new Set<string>();
+    /** Claude Code's task id for each Agent call (task_started), to match its background list. */
+    private agentTasks = new Map<string, string>();
+    /** Background sub-agents' Agent calls, open from their launch until the sub-agent ends. */
+    private launched = new Set<string>();
+    /** Those that have ended (how, and when), in case a report or another word on how it ended comes later. */
+    private closedLaunches = new Map<string, PendingTool & { reason: TurnEndReason; ended: number }>();
+    /** Background sub-agents that ended since Claude Code's last turn started: it takes one with their reports. */
+    private reportsDue = 0;
+    /** What each sub-agent said last: its report, when nothing else carries one. */
+    private lastWords = new Map<string, string>();
+    /** Each sub-agent's token count as Claude Code last reported it. */
+    private agentTokens = new Map<string, number>();
+    /** Waiting on the background, since. */
+    private waitingSince?: number;
+    private pollTimer?: ReturnType<typeof setInterval>;
+    private settleTimer?: ReturnType<typeof setTimeout>;
+    /** The run is being ended (its process stopped). */
+    private finishing = false;
+    /** The user was told the background sub-agents were stopped. */
+    private toldStopped = false;
 
     constructor(
         private def: ProviderDef,
         private bin: string,
         private t: BackendTurn,
+        /** What the session it resumes had spent before (its totals include that). */
+        private spent?: number,
     ) {}
+
+    /** The session's spend so far, as its last result put it. */
+    spending(): { sessionId: string; total: number } | undefined {
+        return this.sessionId && this.spent !== undefined ? { sessionId: this.sessionId, total: this.spent } : undefined;
+    }
 
     private get host(): BackendHost {
         return this.t.host;
@@ -252,7 +328,118 @@ class ClaudeTurn {
 
     private sendUser(content: unknown[]) {
         this.prompted = true;
-        this.proc.send({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "" });
+        this.busy = true;
+        // Its answer is waited for now, not a report turn.
+        clearTimeout(this.settleTimer);
+        this.settleTimer = undefined;
+        const uuid = crypto.randomUUID();
+        this.unanswered.add(uuid);
+        this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "" });
+    }
+
+    /**
+     * Whether a result answers prompts this run sent (they're answered now).
+     * One for a turn Claude Code took itself (a background sub-agent's report,
+     * or one its last run left behind) says so with its origin, and doesn't.
+     * One that names none of them and has no such origin (an older Claude
+     * Code, or a failure before the turn started) answers them all.
+     */
+    private answers(m: Record<string, any>): boolean {
+        const ids = [m.user_message_uuid, ...(Array.isArray(m.user_message_uuids) ? m.user_message_uuids : [])].filter((x): x is string => typeof x === "string" && x !== "");
+        if (ids.some((id) => this.unanswered.has(id))) {
+            for (const id of ids) this.unanswered.delete(id);
+            return true;
+        }
+        if (typeof m.origin?.kind === "string" && m.origin.kind !== "human") return false;
+        this.unanswered.clear();
+        return true;
+    }
+
+    /**
+     * What runs in the background that the turn waits for: sub-agents (and
+     * workflows), not shell commands, which may never end (a dev server).
+     */
+    private inBackground(): { agent: boolean; label: string }[] {
+        // Its sub-agents until Claude Code says each is over, listed or not (the list can drop one before that comes).
+        const agents = this.unreported();
+        const tasks = new Set(agents.map((id) => this.agentTasks.get(id)));
+        const labels = new Set(agents.filter((id) => !this.agentTasks.has(id)).map((id) => this.agentLabels.get(id) ?? "sub-agent"));
+        // And what else it lists (a sub-agent there that's one of those once only).
+        const listed = (this.background ?? []).filter((t) => t.type !== "local_bash" && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
+        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ agent: t.type === "local_agent", label: t.description || "background task" }))];
+    }
+
+    /** Background sub-agents Claude Code hasn't said are over. */
+    private unreported(): string[] {
+        return [...this.backgroundAgents].filter((id) => this.liveAgents.has(id));
+    }
+
+    /**
+     * With Claude Code between turns: whether the run is over. The prompts
+     * are answered; messages the user sent meanwhile go to Claude Code; then
+     * it waits while sub-agents run in the background, and for Claude Code's
+     * turn with the reports of those that ended.
+     */
+    private idle(): boolean {
+        if (this.busy || this.unanswered.size || !this.answered || this.aborted || this.finishing) return false;
+        const queued = this.host.drainQueued();
+        if (queued.length) {
+            // The turn now ends with the queued prompt's result; without one, it failed.
+            this.reason = undefined;
+            this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
+            return false;
+        }
+        const left = this.inBackground();
+        if (left.length) {
+            // Work it lists after a report came: the report turn is waited for with it, not before it's done.
+            clearTimeout(this.settleTimer);
+            this.settleTimer = undefined;
+            this.waitFor(left);
+            if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
+            // Waited long enough (only between Claude Code's turns, so none is cut short): what's left stops with it.
+            const ms = backgroundTiming.maxWaitMs;
+            this.toldStopped = true;
+            this.host.emit({ type: "notice", level: "warn", message: `Stopped waiting for ${describeBackground(left)} after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.ceil(ms / 1000)}s`}. ${left.length === 1 ? "It was" : "They were"} stopped with Claude Code, so ${left.length === 1 ? "its report" : "their reports"} won't come.` });
+            return true;
+        }
+        this.stopWaiting();
+        // A sub-agent ended: Claude Code's turn with its report is due.
+        if (this.reportsDue) {
+            this.settleTimer ??= setTimeout(() => {
+                this.settleTimer = undefined;
+                // It didn't come: the run is over, unless something started since (then that's waited for).
+                if (this.busy || this.unanswered.size || this.inBackground().length) this.idle();
+                else this.finish();
+            }, backgroundTiming.settleMs);
+            return false;
+        }
+        return true;
+    }
+
+    private waitFor(left: { agent: boolean; label: string }[]) {
+        if (this.waitingSince !== undefined) return;
+        this.waitingSince = Date.now();
+        this.host.emit({ type: "notice", level: "info", message: `Waiting for ${describeBackground(left)} to report back: the turn ends once Claude Code has the results (Esc stops them).` });
+        // Messages the user sends meanwhile go to Claude Code now, not after the wait; and the wait has an end.
+        this.pollTimer = setInterval(() => {
+            if (this.idle()) this.finish();
+        }, backgroundTiming.pollMs);
+    }
+
+    private stopWaiting() {
+        clearInterval(this.pollTimer);
+        this.pollTimer = undefined;
+        this.waitingSince = undefined;
+    }
+
+    /** End the run from outside its loop: Claude Code is stopped (it would otherwise wait on its background work), and its output ends. */
+    private finish() {
+        if (this.finishing) return;
+        this.finishing = true;
+        this.stopWaiting();
+        clearTimeout(this.settleTimer);
+        // Then its output stops being read, even if something it started still holds it open.
+        void this.proc.stop(this.aborted ? 1000 : 3000).then(() => this.proc.kill());
     }
 
     /**
@@ -298,8 +485,8 @@ class ClaudeTurn {
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
-            // Nothing to interrupt before the prompt is sent.
-            if (!this.prompted) return void this.proc.kill();
+            // Nothing to interrupt before the prompt is sent, or while Claude Code only waits on its background work.
+            if (!this.prompted || (this.answered && !this.busy && !this.unanswered.size)) return void this.proc.kill();
             this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "interrupt" } });
             // It answers an interrupt with a result; if it doesn't, stop it (SIGKILL if need be).
             killTimer = setTimeout(() => void this.proc.kill(), stopTiming.interruptMs);
@@ -310,30 +497,36 @@ class ClaudeTurn {
         const o = this.t.orchestrator;
         if (o) void this.attach(o).then(() => this.aborted || this.sendUser(content));
         else this.sendUser(content);
-        let gotResult = false;
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {
-                    gotResult = true;
-                    this.onResult(m);
-                    const queued = this.aborted ? [] : this.host.drainQueued();
-                    if (queued.length) {
-                        // The turn now ends with the queued prompt's result; without one, it failed.
-                        gotResult = false;
-                        this.reason = undefined;
-                        this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
-                        continue;
-                    }
-                    break;
+                    this.busy = false;
+                    const ours = this.answers(m);
+                    this.onResult(m, ours);
+                    if (ours && !this.unanswered.size) this.answered = true;
+                    if (this.aborted || this.idle()) break;
+                    continue;
                 }
                 this.onMessage(m);
+                // Between turns, what changes in the background can end the run.
+                if (!this.busy && this.idle()) break;
             }
         } finally {
             signal.removeEventListener("abort", onAbort);
+            this.stopWaiting();
+            clearTimeout(this.settleTimer);
             await this.proc.stop(this.aborted ? 1000 : 3000);
             if (killTimer) clearTimeout(killTimer);
         }
         // Anything still open never got a result. Sub-agents still working (in the background) stopped with Claude Code.
+        const lost = [...this.liveAgents].filter((id) => this.backgroundAgents.has(id));
+        if (lost.length && !this.aborted && !this.toldStopped) {
+            const what = describeBackground(lost.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })));
+            this.host.emit({ type: "notice", level: "warn", message: `${what} stopped with Claude Code before reporting back.` });
+        }
+        // Commands it left running in the background (the turn doesn't wait for them) stop with it too.
+        const commands = (this.background ?? []).filter((t) => t.type === "local_bash");
+        if (commands.length && !this.aborted) this.host.emit({ type: "notice", level: "info", message: `${plural(commands.length, "background command")} (${commands.map((t) => t.description || "command").slice(0, 3).join(", ")}) stopped with Claude Code at the end of the turn.` });
         for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
@@ -341,12 +534,15 @@ class ClaudeTurn {
         // A session it can't find ends with an error result (or exit) before init.
         const err = this.proc.stderr();
         const resumeFailed = Boolean(this.t.resumeId && !this.sessionId && /no conversation found|session.{0,40}(not found|doesn't exist|does not exist)/i.test(`${this.failure ?? ""}\n${err}`));
-        if (!gotResult || resumeFailed) {
+        if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
             const why = (resumeFailed && this.failure) || cliMessage(err) || `claude exited with code ${code}`;
             return { reason: "error", text, actions: this.actions, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
         }
-        return { reason: this.reason ?? "done", text, actions: this.actions, error: this.failure };
+        const reason = this.reason ?? "done";
+        // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.
+        if (reason === "done" && !text.trim() && !this.actions.length && !this.t.prompt.trimStart().startsWith("/")) this.host.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
+        return { reason, text, actions: this.actions, error: this.failure };
     }
 
     private fastModeNotice?: string;
@@ -395,12 +591,23 @@ class ClaudeTurn {
         this.reportFastMode(m);
         switch (m.subtype) {
             case "init":
+                // Each turn starts with one, a turn Claude Code takes itself (with background reports) too.
+                this.busy = true;
+                this.reportsDue = 0;
+                clearTimeout(this.settleTimer);
+                this.settleTimer = undefined;
                 if (typeof m.session_id === "string" && m.session_id) {
                     this.sessionId = m.session_id;
                     this.host.sessionId(m.session_id);
                 }
                 // No API key behind it: the turn runs on the user's plan, not per-token billing.
                 this.billedToPlan = m.apiKeySource === "none";
+                break;
+            case "background_tasks_changed":
+                if (Array.isArray(m.tasks)) this.background = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
+                break;
+            case "task_progress":
+                this.agentUsage(String(m.tool_use_id ?? ""), m.usage);
                 break;
             case "api_retry": {
                 const delay = Number(m.retry_delay_ms ?? m.delay_ms ?? 0);
@@ -411,16 +618,33 @@ class ClaudeTurn {
             case "compact_boundary":
                 this.host.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
                 break;
-            case "task_started":
-                this.agentStarted(String(m.tool_use_id ?? ""));
+            case "task_started": {
+                const id = String(m.tool_use_id ?? "");
+                if (this.agentLabels.has(id) && typeof m.task_id === "string") this.agentTasks.set(id, m.task_id);
+                if (m.is_backgrounded === true && this.agentLabels.has(id)) this.backgroundAgents.add(id);
+                this.agentStarted(id);
                 break;
+            }
             case "task_notification": {
                 // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
                 // ran even if nothing of it showed. A later one replaces what this one said (the report it
                 // was waiting on, or how it ended).
                 const id = String(m.tool_use_id ?? "");
-                const report = typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined;
+                const summary = typeof m.summary === "string" ? m.summary.trim() : "";
+                if (!id) {
+                    // One an earlier run left behind (stopped with it, said when the session is resumed).
+                    if (summary && (m.status === "stopped" || m.status === "failed")) this.host.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+                    break;
+                }
+                const background = this.backgroundAgents.has(id);
+                // Over, whether or not Claude Code says so in its list too.
+                if (this.background && typeof m.task_id === "string") this.background = this.background.filter((t) => t.id !== m.task_id);
+                let report = typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined;
+                // In the background its report goes to the main agent in a turn of its own: what it said last.
+                if (report === undefined && background && m.status === "completed") report = this.lastWords.get(id) ?? (summary || undefined);
                 this.agentStarted(id);
+                this.agentUsage(id, m.usage);
+                if (background) this.reportsDue++;
                 this.endAgent(id, m.status === "completed" ? "done" : m.status === "failed" ? "error" : "aborted", report);
                 break;
             }
@@ -438,7 +662,8 @@ class ClaudeTurn {
             case "content_block_start":
                 if (e.content_block?.type === "tool_use") {
                     this.streamingTools.set(e.index, e.content_block.id);
-                    this.host.emit({ type: "tool_call_start", id: e.content_block.id, name: e.content_block.name });
+                    // Under the harness's name from the start (Agent is a sub-agent's Task), as its call will be.
+                    this.host.emit({ type: "tool_call_start", id: e.content_block.id, name: toHarness(String(e.content_block.name ?? ""), {}).name });
                 }
                 break;
             case "content_block_delta": {
@@ -465,6 +690,7 @@ class ClaudeTurn {
             // One Claude Code said has finished shows no more steps (they'd never be closed), only its report.
             const over = this.endedAgents.has(parent);
             for (const b of blocks) {
+                if (b?.type === "text" && typeof b.text === "string" && b.text.trim()) this.lastWords.set(parent, b.text);
                 if (b?.type !== "tool_use") continue;
                 // Its report to the main agent: what it says last, not a tool of its own.
                 if (b.name === "SubagentHandback") {
@@ -484,7 +710,10 @@ class ClaudeTurn {
         }
         if (msg.usage) {
             const u = msg.usage;
-            this.contextTokens = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0) + Number(u.output_tokens ?? 0);
+            const tokens = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0) + Number(u.output_tokens ?? 0);
+            // Shown as it works: a long turn's context doesn't wait for its result.
+            if (tokens && tokens !== this.contextTokens) this.host.context?.(tokens);
+            this.contextTokens = tokens;
         }
         if (m.error) this.onAssistantError(String(m.error));
         for (const b of blocks) {
@@ -519,12 +748,26 @@ class ClaudeTurn {
             if (p.name === "Task") {
                 // A sub-agent in the background goes on after this; one in the foreground is over.
                 const background = m.tool_use_result?.status === "async_launched";
+                if (background) {
+                    this.backgroundAgents.add(b.tool_use_id);
+                    this.agentStarted(b.tool_use_id);
+                    // Its call is open while the sub-agent works, and ends with it (with its report, and how long it ran).
+                    const was = this.endedAgents.get(b.tool_use_id);
+                    if (was === undefined) {
+                        this.launched.add(b.tool_use_id);
+                        continue;
+                    }
+                    content = this.reports.get(b.tool_use_id) ?? LAUNCH_END[was] ?? content;
+                    this.closedLaunches.set(b.tool_use_id, { ...p, reason: was, ended: Date.now() });
+                    this.endTool(b.tool_use_id, p, content, endedBadly(was));
+                    continue;
+                }
                 // Once Claude Code has said how it ended, the result only brings its report.
                 const report = handedBack(m);
-                if (!background && !this.endedAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? "error" : "done", report);
-                else if (!background && report) this.report(b.tool_use_id, report, true);
+                if (!this.endedAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? "error" : "done", report);
+                else if (report) this.report(b.tool_use_id, report, true);
                 // Its report came as a handback: the result only says where to find it.
-                content = (!background && this.reports.get(b.tool_use_id)) || content;
+                content = this.reports.get(b.tool_use_id) || content;
             }
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
@@ -563,7 +806,46 @@ class ClaudeTurn {
         this.reports.set(parent, text);
         // Only on a sub-agent that has a chip: one that never started would get one that never ends.
         if (this.liveAgents.has(parent) || this.endedAgents.has(parent)) this.host.emit({ type: "subagent", parentId: parent, label: this.agentLabels.get(parent) ?? "sub-agent", event: { type: "text", text } });
+        // A background sub-agent's call that ended before: its result is this report now (and it still says how it ended).
+        const p = this.closedLaunches.get(parent);
+        if (p) this.relaunchEnd(parent, p, text);
         return true;
+    }
+
+    /** A sub-agent's tokens as Claude Code reports them (a total so far): what's new goes to its chip. */
+    private agentUsage(id: string, u: unknown) {
+        const total = Number((u as { total_tokens?: unknown } | undefined)?.total_tokens);
+        // Only for one with a chip (one that never started would get one that never ends).
+        if (!Number.isFinite(total) || !(this.liveAgents.has(id) || this.endedAgents.has(id))) return;
+        const had = this.agentTokens.get(id) ?? 0;
+        if (total <= had) return;
+        this.agentTokens.set(id, total);
+        this.host.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "usage", usage: { inputTokens: total - had, outputTokens: 0 }, cost: { usd: 0, estimated: true, unknown: true }, contextTokens: total } });
+    }
+
+    /**
+     * A background sub-agent's call, open since its launch, ends with it: its
+     * report is its result, and it fails as the sub-agent did. One said to end
+     * another way (it failed after all) says so too; said to end as it did,
+     * it keeps what it said.
+     */
+    private closeLaunch(id: string, reason: TurnEndReason) {
+        const closed = this.closedLaunches.get(id);
+        if (closed) {
+            if (endedBadly(closed.reason) === endedBadly(reason)) return;
+            closed.reason = reason;
+            this.relaunchEnd(id, closed, this.reports.get(id) ?? LAUNCH_END[reason] ?? LAUNCH_END.aborted!);
+            return;
+        }
+        const p = this.tools.get(id);
+        if (!p || !this.launched.delete(id)) return;
+        this.closedLaunches.set(id, { ...p, reason, ended: Date.now() });
+        this.endTool(id, p, this.reports.get(id) ?? LAUNCH_END[reason] ?? LAUNCH_END.aborted!, endedBadly(reason));
+    }
+
+    /** A background sub-agent's call that ended before, ending again: with what it says now, and as long as it ran then. */
+    private relaunchEnd(id: string, p: PendingTool & { reason: TurnEndReason; ended: number }, content: string) {
+        this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError: endedBadly(p.reason) }, durationMs: p.ended - p.started });
     }
 
     private agentStarted(id: string) {
@@ -577,12 +859,15 @@ class ClaudeTurn {
         if (!live && was === undefined) {
             // One that never showed has no chip: its report is for its Agent call's result.
             if (report) this.report(id, report, true);
+            this.closeLaunch(id, reason);
             return;
         }
         this.endedAgents.set(id, reason);
         const reported = report ? this.report(id, report, true) : false;
         if (!live && !reported && reason === was) return;
         for (const [sub, p] of this.subTools) if (p.parent === id) this.endSubTool(sub, p, reason === "done" ? "Claude Code didn't report a result for this." : "Stopped with the sub-agent.", true);
+        // Before its chip ends, so what the call says without a report isn't taken for one.
+        this.closeLaunch(id, reason);
         this.host.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "turn_end", reason } });
     }
 
@@ -600,11 +885,14 @@ class ClaudeTurn {
         else this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude usage limit${which}.${when}` });
     }
 
-    private onResult(m: Record<string, any>) {
+    /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
+    private onResult(m: Record<string, any>, ours: boolean) {
         this.reportFastMode(m);
         const u = m.usage ?? {};
-        const mixedPlanCost = this.billedToPlan && this.fastModeObserved && m.fast_mode_state !== "on";
-        if (mixedPlanCost) this.host.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
+        // Each result's total_cost_usd includes the session's earlier ones: what's new is this result's.
+        const total = typeof m.total_cost_usd === "number" ? m.total_cost_usd : undefined;
+        const spent = total === undefined ? undefined : this.spent === undefined ? total : Math.max(0, total - this.spent);
+        if (total !== undefined) this.spent = Math.max(total, this.spent ?? 0);
         const usage: Usage = {
             inputTokens: Number(u.input_tokens ?? 0),
             outputTokens: Number(u.output_tokens ?? 0),
@@ -612,12 +900,20 @@ class ClaudeTurn {
             cacheWriteTokens: Number(u.cache_creation_input_tokens ?? 0),
             // Fast service uses paid credits even on a subscription. A final cooldown
             // must not erase earlier fast spend; the CLI only gives a whole-turn total.
-            cost: this.billedToPlan && !this.fastModeObserved ? 0 : typeof m.total_cost_usd === "number" ? m.total_cost_usd : undefined,
-            ...(mixedPlanCost ? { costEstimated: true } : {}),
+            cost: this.billedToPlan && !this.fastModeObserved ? 0 : spent,
         };
-        const window = Object.values((m.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).find((x) => typeof x?.contextWindow === "number")?.contextWindow;
-        this.host.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });
+        // A turn of Claude Code's own that made no request (a report it passes on from an earlier run): nothing to count.
+        const nothing = !ours && !usage.inputTokens && !usage.outputTokens && !usage.cacheReadTokens && !usage.cacheWriteTokens && !spent;
+        if (!nothing) {
+            const mixedPlanCost = this.billedToPlan && this.fastModeObserved && m.fast_mode_state !== "on";
+            if (mixedPlanCost) this.host.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
+            if (mixedPlanCost) usage.costEstimated = true;
+            const window = Object.values((m.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).find((x) => typeof x?.contextWindow === "number")?.contextWindow;
+            this.host.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });
+        }
         if (this.aborted) return;
+        // How a turn of Claude Code's own went counts only when it went wrong.
+        if (!ours && m.subtype === "success" && !m.is_error) return;
         if (m.subtype === "error_max_turns") this.reason = "max_turns";
         else if (m.subtype !== "success" || m.is_error) {
             this.reason = "error";
@@ -674,6 +970,13 @@ class ClaudeTurn {
         if (a.allow) return { behavior: "allow", updatedInput: raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
+}
+
+/** "2 background sub-agents (Map auth, Check tests)". */
+function describeBackground(list: { agent: boolean; label: string }[]): string {
+    const kind = list.length && list.every((x) => x.agent) ? "background sub-agent" : "background task";
+    const shown = list.slice(0, 3).map((x) => x.label);
+    return `${plural(list.length, kind)}${shown.length ? ` (${shown.join(", ")}${list.length > shown.length ? `, and ${list.length - shown.length} more` : ""})` : ""}`;
 }
 
 /** The report a sub-agent handed back, as its Agent call's structured result carries it. */

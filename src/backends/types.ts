@@ -74,6 +74,8 @@ export interface BackendHost {
     setMode(m: PermissionMode): void;
     /** Tokens and spend for this turn; `cost` 0 when it's covered by the user's plan. */
     usage(u: Usage, opts: { contextTokens?: number; contextWindow?: number }): void;
+    /** The context as the backend works (from its last request), before the turn's usage comes; nothing is counted. */
+    context?(contextTokens: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
     /** Messages the user typed while the backend was working. */
