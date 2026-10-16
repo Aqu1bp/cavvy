@@ -333,7 +333,7 @@ describe("asking for a secret in a GUI session", () => {
         a.close();
     });
 
-    test("an unloaded session doesn't keep its secrets", async () => {
+    test("an unloaded session restores mode and effort but not its secrets", async () => {
         const a = await client();
         const id = await a.open("session.create", { cwd: project() });
         await a.call("session.send", { id, text: "use a secret" });
@@ -344,12 +344,16 @@ describe("asking for a secret in a GUI session", () => {
         const permission = a.view(id).state.interactions.find((i) => i.kind === "permission")!;
         await respond(a, id, permission.id, { kind: "permission", choice: "yes" });
         await a.until(id, (v) => done(v) && v.state.secrets.length === 1);
+        await a.call("session.setMode", { id, mode: "acceptEdits" });
+        await a.call("session.setEffort", { id, effort: "high" });
         await a.call("session.close", { id });
         await Bun.sleep(100);
         a.views.delete(id);
         expect(srv.engine.runtimes.has(id)).toBe(false);
         await a.open("session.open", { id });
         expect(a.view(id).state.secrets).toEqual([]);
+        expect(a.view(id).state.mode).toBe("acceptEdits");
+        expect(a.view(id).state.effort).toBe("high");
         a.close();
     }, 30_000);
 });

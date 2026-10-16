@@ -4,12 +4,14 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "path";
+import { readFileSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
-const { agentHead, agentStep, agentsFromTurns, cutOffPrompt, promptKey, replay, runsAgent, shownStep, UiLog, withoutActionsNote } = await import("../src/server/history");
+const { agentHead, agentStep, agentsFromTurns, cutOffPrompt, promptKey, replay, runsAgent, shownStep, toolBlockFromCall, UiLog, withoutActionsNote } = await import("../src/server/history");
+const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { DELEGATE_TOOL } = await import("../src/agent/delegation");
 const { mergePath } = await import("../src/server/login-env");
 const { Session, listAllSessions, findSessionAnywhere } = await import("../src/agent/session");
@@ -590,4 +592,31 @@ describe("engine", () => {
         expect(await find()).toMatchObject({ settled: false });
         await engine.stop();
     });
+});
+
+
+test.each(["scalar", "object", "array"])("backend history redacts %s input before its display cut", (shape) => {
+    const value = "rJ8wQ3nL6tV9xK2m";
+    const wrap = (text: string): unknown => shape === "scalar" ? text : shape === "object" ? { text } : [text];
+    const prefix = shape === "scalar" ? 0 : JSON.stringify(wrap("SENTINEL")).indexOf("SENTINEL");
+    const input = { content: wrap("a".repeat(3994 - prefix) + value + "b".repeat(5000)) };
+    const dir = tempDir();
+    const file = join(dir, "s.jsonl");
+    registerSecret(value, "HISTORY_TOKEN");
+    try {
+        const block = toolBlockFromCall({ type: "tool_call", id: "call", name: "Write", input }, { title: "Write(file)" });
+        const log = new UiLog(file, "s", false);
+        log.write({ t: "step", seg: 0, index: 0, block: shownStep(block)!, after: null });
+        log.close();
+        const reopened = new UiLog(file, "s");
+        const texts = [JSON.stringify(block), readFileSync(join(dir, "ui", "s.jsonl"), "utf8"), JSON.stringify(reopened.steps.get("0:0"))];
+        for (const text of texts) {
+            for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));
+        }
+        expect(reopened.steps.get("0:0")?.blocks).toHaveLength(1);
+        // Short nested input still uses its original structure, with string values redacted.
+        expect(trimInput({ nested: { text: value }, list: [value] })).toEqual({ nested: { text: "[REDACTED HISTORY_TOKEN]" }, list: ["[REDACTED HISTORY_TOKEN]"] });
+    } finally {
+        unregisterSecret(value);
+    }
 });
