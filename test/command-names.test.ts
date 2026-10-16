@@ -366,6 +366,87 @@ describe("sandboxPolicy: the agent CLIs' config", () => {
     });
 });
 
+describe("review round 1", () => {
+    test("`command` reads its own options only: in `command cp -v a b` the -v is cp's", () => {
+        for (const cmd of ["/usr/bin/command cp -v payload.json .claude/settings.json", "command cp -v a b", "command mkdir -v d", "command -v", "./command -v cp"]) expect([cmd, isReadOnlyCommand(cmd)]).toEqual([cmd, false]);
+        for (const cmd of ["command -v cp", "command -pv cp", "command -p -v cp", "/usr/bin/command -v cp", "command -v -- cp"]) expect([cmd, isReadOnlyCommand(cmd)]).toEqual([cmd, true]);
+        expect(check("/usr/bin/command cp -v payload.json .claude/settings.json").behavior).toBe("ask");
+    });
+
+    test("a grep option's value isn't an exclusion: `grep -f '--exclude=/../.env'` reads the .env", () => {
+        for (const cmd of ["grep -f '--exclude=/../.env' README.md", "grep --fil --exclude=/../.env README.md", "grep -e x -f --exclude=/../.env y", "grep -rf --exclude=/../.env ."]) {
+            expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, "a .env file"]);
+        }
+        for (const cmd of ["grep -r --exclude .env TODO .", "grep -rn -m 3 TODO --exclude=.env .", "grep -A 2 x --exclude-dir=.aws ."]) expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, undefined]);
+    });
+
+    test("wrappers' options are read as getopt reads them, and env -S's string as env splits it", () => {
+        settings.permissions!.deny = ["Bash(rm:*)"];
+        for (const cmd of [
+            "env -S 'rm\\_x'",
+            "env -S 'rm\\_-rf\\_build'",
+            "env -S '-u HOME rm x'",
+            "env -S 'A=1 rm x'",
+            "env -ivS 'rm x'",
+            "env --split-string='rm x'",
+            "env --sp 'rm x'",
+            "env --ch /tmp rm x",
+            "xargs -rn 1 r''m file",
+            "xargs -en rm x",
+            "xargs --replace rm x",
+            "timeout -- 5 rm x",
+            "nice --adj 5 rm x",
+            "nice --adjustment=5 rm x",
+            "sudo -u x A=1 rm y",
+        ]) {
+            expect([cmd, check(cmd, "bypassPermissions").behavior]).toEqual([cmd, "deny"]);
+            expect([cmd, looksDestructive(cmd)]).toEqual([cmd, "rm"]);
+        }
+        // Lookups don't run it; a `#` word and `\c` end env -S's string.
+        for (const cmd of ["command -p -v rm", "command -pv rm", "env -S 'echo a #rm x'", "env -S 'echo a\\c rm x'"]) expect([cmd, check(cmd, "bypassPermissions").behavior]).toEqual([cmd, "allow"]);
+    });
+
+    test("env -S's command line gets the catastrophic checks", () => {
+        for (const cmd of [`env -S "sh -c 'rm -rf ~'"`, "env -S 'rm -rf /'", "env -S 'sudo ls'"]) expect([cmd, dangerousReason(cmd)]).not.toEqual([cmd, undefined]);
+    });
+
+    onCaseInsensitive("env -S's programs in other spellings, and path-qualified deny rules in other spellings", () => {
+        for (const cmd of ["env -S 'SUDO ls'", "env -S 'SHUTDOWN -h now'"]) expect([cmd, dangerousReason(cmd)]).not.toEqual([cmd, undefined]);
+        for (const [rule, cmd] of [["/bin/rm:*", "/bin/RM x"], ["/bin/rm:*", "/BIN/rm x"], ["/BIN/RM:*", "/bin/rm x"], ["rm:*", "/BIN/RM x"]]) {
+            expect([rule, cmd, bashRuleMatches(rule, cmd, "deny")]).toEqual([rule, cmd, true]);
+        }
+        expect(bashRuleMatches("/bin/rm:*", "/usr/bin/rm x", "deny")).toBe(false);
+        for (const cmd of ["find . -exec RM {} \;", `sh -c "RM -rf src"`, "eval RM -rf src", "ls | xargs RM"]) expect([cmd, looksDestructive(cmd)]).toEqual([cmd, "rm"]);
+    });
+
+    test("a commit message isn't a deletion", () => {
+        for (const cmd of [`git commit -m "Fix RM handling"`, `git commit -am "remove the rm calls"`, `git commit -m"truncate titles"`, `git tag -a v1 -m "unlink"`, `git -C . commit --message="Shred old code"`]) expect([cmd, looksDestructive(cmd)]).toEqual([cmd, undefined]);
+        for (const cmd of [`git commit -m "$(rm -rf src)"`, `git commit -m x && rm y`, "git commit -m x -- rm"]) expect([cmd, looksDestructive(cmd)]).not.toEqual([cmd, undefined]);
+    });
+
+    test("CLI config that a symlink puts inside a worktree stays read-only", () => {
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-in-")));
+        try {
+            const wt = worktree(ws, "feature");
+            mkdirSync(join(wt, "shared-config"));
+            symlinkSync(join(wt, "shared-config"), join(ws, ".codex"));
+            const p = sandboxPolicy([ws], { harnessHome: H });
+            expect(p.cliConfig).toContain(join(wt, "shared-config"));
+            const lines = seatbeltProfile(p).split("\n");
+            const reopen = lines.findIndex((l) => l === `(allow file-write* (subpath "${wt}"))`);
+            const again = lines.findIndex((l, i) => i > reopen && l.startsWith("(deny file-write*") && l.includes(`(subpath "${join(wt, "shared-config")}")`));
+            expect(reopen).toBeGreaterThan(0);
+            expect(again).toBeGreaterThan(reopen);
+            const args = bwrapArgs(p);
+            const pairs = args.flatMap((a, i) => (a === "--bind" || a === "--ro-bind" ? [[a, args[i + 1]] as const] : []));
+            const bound = pairs.findIndex(([a, x]) => a === "--bind" && x === wt);
+            expect(pairs.findIndex(([a, x], i) => i > bound && a === "--ro-bind" && x === join(wt, "shared-config"))).toBeGreaterThan(bound);
+        } finally {
+            rmSync(ws, { recursive: true, force: true });
+        }
+    });
+});
+
 const seatbelt = process.platform === "darwin" && sandboxKind() === "seatbelt";
 
 describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seatbelt)", () => {
@@ -420,5 +501,23 @@ describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seat
         // A link out of the worktree doesn't lead back into .claude either.
         await run("cd .claude/worktrees/feature && ln -s ../.. up && echo x > up/settings.json");
         expect(existsSync(join(ws, ".claude", "settings.json"))).toBe(false);
+    });
+
+    test("a .codex symlinked into a worktree stays read-only there", async () => {
+        const ws2 = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-in-run-")));
+        const wt2 = worktree(ws2, "feature");
+        mkdirSync(join(wt2, "shared-config"));
+        symlinkSync(join(wt2, "shared-config"), join(ws2, ".codex"));
+        const st = { cwd: ws2, projectRoot: ws2, fileState: new Map(), todos: [], shells: new Map() } as any;
+        const sandbox: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws2], { harnessHome: H }) };
+        const run2 = (command: string) => BashTool.run({ command }, { state: st, settings: {}, signal: new AbortController().signal, mode: () => "auto", setMode() {}, ui: {}, sandbox } as any);
+        try {
+            expect((await run2("echo x > .claude/worktrees/feature/shared-config/config.toml")).isError).toBe(true);
+            expect(existsSync(join(wt2, "shared-config", "config.toml"))).toBe(false);
+            expect((await run2("echo x > .claude/worktrees/feature/notes.txt && cat .claude/worktrees/feature/notes.txt")).content).toBe("x");
+        } finally {
+            killAllShells({ state: st });
+            rmSync(ws2, { recursive: true, force: true });
+        }
     });
 });

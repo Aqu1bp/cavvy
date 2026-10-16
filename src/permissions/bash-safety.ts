@@ -357,7 +357,7 @@ export function effectiveArgv(argv: string[]): string[] {
     const rest = argv.slice(i);
     if (rest[0] === "time" || rest[0] === "nice") return effectiveArgv(rest.slice(1));
     if (rest[0] === "command" && !/^-/.test(rest[1] ?? "")) return effectiveArgv(rest.slice(1));
-    if (rest[0] === "command" && rest[1] === "-p") return effectiveArgv(rest.slice(2));
+    if (rest[0] === "command" && rest[1] === "-p" && !/^-/.test(rest[2] ?? "")) return effectiveArgv(rest.slice(2));
     return rest;
 }
 
@@ -550,7 +550,7 @@ export function onlySafeAssignments(argv: string[]): boolean {
     }
     const rest = argv.slice(i);
     if (rest[0] === "time" || rest[0] === "nice" || (rest[0] === "command" && !/^-/.test(rest[1] ?? ""))) return onlySafeAssignments(rest.slice(1));
-    if (rest[0] === "command" && rest[1] === "-p") return onlySafeAssignments(rest.slice(2));
+    if (rest[0] === "command" && rest[1] === "-p" && !/^-/.test(rest[2] ?? "")) return onlySafeAssignments(rest.slice(2));
     return true;
 }
 

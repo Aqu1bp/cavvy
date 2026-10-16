@@ -14,7 +14,7 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, SHELLS } from "./bash-safety";
+import { analyzeCommand, commandsWithDirs, effectiveArgv, gitSubcommand, programNames, readSmallFile, runs, SHELLS } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
 
 export type SandboxKind = "seatbelt" | "bwrap";
@@ -488,13 +488,40 @@ const DELETE_WORD = new RegExp(`(^|[\\s;|&(\`'"/])(${DELETERS.join("|")})(?=\\s|
 const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rmdir|removedirs)|fs\.(rm|unlink|rmdir)|fs\.promises\.(rm|unlink)|FileUtils\.(rm|rm_r|rm_rf|remove)|Remove-Item)\b/;
 
 /**
+ * The command line with the messages of git commit, tag and the like blanked
+ * out: git doesn't run them, and "Remove the rm calls" isn't a deletion.
+ * Not when it has a substitution, whose command a message can hold.
+ */
+function withoutMessages(cmd: string): string {
+    const a = analyzeCommand(cmd);
+    if (a.unparsable || a.hasSubstitution) return cmd;
+    const blank: [number, number][] = [];
+    for (const c of a.commands) {
+        const off = c.argv.length - effectiveArgv(c.argv).length;
+        const argv = c.argv.slice(off);
+        if (!runs(argv[0], "git")) continue;
+        const { index } = gitSubcommand(argv);
+        if (!["commit", "tag", "notes", "merge", "revert", "stash"].includes(argv[index] ?? "")) continue;
+        for (let i = index + 1; i < argv.length && argv[i] !== "--"; i++) {
+            const w = argv[i]!;
+            if (w === "--message" || /^-[a-zA-Z]*m$/.test(w)) blank.push(c.spans[off + ++i]!);
+            else if (w.startsWith("--message=") || /^-[a-zA-Z]*m./.test(w)) blank.push(c.spans[off + i]!);
+        }
+    }
+    let t = cmd;
+    for (const [from, to] of blank.filter(Boolean).sort((x, y) => y[0] - x[0])) t = t.slice(0, from) + " ".repeat(to - from) + t.slice(to);
+    return t;
+}
+
+/**
  * Discards or deletes work by name. The reviewer sees these even when they'd
  * run in the sandbox, which contains everything except damage inside the
  * project itself. With cwd, `git checkout <name>` counts when the name is a
  * file there (it discards that file's changes) and not when it's a branch.
  */
 export function looksDestructive(cmd: string, cwd?: string, depth = 0): string | undefined {
-    if (DELETE_WORD.test(cmd)) return cmd.match(DELETE_WORD)![2];
+    const text = withoutMessages(cmd);
+    if (DELETE_WORD.test(text)) return text.match(DELETE_WORD)![2];
     if (DELETE_CALL.test(cmd)) return "deletes files";
     for (const { programs, dir } of commandsWithDirs(cmd, cwd)) for (const argv of programs) {
         const prog = argv[0];
