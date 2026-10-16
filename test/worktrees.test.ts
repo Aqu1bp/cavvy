@@ -4,7 +4,7 @@ import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
-const { createWorktree, listWorktrees, parseWorktrees, removeWorktree } = await import("../src/server/worktrees");
+const { createWorktree, listWorktrees, parseWorktrees, removeWorktree, runGitAsync } = await import("../src/server/worktrees");
 const { Engine } = await import("../src/server/engine");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 const { trustFolder } = await import("../src/config/trust");
@@ -626,5 +626,40 @@ describe("review fixes", () => {
             release();
             await engine.stop();
         }
+    });
+
+    test("second review #1: trusting a sibling worktree doesn't accept another worktree's own config", async () => {
+        const { main, mark, script } = withFilterScript("rm-sibling");
+        const a = await createWorktree({ path: main, branch: "a" });
+        const b = await createWorktree({ path: main, branch: "b" });
+        git(main, "config", "extensions.worktreeConfig", "true");
+        git(b.path, "config", "--worktree", "filter.evil.clean", `'${script}'`);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(join(b.path, "a.txt"), later, later);
+        trustFolder(a.path);
+        const fromSibling = removeWorktree({ path: a.path, worktree: b.path, inUse: noop });
+        await expect(fromSibling).rejects.toMatchObject({ code: "needs_trust", folder: b.path });
+        await expect(removeWorktree({ path: main, worktree: b.path, inUse: noop })).rejects.toMatchObject({ code: "needs_trust", folder: b.path });
+        expect(existsSync(mark)).toBe(false);
+        expect(existsSync(b.path)).toBe(true);
+        // The sibling's own trust still covers the shared config and its own: removing A goes ahead.
+        expect(await removeWorktree({ path: a.path, worktree: a.path, inUse: noop })).toEqual({ removed: true });
+        // Trusting B itself is what lets B go.
+        trustFolder(b.path);
+        expect(await removeWorktree({ path: main, worktree: b.path, inUse: noop })).toEqual({ removed: true });
+    });
+
+    test("second review #1: a refusal over the shared config names the requesting folder", async () => {
+        const { main, script } = withFilterScript("shared-names");
+        git(main, "config", "filter.evil.smudge", `'${script}'`);
+        await expect(createWorktree({ path: main, branch: "x" })).rejects.toMatchObject({ code: "needs_trust", folder: main });
+    });
+
+    test("second review #3: Git exiting just before its deadline isn't reported as timed out while a child holds the pipe", async () => {
+        const main = repo("deadline");
+        // Git exits after ~200ms of a 400ms allowance; a background child keeps stderr open past both.
+        const alias = "!sh -c 'sleep 0.2; (sleep 3 >/dev/null </dev/null &); true'";
+        const r = await runGitAsync(main, ["-c", `alias.slowexit=${alias}`, "slowexit"], 400);
+        expect(r).toMatchObject({ code: 0, timedOut: false });
     });
 });

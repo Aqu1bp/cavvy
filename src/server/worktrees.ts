@@ -226,8 +226,8 @@ interface GitRun {
     timedOut: boolean;
 }
 
-/** Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself. */
-async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean } = {}): Promise<GitRun> {
+/** Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself. Exported for tests. */
+export async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean } = {}): Promise<GitRun> {
     const proc = spawn(gitArgv(args), { cwd, env: o.lazyFetch ? gitEnv() : noLazyFetch(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -252,17 +252,19 @@ async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { 
     };
     const out = collect(proc.stdout);
     const err = collect(proc.stderr);
+    let code: number | null;
     try {
-        const code = await proc.exited;
-        let drained: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([Promise.all([out, err]), new Promise((r) => (drained = setTimeout(r, DRAIN_MS)))]);
-        clearTimeout(drained);
-        for (const reader of readers) reader.cancel().catch(() => undefined);
-        const text = async (p: Promise<Uint8Array[]>) => Buffer.concat(await p).toString();
-        return { code, stdout: await text(out), stderr: await text(err), timedOut };
+        code = await proc.exited;
     } finally {
+        // Git is done: the drain below has its own deadline and mustn't count as Git timing out.
         clearTimeout(timer);
     }
+    let drained: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.all([out, err]), new Promise((r) => (drained = setTimeout(r, DRAIN_MS)))]);
+    clearTimeout(drained);
+    for (const reader of readers) reader.cancel().catch(() => undefined);
+    const text = async (p: Promise<Uint8Array[]>) => Buffer.concat(await p).toString();
+    return { code, stdout: await text(out), stderr: await text(err), timedOut };
 }
 
 function logFailure(log: Log | undefined, what: string, stderr: string) {
@@ -284,55 +286,64 @@ const INERT_CONFIG = [
     /^(user\.(name|email|signingkey)|commit\.gpgsign|tag\.gpgsign|init\.defaultbranch|pull\.(rebase|ff)|push\.(default|autosetupremote)|fetch\.prune|status\.showuntrackedfiles|rerere\.enabled|lfs\.repositoryformatversion)$/,
 ];
 
-/**
- * The repository's own config that isn't known to be inert: the shared
- * config, and the per-worktree config of each worktree Git will run in.
- * Undefined when it can't be read.
- */
-function riskyConfig(main: string, worktrees: string[]): string[] | undefined {
-    // A single file (--local, --file) doesn't follow includes: an include directive shows up as itself.
-    const read = (cwd: string, scope: string[]) => runGit(cwd, ["config", ...scope, "--list", "--name-only", "-z"])?.split("\0").filter(Boolean);
-    const keys = read(main, ["--local"]);
-    if (!keys) return undefined;
-    // Per-worktree config is read only with this extension, from each worktree's own file (which needn't exist).
-    if (runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() === "true") {
-        for (const dir of new Set([main, ...worktrees].filter(isDir))) {
-            const file = runGit(dir, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"])?.replace(/\n$/, "");
-            if (!file) return undefined;
-            if (!lexists(file)) continue;
-            const own = read(dir, ["--file", file]);
-            if (!own) return undefined;
-            keys.push(...own);
-        }
-    }
-    return [...new Set(keys.filter((k) => !INERT_CONFIG.some((re) => re.test(k))))];
+const notInert = (keys: string[]) => [...new Set(keys.filter((k) => !INERT_CONFIG.some((re) => re.test(k))))];
+
+/** A single file (--local, --file) doesn't follow includes: an include directive shows up as itself. */
+function configKeys(cwd: string, scope: string[]): string[] | undefined {
+    return runGit(cwd, ["config", ...scope, "--list", "--name-only", "-z"])?.split("\0").filter(Boolean);
+}
+
+/** A worktree's own config.worktree (used only with extensions.worktreeConfig); [] when it has none, undefined when it can't be read. */
+function perWorktreeKeys(dir: string): string[] | undefined {
+    const file = runGit(dir, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"])?.replace(/\n$/, "");
+    if (!file) return undefined;
+    if (!lexists(file)) return [];
+    return configKeys(dir, ["--file", file]);
 }
 
 /**
  * Hooks are off, but Git reading file contents (checking files out, or
  * comparing them for status) still runs whatever the repository's own config
  * sets up: filter drivers above all. In a project the user hasn't trusted,
- * only a config with nothing like that is used. Comes before any other Git
- * call that could read objects or files. `worktrees`: where Git will run.
+ * only config with nothing like that is used. Comes before any other Git
+ * call that could read objects or files.
+ *
+ * The shared config is accepted when the main worktree or the requesting
+ * folder (`cwd`) is trusted. Per-worktree config applies only in its own
+ * worktree, so each one Git will run in (`worktrees`) is accepted only when
+ * that worktree's folder is trusted (or one containing it): trusting a
+ * sibling says nothing about it. A refusal names the folder to trust.
  */
-function checkConfigTrust(main: string, worktrees: string[], action: "create" | "remove") {
-    if (trustedByUser(main) || worktrees.some((w) => trustedByUser(w))) return;
-    const risky = riskyConfig(main, worktrees);
-    if (risky && !risky.length) return;
-    // Only section names: a key's middle part can be a URL with credentials in it.
-    const sections = risky ? [...new Set(risky.map((k) => k.split(".")[0]))].slice(0, 6).join(", ") : "";
-    const when = action === "create" ? "while files are checked out" : "while Git checks the worktree for changes";
-    throw new RpcError(
-        `This repository's Git configuration ${sections ? `has settings (${sections}) that can` : "couldn't be checked, and could"} run commands ${when}. Trust the project to ${action === "create" ? "create" : "remove"} worktrees in it.`,
-        "needs_trust",
-    );
+function checkConfigTrust(main: string, cwd: string, worktrees: string[], action: "create" | "remove") {
+    const refuse = (whose: string, folder: string, keys: string[] | undefined) => {
+        // Only section names: a key's middle part can be a URL with credentials in it.
+        const sections = keys ? [...new Set(keys.map((k) => k.split(".")[0]))].slice(0, 6).join(", ") : "";
+        const when = action === "create" ? "while files are checked out" : "while Git checks the worktree for changes";
+        return new RpcError(
+            `${whose} ${sections ? `has settings (${sections}) that can` : "couldn't be checked, and could"} run commands ${when}. Trust ${folder} to ${action} the worktree.`,
+            "needs_trust",
+            folder,
+        );
+    };
+    if (!trustedByUser(main) && !trustedByUser(cwd)) {
+        const shared = configKeys(main, ["--local"]);
+        const risky = shared && notInert(shared);
+        if (!risky || risky.length) throw refuse("This repository's Git configuration", cwd, risky);
+    }
+    if (runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() !== "true") return;
+    for (const dir of new Set([main, cwd, ...worktrees].filter(isDir))) {
+        if (trustedByUser(dir)) continue;
+        const own = perWorktreeKeys(dir);
+        const risky = own && notInert(own);
+        if (!risky || risky.length) throw refuse(`The worktree configuration of ${dir}`, dir, risky);
+    }
 }
 
 /** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
 export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
     const cwd = resolve(o.path);
     const repo = repoOf(cwd);
-    checkConfigTrust(repo.main, [cwd], "create");
+    checkConfigTrust(repo.main, cwd, [], "create");
     const branch = checkBranch(cwd, o.branch);
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
     const commit = resolveBase(cwd, o.base);
@@ -386,7 +397,7 @@ export function planRemoval(o: { path: string; worktree: string; inUse: (path: s
     if (record.locked !== undefined) throw new RpcError(`${record.path} is locked${record.locked ? ` (${record.locked})` : ""}. Unlock it with git worktree unlock first.`, "locked");
     if (o.inUse(record.path)) throw new RpcError(`A Harness session is open in ${record.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
     // Git's status runs in the worktree itself, and runs clean filters on files whose stat changed.
-    checkConfigTrust(repo.main, exists ? [cwd, record.path] : [cwd], "remove");
+    checkConfigTrust(repo.main, cwd, exists ? [record.path] : [], "remove");
     // A detached HEAD's commit is kept only by the worktree's own HEAD and reflog, which go with it.
     if (record.detached && !reachable(repo.main, record.head)) throw new RpcError(`${record.path} is on a detached HEAD whose commit isn't on any branch. Create a branch for it first.`, "unreachable");
     return { main: repo.main, path: record.path, exists };

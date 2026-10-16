@@ -582,4 +582,4 @@ export type ParamsOf<M extends Method> = Methods[M]["params"];
 export type ResultOf<M extends Method> = Methods[M]["result"];
 
 export type ClientMessage = { id: number; method: Method; params: unknown };
-export type ServerMessage = { id: number; result: unknown } | { id: number; error: { message: string; code?: string } } | { event: ServerEvent };
+export type ServerMessage = { id: number; result: unknown } | { id: number; error: { message: string; code?: string; folder?: string } } | { event: ServerEvent };

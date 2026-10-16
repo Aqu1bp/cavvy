@@ -218,7 +218,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 } catch (e) {
                     const err = e as Error;
                     if (!(e instanceof RpcError)) log(`error in ${msg.method}: ${redact(err?.stack ?? String(e))}`);
-                    reply = { id: msg.id, error: { message: redact(err?.message ?? String(e)), code: e instanceof RpcError ? e.code : undefined } };
+                    reply = { id: msg.id, error: { message: redact(err?.message ?? String(e)), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined } };
                 }
                 if (ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
             },

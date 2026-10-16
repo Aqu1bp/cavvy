@@ -2,7 +2,7 @@
 // server checks everything again; these only collect the choice and show its
 // answer next to the field it's about.
 
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
 import type { WorktreeInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
@@ -26,11 +26,12 @@ const FIELD_OF: Record<string, Field> = {
     path_outside: "location",
 };
 
-type FormError = { field: Field; message: string; code?: string };
+/** `folder`: with needs_trust, the folder the server says to trust. */
+type FormError = { field: Field; message: string; code?: string; folder?: string };
 
 const errorOf = (e: unknown): FormError => {
     const code = e instanceof RpcError ? e.code : undefined;
-    return { field: (code && FIELD_OF[code]) || "general", message: e instanceof Error ? e.message : String(e), code };
+    return { field: (code && FIELD_OF[code]) || "general", message: e instanceof Error ? e.message : String(e), code, folder: e instanceof RpcError ? e.folder : undefined };
 };
 
 export interface NewWorktreeRequest {
@@ -57,32 +58,28 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const target = () => `${dir().replace(/\/+$/, "")}/${name()}`;
     const errorFor = (f: Field) => (error()?.field === f ? error()!.message : undefined);
     const close = () => !busy() && p.onClose();
+    let open = true;
+    onCleanup(() => (open = false));
 
     const choose = async () => {
         const chosen = await chooseFolder({ title: "Choose where to create the worktree", action: "Create it here", start: r.main });
         if (chosen) setParent(chosen);
     };
 
-    /** The repository's own Git config can run commands on checkout: the user decides, then it's created. */
-    const trustAndCreate = async () => {
-        setBusy(true);
-        try {
-            await rpc.call("projects.trust", { path: r.cwd, trust: true });
-        } catch (e) {
-            setBusy(false);
-            return setError(errorOf(e));
-        }
-        setBusy(false);
-        await create();
-    };
-
-    const create = async () => {
+    /**
+     * Busy from start to end, so it can't be started twice or the dialog closed
+     * midway. `trust`: a folder the user just agreed to trust (the repository's
+     * own Git config can run commands on checkout), trusted first.
+     */
+    const create = async (trust?: string) => {
         if (busy()) return;
         const b = branch().trim();
         if (!b) return setError({ field: "branch", message: "Enter a branch name." });
         setError(undefined);
         setBusy(true);
         try {
+            if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
+            if (!open) return;
             const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }) });
             setBusy(false);
             p.onClose();
@@ -152,7 +149,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                             <AlertTriangle size={14} />
                             <span>{m()}</span>
                             <Show when={error()?.code === "needs_trust"}>
-                                <button type="button" class="btn secondary sm" disabled={busy()} onClick={() => void trustAndCreate()}>
+                                <button type="button" class="btn secondary sm" disabled={busy()} onClick={() => void create(error()?.folder ?? r.cwd)}>
                                     Trust and create
                                 </button>
                             </Show>
@@ -191,10 +188,20 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
     /** Ignored files Git would delete with it: removal waits for the user to agree to exactly these. */
     const [ignored, setIgnored] = createSignal<{ names: string[]; total: number; confirm: string }>();
     const close = () => !busy() && p.onClose();
-    const remove = async (deleteIgnored?: string) => {
+    let open = true;
+    onCleanup(() => (open = false));
+    /**
+     * Busy from start to end, so it can't be started twice or the dialog closed
+     * midway. `trust`: a folder the user just agreed to trust (the repository's
+     * own Git config can run commands when Git compares the files), trusted first.
+     */
+    const remove = async (deleteIgnored?: string, trust?: string) => {
+        if (busy()) return;
         setError(undefined);
         setBusy(true);
         try {
+            if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
+            if (!open) return;
             const r = await rpc.call("projects.removeWorktree", { path: p.request.cwd, worktree: w.path, deleteIgnored });
             if (!r.removed) return setIgnored({ names: r.ignored, total: r.total, confirm: r.confirm });
             setBusy(false);
@@ -208,15 +215,6 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
         } finally {
             setBusy(false);
         }
-    };
-    /** The repository's own Git config can run commands when Git compares the files: the user decides. */
-    const trustAndRemove = async () => {
-        try {
-            await rpc.call("projects.trust", { path: p.request.cwd, trust: true });
-        } catch (e) {
-            return setError(errorOf(e));
-        }
-        await remove(ignored()?.confirm);
     };
     return (
         <Dialog open onClose={close} title="Remove worktree" width={500}>
@@ -255,7 +253,7 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
                         <AlertTriangle size={14} />
                         <span>{m().message}</span>
                         <Show when={m().code === "needs_trust"}>
-                            <button class="btn secondary sm" disabled={busy()} onClick={() => void trustAndRemove()}>
+                            <button class="btn secondary sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? p.request.cwd)}>
                                 Trust and remove
                             </button>
                         </Show>
