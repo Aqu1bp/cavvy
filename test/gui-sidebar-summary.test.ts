@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { writeFileSync } from "fs";
+import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { Interaction, SessionOp, SessionState, SessionSummary, Turn } from "../src/server/protocol";
 
@@ -33,6 +35,28 @@ function fixture() {
 }
 
 describe("sidebar summaries", () => {
+    test("run metadata and outcome coexist with waiting kinds and visible turn timing", async () => {
+        const { engine, rt, view } = fixture();
+        writeFileSync(join(process.env.HARNESS_HOME!, "gui.json"), JSON.stringify({ runs: [{
+            id: "run", label: "Compare models", cwd: "/original", sessions: [{ id: rt.id, model: "mock:a", modelName: "Model A" }],
+        }] }));
+        view.state.status = "waiting";
+        view.state.interactions = [{ id: "ask", kind: "plan" } as Interaction];
+        expect(engine.summaryOf(rt)).toMatchObject({
+            waitingKind: "plan", turnStartedAt: 100,
+            run: { id: "run", label: "Compare models", cwd: "/original", model: "mock:a", modelName: "Model A", outcome: "working" },
+        });
+        rt.busy = false;
+        view.state.status = "idle";
+        view.turns[0]!.status = "done";
+        expect(engine.summaryOf(rt).run?.outcome).toBe("done");
+        expect(engine.summaryOf(rt).waitingKind).toBeUndefined();
+        expect(engine.summaryOf(rt).turnStartedAt).toBeUndefined();
+        view.turns[0]!.status = "aborted";
+        expect(engine.summaryOf(rt).run?.outcome).toBe("stopped");
+        await engine.stop();
+    });
+
     test("pending kinds are available even without a subscribed session", async () => {
         const { engine, rt, view } = fixture();
         for (const kind of ["permission", "question", "plan", "secret"] as const) {

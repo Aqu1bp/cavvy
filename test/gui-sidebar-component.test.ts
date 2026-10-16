@@ -42,14 +42,14 @@ function fixture(count = 60) {
         },
         createTextNode: (text: string) => ({ text }), insertNode() {},
         setProp: (node: any, key: string, value: any) => { node.props[key] = value; if (key === "data-session-row") node.dataset.sessionRow = value; },
-        insert: (_node: any, value: any) => solid.createRenderEffect(() => resolve(value)),
+        insert: (node: any, value: any) => solid.createRenderEffect(() => { node.content = resolve(value); }),
     };
     const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
     const compiled = transformSync(source, { filename: "Sidebar.tsx", parserOpts: { plugins: ["typescript", "jsx"] },
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "FolderPlus", "ListFilter", "MoreHorizontal", "PanelLeftClose", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "ProviderIcon"].map((name) => [name, () => null]));
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "FolderPlus", "Layers", "ListFilter", "MoreHorizontal", "PanelLeftClose", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "ProviderIcon"].map((name) => [name, () => null]));
     const scope = { renderer, ...solid, ...order, ...format, ...icons, sessionStatus, app, prefs,
         // Count work against layout keys, rather than timing a machine-dependent render.
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
@@ -210,3 +210,37 @@ test("expanded sidebar summary updates do linear layout-key work", async () => {
     }
     expect(reads[1]!).toBeLessThanOrEqual(reads[0]! * 3);
 });
+
+for (const view of ["date", "project"]) {
+    test(`actual sidebar keeps run groups, labels, paging and held model cards in ${view} view`, async () => {
+        const f = fixture();
+        try {
+            f.setGroupBy(view);
+            const run = { id: "compare", cwd: "/original/project", label: "Fix the login redirect", model: "mock:a", modelName: "Model A" };
+            solid.batch(() => {
+                f.update("30", { run, cwd: "/worktrees/a", createdAt: 10, updatedAt: 200 });
+                f.update("31", { run: { ...run, model: "mock:b", modelName: "Model B" }, cwd: "/worktrees/b", createdAt: 20, updatedAt: 300 });
+            });
+            expect(f.ids.slice(0, 2)).toEqual(["30", "31"]);
+            expect(f.ids).toHaveLength(26); // One group consumes one slot.
+            expect(f.nodes.some((n) => n.props.class === "run-group" && n.props["aria-label"] === "2 models: Fix the login redirect")).toBe(true);
+            expect(f.nodes.some((n) => n.props.class === "run-head" && n.props.title === run.label)).toBe(true);
+            for (const name of ["Model A", "Model B"]) expect(f.nodes.some((n) => Array.isArray(n.content) ? n.content.includes(name) : n.content === name)).toBe(true);
+            const modelCard = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
+            modelCard.props.onContextMenu({ preventDefault() {} });
+            const held = f.ids;
+            f.update("50", { status: "waiting", waitingKind: "permission" });
+            expect(f.ids.slice(0, held.length)).toEqual(held);
+            const rename = f.nodes.findLast((n) => n.props.onClick?.toString().includes("p.onRename"));
+            rename.props.onClick();
+            f.update("31", { settled: true });
+            expect(f.ids.slice(0, held.length)).toEqual(held);
+            f.nodes.findLast((n) => n.props.class === "sess-rename").props.onKeyDown({ key: "Escape" });
+            expect(f.ids[0]).toBe("50");
+            expect(f.ids.at(-1)).toBe("31");
+            f.setSessions(f.sessions().filter((s) => s.id !== "30" && s.id !== "31"));
+            expect(f.ids).not.toContain("30");
+            expect(f.ids).not.toContain("31");
+        } finally { f.dispose(); }
+    });
+}

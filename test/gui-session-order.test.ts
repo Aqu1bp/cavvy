@@ -108,3 +108,51 @@ test("monograms distinguish colliding names and paths; colors are stable and rea
         expect(1.05 / (lum + .05)).toBeGreaterThanOrEqual(4.5);
     }
 });
+
+const runSession = (id: string, patch: Partial<SessionSummary> = {}) => session(id, {
+    cwd: `/worktrees/${id}`, run: { id: "run", cwd: "/original/project", label: "Compare models", model: `mock:${id}`, modelName: id }, ...patch,
+});
+
+for (const groupBy of ["date", "project"] as const) {
+    test(`${groupBy}: runs rank by attention/pins/activity, page as units and navigate in model start order`, () => {
+        const list = [session("new", { updatedAt: 100 }), runSession("a", { createdAt: 10 }), runSession("b", { createdAt: 20, pinned: true })];
+        const layout = (patch: Partial<SidebarOptions> = {}) => sidebarEntries(list, [], options({ groupBy, cards: 1, ...patch }));
+        expect(sidebarIds(layout())).toEqual(["a", "b"]);
+        expect(layout().find((e) => e.kind === "more")).toMatchObject({ remaining: 1 });
+        list[0]!.status = "waiting";
+        expect(sidebarIds(layout())).toEqual(["new"]);
+        expect(sidebarIds(layout({ activeId: "b" }))).toEqual(["new", "a", "b"]);
+        list[2]!.status = "waiting";
+        expect(sidebarIds(layout())).toEqual(["a", "b", "new"]);
+        const ids = sidebarIds(layout());
+        expect(adjacentSession(ids, "a", 1)).toBe("b");
+        expect(adjacentSession(ids, "b", -1)).toBe("a");
+        expect(adjacentSession(ids, "new", 1)).toBe("a");
+        if (groupBy === "project") expect(layout().filter((e) => e.kind === "project")).toEqual([
+            { key: "project:/original/project", kind: "project", cwd: "/original/project", name: "project" },
+            { key: "project:/project", kind: "project", cwd: "/project", name: "project" },
+        ]);
+    });
+}
+
+test("held runs keep model order and append new required groups without duplicates, then regroup on release", () => {
+    let list = [runSession("a"), runSession("b", { createdAt: 2 }), session("tail")];
+    const before = sidebarEntries(list, [], options());
+    list = [...list, runSession("c", { createdAt: 3, status: "waiting" })];
+    const next = sidebarEntries(list, [], options());
+    const held = holdSidebar(before, next, true, list);
+    expect(sidebarIds(held)).toEqual(["a", "b", "tail", "c"]);
+    expect(sidebarIds(holdSidebar(held, next, true, list))).toEqual(["a", "b", "tail", "c"]);
+    expect(sidebarIds(holdSidebar(held, next, false, list))).toEqual(["a", "b", "c", "tail"]);
+    list = list.filter((s) => s.id !== "b");
+    expect(sidebarIds(holdSidebar(held, sidebarEntries(list, [], options()), true, list))).toEqual(["a", "tail", "c"]);
+});
+
+test("settled and archived runs page together and retain active/waiting groups across filters", () => {
+    const list = [runSession("a", { settled: true }), runSession("b", { settled: true }), session("tail", { settled: true })];
+    expect(sidebarIds(sidebarEntries(list, [], options({ settled: 1 })))).toEqual(["a", "b"]);
+    expect(sidebarIds(sidebarEntries(list, [], options({ settledOpen: false, activeId: "b" })))).toEqual(["a", "b"]);
+    const archived = list.map((s) => ({ ...s, archived: true }));
+    expect(sidebarIds(sidebarEntries([], archived, options({ archived: true, archive: 1 })))).toEqual(["a", "b"]);
+    expect(sidebarIds(sidebarEntries([], archived, options({ activeId: "b" })))).toEqual(["a", "b"]);
+});

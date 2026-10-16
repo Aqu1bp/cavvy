@@ -3,7 +3,7 @@
 // bottom; sending to one brings it back.
 
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread } from "../state/app";
 import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
@@ -127,7 +127,8 @@ function SessionCard(p: { s: SessionSummary; label?: string; hold: (id: string, 
                         <Show when={p.s.pinned}>
                             <Pin size={12} class="card-pin" />
                         </Show>
-                        {p.s.title}
+                        {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
+                        {p.s.run ? p.s.run.modelName : p.s.title}
                     </span>
                 </Show>
                 <span class="l3">
@@ -182,7 +183,7 @@ function SessionRow(p: { s: SessionSummary; label?: string; hold: (id: string, h
                     <Show when={p.s.pinned}>
                         <Pin size={12} class="slim-pin" />
                     </Show>
-                    <span class="truncate">{p.s.title}</span>
+                    <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                 </button>
                 <span class="slim-end">
                     <span class={`t tone-${sessionStatus(p.s, now())?.tone ?? "muted"}`}>{sessionStatus(p.s, now())?.text ?? (now(), since(p.s.updatedAt))}</span>
@@ -371,6 +372,24 @@ export function Sidebar() {
                     const entry = () => entriesByKey().get(key)!;
                     // A held row keeps its component (and menu/rename) through status changes.
                     const kind = untrack(() => entry().kind);
+                    if (kind === "run") {
+                        const group = () => entry() as Extract<SidebarEntry, { kind: "run" }>;
+                        const members = () => group().ids.filter((id) => sessions().has(id));
+                        const run = () => sessions().get(members()[0]!)?.run;
+                        return <div class="run-group" data-session-row={key} role="group" aria-label={`${members().length} models: ${run()?.label ?? ""}`}>
+                            <div class="run-head" title={run()?.label}>
+                                <Layers size={12} /><span class="truncate">{run()?.label}</span><span class="run-count">{members().length}</span>
+                            </div>
+                            <For each={members()}>{(id) => {
+                                const s = () => sessions().get(id)!;
+                                return <Show when={s()}>
+                                    <Show when={!group().row} fallback={<SessionRow s={s()} label={monograms().get(s().cwd)} hold={hold} />}>
+                                        <SessionCard s={s()} label={monograms().get(s().cwd)} hold={hold} />
+                                    </Show>
+                                </Show>;
+                            }}</For>
+                        </div>;
+                    }
                     if (kind === "card" || kind === "row") {
                         const s = () => sessions().get(key)!;
                         return <div data-session-row={key}>
@@ -394,7 +413,7 @@ export function Sidebar() {
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><Plus size={14} /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
-                <Show when={!all().length || (showArchived() && !layout().some((e) => "id" in e))}>
+                <Show when={!all().length || (showArchived() && !sidebarIds(layout()).length)}>
                     <div class="side-empty">{showArchived() ? "Nothing archived." : app.conn === "open" ? "No sessions yet. Start one from the composer." : "Connecting…"}</div>
                 </Show>
             </nav>

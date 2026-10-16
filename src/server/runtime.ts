@@ -286,6 +286,11 @@ export class Runtime {
         return turn?.startedAt ?? this.view.state.activity?.since;
     }
 
+    /** The last task's result, including an interrupted run after reopening. */
+    get lastTurnStatus(): TurnStatus | undefined {
+        return this.view.turns.at(-1)?.status;
+    }
+
     get title(): string | undefined {
         return this.view.state.title;
     }

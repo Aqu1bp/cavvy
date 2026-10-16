@@ -1,4 +1,5 @@
 import type { SessionSummary } from "@shared/protocol";
+import { basename } from "./format";
 
 export const SESSION_PAGE = 25;
 
@@ -13,11 +14,29 @@ export function requiredSession(s: SessionSummary, activeId?: string): boolean {
 }
 
 export function pageSessions(list: readonly SessionSummary[], limit: number, activeId?: string): SessionSummary[] {
-    return list.filter((s, i) => i < limit || requiredSession(s, activeId));
+    return sessionGroups(list).filter((group, i) => i < limit || group.some((s) => requiredSession(s, activeId))).flat();
+}
+
+/** Runs occupy one page slot at their highest-priority member's position.
+ * Within a run, model cards stay in start order rather than racing each other. */
+function sessionGroups(list: readonly SessionSummary[]): SessionSummary[][] {
+    const groups: SessionSummary[][] = [];
+    const runs = new Map<string, SessionSummary[]>();
+    for (const s of list) {
+        if (!s.run) groups.push([s]);
+        else {
+            let group = runs.get(s.run.id);
+            if (!group) { group = []; runs.set(s.run.id, group); groups.push(group); }
+            group.push(s);
+        }
+    }
+    for (const group of runs.values()) group.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    return groups;
 }
 
 export type SidebarEntry =
     | { key: string; kind: "card" | "row"; id: string }
+    | { key: string; kind: "run"; ids: string[]; row: boolean }
     | { key: string; kind: "project"; cwd: string; name: string }
     | { key: string; kind: "settled" | "archived" }
     | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number };
@@ -35,21 +54,25 @@ export interface SidebarOptions {
 /** A single projection drives the DOM and keyboard navigation, including paging. */
 export function sidebarEntries(sessions: readonly SessionSummary[], archived: readonly SessionSummary[], o: SidebarOptions): SidebarEntry[] {
     const entries: SidebarEntry[] = [];
-    const rows = (list: readonly SessionSummary[], kind: "card" | "row") => {
-        for (const s of list) entries.push({ key: s.id, kind, id: s.id });
+    const rows = (list: readonly SessionSummary[], kind: "card" | "row", shelf: string) => {
+        for (const group of sessionGroups(list)) {
+            const s = group[0]!;
+            if (s.run) entries.push({ key: `run:${shelf}:${s.run.id}`, kind: "run", ids: group.map((s) => s.id), row: kind === "row" });
+            else entries.push({ key: s.id, kind, id: s.id });
+        }
     };
     const more = (page: "cards" | "settled" | "archived", remaining: number) => {
         if (remaining > 0) entries.push({ key: `more:${page}`, kind: "more", page, remaining });
     };
     // Active/asking sessions stay discoverable even across the archive filter.
-    const requiredElsewhere = (list: readonly SessionSummary[]) => rows(orderSessions(list).filter((s) => requiredSession(s, o.activeId)), "card");
+    const requiredElsewhere = (list: readonly SessionSummary[]) => rows(pageSessions(orderSessions(list), 0, o.activeId), "card", "elsewhere");
     if (o.archived) {
         requiredElsewhere(sessions);
         entries.push({ key: "heading:archived", kind: "archived" });
         const all = orderSessions(archived);
         const visible = pageSessions(all, o.archive, o.activeId);
-        rows(visible, "row");
-        more("archived", all.length - visible.length);
+        rows(visible, "row", "archived");
+        more("archived", sessionGroups(all).length - sessionGroups(visible).length);
         return entries;
     }
     requiredElsewhere(archived);
@@ -58,22 +81,23 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
     if (o.groupBy === "project") {
         const groups = new Map<string, SessionSummary[]>();
         for (const s of visible) {
-            const group = groups.get(s.cwd) ?? [];
+            const cwd = s.run?.cwd ?? s.cwd;
+            const group = groups.get(cwd) ?? [];
             group.push(s);
-            groups.set(s.cwd, group);
+            groups.set(cwd, group);
         }
         for (const [cwd, group] of groups) {
-            entries.push({ key: `project:${cwd}`, kind: "project", cwd, name: group[0]!.projectName });
-            rows(group, "card");
+            entries.push({ key: `project:${cwd}`, kind: "project", cwd, name: group[0]!.run ? basename(cwd) : group[0]!.projectName });
+            rows(group, "card", "cards");
         }
-    } else rows(visible, "card");
-    more("cards", cards.length - visible.length);
+    } else rows(visible, "card", "cards");
+    more("cards", sessionGroups(cards).length - sessionGroups(visible).length);
     const settled = orderSessions(sessions.filter((s) => s.settled));
     if (settled.length) {
         entries.push({ key: "heading:settled", kind: "settled" });
         const visibleSettled = pageSessions(settled, o.settledOpen ? o.settled : 0, o.activeId);
-        rows(visibleSettled, "row");
-        if (o.settledOpen) more("settled", settled.length - visibleSettled.length);
+        rows(visibleSettled, "row", "settled");
+        if (o.settledOpen) more("settled", sessionGroups(settled).length - sessionGroups(visibleSettled).length);
     }
     return entries;
 }
@@ -83,13 +107,28 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
 export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntry[], held: boolean, sessions: readonly SessionSummary[], activeId?: string): SidebarEntry[] {
     if (!held || !previous.length) return next;
     const live = new Map(sessions.map((s) => [s.id, s]));
-    const kept = previous.filter((e) => !("id" in e) || live.has(e.id));
-    const keys = new Set(kept.map((e) => e.key));
-    return [...kept, ...next.filter((e) => "id" in e && !keys.has(e.key) && requiredSession(live.get(e.id)!, activeId))];
+    const kept = previous.flatMap((e): SidebarEntry[] => {
+        if (e.kind === "run") {
+            const ids = e.ids.filter((id) => live.has(id));
+            return ids.length ? [{ ...e, ids }] : [];
+        }
+        return "id" in e && !live.has(e.id) ? [] : [e];
+    });
+    const ids = new Set(sidebarIds(kept));
+    const added = next.flatMap((e): SidebarEntry[] => {
+        if (e.kind === "run") {
+            const missing = e.ids.filter((id) => !ids.has(id));
+            if (!missing.some((id) => requiredSession(live.get(id)!, activeId))) return [];
+            // A newly required member must not move targets below its held group.
+            return [{ ...e, key: `${e.key}:pending:${missing[0]}`, ids: missing }];
+        }
+        return "id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId) ? [e] : [];
+    });
+    return [...kept, ...added];
 }
 
 export function sidebarIds(entries: readonly SidebarEntry[]): string[] {
-    return entries.flatMap((e) => "id" in e ? [e.id] : []);
+    return entries.flatMap((e) => e.kind === "run" ? e.ids : "id" in e ? [e.id] : []);
 }
 
 export function adjacentSession(ids: readonly string[], current: string | undefined, direction: 1 | -1): string | undefined {

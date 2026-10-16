@@ -462,7 +462,45 @@ export interface SessionSummary {
     model?: string;
     /** Loaded in the server right now. */
     live: boolean;
+    /** Started with other models from one prompt (runs.start). */
+    run?: RunMember;
 }
+
+export type RunOutcome = "working" | "done" | "stopped";
+
+/** A session's place in a run: which run, and which of its models it is. */
+export interface RunMember {
+    id: string;
+    /** The prompt's start, as the run's sessions are grouped under. */
+    label: string;
+    /** The folder it was started from. */
+    cwd: string;
+    model: string;
+    modelName: string;
+    /** Latest result, kept when the session unloads or the server restarts. */
+    outcome?: RunOutcome;
+}
+
+/** How a provider is paid for: the user's plan (Claude Code, Codex), on this machine, or per token through a key. */
+export type Billing = "plan" | "local" | "api";
+
+/** The same prompt to 2-4 models, each in a new worktree of `path`'s repository from its HEAD. */
+export interface StartRunParams {
+    path: string;
+    /** "provider:id" refs. */
+    models: string[];
+    text: string;
+    images?: { mediaType: string; data: string }[];
+    files?: WireFile[];
+    mode?: PermissionModeId;
+    /** The user agreed to more than two paid-API models. */
+    confirmPaid?: boolean;
+}
+
+/** One per model, in the order asked: started, or why not (with the worktree, when one was made). */
+export type RunResult =
+    | { model: string; modelName: string; ok: true; sessionId: string; branch: string; path: string }
+    | { model: string; modelName: string; ok: false; error: string; branch?: string; path?: string };
 
 /** A conversation started in the Claude Code or Codex CLI, offered for import. */
 export interface CliSessionInfo {
@@ -655,6 +693,7 @@ export interface ProviderModels {
     providerName: string;
     status: "ok" | "cached" | "error" | "offline" | "no-key";
     error?: string;
+    billing: Billing;
     models: ModelSummary[];
 }
 
@@ -1009,6 +1048,12 @@ export interface Methods {
      * the repository. With ignored files in it, nothing happens until `deleteIgnored` is the `confirm` it returned.
      */
     "projects.removeWorktree": { params: { path: string; worktree: string; deleteIgnored?: string }; result: RemoveWorktreeResult };
+    /**
+     * Refused with "confirm_paid" for more than two paid-API models without `confirmPaid`, "needs_trust" (its
+     * `folder`) when the repository's Git config needs trust, and "needs_project_trust" when the new worktrees'
+     * project configuration does; nothing is created then.
+     */
+    "runs.start": { params: StartRunParams; result: { runId: string; results: RunResult[] } };
     "projects.trust": { params: { path: string; trust: boolean }; result: ProjectInfo };
     "projects.forget": { params: { path: string }; result: null };
     "fs.mentions": { params: { cwd: string; query: string }; result: string[] };
