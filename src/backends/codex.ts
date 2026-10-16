@@ -214,6 +214,15 @@ function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
     return undefined;
 }
 
+/** Codex's fast service tiers: "priority" in its catalog (0.163), "fast" in older ones. */
+const FAST_TIERS = new Set(["fast", "priority"]);
+
+/** Prefer the current catalog; the legacy field is only used by older CLIs. */
+export function codexFastTier(m: { serviceTiers?: { id: string }[]; additionalSpeedTiers?: string[] }): string | undefined {
+    const tiers = Array.isArray(m.serviceTiers) ? m.serviceTiers.map((t) => t.id) : m.additionalSpeedTiers ?? [];
+    return tiers.find((t) => FAST_TIERS.has(t));
+}
+
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
 
@@ -242,6 +251,8 @@ export class CodexBackend implements AgentBackendClient {
             return shown.map((m) =>
                 backendModel(this.def.id, m.model, typeof m.displayName === "string" ? m.displayName : undefined, {
                     effortLevels: Array.isArray(m.supportedReasoningEfforts) ? m.supportedReasoningEfforts.map((e: any) => e?.reasoningEffort).filter((e: unknown) => typeof e === "string") : undefined,
+                    supportsFastMode: codexFastTier(m) !== undefined,
+                    fastModeTier: codexFastTier(m),
                     supportsImages: Array.isArray(m.inputModalities) ? m.inputModalities.includes("image") : true,
                 }),
             );
@@ -378,7 +389,14 @@ class CodexTurn {
                 if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
                 config = off;
             }
-            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+            // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
+            // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
+            // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
+            const tierFor = (fast: boolean | undefined) => (fast && t.model.supportsFastMode ? t.model.fastModeTier : undefined);
+            const fastTier = tierFor(t.fastMode);
+            /** The thread's tier as last reported or set. */
+            let tierNow: string | null | undefined;
+            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
@@ -394,6 +412,7 @@ class CodexTurn {
                 try {
                     const r = await thread("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
                     this.threadId = r?.thread?.id ?? t.resumeId;
+                    tierNow = r?.serviceTier;
                 } catch (e) {
                     // Stopped by esc: the thread is fine and is resumed next time.
                     if (this.aborted) throw e;
@@ -402,6 +421,7 @@ class CodexTurn {
             } else {
                 const r = await thread("thread/start", threadParams);
                 this.threadId = r?.thread?.id;
+                tierNow = r?.serviceTier;
                 if (!this.threadId) throw new ProviderError("Codex didn't start a thread");
             }
             this.host.sessionId(this.threadId!);
@@ -418,10 +438,14 @@ class CodexTurn {
                     const input = this.input(note ? `${note}\n\n${text}` : text, images);
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
+                    // The speed as it is now too: a sub-agent's session may have changed it since (its turn restarting, a queued message).
+                    const tier = tierFor(this.host.fastMode?.() ?? t.fastMode);
+                    const serviceTier = tier ?? (typeof tierNow === "string" && FAST_TIERS.has(tierNow) ? null : undefined);
                     await this.waitFor(async () => {
-                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                     });
+                    if (serviceTier !== undefined) tierNow = serviceTier ?? "default";
                     this.turnId = undefined;
                     if (this.aborted || this.status === "failed") break;
                     images = [];

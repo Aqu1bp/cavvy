@@ -61,6 +61,7 @@ export interface AppInit {
     extraDeny?: string[];
     addDirs?: string[];
     effort?: Effort;
+    fastMode?: boolean;
     /** Open the session picker at startup (--resume without an id). */
     resumePicker?: boolean;
     /** Default model when settings don't name one (legacy MODEL in the harness .env). */
@@ -212,9 +213,14 @@ export class App {
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
+        if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
         void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
 
         await this.trackSwitch(this.initModel());
+        if (this.init.fastMode && !this.model?.supportsFastMode) {
+            this.session.setFastMode(false);
+            this.notice("Fast mode is not available for this model/backend; using standard speed.", "warn");
+        }
         this.renderLive();
 
         if (this.init.resumePicker) await runCommand(this, "/resume");
@@ -1594,6 +1600,7 @@ export class App {
         }
         const parts: string[] = [];
         if (this.model) parts.push(shortModel(this.model));
+        if (this.model?.supportsFastMode && (this.session.fastMode ?? this.settings.fastMode)) parts.push("↯ fast");
         if (this.agent && this.model?.contextWindow) {
             const used = this.agent.contextTokens || 0;
             if (used) {

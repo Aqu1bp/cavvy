@@ -5,6 +5,7 @@
 // assistant `phase` values intact (per OpenAI's reasoning guide). Turns from
 // other providers are converted to plain message / function_call items.
 
+import { apiFastModeInfo } from "./fast-mode";
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallMessage, stallTimer } from "./sse";
@@ -38,7 +39,7 @@ const KNOWN: [RegExp, Partial<ModelInfo>][] = [
     [/^gpt-5\.6-luna/, { name: "GPT-5.6 Luna", pricing: { input: 0.2, output: 1.2, cacheRead: 0.02 } }],
 ];
 
-function staticInfo(provider: string, id: string): ModelInfo {
+export function responsesModelInfo(provider: string, id: string, baseUrl: string): ModelInfo {
     const k = KNOWN.find(([re]) => re.test(id))?.[1];
     const reasoning = /^(gpt-[5-9]|o\d)/.test(id);
     return {
@@ -46,6 +47,7 @@ function staticInfo(provider: string, id: string): ModelInfo {
         id,
         name: k?.name,
         pricing: k?.pricing,
+        ...apiFastModeInfo(provider, id, baseUrl),
         contextWindow: /^gpt-(5\.[5-9]|[6-9])/.test(id) ? 1_050_000 : undefined,
         maxOutput: /^gpt-(5\.[5-9]|[6-9])/.test(id) ? 128_000 : undefined,
         supportsTools: true,
@@ -126,6 +128,8 @@ export class OpenAIResponsesProvider implements ProviderClient {
             stream: true,
             input: toResponsesInput(req.messages, def, m.id),
         };
+        // Left out, the project's own tier applies (auto); "default" would override it, so only fast is asked for.
+        if (req.fastMode && m.supportsFastMode && def.id === "openai" && apiFastModeInfo(def.id, m.id, this.base).supportsFastMode) body.service_tier = "fast";
         if (req.system) body.instructions = req.system;
         if (req.tools.length) {
             body.tools = req.tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: false }));
@@ -270,6 +274,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
         else if (final.status === "incomplete") stopReason = hasCalls ? "max_tokens" : "other";
         else if (hasCalls) stopReason = "tool_use";
 
+        if (req.fastMode && final.service_tier === "default") onEvent({ type: "notice", message: "OpenAI served this response at standard speed and rates (fast service was unavailable)." });
         return {
             role: "assistant",
             content,
@@ -279,7 +284,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
             // would drop the reasoning every time.
             model: m.id,
             stopReason,
-            usage: final.usage ? mapUsage(final.usage) : undefined,
+            usage: final.usage ? { ...mapUsage(final.usage), ...(final.service_tier ? { fastMode: ["fast", "priority"].includes(final.service_tier) } : {}) } : undefined,
             raw: { responses: JSON.parse(JSON.stringify(output)) },
         };
     }
@@ -289,7 +294,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
         const res = await fetch(`${this.base}/models`, { headers: this.headers(), signal: signal ?? AbortSignal.timeout(20_000) });
         if (!res.ok) {
             const configured = customProviderModels(def.id);
-            if (configured.length) return configured.map((id) => staticInfo(def.id, id));
+            if (configured.length) return configured.map((id) => responsesModelInfo(def.id, id, this.base));
             throw httpError(res.status, res.statusText, await res.text().catch(() => ""), null, def.name);
         }
         const json = (await res.json()) as { data?: Json[] };
@@ -302,9 +307,9 @@ export class OpenAIResponsesProvider implements ProviderClient {
             // Hide dated snapshots when the alias is listed too.
             const alias = id.replace(/-\d{4}-\d{2}-\d{2}$/, "");
             if (alias !== id && ids.has(alias)) continue;
-            out.push({ ...staticInfo(def.id, id), created: r.created ? r.created * 1000 : undefined });
+            out.push({ ...responsesModelInfo(def.id, id, this.base), created: r.created ? r.created * 1000 : undefined });
         }
-        for (const id of customProviderModels(def.id)) if (!out.some((m) => m.id === id)) out.push(staticInfo(def.id, id));
+        for (const id of customProviderModels(def.id)) if (!out.some((m) => m.id === id)) out.push(responsesModelInfo(def.id, id, this.base));
         return out;
     }
 }

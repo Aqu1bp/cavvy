@@ -35,6 +35,8 @@ export interface Settings {
     /** The auto-mode reviewer ("provider:model"). Unset: Claude Sonnet 5.5 with an Anthropic key, else the session's model. User settings only. */
     reviewModel?: string;
     effort?: Effort;
+    /** Prefer the provider’s faster service on models that explicitly support it. */
+    fastMode?: boolean;
     permissions?: {
         allow?: string[];
         ask?: string[];

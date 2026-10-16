@@ -52,6 +52,7 @@ ${bold("Usage")}
 ${bold("Options")}
   -p, --print                    non-interactive: print the response and exit
   -m, --model <provider:model>   model to use, e.g. anthropic:claude-opus-5-5, openai:gpt-6.1-sol
+      --fast / --no-fast         use fast / standard service (supported models only)
       --effort <level>           reasoning effort: ${EFFORT_LEVELS.join(", ")}
       --permission-mode <mode>   manual (default) | acceptEdits | plan | auto | bypassPermissions
       --dangerously-skip-permissions  start in bypass mode (only in sandboxes / containers)
@@ -75,6 +76,7 @@ interface Flags {
     print: boolean;
     model?: string;
     effort?: Effort;
+    fastMode?: boolean;
     mode?: PermissionMode;
     skipPermissions: boolean;
     continue: boolean;
@@ -132,6 +134,12 @@ function parseFlags(argv: string[]): Flags {
             case "-m":
             case "--model":
                 f.model = value();
+                break;
+            case "--fast":
+                f.fastMode = true;
+                break;
+            case "--no-fast":
+                f.fastMode = false;
                 break;
             case "--effort": {
                 const v = value().toLowerCase();
@@ -718,6 +726,7 @@ async function main() {
             addDirs: f.addDirs,
             startupNotes: notes,
             effort: f.effort,
+            fastMode: f.fastMode,
             fallbackModel: env.legacyModel,
         });
         process.exit(code);
@@ -741,6 +750,7 @@ async function main() {
         extraDeny: f.disallowed,
         addDirs: f.addDirs,
         effort: f.effort,
+        fastMode: f.fastMode,
         fallbackModel: env.legacyModel,
     });
     process.on("uncaughtException", (e) => {

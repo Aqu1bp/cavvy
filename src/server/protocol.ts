@@ -261,6 +261,7 @@ export interface ModelSummary {
     supportsImages?: boolean;
     supportsReasoning?: boolean;
     effortLevels?: EffortLevel[];
+    supportsFastMode?: boolean;
     deprecated?: boolean;
 }
 
@@ -294,6 +295,7 @@ export interface SessionState {
     mode: PermissionModeId;
     bypassAllowed: boolean;
     effort?: EffortLevel;
+    fastMode?: boolean;
     status: SessionStatus;
     busy: boolean;
     /** The spinner line: what it's doing right now. */
@@ -373,6 +375,18 @@ export interface ProjectInfo {
     openedAt?: number;
 }
 
+export interface WorktreeInfo {
+    path: string;
+    branch?: string;
+    head?: string;
+    detached: boolean;
+    current: boolean;
+    exists: boolean;
+    /** Empty string means locked/prunable without a reason. */
+    locked?: string;
+    prunable?: string;
+}
+
 export interface ProviderInfo {
     id: string;
     name: string;
@@ -441,6 +455,7 @@ export interface GuiSettings {
     /** The auto-mode reviewer. Unset: Claude Sonnet 5.5 with an Anthropic key, else the session's model. */
     reviewModel?: string;
     effort?: EffortLevel;
+    fastMode?: boolean;
     defaultMode?: PermissionModeId;
     showThinking?: boolean;
     autoCompact?: boolean;
@@ -452,6 +467,8 @@ export interface GuiSettings {
 // Events
 
 export type ServerEvent =
+    | { type: "terminal.data"; id: string; data: string }
+    | { type: "terminal.exit"; id: string; exitCode: number }
     | { type: "session.ops"; sessionId: string; seq: number; ops: SessionOp[] }
     | { type: "sessions.upsert"; session: SessionSummary }
     | { type: "sessions.remove"; id: string }
@@ -478,6 +495,12 @@ export interface HelloResult {
 }
 
 export interface Methods {
+    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number }; result: { id: string; cwd: string } };
+    "terminal.write": { params: { id: string; data: string }; result: null };
+    /** The window has drawn this many characters of the terminal's output (flow control). */
+    "terminal.ack": { params: { id: string; chars: number }; result: null };
+    "terminal.resize": { params: { id: string; cols: number; rows: number }; result: null };
+    "terminal.close": { params: { id: string }; result: null };
     hello: { params: { client?: string }; result: HelloResult };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
@@ -488,6 +511,7 @@ export interface Methods {
     "session.respond": { params: { id: string; interactionId: string; response: InteractionResponse }; result: null };
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
     "session.setMode": { params: { id: string; mode: PermissionModeId }; result: null };
+    "session.setFastMode": { params: { id: string; enabled: boolean }; result: null };
     "session.setEffort": { params: { id: string; effort: EffortLevel }; result: null };
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };
@@ -514,6 +538,7 @@ export interface Methods {
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
     "projects.recent": { params: Record<string, never>; result: ProjectInfo[] };
     "projects.inspect": { params: { path: string }; result: ProjectInfo };
+    "projects.worktrees": { params: { path: string }; result: WorktreeInfo[] };
     "projects.trust": { params: { path: string; trust: boolean }; result: ProjectInfo };
     "projects.forget": { params: { path: string }; result: null };
     "fs.mentions": { params: { cwd: string; query: string }; result: string[] };

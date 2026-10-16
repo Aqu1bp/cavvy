@@ -87,6 +87,15 @@ export function describeClaudeAuth(s: ClaudeStatus): string {
     return `signed in${s.authMethod ? ` (${s.authMethod})` : ""}${via}`;
 }
 
+/** Noninteractive fast mode via --settings was added in 2.1.205. */
+export function claudeFastModeVersion(version: unknown): boolean {
+    if (typeof version !== "string") return false;
+    const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+    if (!m) return false;
+    const [major, minor, patch] = m.slice(1).map(Number) as [number, number, number];
+    return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 205)));
+}
+
 let requestSeq = 0;
 const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
 
@@ -123,6 +132,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
                     .filter((x) => typeof x?.value === "string" && x.value)
                     .map((x) =>
                         backendModel(this.def.id, x.value, typeof x.displayName === "string" ? `${x.displayName}${x.resolvedModel && x.resolvedModel !== x.value ? ` (${x.resolvedModel})` : ""}` : undefined, {
+                            supportsFastMode: x.supportsFastMode === true && claudeFastModeVersion(m.response.response?.claude_code_version),
                             effortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels : undefined,
                         }),
                     );
@@ -222,14 +232,16 @@ class ClaudeTurn {
         if (!t.trusted) a.push("--setting-sources", "user", "--strict-mcp-config");
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
+        // Always override external preferences: an unsupported model must not silently switch to Opus.
+        const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
         a.push("--disallowedTools", READ_ONLY_DENY.join(","));
         if (t.trusted) a.push("--strict-mcp-config");
-        const settings = { permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
+        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
         a.push("--settings", JSON.stringify(settings));
         return a;
     }
@@ -337,6 +349,18 @@ class ClaudeTurn {
         return { reason: this.reason ?? "done", text, actions: this.actions, error: this.failure };
     }
 
+    private fastModeNotice?: string;
+    private fastModeObserved = false;
+
+    private reportFastMode(m: Record<string, any>) {
+        if (m.fast_mode_state === "on") this.fastModeObserved = true;
+        if (!this.t.fastMode || typeof m.fast_mode_state !== "string" || m.fast_mode_state === "on") return;
+        const reason = typeof m.fast_mode_disabled_reason === "string" ? m.fast_mode_disabled_reason.replace(/_/g, " ") : m.fast_mode_state;
+        if (reason === this.fastModeNotice) return;
+        this.fastModeNotice = reason;
+        this.host.emit({ type: "notice", level: "warn", message: `Claude Code is not using fast mode (${reason}). Account, organization settings or capacity can limit availability.` });
+    }
+
     private onMessage(m: Record<string, any>) {
         switch (m.type) {
             case "control_request":
@@ -344,6 +368,7 @@ class ClaudeTurn {
                 break;
             case "control_response": {
                 const r = m.response ?? {};
+                this.reportFastMode(r.response ?? {});
                 this.controls.get(String(r.request_id ?? ""))?.(r);
                 break;
             }
@@ -367,6 +392,7 @@ class ClaudeTurn {
     }
 
     private onSystem(m: Record<string, any>) {
+        this.reportFastMode(m);
         switch (m.subtype) {
             case "init":
                 if (typeof m.session_id === "string" && m.session_id) {
@@ -575,14 +601,19 @@ class ClaudeTurn {
     }
 
     private onResult(m: Record<string, any>) {
+        this.reportFastMode(m);
         const u = m.usage ?? {};
+        const mixedPlanCost = this.billedToPlan && this.fastModeObserved && m.fast_mode_state !== "on";
+        if (mixedPlanCost) this.host.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
         const usage: Usage = {
             inputTokens: Number(u.input_tokens ?? 0),
             outputTokens: Number(u.output_tokens ?? 0),
             cacheReadTokens: Number(u.cache_read_input_tokens ?? 0),
             cacheWriteTokens: Number(u.cache_creation_input_tokens ?? 0),
-            // On a plan nothing is billed per token; with an API key, Claude Code reports the cost.
-            cost: this.billedToPlan ? 0 : typeof m.total_cost_usd === "number" ? m.total_cost_usd : undefined,
+            // Fast service uses paid credits even on a subscription. A final cooldown
+            // must not erase earlier fast spend; the CLI only gives a whole-turn total.
+            cost: this.billedToPlan && !this.fastModeObserved ? 0 : typeof m.total_cost_usd === "number" ? m.total_cost_usd : undefined,
+            ...(mixedPlanCost ? { costEstimated: true } : {}),
         };
         const window = Object.values((m.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).find((x) => typeof x?.contextWindow === "number")?.contextWindow;
         this.host.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });

@@ -49,6 +49,7 @@ export interface Prefs {
     expandActivity: boolean;
     showThinking: boolean;
     sidebarWidth: number;
+    terminalHeight: number;
     /** The docked review pane. */
     reviewWidth: number;
     /** Model refs, in the order they were starred. */
@@ -76,6 +77,7 @@ const DEFAULTS: Prefs = {
     expandActivity: false,
     showThinking: true,
     sidebarWidth: 260,
+    terminalHeight: 260,
     reviewWidth: 720,
     favoriteModels: [],
     chatWidth: "default",

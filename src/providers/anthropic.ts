@@ -8,6 +8,7 @@
 //   block binding) are enabled per model and dropped automatically for the rest
 //   of the process if an endpoint rejects them.
 
+import { apiFastModeInfo } from "./fast-mode";
 import Anthropic from "@anthropic-ai/sdk";
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl } from "./registry";
@@ -79,6 +80,7 @@ export class AnthropicProvider implements ProviderClient {
                     contextWindow: m.max_input_tokens ?? t.contextWindow,
                     maxOutput: m.max_tokens ?? t.maxOutput,
                     pricing: t.pricing,
+                    ...apiFastModeInfo(this.def.id, m.id, resolveBaseUrl(this.def)),
                     supportsTools: true,
                     supportsImages: caps ? caps.image_input.supported : true,
                     supportsReasoning: caps ? caps.thinking.supported : t.adaptive,
@@ -103,6 +105,7 @@ export class AnthropicProvider implements ProviderClient {
             provider: this.def.id,
             id,
             name,
+            ...apiFastModeInfo(this.def.id, id, resolveBaseUrl(this.def)),
             contextWindow: t.contextWindow,
             maxOutput: t.maxOutput,
             pricing: t.pricing,
@@ -183,6 +186,11 @@ export class AnthropicProvider implements ProviderClient {
             tools: tools.length ? tools : undefined,
             stream: true,
         };
+        // Standard is what the API runs when speed is left out, so only fast is asked for (and it needs the beta on every model).
+        if (req.fastMode && this.official && m.supportsFastMode && apiFastModeInfo(this.def.id, m.id, resolveBaseUrl(this.def)).supportsFastMode) {
+            params.speed = "fast";
+            betas.push("fast-mode-2026-02-01");
+        }
         if (!req.lightweight) params.cache_control = { type: "ephemeral" };
 
         if (adaptive && req.noThinking && t.thinkingOff === "between_tools") {
@@ -258,6 +266,7 @@ export class AnthropicProvider implements ProviderClient {
             }
         }
         const final = await stream.finalMessage();
+        if (req.fastMode && final.usage.speed === "standard") onEvent({ type: "notice", message: "Anthropic served this response at standard speed and rates." });
         return this.fromFinal(final, req);
     }
 
@@ -289,6 +298,7 @@ export class AnthropicProvider implements ProviderClient {
             outputTokens: u.output_tokens ?? 0,
             cacheReadTokens: u.cache_read_input_tokens ?? 0,
             cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+            ...(u.speed ? { fastMode: u.speed === "fast" } : {}),
         };
         return {
             role: "assistant",

@@ -62,6 +62,8 @@ export interface BackendHost {
     emit(e: AgentEvent): void;
     /** The harness's permission mode now (it can change during a turn). */
     mode(): PermissionMode;
+    /** Fast mode now: a sub-agent's follows its session, which can change during its turn. BackendTurn.fastMode otherwise. */
+    fastMode?(): boolean;
     permission(req: BackendPermission): Promise<PermissionAnswer>;
     /** One answer list per question; undefined when the user dismissed them. */
     askQuestions(questions: BackendQuestion[]): Promise<string[][] | undefined>;
@@ -83,6 +85,7 @@ export interface BackendTurn {
     model: ModelInfo;
     mode: PermissionMode;
     effort?: Effort;
+    fastMode?: boolean;
     appendSystemPrompt?: string;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
