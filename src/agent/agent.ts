@@ -185,6 +185,8 @@ export interface AgentOptions {
 const MAX_RETRIES = 10;
 /** Requests that got nothing back for minutes (sse.ts) are tried this many more times. */
 const MAX_STALL_RETRIES = 2;
+/** After the results of tools a turn was stopped in. */
+const TOOL_INTERRUPT = "[Request interrupted by user for tool use]";
 /** Starts the text of a message the user sent while tools were running. */
 const STEERING = "The user sent this message while you were working:\n";
 
@@ -302,6 +304,8 @@ export class Agent {
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
     private running = false;
+    /** This turn's prompt is in the session. */
+    private prompted = false;
     /** Prompt tokens of the most recent request (context usage). */
     contextTokens = 0;
     private lastUsageTotal = 0;
@@ -421,6 +425,7 @@ export class Agent {
     async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
+        this.prompted = false;
         // Interrupting a turn stops the delegated tasks still running, those in the background too
         // (delegated on an earlier turn, maybe before a switch to another model).
         const onAbort = () => this.cancelTasks();
@@ -430,6 +435,7 @@ export class Agent {
         } finally {
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
+            this.prompted = false;
         }
     }
 
@@ -457,6 +463,7 @@ export class Agent {
         const parts: UserContent[] = [...content];
         for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
+        this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
         if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal);
@@ -580,7 +587,7 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
-            if (signal.aborted) extra.push({ type: "text", text: "[Request interrupted by user for tool use]" });
+            if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
             else {
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
@@ -638,6 +645,29 @@ export class Agent {
         this.session.push({ role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }], meta: { kind: "interrupt" } });
         this.emit({ type: "turn_end", reason: "aborted" });
         return "aborted";
+    }
+
+    /**
+     * Its session is being closed while this turn is still stopping (a CLI
+     * backend gets seconds to answer an interrupt; a tool may not stop at
+     * once): note the interrupt now, as the turn would have. The caller lets
+     * the file go right after, so what the turn still writes is dropped, not
+     * recorded after this.
+     */
+    noteStopped(): void {
+        // Not running, or its prompt isn't in yet (then nothing of the turn is).
+        if (!this.running || !this.prompted) return;
+        const last = this.session.messages.at(-1);
+        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return;
+        const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
+        if (!calls.length) return void this.interrupted(false);
+        // Tools still running: their calls get results, or the next request is refused.
+        this.session.push({
+            role: "user",
+            content: [...calls.map((c) => ({ type: "tool_result" as const, toolCallId: c.id, toolName: c.name, content: "Interrupted by user", isError: true })), { type: "text", text: TOOL_INTERRUPT }],
+            meta: { kind: "tool_results" },
+        });
+        this.emit({ type: "turn_end", reason: "aborted" });
     }
 
     /**

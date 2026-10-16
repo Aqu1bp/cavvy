@@ -361,6 +361,36 @@ describe("connecting", () => {
         expect(last.m.meta.kind).toBe("interrupt");
     });
 
+    test("a turn still stopping when the server stops has its interrupt noted for it, once", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const { closeTiming } = await import("../src/server/runtime");
+        const { engine, c, id, rt } = await engineWithSession();
+        rt.ws.settings.permissions = { allow: ["Bash"] };
+        // Closing outlasts the command, which stops 2s after SIGTERM (SIGKILL).
+        rt.ws.settings.hooks = { SessionEnd: [{ command: "sleep 3" }] };
+        const saved = closeTiming.turnMs;
+        closeTiming.turnMs = 200;
+        try {
+            await engine.handle(c, "session.send", { id, text: "stubborn please" });
+            const running = () => rt.snapshot().turns.at(-1)?.blocks.some((b) => b.t === "tool" && b.status === "running");
+            for (let i = 0; i < 300 && !running(); i++) await Bun.sleep(10);
+            expect(running()).toBe(true);
+            await Bun.sleep(100);
+            await engine.stop();
+            const msgs = readFileSync(findSessionAnywhere(id)!, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => l.t === "msg").map((l) => l.m);
+            const call = msgs.findIndex((m) => m.role === "assistant" && m.content.some((p: any) => p.type === "tool_call"));
+            expect(call).toBeGreaterThan(0);
+            // Its call answered, and the interrupt, as the turn would have; nothing after it.
+            expect(msgs.slice(call + 1)).toHaveLength(1);
+            const last = msgs.at(-1);
+            expect(last.meta.kind).toBe("tool_results");
+            expect(last.content[0]).toMatchObject({ type: "tool_result", toolName: "Bash", isError: true });
+            expect(last.content.at(-1).text).toBe("[Request interrupted by user for tool use]");
+        } finally {
+            closeTiming.turnMs = saved;
+        }
+    }, 20_000);
+
     test("a session opened again while it's being closed waits for that", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();
         await engine.handle(c, "session.send", { id, text: "first prompt" });

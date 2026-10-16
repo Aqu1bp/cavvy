@@ -86,6 +86,9 @@ export function titleWorthy(prompt: string): boolean {
 /** Title requests per session, failures included: a model that can't give one isn't asked forever. */
 const TITLE_TRIES = 3;
 
+/** How long closing waits for a turn to stop on its own before noting the interrupt for it (changeable for tests). */
+export const closeTiming = { turnMs: 3000 };
+
 export function modelSummary(m: ModelInfo): ModelSummary {
     const p = getProvider(m.provider);
     return {
@@ -1634,14 +1637,21 @@ export class Runtime {
     async close() {
         this.abort?.abort();
         this.cancelInteractions();
-        // A turn still running notes how it stopped (the interrupt, what it was retrying) before the file is let go.
-        if (this.turnDone) await Promise.race([this.turnDone, Bun.sleep(3000)]);
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
         this.closed = true;
         // Delegated tasks still running stop with the session.
+        const ending = Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
         try {
-            await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
+            // A turn still running notes how it stopped (the interrupt, what it was retrying) before the file is let go.
+            const turn = this.turnDone;
+            if (turn && !(await Promise.race([turn.then(() => true), Bun.sleep(closeTiming.turnMs).then(() => false)]))) {
+                // Still stopping (the server's own exit doesn't wait long enough for a CLI backend's): noted for it,
+                // and the file let go now, so what it writes when it does stop isn't recorded after that.
+                this.agent?.noteStopped();
+                this.session.release();
+            }
+            await ending;
         } finally {
             this.session.release();
         }
