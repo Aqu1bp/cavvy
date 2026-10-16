@@ -139,8 +139,9 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
         const [agentFocus, setAgentFocus] = solid.createSignal(target === "AgentView" ? "agent" : undefined);
         const [review, setReview] = solid.createSignal(target === "ReviewPane" ? {} : undefined);
         const handle = { view: { state: { cwd: "/project" }, agents: [{ id: "agent" }] } };
-        const tags = ["Header", "Home", "Sidebar", "SettingsNav", "SettingsPage", "SessionView", "AgentView", "ReviewPane", "Reconnecting", "Disconnected", "TerminalPanel", "CommandPalette", "RewindDialog", "McpDialog", "FolderPicker", "TrustDialog", "DeleteSessionDialog", "CommitDialog", "Toasts"];
         const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "utf8");
+        const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
+        const tags = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
         const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
             prefs: { sidebar: true }, isTauri: false, document: {}, onMount() {},

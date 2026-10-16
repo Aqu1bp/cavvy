@@ -75,11 +75,12 @@ const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url)
 const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense"]);
 const widgets = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
+    // Stubs first: a component given explicitly below wins.
+    ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
     RenderBoundary: boundary(), Spinner: () => node("Spinner"), activate: second.activate, app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
     prefs: { sidebar: false }, isTauri: mode === "desktop", os: "other",
     settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
-    ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
 });
 const root = node("root");
 const dispose = renderer.render(App, root);

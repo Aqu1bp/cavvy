@@ -37,8 +37,10 @@ await settle();
 Socket.instances.at(-1)!.open();
 await settle();
 await settle();
-const widgets = ["Header", "Home", "Sidebar", "SessionView", "Reconnecting", "Disconnected", "TerminalPanel", "CommandPalette", "RewindDialog", "McpDialog", "FolderPicker", "TrustDialog", "DeleteSessionDialog", "CommitDialog", "Toasts", "Spinner"];
 const source = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "utf8");
+// Every component App renders, except Solid's control flow and the boundary under test, is a stub.
+const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
+const widgets = [...new Set([...source.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(source.slice(source.indexOf("export function App")), "App", {
     ...appModule, RenderBoundary: boundary(), prefs: { sidebar: true }, isTauri: false,
     settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
