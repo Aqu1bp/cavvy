@@ -119,3 +119,19 @@ export function monogram(name: string): string {
     const s = words.length > 1 ? words[0]![0]! + words[words.length - 1]![0]! : words[0]!.slice(0, 2);
     return s.toUpperCase();
 }
+
+/**
+ * Where a diff's first change is in the new file: the line of the first added
+ * or removed line (a removal, where its text was). A hunk starts with up to
+ * three lines of context, so its newStart is above the change.
+ */
+export function firstChangedLine(diff?: { hunks?: { newStart: number; lines: { t: string; b?: number }[] }[] }): number | undefined {
+    for (const h of diff?.hunks ?? []) {
+        let next = h.newStart;
+        for (const l of h.lines) {
+            if (l.t !== "ctx") return Math.max(1, l.t === "add" ? (l.b ?? next) : next);
+            next = (l.b ?? next) + 1;
+        }
+    }
+    return undefined;
+}

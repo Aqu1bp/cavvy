@@ -175,13 +175,15 @@ function General() {
                 </select>
             </Row>
             <Row title="Open files with" desc="For file links in replies, changed files and tool rows. It opens on the computer running Harness.">
-                <select class="select" aria-label="Open files with" value={s().editor ?? ""} onChange={(e) => void update({ editor: e.currentTarget.value })}>
-                    <option value="" disabled={!s().editor}>
+                {/* Each option says whether it's the one chosen: the list arrives after the
+                    saved choice, and a select's value set before its options matches nothing. */}
+                <select class="select" aria-label="Open files with" onChange={(e) => void update({ editor: e.currentTarget.value })}>
+                    <option value="" disabled={!s().editor} selected={!s().editor}>
                         {s().editor ? "None" : "Choose an editor"}
                     </option>
                     <For each={editorChoices()}>
                         {(e) => (
-                            <option value={e.id}>
+                            <option value={e.id} selected={e.id === s().editor}>
                                 {e.name}
                                 {!e.installed ? " (not found)" : e.lines || e.id === "finder" ? "" : " (without line numbers)"}
                             </option>

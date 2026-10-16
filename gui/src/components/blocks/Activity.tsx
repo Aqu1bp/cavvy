@@ -26,7 +26,7 @@ import {
     X,
 } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
-import { duration, plural, splitTitle, stripAnsi, tokens } from "../../lib/format";
+import { duration, firstChangedLine, plural, splitTitle, stripAnsi, tokens } from "../../lib/format";
 import { now } from "../../lib/clock";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
@@ -506,7 +506,7 @@ export function toolFile(t: ToolBlock): { path: string; line?: number } | undefi
     const path = i.file_path ?? i.notebook_path;
     if (typeof path !== "string" || !path) return undefined;
     const offset = t.name === "Read" && typeof i.offset === "number" && i.offset >= 1 ? Math.floor(i.offset) : undefined;
-    return { path, line: offset ?? (t.diff?.hunks?.[0]?.newStart || undefined) };
+    return { path, line: offset ?? firstChangedLine(t.diff) };
 }
 
 /** A small "Open in editor" button for a row. */

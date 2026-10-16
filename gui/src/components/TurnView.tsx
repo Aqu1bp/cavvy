@@ -1,7 +1,7 @@
 import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { duration, plural, stripAnsi } from "../lib/format";
+import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { prefs } from "../state/prefs";
 import { openInEditor, openReview } from "../state/actions";
@@ -189,7 +189,7 @@ function turnChanges(t: Turn): Changed[] {
     const files = new Map<string, Changed>();
     for (const b of t.blocks) {
         if (b.t !== "tool" || b.status !== "ok" || !b.diff) continue;
-        const f = files.get(b.diff.path) ?? { path: b.diff.path, status: b.diff.status, added: 0, removed: 0, line: b.diff.hunks?.[0]?.newStart || undefined };
+        const f = files.get(b.diff.path) ?? { path: b.diff.path, status: b.diff.status, added: 0, removed: 0, line: firstChangedLine(b.diff) };
         f.added += b.diff.added;
         f.removed += b.diff.removed;
         files.set(b.diff.path, f);
