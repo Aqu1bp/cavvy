@@ -32,11 +32,14 @@ import { displayPath } from "../util/files";
 import { gitSnapshot } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
+import { gitChanges } from "./git-changes";
 import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, withoutActionsNote, type ToolMeta } from "./history";
 import type {
     AgentRun,
     Block,
     ChangesInfo,
+    GitChangesInfo,
+    GitScope,
     EffortLevel,
     Interaction,
     InteractionResponse,
@@ -1573,6 +1576,11 @@ export class Runtime {
             return live ? { ...live, turnId: r.turnId } : r;
         });
         this.op({ op: "reset", turns, agents });
+    }
+
+    /** What git says changed in the session's folder, whoever changed it. */
+    gitChanges(req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
+        return gitChanges(this.ws.cwd, req);
     }
 
     changes(): ChangesInfo {

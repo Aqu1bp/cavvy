@@ -1019,6 +1019,55 @@ a.prow:hover,
     font-weight: 600;
 }
 
+/* Which changes: git's two views or Harness's own edits, and the base branch. */
+.review-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 4px 10px 4px 16px;
+    flex: none;
+    border-bottom: 1px solid var(--hairline);
+    min-width: 0;
+}
+
+.review-scope-note {
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.review-branch {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.review-branch > svg {
+    flex: none;
+}
+
+.review-branch .arrow {
+    flex: none;
+    color: var(--fg-subtle);
+}
+
+.review-branch .base-ctl {
+    max-width: 220px;
+    color: var(--fg);
+}
+
+.base-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 6px;
+}
+
 .review-body {
     flex: 1;
     min-height: 0;
@@ -1050,6 +1099,37 @@ a.prow:hover,
 
 .rf.on {
     background: var(--bg-active);
+}
+
+/* git status's letter for the file. */
+.rf-change {
+    flex: none;
+    width: 14px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: center;
+    color: var(--warning);
+}
+
+.rf-change.added,
+.rf-change.untracked {
+    color: var(--success);
+}
+
+.rf-change.deleted {
+    color: var(--danger);
+}
+
+.rf-change.renamed,
+.rf-change.typechange {
+    color: var(--info);
+}
+
+.rf-more {
+    padding: 8px;
+    font-size: 0.786rem;
+    color: var(--fg-subtle);
 }
 
 .rf-text {
@@ -1094,6 +1174,11 @@ a.prow:hover,
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 35%, transparent);
 }
 
+.file-tag.modified {
+    color: var(--fg-muted);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
 .file-tag.deleted {
     color: var(--danger);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent);
@@ -1134,6 +1219,11 @@ a.prow:hover,
 
     .rf-dir {
         display: none;
+    }
+
+    .rf-more {
+        flex: none;
+        align-self: center;
     }
 
     .rf-stat {

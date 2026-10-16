@@ -910,6 +910,32 @@ describe("sessions", () => {
         c.close();
     });
 
+    test("the git view shows what a shell command changed, which Harness's own record can't", async () => {
+        const dir = project();
+        const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args], { cwd: dir, stdout: "ignore", stderr: "ignore" });
+        git("init", "-q", "-b", "main");
+        git("add", "-A");
+        git("commit", "-q", "-m", "Initial commit");
+        const c = await client();
+        const id = await c.open("session.create", { cwd: dir });
+        await c.call("session.send", { id, text: "!echo x >> README.md" });
+        await c.until(id, done);
+
+        const r = await c.call("session.gitChanges", { id, scope: "uncommitted" });
+        expect(r.repo).toBe(true);
+        expect(r.files.map((f: { path: string; change: string; added: number }) => `${f.path}:${f.change}:+${f.added}`)).toEqual(["README.md:modified:+1"]);
+        expect((await c.call("session.changes", { id })).files).toEqual([]);
+        const b = await c.call("session.gitChanges", { id, scope: "branch", base: "main" });
+        expect(b.base.ref).toBe("main");
+        await expect(c.call("session.gitChanges", { id, scope: "branch", base: "--output=x" })).rejects.toThrow(/isn't a branch/);
+        await expect(c.call("session.gitChanges", { id, scope: "sideways" })).rejects.toThrow(/scope/);
+
+        const plain = await c.open("session.create", { cwd: project() });
+        const p = await c.call("session.gitChanges", { id: plain, scope: "uncommitted" });
+        expect([p.repo, p.reason]).toEqual([false, expect.stringMatching(/isn't a Git repository/)]);
+        c.close();
+    });
+
     test("! runs a shell command for the user", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });

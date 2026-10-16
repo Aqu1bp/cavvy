@@ -243,14 +243,15 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string }) {
                         <span class="del">−{total().removed}</span>
                     </span>
                     <span class="grow" />
-                    <button class="ghost-btn" onClick={() => openReview()}>
+                    {/* Git's uncommitted view lists these too, whoever made them. */}
+                    <button class="ghost-btn" onClick={() => openReview(files()[0]?.path, "uncommitted")}>
                         <FileDiff size={14} /> Review changes
                     </button>
                 </div>
                 <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                     {(f) => (
                         <div class="frow-line">
-                            <button class="frow" onClick={() => openReview(f.path)}>
+                            <button class="frow" onClick={() => openReview(f.path, "uncommitted")}>
                                 <SplitPath path={f.path} cwd={p.cwd} />
                                 <Show when={f.status === "added"}>
                                     <span class="frow-tag">new</span>

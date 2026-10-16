@@ -6,6 +6,7 @@ import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
 import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import type { ReviewScope } from "./changes";
 import { prefs, setPrefs } from "./prefs";
 import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
@@ -123,9 +124,9 @@ export function openAgents(agentId?: string) {
     setPrefs("panel", true);
 }
 
-/** The docked review pane, on a file when one is given. */
-export function openReview(path?: string) {
-    setReview({ path });
+/** The docked review pane, on a file and a view when given (else the view last used). */
+export function openReview(path?: string, scope?: ReviewScope) {
+    setReview({ path, scope });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */
