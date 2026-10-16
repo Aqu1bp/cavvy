@@ -90,6 +90,8 @@ export interface EngineOptions {
     listModels?: typeof listAllModels;
     /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
     unloadAfterMs?: number;
+    /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
+    terminalGraceMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
     log?: (message: string) => void;
     /** Where to look for editors (tests point it at fake launchers). */
@@ -125,6 +127,8 @@ export interface EngineClient {
     send(ev: ServerEvent): void;
     /** Sessions this client has open. */
     subs: Set<string>;
+    /** The window's key, when its connection presented one: its terminals are the window's, not this connection's. */
+    window?: string;
 }
 
 
@@ -270,7 +274,9 @@ export class Workspace {
 // ---------------------------------------------------------------------------
 
 export class Engine {
-    private terminals = new Terminals();
+    private terminals: Terminals;
+    /** Script lookup is asynchronous: a tab can close before its shell exists. */
+    private openingTerminals = new Map<string, { window: string | EngineClient; cancelled: boolean }>();
     /** Setup runs that a window may start, once, in the worktree it just created (see setup.ts). */
     readonly setups = new SetupTickets();
     readonly clients = new Set<EngineClient>();
@@ -298,6 +304,7 @@ export class Engine {
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
+        this.terminals = new Terminals({ graceMs: o.terminalGraceMs });
     }
 
     log(msg: string) {
@@ -313,11 +320,13 @@ export class Engine {
 
     async stop() {
         this.stopping = true;
-        this.terminals.stop();
+        for (const pending of this.openingTerminals.values()) pending.cancelled = true;
+        const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
+        await terminalsStopped;
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
     }
 
@@ -873,7 +882,7 @@ export class Engine {
         this.unloadTimers.set(id, t);
     }
 
-    /** A window went away (closed, reloading, or lost its connection). */
+    /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         this.terminals.drop(client);
@@ -1287,7 +1296,7 @@ export class Engine {
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
                     const command = loginCommand(provider, accountId);
-                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, onExit: () => { void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
                 }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
@@ -1299,12 +1308,25 @@ export class Engine {
             case "terminal.resize":
                 this.terminals.resize(client, str(p.id, "id"), p.cols, p.rows);
                 return null;
-            case "terminal.close":
-                this.terminals.close(client, str(p.id, "id"));
+            case "terminal.close": {
+                const id = str(p.id, "id");
+                const pending = this.openingTerminals.get(id);
+                const cancelled = pending?.window === (client.window ?? client);
+                if (cancelled) pending!.cancelled = true;
+                try { this.terminals.close(client, id); }
+                catch (e) {
+                    if (!cancelled || !(e instanceof RpcError && e.code === "terminal_not_open")) throw e;
+                }
                 return null;
+            }
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
+            case "terminal.list":
+                return this.terminals.list(client);
+            case "terminal.attach":
+                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                return this.terminals.attach(client, str(p.id, "id"), p.have);
             case "scripts.list":
                 return await listScripts(p.cwd);
             case "scripts.save": {
@@ -1327,17 +1349,23 @@ export class Engine {
                 // Or, with `setup`, the setup script, once, in the worktree this window just created (see setup.ts).
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
                 const grant = p.setup === undefined ? undefined : this.setups.take(client, p.setup);
-                const cwd = str(p.cwd, "cwd");
-                const found = await findScript(cwd, p.script);
-                const { project, script } = found;
-                // The window may have gone while the script was looked up.
-                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
-                if (grant) checkGrant(grant, cwd, found);
-                const opened = this.terminals.open(client, str(p.id, "id"), grant ? grant.path : cwd, p.cols, p.rows, { input: `${script.command}\r` });
-                // It's running; remembering it for the header button needn't hold up the reply, and may fail quietly.
-                // A setup run isn't a choice of the user's, so the button keeps what it had.
-                if (!grant) void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
-                return { ...opened, script };
+                const id = str(p.id, "id");
+                if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.openingTerminals.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
+                const pending = { window: client.window ?? client, cancelled: false };
+                this.openingTerminals.set(id, pending);
+                try {
+                    const cwd = str(p.cwd, "cwd");
+                    const found = await findScript(cwd, p.script);
+                    const { project, script } = found;
+                    // A close from the reloaded window also cancels this old connection's pending lookup.
+                    if (pending.cancelled) throw new RpcError("That terminal was closed", "terminal_not_open");
+                    if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                    if (grant) checkGrant(grant, cwd, found);
+                    const opened = this.terminals.open(client, id, grant ? grant.path : cwd, p.cols, p.rows, { input: `${script.command}\r`, script: { id: script.id, name: script.name } });
+                    // A setup run must not change the header button's last-used script.
+                    if (!grant) void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
+                    return { ...opened, script };
+                } finally { this.openingTerminals.delete(id); }
             }
             case "scripts.setupInfo": {
                 if (typeof p.cwd !== "string") throw new RpcError("cwd must be a string", "invalid");
