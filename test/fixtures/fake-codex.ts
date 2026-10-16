@@ -21,7 +21,7 @@
 // FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
 //                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
 //                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
-// FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web
+// FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web | steps (command, message, command, answer)
 //                     subagent: Codex's own sub-agent (spawnAgent, then wait): its thread runs a command (which
 //                     asks from its thread under untrusted), says something, answers and has usage of its own;
 //                     FAKE_CHILD_EARLY=1 sends its first events before the spawn says which thread is whose;
@@ -142,6 +142,20 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         // The first turn works until interrupted (or a while).
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(5000)]);
         return finish(t.interrupted ? "interrupted" : "completed");
+    }
+    if (scenario === "steps") {
+        // What a long turn sends: a progress message between its commands, then the answer.
+        const ran = (n: number) => {
+            const cmd = { type: "commandExecution", id: `cmd${n}-${turnId}`, command: `/bin/zsh -lc 'ls ${n}'`, cwd, status: "inProgress", commandActions: [{ type: "listFiles", command: `ls ${n}` }], aggregatedOutput: null, exitCode: null };
+            notify("item/started", { threadId, turnId, item: cmd });
+            notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
+        };
+        ran(1);
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-mid-${turnId}`, text: "Checked the first.", ...phase("commentary") } });
+        ran(2);
+        spend(threadId, turnId, tokens(120, 20, 30, 5));
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Finished.", ...phase("final_answer") } });
+        return finish("completed");
     }
     let decision: string | undefined = "accept";
     if (scenario === "mcp") {

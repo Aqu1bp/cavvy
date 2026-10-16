@@ -1052,7 +1052,7 @@ export class Runtime {
         }
         const d = result.display;
         const shown = d?.body !== undefined ? d.body : result.content;
-        const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (result.isError ? result.content : "")), result.isError), durationMs, progress: undefined };
+        const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (result.isError ? result.content : "")), result.isError, runsAgent(call.name)), durationMs, progress: undefined };
         // What it did was only known at its end (a backend's web search): its title and input say so now.
         if (title) Object.assign(patch, { title, input: trimInput(call.input) });
         if (/^The user declined/.test(result.content)) patch.status = "denied";
@@ -1185,7 +1185,7 @@ export class Runtime {
             case "tool_end": {
                 const d = e.result.display;
                 const shown = d?.body !== undefined ? d.body : e.result.content;
-                const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (e.result.isError ? e.result.content : "")), e.result.isError), durationMs: e.durationMs, progress: undefined };
+                const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (e.result.isError ? e.result.content : "")), e.result.isError, runsAgent(e.call.name)), durationMs: e.durationMs, progress: undefined };
                 if (e.title) Object.assign(patch, { title: e.title, input: trimInput(e.call.input) });
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);

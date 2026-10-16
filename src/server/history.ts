@@ -276,9 +276,10 @@ function diffFromInput(call: ToolCallPart): FileDiff | undefined {
     return undefined;
 }
 
-export function resultPatch(text: string, isError: boolean | undefined): Partial<ToolBlock> {
+/** `agent`: a sub-agent's call, whose report can end with a backend's actions note (for models, not the reader), dropped before it's clipped. */
+export function resultPatch(text: string, isError: boolean | undefined, agent = false): Partial<ToolBlock> {
     const denied = /^The user declined/.test(text);
-    const out = truncateText(text, INLINE_OUTPUT);
+    const out = truncateText(agent ? withoutActionsNote(text) : text, INLINE_OUTPUT);
     return {
         status: denied ? "denied" : isError ? "error" : "ok",
         output: out.text,
@@ -362,7 +363,8 @@ export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map
             }
             if (!b.agent) continue;
             const status = b.status === "ok" ? "done" : b.status === "error" || b.status === "denied" ? "failed" : "stopped";
-            out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt: b.startedAt ?? t.startedAt ?? 0, report: b.output && withoutActionsNote(b.output), replayed: true });
+            const startedAt = b.startedAt ?? t.startedAt ?? 0;
+            out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt, ...(b.durationMs !== undefined && startedAt ? { endedAt: startedAt + b.durationMs } : {}), report: b.output && withoutActionsNote(b.output), replayed: true });
         }
     }
     return out;
@@ -568,7 +570,7 @@ function ended<B extends Block>(b: B): B {
 function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (!b) return;
     const rec = ui.tools.get(p.toolCallId);
-    Object.assign(b, resultPatch(p.content, p.isError));
+    Object.assign(b, resultPatch(p.content, p.isError, b.agent));
     if (rec?.summary) b.summary = rec.summary;
     else if (b.status === "ok") b.summary = derivedSummary(b, p.content);
     if (rec?.durationMs !== undefined) b.durationMs = rec.durationMs;

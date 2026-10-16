@@ -123,6 +123,30 @@ describe("sub-agent ops", () => {
     });
 });
 
+test("a reopened backend sub-agent's long report comes back without the actions note, with how long it ran", async () => {
+    const { backendActionsNote } = await import("../src/agent/agent");
+    const report = "x".repeat(5000);
+    const note = backendActionsNote("Codex", Array.from({ length: 300 }, (_, i) => `Bash(nl -ba src/server/file-${i}.ts | sed -n '1,340p')`));
+    const messages: Message[] = [
+        { role: "user", content: [{ type: "text", text: "review it" }], meta: { kind: "prompt" } },
+        { role: "assistant", provider: "anthropic", model: "m", stopReason: "tool_use", content: [{ type: "tool_call", id: "ag", name: "Task", input: { description: "Review", prompt: "p", model: "codex:gpt" } }] },
+        { role: "user", content: [{ type: "tool_result", toolCallId: "ag", content: `${report}\n\n${note}` }], meta: { kind: "tool_results" } },
+        { role: "assistant", provider: "anthropic", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Reviewed." }] },
+    ] as Message[];
+    const ui = new UiLog(join(tempDir(), "n.jsonl"), "n");
+    ui.write({ t: "turn", seg: 0, index: 0, at: 1000 });
+    ui.write({ t: "tool", id: "ag", durationMs: 4200 });
+    let n = 0;
+    const turns = replay({ segments: [{ messages }], current: messages, ui, meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+    const [a] = agentsFromTurns(turns, "mock:mock-opus");
+    // Clipped for the row, but the note went first: none of it is left.
+    expect(a!.report).toContain("characters omitted");
+    expect(a!.report).not.toContain("used:");
+    expect(a!.report).not.toContain("Bash(");
+    expect(a!.report!.endsWith("x")).toBe(true);
+    expect(a!.endedAt! - a!.startedAt).toBe(4200);
+});
+
 describe("timeline ops", () => {
     test("append, patch and remove build a turn", () => {
         const v = view();

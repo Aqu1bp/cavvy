@@ -1432,6 +1432,28 @@ describe("reopening a Claude Code session", () => {
         }
     }, 60_000);
 
+    test("a Codex turn's progress messages come back as they were, each between its commands, and its answer on its own", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("codex", { path: fakeCodex() });
+        process.env.FAKE_SCENARIO = "steps";
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "codex:default", persist: false });
+            await c.call("session.send", { id, text: "look around" });
+            await c.until(id, done, 30_000);
+            const seq = (blocks: Block[]) => blocks.filter((b) => b.t === "text" || b.t === "tool").map((b) => (b.t === "tool" ? `tool:${b.status}` : b.text));
+            const live = seq(lastTurn(c.view(id)).blocks);
+            expect(live).toEqual(["Running it.", "tool:ok", "Checked the first.", "tool:ok", "Finished."]);
+            const snap = await reopened(id);
+            expect(seq(snap.turns.at(-1)!.blocks)).toEqual(live);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("codex");
+        }
+    }, 45_000);
+
     test("after Claude Code compacts its own context, later turns still come back (the transcript itself wasn't compacted)", async () => {
         try {
             const { c, id } = await claudeCodeSession("write", "acceptEdits");
