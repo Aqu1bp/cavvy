@@ -316,6 +316,11 @@
     min-width: 0;
 }
 
+.live-tail {
+    margin-top: 4px;
+    color: var(--fg-muted);
+}
+
 .live-hint {
     display: flex;
     align-items: center;
