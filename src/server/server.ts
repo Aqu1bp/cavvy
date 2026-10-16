@@ -165,8 +165,14 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     debug(`refused WebSocket without the token (origin ${req.headers.get("origin")})`);
                     return new Response("Unauthorized", { status: 401 });
                 }
+                // The window's key (kept by the window across reloads), which its terminals belong to. Never logged.
+                const window = protocols.find((p) => p.startsWith("window."))?.slice(7);
+                if (window !== undefined && !/^[0-9a-f]{32}$/.test(window)) {
+                    debug("refused WebSocket with a malformed window key");
+                    return new Response("Bad window key", { status: 400 });
+                }
                 debug(`WebSocket from ${req.headers.get("origin") ?? "no origin"}`);
-                const conn: Conn = { client: { subs: new Set(), send: () => {} } };
+                const conn: Conn = { client: { subs: new Set(), send: () => {}, window } };
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }

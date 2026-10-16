@@ -974,6 +974,10 @@ export class Runtime {
     private onEvent(e: AgentEvent) {
         this.lastActive = Date.now();
         switch (e.type) {
+            case "activity":
+                if (e.text) this.activity(e.text);
+                else this.setState({ activity: undefined });
+                break;
             case "request_start":
                 this.closeOpen();
                 this.responseBlocks = [];
@@ -1240,6 +1244,9 @@ export class Runtime {
             this.agentPatch(id, { status: "running", endedAt: undefined, report: undefined, turnAfter: a.blocks.at(-1)?.id ?? a.turnAfter });
         }
         switch (e.type) {
+            case "activity":
+                this.agentPatch(id, { activity: e.text });
+                break;
             case "request_start":
             case "thinking":
                 if (a.activity !== "Thinking" && a.status === "running") this.agentPatch(id, { activity: "Thinking" });

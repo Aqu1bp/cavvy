@@ -924,8 +924,15 @@ export interface ProjectScripts {
 // Events
 
 export type ServerEvent =
-    | { type: "terminal.data"; id: string; data: string }
+    /**
+     * `pos`: where in the shell's output this ends (the window gives it back to
+     * terminal.attach). `reset`: the window's screen is to be reset before `data`,
+     * which replays all the output kept.
+     */
+    | { type: "terminal.data"; id: string; data: string; pos: number; reset?: boolean }
     | { type: "terminal.exit"; id: string; exitCode: number }
+    /** Another connection with this window's key (a copy of the window) attached the terminal: it's shown there now. */
+    | { type: "terminal.moved"; id: string }
     | { type: "session.ops"; sessionId: string; seq: number; ops: SessionOp[] }
     | { type: "sessions.upsert"; session: SessionSummary }
     | { type: "sessions.remove"; id: string }
@@ -943,6 +950,28 @@ export type ServerEvent =
 
 // ---------------------------------------------------------------------------
 // Requests
+
+/** The project script a terminal was opened to run, which names its tab. */
+export interface TerminalScript {
+    id: string;
+    name: string;
+}
+
+/** Safe display/selector metadata only: commands, environments and login output stay off persistence. */
+export interface TerminalLogin {
+    provider: string;
+    accountId: string;
+    name: string;
+}
+
+/** One of the window's terminals. `exitCode`: its shell has exited (it's kept, with its output, until closed). */
+export interface TerminalInfo {
+    id: string;
+    cwd: string;
+    script?: TerminalScript;
+    login?: TerminalLogin;
+    exitCode?: number;
+}
 
 export interface HelloResult {
     version: string;
@@ -966,6 +995,20 @@ export interface Methods {
     "terminal.close": { params: { id: string }; result: null };
     /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */
     "terminal.arm": { params: { id: string }; result: null };
+    /**
+     * Terminals belong to a window: its connection presents the window's key (a
+     * WebSocket subprotocol, "window.<32 hex digits>"), and only a connection
+     * with that key reaches them. They keep running for a while when it goes.
+     */
+    "terminal.list": { params: Record<string, never>; result: TerminalInfo[] };
+    /**
+     * Takes the window's terminal on this connection (after a reload or a
+     * reconnect). What it printed since `have` (the last terminal.data's `pos`)
+     * comes first, as terminal.data, ahead of this reply; without `have`, or if
+     * that much is no longer kept, all of what is, with `reset`.
+     */
+    /** Login terminals clear the screen and never replay output, regardless of `have`. */
+    "terminal.attach": { params: { id: string; have?: number }; result: TerminalInfo };
     hello: { params: { client?: string }; result: HelloResult };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };
     /** Creates a script, or updates the one with `id`. */
