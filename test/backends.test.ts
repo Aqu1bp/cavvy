@@ -61,7 +61,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT"]) delete process.env[k];
+    for (const k of ["FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -449,13 +449,36 @@ describe("Claude Code's background work (live test findings)", () => {
 
     test("a sub-agent Claude Code stops listing before it says it's done is still waited for, with its report", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
-        process.env.FAKE_LIST_FIRST = "1";
-        const { run, events } = await makeAgent({ provider: "claude-code" });
-        expect(await run("map the auth module")).toBe("done");
-        expect(subEnds(events)).toEqual(["done"]);
-        expect(taskEnd(events).result.content).toBe(REPORT);
-        expect(texts(events)).toContain("The explorer reported back");
-    });
+        // Its notification comes later than the wait for a report turn lasts, and than Claude Code is given to exit after it.
+        process.env.FAKE_LIST_FIRST = "3600";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.settleMs = 50;
+        try {
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            expect(await run("map the auth module")).toBe("done");
+            expect(subEnds(events)).toEqual(["done"]);
+            expect(taskEnd(events).result.content).toBe(REPORT);
+            expect(texts(events)).toContain("The explorer reported back");
+        } finally {
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 15_000);
+
+    test("background work Claude Code lists after a sub-agent reported is waited for too: the report turn still comes", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        // The other task runs longer than the wait for a report turn lasts, and than Claude Code is given to exit after it.
+        process.env.FAKE_LATE_TASK = "3600";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.settleMs = 100;
+        try {
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            expect(await run("map the auth module")).toBe("done");
+            expect(taskEnd(events).result.content).toBe(REPORT);
+            expect(texts(events)).toContain("The explorer reported back");
+        } finally {
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 15_000);
 
     test("giving up on the wait ends the run even when something Claude Code started holds its output open", async () => {
         process.env.FAKE_SCENARIO = "agent-background-stuck";

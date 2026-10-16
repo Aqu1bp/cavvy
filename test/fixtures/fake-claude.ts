@@ -25,7 +25,8 @@
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
 // FAKE_OLD_RESULTS=1  results don't say which prompt they answer (an older CLI)
-// FAKE_LIST_FIRST=1   a background sub-agent leaves Claude Code's background list before its task_notification
+// FAKE_LIST_FIRST=ms  a background sub-agent leaves Claude Code's background list this long before its task_notification (1: 200 ms)
+// FAKE_LATE_TASK=ms   after a background sub-agent's notification, another background task is listed this long before the report turn
 // FAKE_HOLD_STDOUT=1  starts a command that keeps its stdout open for a while after it exits
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -271,7 +272,8 @@ let afterResult: (() => void) | undefined;
 /**
  * The background sub-agent's last step and words, Claude Code saying it's
  * done, and the turn it takes with its report. With FAKE_LIST_FIRST=1 it
- * stops listing the sub-agent a while before it says it's done.
+ * stops listing the sub-agent a while before it says it's done; with
+ * FAKE_LATE_TASK=1 another background task runs for a while before that turn.
  */
 async function backgroundAgentEnds(id: string) {
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_glob", content: "src/auth/index.ts", is_error: false }]);
@@ -281,12 +283,21 @@ async function backgroundAgentEnds(id: string) {
         bgTasks.delete("agent-1");
         backgroundChanged();
     };
-    if (process.env.FAKE_LIST_FIRST === "1") {
+    const listFirst = Number(process.env.FAKE_LIST_FIRST ?? 0);
+    if (listFirst) {
         unlist();
-        await Bun.sleep(200);
+        await Bun.sleep(listFirst === 1 ? 200 : listFirst);
     }
     out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", output_file: "/tmp/agent-1.output", summary: REPORT, usage: { total_tokens: 4321, tool_uses: 2, duration_ms: 300 }, session_id: sessionId });
-    if (process.env.FAKE_LIST_FIRST !== "1") unlist();
+    if (!listFirst) unlist();
+    const lateTask = Number(process.env.FAKE_LATE_TASK ?? 0);
+    if (lateTask) {
+        bgTasks.set("workflow-1", { task_id: "workflow-1", task_type: "local_workflow", description: "Check the tests" });
+        backgroundChanged();
+        await Bun.sleep(lateTask);
+        bgTasks.delete("workflow-1");
+        backgroundChanged();
+    }
     followUp("The explorer reported back: sign-in strategies are registered in one list.");
 }
 

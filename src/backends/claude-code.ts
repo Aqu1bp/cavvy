@@ -360,16 +360,13 @@ class ClaudeTurn {
      * workflows), not shell commands, which may never end (a dev server).
      */
     private inBackground(): { agent: boolean; label: string }[] {
-        const listed = (this.background ?? []).filter((t) => t.type !== "local_bash");
-        const out = listed.map((t) => ({ agent: t.type === "local_agent", label: t.description || "background task" }));
-        // Background sub-agents not over yet, unless Claude Code lists them already (or has stopped listing them: their notification is due).
-        for (const id of this.unreported()) {
-            const task = this.agentTasks.get(id);
-            const label = this.agentLabels.get(id) ?? "sub-agent";
-            if (task ? this.background : listed.some((t) => t.description === label)) continue;
-            out.push({ agent: true, label });
-        }
-        return out;
+        // Its sub-agents until Claude Code says each is over, listed or not (the list can drop one before that comes).
+        const agents = this.unreported();
+        const tasks = new Set(agents.map((id) => this.agentTasks.get(id)));
+        const labels = new Set(agents.filter((id) => !this.agentTasks.has(id)).map((id) => this.agentLabels.get(id) ?? "sub-agent"));
+        // And what else it lists (a sub-agent there that's one of those once only).
+        const listed = (this.background ?? []).filter((t) => t.type !== "local_bash" && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
+        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ agent: t.type === "local_agent", label: t.description || "background task" }))];
     }
 
     /** Background sub-agents Claude Code hasn't said are over. */
@@ -394,6 +391,9 @@ class ClaudeTurn {
         }
         const left = this.inBackground();
         if (left.length) {
+            // Work it lists after a report came: the report turn is waited for with it, not before it's done.
+            clearTimeout(this.settleTimer);
+            this.settleTimer = undefined;
             this.waitFor(left);
             if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
             // Waited long enough (only between Claude Code's turns, so none is cut short): what's left stops with it.
@@ -403,8 +403,8 @@ class ClaudeTurn {
             return true;
         }
         this.stopWaiting();
-        // A sub-agent that ended (or that Claude Code no longer lists, before it says so): its report turn is due.
-        if (this.reportsDue || this.unreported().length) {
+        // A sub-agent ended: Claude Code's turn with its report is due.
+        if (this.reportsDue) {
             this.settleTimer ??= setTimeout(() => this.finish(), backgroundTiming.settleMs);
             return false;
         }
