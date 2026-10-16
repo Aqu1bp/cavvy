@@ -843,6 +843,16 @@ export class Agent {
     // -----------------------------------------------------------------------
     // Agent backends (src/backends): Claude Code and Codex run the turn
 
+    /** Approvals as they stand for each CLI launch (a Stop-hook continuation or a resume retry starts another), never more than the turn began with. */
+    private freshApprovals(base: { approvedMcpServers?: ApprovedMcpServers }): ApprovedMcpServers | undefined {
+        if (!base.approvedMcpServers) return undefined;
+        try {
+            return this.o.approvedMcpServers?.();
+        } catch {
+            return undefined;
+        }
+    }
+
     private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
         const s = this.o.settings();
         let trusted = false;
@@ -1098,12 +1108,12 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
