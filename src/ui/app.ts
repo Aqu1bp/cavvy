@@ -36,6 +36,8 @@ import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
+import { account } from "../providers/accounts";
+import { RpcError } from "../server/rpc-error";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
@@ -46,6 +48,7 @@ import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
 import type { PlanLimits } from "../server/protocol";
 
@@ -130,7 +133,7 @@ export class App {
     private detached = new Map<string, ActiveTool>();
     private turnStart = 0;
     private turnTokens = 0;
-    /** The agent CLIs' plan limits as last reported, by provider (/cost shows them). */
+    /** The agent CLIs' plan limits as last reported, by provider and account (/cost shows them). */
     planLimits = new Map<string, PlanLimits>();
     private streamChars = 0;
     /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
@@ -369,6 +372,20 @@ export class App {
         return this.listings;
     }
 
+    /** Keep account changes between turns, like model changes. */
+    setAccount(provider: string, id: string) {
+        if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
+        const selected = account(provider, id);
+        if (!this.session.setAccount(provider, selected.id)) return;
+        const name = getProvider(provider)?.name ?? provider;
+        const text = this.session.messages.length
+            ? `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.`
+            : `Using ${name} · ${selected.name}.`;
+        this.session.recordNotice("info", text);
+        this.notice(text);
+        this.renderLive();
+    }
+
     /** Switch the active model. Returns false if the provider isn't usable. */
     async setModel(ref: string, opts: { quiet?: boolean; persist?: boolean } = {}): Promise<boolean> {
         const parsed = parseModelRef(ref);
@@ -589,10 +606,11 @@ export class App {
         this.sessionSwitched(prev, "clear");
     }
 
-    resume(file: string) {
+    /** Switch to a saved session (/resume), or to one just opened (a fork). */
+    resume(from: string | Session) {
         const prev = this.session;
         try {
-            this.session = Session.load(file);
+            this.session = typeof from === "string" ? Session.load(from) : from;
         } catch (e) {
             this.notice(`Could not resume: ${(e as Error).message}`, "error");
             // Stay in the current conversation; at startup there's none yet.
@@ -836,7 +854,11 @@ export class App {
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
                 break;
             case "limits":
-                this.planLimits.set(e.limits.provider, mergeLimits(this.planLimits.get(e.limits.provider), e.limits, e.partial));
+                {
+                    const key = planLimitKey(e.limits.provider, e.limits.accountId);
+                    const prev = this.planLimits.get(key);
+                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial));
+                }
                 break;
             case "usage":
                 this.turnTokens += e.usage.outputTokens;

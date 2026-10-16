@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
@@ -50,7 +50,7 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
                     </span>
                 </Show>
                 <Show when={long()}>
-                    <button class="link-btn more" onClick={() => setExpanded(!expanded())}>
+                    <button class="link-btn more" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
                         {expanded() ? "Show less" : "Show more"}
                     </button>
                 </Show>
@@ -152,7 +152,7 @@ function Compacted(p: { block: CompactBlock }) {
         <div class="compacted" data-find={p.block.id}>
             <div class="compacted-rule" data-find-skip>
                 <span />
-                <button class="link-btn" onClick={() => setOpen(!open())}>
+                <button class="link-btn" aria-expanded={open()} onClick={() => setOpen(!open())}>
                     Conversation compacted · {open() ? "hide summary" : "view summary"}
                 </button>
                 <span />
@@ -348,11 +348,11 @@ function segments(items: Item[]): Seg[] {
     return out;
 }
 
-export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void }) {
+export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void; onFork?: () => void }) {
     return <RenderBoundary raw={() => p.turn}><TurnViewContent {...p} /></RenderBoundary>;
 }
 
-function TurnViewContent(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void }) {
+function TurnViewContent(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void; onFork?: () => void }) {
     const items = createMemo(() => groupBlocks(p.turn.blocks));
     const segs = createMemo(() => segments(items()));
     const running = () => p.turn.status === "running";
@@ -423,12 +423,14 @@ function TurnViewContent(p: { turn: Turn; state: SessionState; last: boolean; ag
     );
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""}`} data-turn={p.turn.id}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""}`} data-turn={p.turn.id} aria-busy={running()}>
             <Show when={p.turn.prompt}>
+                <h2 class="sr-only" data-find-skip>You said</h2>
                 <UserPrompt turn={p.turn} onRewind={p.onRewind} />
             </Show>
             <Show when={hasOutput()}>
                 <div class="reply">
+                    <h2 class="sr-only" data-find-skip>{running() ? "Harness is working" : "Harness replied"}</h2>
                     <Show when={live() && streamingTail()}>
                         <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
                     </Show>
@@ -473,6 +475,11 @@ function TurnViewContent(p: { turn: Turn; state: SessionState; last: boolean; ag
                             </Show>
                             <Show when={reply().trim()}>
                                 <CopyButton text={reply} label="Copy response" class="foot-btn" />
+                            </Show>
+                            <Show when={p.onFork && !p.turn.archived}>
+                                <button class="icon-btn foot-btn" title="Fork from here" aria-label="Fork from here" onClick={() => p.onFork?.()}>
+                                    <GitFork size={14} />
+                                </button>
                             </Show>
                         </div>
                     </Show>

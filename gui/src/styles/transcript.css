@@ -53,6 +53,23 @@
     background: var(--bg-hover);
 }
 
+/* A fork's origin, above its first turn: opens the original. */
+.forked-from {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    margin: 0 0 16px;
+    padding: 3px 0;
+    font-size: 0.857rem;
+    color: var(--fg-subtle);
+}
+
+.forked-from:hover {
+    color: var(--fg);
+}
+
 .jump {
     position: absolute;
     left: 50%;
@@ -106,6 +123,16 @@
     font-size: 0.93rem;
 }
 
+.find-bar input:focus-visible {
+    outline: 2px solid var(--accent-text);
+}
+
+.find-bar input::placeholder {
+    color: var(--fg-subtle);
+    opacity: 1;
+}
+
+
 .find-count {
     font-size: 0.8rem;
     color: var(--fg-subtle);
@@ -114,12 +141,30 @@
 }
 
 ::highlight(find-match) {
-    background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+    background-color: var(--find-bg);
+    color: var(--fg);
 }
 
 ::highlight(find-current) {
-    background-color: color-mix(in srgb, var(--accent) 55%, transparent);
-    color: var(--fg);
+    background-color: var(--find-current-bg);
+    color: var(--accent-fg);
+}
+
+@media (forced-colors: active) {
+    .find-bar input:focus-visible {
+        outline-color: Highlight;
+    }
+
+    ::highlight(find-match) {
+        background-color: Mark;
+        color: MarkText;
+    }
+
+    ::highlight(find-current) {
+        background-color: Highlight;
+        color: HighlightText;
+        text-decoration: underline;
+    }
 }
 
 /* The row find is showing: all of its command, title or summary, not cut short. */
@@ -164,13 +209,9 @@
     padding-bottom: 36px;
 }
 
-.turn.archived {
-    opacity: 0.55;
-    transition: opacity var(--dur);
-}
-
-.turn.archived:hover {
-    opacity: 0.9;
+/* De-emphasize archived prompts without fading all their text below AA. */
+.turn.archived .user-bubble {
+    color: var(--fg-muted);
 }
 
 .user-row {
@@ -1298,7 +1339,7 @@ button.wrow:hover {
 .todo-list li.completed {
     color: var(--fg-subtle);
     text-decoration: line-through;
-    text-decoration-color: color-mix(in srgb, var(--fg-subtle) 60%, transparent);
+    text-decoration-color: color-mix(in srgb, var(--fg-faint) 60%, transparent);
 }
 
 .todo-list li.completed .todo-box {

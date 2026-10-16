@@ -1,7 +1,7 @@
 // What the plan meter and the Usage view say: plain functions of the
 // server's data and the time (no DOM, so they're tested from test/).
 
-import type { PlanLimits, UsageRow, UsageSummary } from "@shared/protocol";
+import type { AccountInfo, PlanLimits, UsageRow, UsageSummary } from "@shared/protocol";
 
 /** Older than this, a report is shown with "as of" its time. */
 export const STALE_MS = 15 * 60_000;
@@ -80,6 +80,11 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
 /** "5-hour 62% · resets 4:40 PM" */
 export function windowLine(w: MeterWindow): string {
     return [w.label, w.pct !== undefined ? `${w.pct}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resets ? ` · resets ${w.resets}` : "");
+}
+
+/** Only a fresh CLI status can offer a usable alternative; no identity enters the transcript. */
+export function limitAlternatives(accounts: AccountInfo[], accountId: string): AccountInfo[] {
+    return accounts.filter((a) => a.id !== accountId && a.signedIn === true);
 }
 
 export function usd(n: number): string {

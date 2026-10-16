@@ -66,8 +66,8 @@ export interface CliResult {
 }
 
 /** Run a short CLI command (status checks) with arguments only, never a shell. */
-export async function runCli(bin: string, args: string[], opts: { cwd?: string; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<CliResult> {
-    const proc = Bun.spawn([bin, ...args], { cwd: opts.cwd ?? homedir(), env: childEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+export async function runCli(bin: string, args: string[], opts: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; env?: Record<string, string> } = {}): Promise<CliResult> {
+    const proc = Bun.spawn([bin, ...args], { cwd: opts.cwd ?? homedir(), env: { ...childEnv(), ...opts.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const kill = () => proc.kill();
     const timer = setTimeout(kill, opts.timeoutMs ?? 20_000);
     opts.signal?.addEventListener("abort", kill, { once: true });
@@ -87,6 +87,11 @@ export function cliMessage(text: string): string {
         .map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim())
         .filter((l) => l && !/^(WARNING|warning):/.test(l));
     return (lines.find((l) => /error/i.test(l)) ?? lines[0] ?? "").slice(0, 400);
+}
+
+/** Identity and plan labels are untrusted CLI output and stay out of persistent state. */
+export function cliStatusString(value: unknown): string | undefined {
+    return typeof value === "string" ? redact(value).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 200) : undefined;
 }
 
 const STDERR_TAIL = 16_000;
@@ -109,8 +114,8 @@ export class JsonLinesProcess {
     private reader?: { cancel(): Promise<void> };
     readonly exited: Promise<number>;
 
-    constructor(bin: string, args: string[], opts: { cwd: string }) {
-        this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: childEnv(), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
+        this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
         void this.exited.then(() => (this.gone = true));
         void this.drainStderr();
