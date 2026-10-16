@@ -43,6 +43,8 @@ export const [archiveRequest, setArchiveRequest] = createSignal<{ id: string; ti
 /** Bottom panel; hiding it keeps its shells running. */
 export const [terminalOpen, setTerminalOpen] = createSignal(false);
 
+/** The models Home's next prompt goes to, each in a worktree of its own (Compare in the model picker); undefined while that's off. */
+export const [comparePicks, setComparePicks] = createSignal<string[] | undefined>();
 /** A worktree's setup run: the server's single-use ticket, the tab's name, and the command for its tooltip. */
 export interface SetupRun { ticket: string; label: string; command: string }
 

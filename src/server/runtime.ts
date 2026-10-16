@@ -282,6 +282,11 @@ export class Runtime {
         return this.view.state.status;
     }
 
+    /** The last task's result, including an interrupted run after reopening. */
+    get lastTurnStatus(): TurnStatus | undefined {
+        return this.view.turns.at(-1)?.status;
+    }
+
     get title(): string | undefined {
         return this.view.state.title;
     }
