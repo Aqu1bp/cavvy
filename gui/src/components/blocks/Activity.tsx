@@ -353,6 +353,7 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
 
 /** The call running now: what it's doing, shimmering, and for how long. */
 function RunningRow(p: { tool: ToolBlock }) {
+    const found = () => findReveal()?.part === p.tool.id;
     const label = () => toolLabel(p.tool);
     const verb = () => {
         const t = p.tool;
@@ -364,7 +365,7 @@ function RunningRow(p: { tool: ToolBlock }) {
     return (
         <>
             {/* Find counts a running call by its argument: the verb, the timer and the output's tail change as it runs. */}
-            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""}`} data-find={p.tool.id}>
+            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""} ${found() ? "found" : ""}`} data-find={p.tool.id}>
                 <span class="slot">
                     <Show when={p.tool.status === "awaiting"} fallback={<ToolIcon name={p.tool.name} size={16} />}>
                         <Hand size={16} />
@@ -560,11 +561,11 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                         <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
                     </span>
                     {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
-                    <span class="tool-verb">{label().verb}</span>{" "}
+                    <span class="tool-verb" data-find-skip={isLive(p.tool) || undefined}>{label().verb}</span>{!isLive(p.tool) && " "}
                     <Show when={label().arg}>
-                        <span class="tool-arg truncate">{label().arg}</span>{" "}
+                        <span class="tool-arg truncate" data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
                     </Show>
-                    <span class="tool-meta">
+                    <span class="tool-meta" data-find-skip={isLive(p.tool) || undefined}>
                         <Show when={p.tool.sandboxed}>
                             <span class="tool-tag" title="Ran in the sandbox" data-find-skip>
                                 <ShieldCheck size={11} /> sandbox
@@ -595,7 +596,7 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
                 </pre>
             </Show>
             <Show when={open()}>
-                <div class="tool-detail">
+                <div class="tool-detail" data-find-skip={isLive(p.tool) || undefined}>
                     <ToolDetails tool={p.tool} />
                 </div>
             </Show>

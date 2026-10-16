@@ -124,6 +124,7 @@
 
 /* The tool row find is showing: all of its title and summary, not cut short. */
 .tool.found .tool-line .truncate,
+.wrow.live.found .warg,
 .agr.found .truncate {
     white-space: normal;
     overflow-wrap: anywhere;
