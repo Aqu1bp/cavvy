@@ -16,9 +16,9 @@ import { requestComposerFocus, setupObscured, terminalActions } from "../state/u
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
-type Field = "branch" | "base" | "location" | "general";
+export type Field = "branch" | "base" | "location" | "general";
 
-const FIELD_OF: Record<string, Field> = {
+export const FIELD_OF: Record<string, Field> = {
     invalid_branch: "branch",
     branch_exists: "branch",
     branch_in_use: "branch",
@@ -30,9 +30,9 @@ const FIELD_OF: Record<string, Field> = {
 };
 
 /** `folder`: with needs_trust, the folder the server says to trust. */
-type FormError = { field: Field; message: string; code?: string; folder?: string };
+export type FormError = { field: Field; message: string; code?: string; folder?: string };
 
-const errorOf = (e: unknown): FormError => {
+export const errorOf = (e: unknown): FormError => {
     const code = e instanceof RpcError ? e.code : undefined;
     return { field: (code && FIELD_OF[code]) || "general", message: e instanceof Error ? e.message : String(e), code, folder: e instanceof RpcError ? e.folder : undefined };
 };
@@ -267,6 +267,24 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     );
 }
 
+/** The ignored files and folders Git would delete with a worktree: removal waits for the user to agree to exactly these. */
+export function IgnoredFiles(p: { names: string[]; total: number }) {
+    return (
+        <div class="rw-confirm wt-ignored">
+            <AlertTriangle size={14} />
+            <div>
+                <div>These ignored {p.total === 1 ? "file would" : "files and folders would"} be deleted with it:</div>
+                <ul class="mono">
+                    <For each={p.names}>{(n) => <li>{n}</li>}</For>
+                </ul>
+                <Show when={p.total > p.names.length}>
+                    <div>and {p.total - p.names.length} more.</div>
+                </Show>
+            </div>
+        </div>
+    );
+}
+
 export interface RemoveWorktreeRequest {
     /** The folder the picker was opened in: the request names it, and trusting means trusting it. */
     cwd: string;
@@ -323,24 +341,7 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
                     Git refuses if it has uncommitted or untracked changes. Ignored files (an .env, node_modules) are listed for you before anything is deleted.
                 </Show>
             </p>
-            <Show when={ignored()}>
-                {(i) => (
-                    <div class="rw-confirm wt-ignored">
-                        <AlertTriangle size={14} />
-                        <div>
-                            <div>
-                                These ignored {i().total === 1 ? "file would" : "files and folders would"} be deleted with it:
-                            </div>
-                            <ul class="mono">
-                                <For each={i().names}>{(n) => <li>{n}</li>}</For>
-                            </ul>
-                            <Show when={i().total > i().names.length}>
-                                <div>and {i().total - i().names.length} more.</div>
-                            </Show>
-                        </div>
-                    </div>
-                )}
-            </Show>
+            <Show when={ignored()}>{(i) => <IgnoredFiles names={i().names} total={i().total} />}</Show>
             <Show when={error()}>
                 {(m) => (
                     <div class="rw-confirm">

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { toast, toasts, pauseToast, dismissToast, runToastAction, rpc } from "../gui/src/state/app";
-import { deleteSession, send } from "../gui/src/state/actions";
+import { toast, toasts, pauseToast, dismissToast, runToastAction, runToastChoice, rpc } from "../gui/src/state/app";
+import { archive, archivedWithWorktree, deleteSession, send, setArchived } from "../gui/src/state/actions";
+import { archiveRequest, setArchiveRequest } from "../gui/src/state/ui";
 import { UNDO_DELETE_MS } from "../gui/src/lib/toasts";
 import { RpcError, type Credentials } from "../gui/src/lib/rpc";
 import { Socket } from "./helpers/gui-socket";
@@ -348,6 +349,88 @@ test("dismissing a running Undo still reports a later restore failure", async ()
         expect(toasts.map((t) => [t.level, t.message])).toEqual([["error", "Restore failed"]]);
         expect(toasts[0]!.id).not.toBe(undo.id);
         expect(toasts[0]!.action).toBeUndefined();
+    } finally {
+        call.mockRestore();
+    }
+});
+
+
+test("saved-plan choices preserve async errors, prevent double actions, and can retry", async () => {
+    const copy = Promise.withResolvers<boolean>();
+    let reveals = 0;
+    let copies = 0;
+    toast("Saved plan.md", "success", [
+        { label: "Reveal in Finder", run: () => { reveals++; } },
+        { label: "Copy path", run: () => { copies++; return copy.promise; } },
+    ]);
+    const id = toasts[0]!.id;
+    expect(toasts[0]!.additionalActions?.[0]?.label).toBe("Copy path");
+    const pending = runToastChoice(id, 1);
+    await runToastAction(id);
+    expect(reveals).toBe(0);
+    expect(copies).toBe(1);
+    copy.resolve(false);
+    await pending;
+    expect(toasts[0]!.level).toBe("error");
+    expect(toasts[0]!.additionalActions?.[0]?.label).toBe("Copy path");
+    await runToastAction(id);
+    expect(reveals).toBe(1);
+    expect(toasts).toHaveLength(0);
+});
+
+test("failed archive does not claim success or offer Undo", async () => {
+    const call = spyOn(rpc, "call").mockRejectedValue(new Error("Archive failed"));
+    try {
+        expect(await setArchived("session", true)).toBe(false);
+        expect(toasts.map((t) => [t.level, t.message, t.action])).toEqual([["error", "Archive failed", undefined]]);
+    } finally {
+        call.mockRestore();
+    }
+});
+
+test("managed worktree archive waits for the dialog, while ordinary folders archive directly", async () => {
+    const methods: string[] = [];
+    let managed = true;
+    const call = spyOn(rpc, "call").mockImplementation((method) => {
+        methods.push(method);
+        if (method === "session.archiveOffer") return Promise.resolve(managed
+            ? { removable: true, worktree: { path: "/repo/.claude/worktrees/plan", branch: "plan", main: "/repo" } }
+            : { removable: false }) as any;
+        return Promise.resolve(null) as any;
+    });
+    try {
+        await archive("session", true);
+        expect(methods).toEqual(["session.archiveOffer"]);
+        expect(archiveRequest()?.id).toBe("session");
+        expect(toasts).toHaveLength(0);
+        setArchiveRequest(undefined);
+        managed = false;
+        expect(await archive("session", true)).toBe(true);
+        expect(methods).toEqual(["session.archiveOffer", "session.archiveOffer", "session.archive"]);
+        expect(toasts[0]!.message).toBe("Session archived");
+    } finally {
+        setArchiveRequest(undefined);
+        call.mockRestore();
+    }
+});
+
+test("worktree removal Undo restores only the archive and remains available after failure", async () => {
+    const calls: unknown[] = [];
+    let offline = true;
+    const call = spyOn(rpc, "call").mockImplementation((method, params) => {
+        calls.push({ method, params });
+        return offline ? Promise.reject(new Error("Offline")) : Promise.resolve(null) as any;
+    });
+    try {
+        archivedWithWorktree("session", { archived: true, removed: true, worktree: "/repo/.claude/worktrees/plan", main: "/repo" });
+        const id = toasts[0]!.id;
+        await runToastAction(id);
+        expect(toasts[0]!.message).toBe("Session archived; worktree removed: Offline");
+        expect(toasts[0]!.action?.label).toBe("Undo");
+        offline = false;
+        await runToastAction(id);
+        expect(toasts).toHaveLength(0);
+        expect(calls).toEqual(Array(2).fill({ method: "session.archive", params: { id: "session", archived: false } }));
     } finally {
         call.mockRestore();
     }
