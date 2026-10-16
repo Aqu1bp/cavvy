@@ -19,7 +19,7 @@ mock.module("../../gui/src/state/app", () => ({
     app, rpc, reportError: (e: unknown) => errors.push(e),
     toast: (text: string, _level: string, action: any) => notices.push({ text, action }),
     createSession: async () => { created++; return { id: "created" }; }, setApp: (key: string, value: any) => Object.assign(app, { [key]: value }),
-    activate: noop, handleFor: noop, refreshModels: noop, refreshProjects: noop,
+    activate: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
     refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop,
 }));
 mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
