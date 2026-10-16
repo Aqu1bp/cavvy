@@ -12,6 +12,13 @@ interface ClaudeMcpPolicy {
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
+/**
+ * The definition fields Harness's approval fingerprint covers (mcpFingerprint), plus ones that
+ * run nothing. Claude Code acts on others (headersHelper runs a program, oauth signs in), which
+ * an approval doesn't bind, so a definition with any other field isn't passed on.
+ */
+const BOUND_FIELDS = new Set(["command", "args", "env", "cwd", "url", "headers", "type", "disabled"]);
+
 function exists(file: string): boolean {
     try {
         lstatSync(file);
@@ -44,6 +51,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
         const enabled: string[] = [];
         const disabled = new Set([MCP_SERVER_NAME]);
         let incompatibleCwd = false;
+        let unboundField = false;
         const file = join(cwd, ".mcp.json");
         if (exists(file)) {
             // Claude rereads this file after our check: a race requires a concurrent
@@ -57,7 +65,9 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
                 if (!record(config)) return fallback("a project MCP server definition is malformed");
                 const entry = Object.hasOwn(approved.servers, name) ? approved.servers[name] : undefined;
                 // These names convey the manager's config-bound approvals to Claude, never legacy name-only approvals.
-                if (name !== MCP_SERVER_NAME && entry?.source === "project" && isDeepStrictEqual(config, entry.config)) {
+                const bound = Object.keys(config).every((k) => BOUND_FIELDS.has(k));
+                if (!bound && entry?.source === "project") unboundField = true;
+                if (name !== MCP_SERVER_NAME && entry?.source === "project" && bound && isDeepStrictEqual(config, entry.config)) {
                     // Claude ignores server cwd; compare the directory Harness would actually use.
                     if (realpathSync(entry.config.cwd ?? approved.cwd) === real) enabled.push(name);
                     else {
@@ -72,7 +82,10 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
         return {
             strict: false,
             settings: { enabledMcpjsonServers: enabled.sort(), disabledMcpjsonServers: [...disabled].sort() },
-            ...(incompatibleCwd ? { warning: "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd." } : {}),
+            ...(incompatibleCwd || unboundField ? { warning: [
+                incompatibleCwd && "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd.",
+                unboundField && "Claude Code skipped approved project MCP servers whose .mcp.json definitions use fields a Harness approval doesn't cover (such as headersHelper or oauth).",
+            ].filter(Boolean).join(" ") } : {}),
         };
     } catch {
         // Paths, file contents and parser errors can contain credentials. Report only a static reason.

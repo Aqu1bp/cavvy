@@ -54,7 +54,7 @@ describe("Claude native project MCP policy", () => {
     });
 
     test("manager approvals preserve raw project definitions and cannot be replaced by legacy names or connection status", () => {
-        const cfg = { ...config(), customField: { preserved: true } };
+        const cfg = { ...config(), type: "stdio" };
         const clash = { url: "https://example.invalid/mcp", headers: { Authorization: "one", authorization: "two" } };
         const servers = { approved: cfg, legacy: cfg, pending: cfg, rejected: cfg, clash, disabled: { ...cfg, disabled: true }, same__name: cfg };
         write(servers);
@@ -77,6 +77,22 @@ describe("Claude native project MCP policy", () => {
         });
         approved.servers.approved!.config.env!.A = "changed outside the manager";
         expect(manager.approvedServers().servers.approved!.config).toEqual(cfg);
+    });
+
+    test("an approved definition with a field the approval doesn't cover stays disabled after reload", () => {
+        const http = { url: "https://example.invalid/mcp", headers: { "X-Team": "one" } };
+        write({ helper: http });
+        saveApproval(cwd, "helper", mcpFingerprint(http, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.enabledMcpjsonServers).toEqual(["helper"]);
+        // headersHelper runs a program in Claude Code; the fingerprint doesn't include it, so the approval still holds.
+        write({ helper: { ...http, headersHelper: "./helper.sh" } });
+        manager.load();
+        expect(manager.approvedServers().servers.helper).toBeDefined();
+        const policy = claudeMcpPolicy(cwd, manager.approvedServers());
+        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness", "helper"] });
+        expect(policy.warning).toContain("fields a Harness approval doesn't cover");
     });
 
     test("deep equality ignores object key order but preserves all definition fields", () => {
@@ -113,7 +129,7 @@ describe("Claude native project MCP policy", () => {
     })) test(`a stale approval does not authorize changed ${change}`, () => {
         const cfg = config();
         write({ approved: { ...cfg, ...update } });
-        expect(claudeMcpPolicy(cwd, snapshot({ approved: cfg }))).toEqual({ strict: false, settings: {
+        expect(claudeMcpPolicy(cwd, snapshot({ approved: cfg }))).toMatchObject({ strict: false, settings: {
             enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"],
         } });
     });
