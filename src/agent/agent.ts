@@ -1236,16 +1236,6 @@ export class Agent {
     }
 
     /**
-     * A permission prompt from the backend. Its own permission system decided
-     * to ask; the harness's rules then apply: deny rules (and the harness's
-     * protected files) refuse it, an explicit allow rule approves it, and
-     * anything else goes to the user. The harness's mode defaults never
-     * approve on the user's behalf what the backend wanted confirmed, except
-     * where the ask says nothing of its own: Codex asking about every command,
-     * or a read-only agent asking because of the harness's own rule. There a
-     * read-only command the harness would run for its own models runs.
-     */
-    /**
      * run_with_secrets (Claude Code, Codex): one command with Harness's Bash and those secrets. The CLI approves
      * Harness's tools without asking, so the check is here, at least as strict as backendPermission's for a
      * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule runs it without asking
@@ -1294,6 +1284,16 @@ export class Agent {
         return { text: redact(r.content), isError: r.isError };
     }
 
+    /**
+     * A permission prompt from the backend. Its own permission system decided
+     * to ask; the harness's rules then apply: deny rules (and the harness's
+     * protected files) refuse it, an explicit allow rule approves it, and
+     * anything else goes to the user. The harness's mode defaults never
+     * approve on the user's behalf what the backend wanted confirmed, except
+     * where the ask says nothing of its own: Codex asking about every command,
+     * or a read-only agent asking because of the harness's own rule. There a
+     * read-only command the harness would run for its own models runs.
+     */
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
@@ -1839,11 +1839,6 @@ function backendTool(name: string, title?: string): Tool<any> {
     };
 }
 
-/**
- * A backend's event with its output redacted, as the harness's own tools
- * redact theirs (keys in a file the backend read, say): its sub-agents'
- * tool output and what they say too.
- */
 /** A tool's result with every known secret taken out, as the model, hooks and windows see it. */
 function redactResult(r: ToolResult): ToolResult {
     const d = r.display;
@@ -1851,6 +1846,11 @@ function redactResult(r: ToolResult): ToolResult {
     return { ...r, content: redact(r.content), display };
 }
 
+/**
+ * A backend's event with its output redacted, as the harness's own tools
+ * redact theirs (keys in a file the backend read, say): its sub-agents'
+ * tool output and what they say too.
+ */
 function redactBackendEvent(e: AgentEvent): AgentEvent {
     if (e.type === "tool_progress") return { ...e, text: redact(e.text) };
     if (e.type === "tool_end") return { ...e, result: redactResult(e.result) };

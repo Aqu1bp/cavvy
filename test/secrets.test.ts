@@ -178,6 +178,21 @@ describe("RequestSecret and Bash", () => {
         expect(out.content).not.toContain(v);
     });
 
+    test("output past the size cap can't end partway through the value", async () => {
+        const { ctx, secrets } = toolCtx();
+        const v = fake();
+        secrets.set("CAP_TOKEN", v);
+        // The cap is 600,000 characters: filler up to just under it, then the value's start in the chunk that crosses it,
+        // and its rest a moment later (in a chunk that isn't kept).
+        const straddle = (filler: string) => `${filler}; printf %s "$(printf %s "$CAP_TOKEN" | cut -c1-6)"; sleep 0.3; printf '%s\n' "$(printf %s "$CAP_TOKEN" | cut -c7-)"`;
+        for (const filler of ["yes aaaaaaaaa | head -c 599997", "head -c 599997 /dev/zero | tr '\\0' a"]) {
+            const r = await bash(ctx, straddle(filler));
+            expect(r.content).toContain("aaaaaaaaa");
+            expect(r.content).not.toContain(v.slice(0, 6));
+            expect(r.display?.body ?? "").not.toContain(v.slice(0, 6));
+        }
+    });
+
     test("a background line still being written waits, so a read can't split the value", async () => {
         const { ctx, secrets } = toolCtx();
         const v = fake();

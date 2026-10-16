@@ -7,6 +7,7 @@ import { stripAnsi } from "../ui/ansi";
 import { redact, lineRedactor } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
+import { MAX_SECRET_BYTES } from "../agent/secrets";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
 import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
 import { finalSearch } from "../permissions/bash-safety";
@@ -110,9 +111,16 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
                 }
             }, 2000).unref?.();
         };
+        let capped = false;
         const onChunk = (b: Buffer) => {
             const s = b.toString("utf-8");
-            if (output.length < MAX_KEPT) output += s;
+            if (!capped) {
+                output += s;
+                if (output.length >= MAX_KEPT) {
+                    capped = true;
+                    output = cutAtCap(output);
+                }
+            }
             opts.onData?.(s);
         };
         child.stdout?.on("data", onChunk);
@@ -145,6 +153,19 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             resolvePromise({ output: output + `\n${err.message}`, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
         });
     });
+}
+
+/**
+ * Output kept up to the cap ends where a chunk did, maybe partway through a
+ * secret whose rest never arrives, so redaction wouldn't know it (and the
+ * kept tail is what the model sees). Secrets don't span lines: cut at the
+ * last line break. Without one near the end, drop as much as the longest
+ * secret, which takes any part of one with it.
+ */
+function cutAtCap(output: string): string {
+    const nl = output.lastIndexOf("\n");
+    if (nl !== -1 && output.length - nl <= MAX_SECRET_BYTES) return output.slice(0, nl + 1);
+    return output.slice(0, Math.max(0, output.length - MAX_SECRET_BYTES));
 }
 
 function cleanOutput(s: string): string {
