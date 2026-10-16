@@ -32,7 +32,7 @@ function hasAncestorConfig(cwd: string): boolean {
     return false;
 }
 
-/** Only names enter argv. Current definitions must still match the manager's project approval snapshot. */
+/** Only names enter argv. The snapshot contains only mayStart() servers; Claude's raw definitions must match it exactly. */
 export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | undefined): ClaudeMcpPolicy {
     const fallback = (reason: string): ClaudeMcpPolicy => ({ strict: true, warning: `Claude Code uses strict MCP isolation: ${reason}.` });
     if (!approved) return fallback("the MCP manager snapshot is unavailable");
@@ -56,6 +56,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
                 if (!/^[a-zA-Z0-9_-]+$/.test(name) || ["__proto__", "constructor", "prototype"].includes(name)) return fallback("a project MCP server name cannot be expressed safely");
                 if (!record(config)) return fallback("a project MCP server definition is malformed");
                 const entry = Object.hasOwn(approved.servers, name) ? approved.servers[name] : undefined;
+                // These names convey the manager's config-bound approvals to Claude, never legacy name-only approvals.
                 if (name !== MCP_SERVER_NAME && entry?.source === "project" && isDeepStrictEqual(config, entry.config)) {
                     // Claude ignores server cwd; compare the directory Harness would actually use.
                     if (realpathSync(entry.config.cwd ?? approved.cwd) === real) enabled.push(name);

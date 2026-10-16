@@ -18,6 +18,8 @@ const { isAgentBackend } = await import("../src/backends/types");
 const { checkAgentCli } = await import("../src/backends/index");
 const { applyHunks, codexPolicy, changePreview } = await import("../src/backends/codex");
 const trust = await import("../src/config/trust");
+const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
+const { loadSettings } = await import("../src/config/settings");
 const { claudeRule, claudePermissions } = await import("../src/backends/claude-code");
 const { untrustedArgs, requestedPaths, elicitationForm } = await import("../src/backends/codex");
 const { deniedWithin } = await import("../src/permissions/rules");
@@ -1543,7 +1545,8 @@ describe("Claude Code project MCP settings", () => {
         const { McpManager } = await import("../src/mcp/manager");
         const cfg = { command: "unused", env: { PRIVATE: "not-in-argv" } };
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: cfg, pending: cfg } }));
-        const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["approved"] }), true);
+        saveApproval(cwd, "approved", mcpFingerprint(cfg, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
         manager.load();
         const { run } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => manager.approvedServers() });
         expect(await run("hello")).toBe("done");
@@ -1574,7 +1577,8 @@ describe("Claude Code MCP approval boundary", () => {
         test(`a populated manager cannot bypass strict MCP for trusted=${trusted}, readOnly=${readOnly}`, async () => {
             const { McpManager } = await import("../src/mcp/manager");
             writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
-            const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["approved"] }), true);
+            saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+            const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
             manager.load();
             const { run } = await makeAgent({ provider: "claude-code", trusted, readOnly, approvedMcpServers: () => manager.approvedServers() });
             expect(await run("hello")).toBe("done");
@@ -1629,7 +1633,7 @@ describe("Claude Code MCP approval boundary", () => {
         } }));
         const settings = {
             mcpServers: { settings: cfg, same_name: cfg, shadowed: cfg },
-            enabledMcpjsonServers: ["approved", "disabled", "same__name", "shadowed", "harness"],
+            approvedMcpjsonServers: Object.fromEntries(["approved", "disabled", "same__name", "shadowed", "harness"].map((name) => [name, mcpFingerprint(cfg, cwd)])),
             disabledMcpjsonServers: ["rejected"],
         };
         const manager = new McpManager(cwd, () => settings, true);
@@ -1645,16 +1649,17 @@ describe("Claude Code MCP approval boundary", () => {
         expect(JSON.stringify(starts())).not.toContain(sentinel);
         expect(JSON.stringify(events)).not.toContain(sentinel);
         expect(JSON.stringify(session.messages)).not.toContain(sentinel);
-        settings.enabledMcpjsonServers.push("pending");
+        settings.approvedMcpjsonServers.pending = mcpFingerprint(cfg, cwd);
         manager.load();
         expect(await run("again")).toBe("done");
         expect(settingsFor(starts()[1]).enabledMcpjsonServers).toEqual(["approved", "pending"]);
     });
 
-    test("a changed definition is disabled until the manager reloads it", async () => {
+    test("a changed definition is disabled through reload until its new fingerprint is approved", async () => {
         const { McpManager } = await import("../src/mcp/manager");
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
-        const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["approved"] }), true);
+        saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
         manager.load();
         const { run } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => manager.approvedServers() });
         expect(await run("hello")).toBe("done");
@@ -1663,7 +1668,11 @@ describe("Claude Code MCP approval boundary", () => {
         expect(settingsFor(starts()[1])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"] });
         manager.load();
         expect(await run("reloaded")).toBe("done");
-        expect(settingsFor(starts()[2]).enabledMcpjsonServers).toEqual(["approved"]);
+        expect(settingsFor(starts()[2])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"] });
+        saveApproval(cwd, "approved", mcpFingerprint({ ...config(), command: "changed" }, cwd));
+        manager.load();
+        expect(await run("approved again")).toBe("done");
+        expect(settingsFor(starts()[3]).enabledMcpjsonServers).toEqual(["approved"]);
     });
 
     test("a throwing manager fails closed without echoing its error", async () => {
@@ -1683,7 +1692,8 @@ describe("Claude Code MCP approval boundary", () => {
     test("approved project servers do not enter the attach wait", async () => {
         const { McpManager } = await import("../src/mcp/manager");
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
-        const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["approved"] }), true);
+        saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
         manager.load();
         process.env.FAKE_MCP_REFUSE = "hang";
         try {
@@ -1699,7 +1709,8 @@ describe("Claude Code MCP approval boundary", () => {
     for (const ending of ["normal", "failed", "aborted"]) test(`project definition secrets stay out of argv and transcripts when ${ending}`, async () => {
         const { McpManager } = await import("../src/mcp/manager");
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
-        const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["approved"] }), true);
+        saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
         manager.load();
         process.env.FAKE_SCENARIO = ending === "aborted" ? "hang" : "write";
         if (ending === "failed") process.env.FAKE_CRASH_ON_SECOND = "1";

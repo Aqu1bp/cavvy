@@ -540,8 +540,11 @@ describe("McpManager.load and project .mcp.json approval", () => {
         expect(m.needsApproval().map((s) => s.name)).toEqual(["unapproved"]);
     });
 
-    test("approved set follows manager state, including failures but excluding collision refusals", () => {
-        const m = new McpManager(proj, () => ({ ...base, mcpServers: { ...base.mcpServers, "same name": cfg("first"), same_name: cfg("collision") } }), true);
+    test("approved set follows start policy, excluding collision refusals and header clashes", () => {
+        const m = new McpManager(proj, () => ({ ...base, mcpServers: {
+            ...base.mcpServers, "same name": cfg("first"), same_name: cfg("collision"),
+            headerClash: { url: "https://example.invalid/mcp", headers: { Authorization: "first", authorization: "second" } },
+        } }), true);
         m.load();
         m.servers.get("approved")!.status = "failed";
         expect(m.approvedServers()).toEqual({ cwd: proj, servers: {
@@ -550,6 +553,22 @@ describe("McpManager.load and project .mcp.json approval", () => {
             approved: { config: cfg("approved"), source: "project" },
             "same name": { config: cfg("first"), source: "settings" },
         } });
+    });
+
+    for (const connectionStatus of ["pending", "connecting", "connected", "failed", "needs-approval"] as const) {
+        test(`connection status ${connectionStatus} neither grants nor revokes approval`, () => {
+            const m = new McpManager(proj, () => base, true);
+            m.load();
+            for (const st of m.servers.values()) st.status = connectionStatus;
+            expect(Object.keys(m.approvedServers().servers).sort()).toEqual(["approved", "dup", "fromSettings"]);
+        });
+    }
+
+    test("a server disabled for this session leaves the approved set", () => {
+        const m = new McpManager(proj, () => base, true);
+        m.load();
+        m.servers.get("approved")!.status = "disabled";
+        expect(Object.keys(m.approvedServers().servers).sort()).toEqual(["dup", "fromSettings"]);
     });
 
     test("approved snapshots retain manager provenance and original definitions", () => {

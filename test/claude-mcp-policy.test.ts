@@ -7,6 +7,9 @@ import type { McpServerConfig } from "../src/config/settings";
 
 const { cleanup } = isolate();
 const { claudeMcpPolicy } = await import("../src/backends/claude-mcp-policy");
+const { McpManager } = await import("../src/mcp/manager");
+const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
+const { loadSettings } = await import("../src/config/settings");
 const dirs: string[] = [];
 afterAll(() => {
     cleanup();
@@ -48,6 +51,32 @@ describe("Claude native project MCP policy", () => {
         expect(claudeMcpPolicy(cwd, approved)).toEqual({ strict: false, settings: {
             enabledMcpjsonServers: ["approved"], disabledMcpjsonServers: ["harness", "pending", "settings"],
         } });
+    });
+
+    test("manager approvals preserve raw project definitions and cannot be replaced by legacy names or connection status", () => {
+        const cfg = { ...config(), customField: { preserved: true } };
+        const clash = { url: "https://example.invalid/mcp", headers: { Authorization: "one", authorization: "two" } };
+        const servers = { approved: cfg, legacy: cfg, pending: cfg, rejected: cfg, clash, disabled: { ...cfg, disabled: true }, same__name: cfg };
+        write(servers);
+        for (const name of ["approved", "clash", "disabled", "same__name"] as const) saveApproval(cwd, name, mcpFingerprint(servers[name], cwd));
+        const manager = new McpManager(cwd, () => ({
+            ...loadSettings(cwd, { trusted: true }),
+            mcpServers: { same_name: cfg },
+            enabledMcpjsonServers: ["legacy"],
+            disabledMcpjsonServers: ["rejected"],
+        }), true);
+        manager.load();
+        for (const st of manager.servers.values()) st.status = "failed";
+        expect(manager.servers.get("legacy")!.approval?.reason).toBe("legacy");
+        const approved = manager.approvedServers();
+        expect(approved.servers.approved).toEqual({ source: "project", config: cfg });
+        expect(approved.servers.approved!.config).not.toHaveProperty("cwd");
+        expect(claudeMcpPolicy(cwd, approved).settings).toEqual({
+            enabledMcpjsonServers: ["approved"],
+            disabledMcpjsonServers: ["clash", "disabled", "harness", "legacy", "pending", "rejected", "same__name"],
+        });
+        approved.servers.approved!.config.env!.A = "changed outside the manager";
+        expect(manager.approvedServers().servers.approved!.config).toEqual(cfg);
     });
 
     test("deep equality ignores object key order but preserves all definition fields", () => {

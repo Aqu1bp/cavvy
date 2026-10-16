@@ -19,6 +19,8 @@ const trust = await import("../src/config/trust");
 const { registerTools, serverTiming, stopServer } = await import("../src/mcp/server");
 const { McpClient } = await import("../src/mcp/client");
 const { McpManager } = await import("../src/mcp/manager");
+const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
+const { loadSettings } = await import("../src/config/settings");
 const { redact } = await import("../src/util/redact");
 const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
@@ -989,8 +991,10 @@ describe("Claude Code as the main agent", () => {
     test("an approved server named harness cannot replace the delegation server", async () => {
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { harness: { command: "must-not-run" } } }));
         trust.trustFolder(cwd);
-        const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["harness"] }), true);
+        saveApproval(cwd, "harness", mcpFingerprint({ command: "must-not-run" }, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
         manager.load();
+        expect(manager.approvedServers().servers.harness?.source).toBe("project");
         const { run } = await makeAgent({ provider: "claude-code", approvedMcpServers: () => manager.approvedServers() });
         expect(await run("hi")).toBe("done");
         expect(setServers()).toHaveLength(1);
@@ -1116,8 +1120,10 @@ describe("Codex as the main agent", () => {
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
             relative: { command: process.execPath, args: ["--no-env-file", "./server.js"] },
         } }));
-        const manager = new McpManager(cwd, () => ({ enabledMcpjsonServers: ["relative"] }), true);
+        saveApproval(cwd, "relative", mcpFingerprint({ command: process.execPath, args: ["--no-env-file", "./server.js"] }, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
         manager.load();
+        expect(manager.approvedServers().servers.relative?.source).toBe("project");
         script = (_req, n) => n === 1 ? use("cd", "Bash", { command: "cd subdir" }) : say("Changed directory");
         trust.trustFolder(cwd);
         const { agent, run, events } = await makeAgent({ provider: "gemini", client: childClient, approvedMcpServers: () => manager.approvedServers() });

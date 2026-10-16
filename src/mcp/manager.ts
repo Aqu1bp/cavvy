@@ -48,7 +48,7 @@ function startError(st: ServerState): string | undefined {
     return headerClash(st.config);
 }
 
-/** Approval provenance for backends; definitions remain exactly as load() read them. */
+/** Servers allowed by mayStart(); definitions remain exactly as load() read and checked them for approval. */
 export interface ApprovedMcpServers {
     cwd: string;
     servers: Record<string, Pick<ServerState, "config" | "source">>;
@@ -217,12 +217,12 @@ export class McpManager {
         return JSON.stringify([...this.servers.values()].map((s) => [s.name, s.source, s.status, s.tools.length, s.error, s.approval?.state, s.approval?.reason]));
     }
 
-    /** The configured servers load() permits starting, including ones still connecting or temporarily failed. */
+    /** Start permission, independent of connection status except "disable for this session"; copy the raw approved config without resolving or masking it. */
     approvedServers(): ApprovedMcpServers {
         return {
             cwd: this.cwd,
             servers: Object.fromEntries([...this.servers.values()]
-                .filter((s) => !s.config.disabled && s.collidesWith === undefined && ["pending", "connecting", "connected", "failed"].includes(s.status))
+                .filter((s) => mayStart(s) && s.status !== "disabled")
                 .map((s) => [s.name, { config: structuredClone(s.config), source: s.source }])),
         };
     }
