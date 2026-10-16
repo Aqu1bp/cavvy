@@ -245,6 +245,49 @@ describe("connecting", () => {
         expect(rt.idle).toBe(true);
     }
 
+    test("live and reopened snapshot cards keep steered turn ids and include external writes in the badge", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        try {
+            const { gitArgv, gitEnv } = await import("../src/util/git");
+            const env = gitEnv();
+            for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+            const init = Bun.spawnSync(gitArgv(["init", "-q", "-b", "main"]), { cwd, env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdout: "pipe", stderr: "pipe" });
+            expect(init.exitCode).toBe(0);
+            await engine.handle(c, "projects.trust", { path: cwd, trust: true });
+            rt.session.setTitle("Snapshot test");
+            let calls = 0;
+            rt.agent!.setModel(rt.model!, { stream: async () => {
+                if (++calls === 1) {
+                    writeFileSync(join(cwd, "first.txt"), "first change\n");
+                    expect((await rt.send("and make the second change")).queued).toBe(true);
+                    return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "tool_use", content: [{ type: "tool_call", id: "snapshot-glob", name: "Glob", input: { pattern: "*.txt" } }] };
+                }
+                writeFileSync(join(cwd, "second.txt"), "second change\n");
+                return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "end_turn", content: [{ type: "text", text: "Done" }] };
+            } } as any);
+            await rt.startTurn("make the first change");
+            const live = rt.snapshot();
+            const promptTurns = live.turns.filter((t) => t.prompt);
+            expect(promptTurns.map((t) => t.prompt!.text)).toEqual(["make the first change", "and make the second change"]);
+            const snapshotIds = promptTurns.map((t) => t.snapshotId);
+            expect(snapshotIds.every((n) => Number.isSafeInteger(n))).toBe(true);
+            expect(new Set(snapshotIds).size).toBe(2);
+            expect(live.state.filesChanged).toBe(2);
+            expect((await rt.gitChanges({ scope: "turn", turnId: snapshotIds[0] })).files.map((f) => f.path)).toEqual(["first.txt"]);
+            expect((await rt.gitChanges({ scope: "last-turn" })).files.map((f) => f.path)).toEqual(["second.txt"]);
+
+            await engine.handle(c, "session.close", { id });
+            const reopened = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
+            expect(reopened.turns.filter((t) => t.prompt).map((t) => t.snapshotId)).toEqual(snapshotIds);
+            expect(reopened.state.filesChanged).toBe(2);
+            const resumed = engine.runtimes.get(id)!;
+            await resumed.agent?.dispose();
+            resumed.agent = undefined;
+            resumed.model = undefined;
+            expect((await resumed.gitChanges({ scope: "turn", turnId: snapshotIds[0] })).files.map((f) => f.path)).toEqual(["first.txt"]);
+        } finally { await engine.stop(); }
+    });
+
     test("a new chat saves its speed; an older chat without one gets the default without being written to", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id, rt } = await engineWithSession();

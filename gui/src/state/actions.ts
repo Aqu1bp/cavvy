@@ -121,8 +121,8 @@ export function openAgents(agentId?: string) {
 }
 
 /** The docked review pane, on a file and a view when given (else the view last used). */
-export function openReview(path?: string, scope?: ReviewScope) {
-    setReview({ path, scope });
+export function openReview(path?: string, scope?: ReviewScope, turnId?: number) {
+    setReview({ path, scope, turnId });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */

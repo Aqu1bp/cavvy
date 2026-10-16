@@ -510,6 +510,54 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(subEnds(events)).toEqual(["aborted"]);
     });
 
+    test("esc waits for a queued start snapshot before ending a background turn", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const ac = new AbortController();
+        const session = Session.create(cwd, { system: "test" });
+        let waiting = false;
+        let sent = false;
+        let capturing = false;
+        let finished = false;
+        let ended = false;
+        let release!: () => void;
+        const capture = new Promise<void>((resolve) => (release = resolve));
+        const a = await makeAgent({
+            provider: "claude-code",
+            session,
+            drainQueued: () => {
+                if (!waiting || sent) return [];
+                sent = true;
+                return ["and check the tests"];
+            },
+        });
+        a.agent.options.trusted = () => true;
+        a.agent.turnSnapshots!.begin = async (_id, prompt) => {
+            if (prompt !== "and check the tests") return;
+            capturing = true;
+            await capture;
+        };
+        a.agent.turnSnapshots!.end = async () => { ended = true; };
+        const done = a.run("map the auth module", ac.signal).finally(() => { finished = true; });
+        try {
+            while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            waiting = true;
+            while (!capturing) await Bun.sleep(10);
+            ac.abort();
+            await Bun.sleep(150);
+            expect(finished).toBe(false);
+            expect(ended).toBe(false);
+            release();
+            expect(await done).toBe("aborted");
+            expect(ended).toBe(true);
+            expect(userTexts()).not.toContain("and check the tests");
+        } finally {
+            ac.abort();
+            release();
+            await done;
+            session.release();
+        }
+    });
+
     test("a message the user sends while it waits goes to Claude Code in the same run", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
         process.env.FAKE_SECOND_SCENARIO = "none";

@@ -44,6 +44,7 @@ import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompac
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
+import { TurnSnapshots } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
@@ -161,6 +162,8 @@ export interface AgentOptions {
     host: AgentHost;
     helpers?: Helpers;
     isSubagent?: boolean;
+    /** Current folder trust; private working-tree snapshots require it. */
+    trusted?: () => boolean;
     /** A sub-agent's type and task, for its SubagentStop hooks. */
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
@@ -306,6 +309,7 @@ export class Agent {
     model: ModelInfo;
     client: ProviderClient;
     readonly state: ToolState;
+    readonly turnSnapshots?: TurnSnapshots;
     private pendingReminders: PendingNote[] = [];
     /** Why the model call is being retried right now (shown if the user stops it meanwhile). */
     private retrying?: string;
@@ -337,7 +341,10 @@ export class Agent {
         this.client = o.client;
         this.state = o.toolState;
         // Edits are saved into this session's file history; sub-agents get their parent's.
-        if (!o.isSubagent) this.state.fileHistory = FileHistory.for(o.session);
+        if (!o.isSubagent) {
+            this.state.fileHistory = FileHistory.for(o.session);
+            this.turnSnapshots = TurnSnapshots.for(o.session, this.state.cwd);
+        }
     }
 
     get tools(): Tool<any>[] {
@@ -444,6 +451,7 @@ export class Agent {
         try {
             return await this.runInner(content, opts);
         } finally {
+            await this.turnSnapshots?.end();
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
             this.prompted = false;
@@ -454,6 +462,7 @@ export class Agent {
         const { signal } = opts;
         const settings = this.o.settings();
         const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
+        const checkpoint = await this.checkpoint(opts.display ?? promptText);
 
         if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -470,7 +479,7 @@ export class Agent {
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
         for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
-        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
+        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
@@ -572,7 +581,7 @@ export class Agent {
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) {
-                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
+                    this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: await this.checkpoint(queued.join("\n")) } });
                     continue;
                 }
 
@@ -595,12 +604,16 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
+            let steeringCheckpoint: number | undefined;
             if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
             else {
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                if (queued.length) {
+                    steeringCheckpoint = await this.checkpoint(queued.join("\n"), true);
+                    extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                }
             }
-            this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results" } });
+            this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(steeringCheckpoint !== undefined ? { checkpoint: steeringCheckpoint } : {}) } });
             if (signal.aborted) {
                 this.emit({ type: "turn_end", reason: "aborted" });
                 return "aborted";
@@ -613,8 +626,12 @@ export class Agent {
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
-    private checkpoint(): number | undefined {
-        return this.o.isSubagent ? undefined : this.state.fileHistory?.begin();
+    private async checkpoint(prompt: string, snapshotOnly = false): Promise<number | undefined> {
+        if (this.o.isSubagent) return undefined;
+        // Steering inside tool results isn't a /rewind target: keep its edit copies with the original prompt.
+        const cp = snapshotOnly ? this.state.fileHistory?.nextId() : this.state.fileHistory?.begin();
+        if (cp !== undefined && this.o.trusted?.()) await this.turnSnapshots?.begin(cp, redact(prompt));
+        return cp;
     }
 
     /**
@@ -1056,10 +1073,10 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
-            drainQueued: () => {
+            drainQueued: async () => {
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (!queued.length) return [];
-                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: this.checkpoint() } });
+                const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint: await this.checkpoint(queued.join("\n")) } });
                 return [textOf(m)];
             },
         };

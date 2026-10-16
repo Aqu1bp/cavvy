@@ -1019,9 +1019,10 @@ a.prow:hover,
     font-weight: 600;
 }
 
-/* Which changes: git's two views or Harness's own edits, and the base branch. */
+/* Which changes: Git views, recorded turns or Harness's own edits. */
 .review-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     min-height: 38px;
@@ -1029,6 +1030,13 @@ a.prow:hover,
     flex: none;
     border-bottom: 1px solid var(--hairline);
     min-width: 0;
+}
+
+.review-turn {
+    height: 28px;
+    flex: 1 1 160px;
+    max-width: 280px;
+    font-size: 0.857rem;
 }
 
 .review-scope-note {

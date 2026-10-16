@@ -261,6 +261,18 @@ describe("replay", () => {
         expect([edit.diff?.added, edit.diff?.removed]).toEqual([1, 1]);
     });
 
+    test("snapshot ids survive replay, steering and compaction independently of UI turn ids", () => {
+        const first = user("first", "prompt", { meta: { kind: "prompt", checkpoint: 101 } } as Partial<Message>);
+        const steered = user("The user sent this message while you were working:\nsecond", "tool_results", { meta: { kind: "tool_results", checkpoint: 102 } } as Partial<Message>);
+        const current = [user("third", "prompt", { meta: { kind: "prompt", checkpoint: 103 } } as Partial<Message>), user("legacy")];
+        const segments = [{ messages: [first, steered] }, { summary: "Summary", messages: current }];
+        let n = 0;
+        const turns = replay({ segments, current, ui: new UiLog(join(tempDir(), "snapshots.jsonl"), "snapshots", false), meta: (c) => ({ title: c.name }), newId: () => `ui${++n}` });
+        expect(turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.snapshotId])).toEqual([["first", 101], ["second", 102], ["third", 103], ["legacy", undefined]]);
+        expect(turns.find((t) => t.snapshotId === 101)?.archived).toBe(true);
+        expect(turns.find((t) => t.snapshotId === 102)?.prompt?.index).toBeUndefined();
+    });
+
     test("a backend's note of what it did stays in history but not in the transcript", () => {
         const note = "[Claude Code used: Bash(bun test), Edit(src/a.ts)]";
         const segs = [
