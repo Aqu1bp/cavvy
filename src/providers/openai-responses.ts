@@ -8,7 +8,7 @@
 import { apiFastModeInfo } from "./fast-mode";
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
-import { parseSse, stallMessage, stallTimer } from "./sse";
+import { parseSse, stallError, stallTimer } from "./sse";
 import { httpError } from "./openai-compat";
 import {
     ProviderError,
@@ -161,14 +161,14 @@ export class OpenAIResponsesProvider implements ProviderClient {
                 signal: stall.signal,
             }).catch((e: Error) => {
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+                if (stall.stalled()) throw stallError(def.name, stall.limit());
                 throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
             });
             stall.touch();
             if (!res.ok || !res.body) {
                 const text = await res.text().catch(() => "");
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+                if (stall.stalled()) throw stallError(def.name, stall.limit());
                 throw httpError(res.status, res.statusText, text, res.headers.get("retry-after"), def.name);
             }
 
@@ -225,7 +225,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
                 }
             } catch (e) {
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+                if (stall.stalled()) throw stallError(def.name, stall.limit());
                 if (e instanceof ProviderError) throw e;
                 throw new ProviderError(`Stream from ${def.name} failed: ${(e as Error).message}`, undefined, true);
             }

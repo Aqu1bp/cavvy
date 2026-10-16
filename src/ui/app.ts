@@ -613,9 +613,21 @@ export class App {
         const id = this.session.meta.id;
         const count = msgs.length;
         const tail = msgs.slice(-40);
+        const from = count - tail.length;
+        // How turns ended where the messages don't say (an error, a limit): each after the message before it.
+        const notices = this.session.notices.filter((n) => n.index > from).sort((a, b) => a.index - b.index);
         this.screen.print((cols) => {
             const out: string[] = ["", theme.muted(`── Resumed session ${id} (${count} messages) ──`)];
-            for (const m of tail) {
+            let next = 0;
+            const noticesUpTo = (index: number) => {
+                for (; next < notices.length && notices[next]!.index <= index; next++) {
+                    const n = notices[next]!;
+                    const color = n.level === "error" ? theme.error : n.level === "warn" ? theme.warning : theme.muted;
+                    out.push(...wrapLine(n.text, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+                }
+            };
+            tail.forEach((m, i) => {
+                noticesUpTo(from + i);
                 if (m.role === "user") {
                     const kind = m.meta?.kind ?? "prompt";
                     if (kind === "prompt" || kind === "summary") {
@@ -631,7 +643,8 @@ export class App {
                     }
                     for (const p of m.content) if (p.type === "tool_call") out.push(theme.muted(`  ${BULLET} ${p.name}`));
                 }
-            }
+            });
+            noticesUpTo(Infinity);
             out.push(theme.muted("── end of resumed history ──"));
             return out;
         });

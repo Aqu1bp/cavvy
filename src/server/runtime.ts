@@ -134,6 +134,8 @@ export class Runtime {
     // What the current turn is building
     private turnId?: string;
     private turnStartedAt = 0;
+    /** Settles when the running turn has ended (and written how). */
+    private turnDone?: Promise<void>;
     private openText?: string;
     private openThinking?: string;
     /** Blocks from the model response being streamed (dropped if it's retried). */
@@ -169,7 +171,7 @@ export class Runtime {
 
         const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
         this.segment = segments.length - 1;
-        const turns = opts.resumed ? replay({ segments, current: session.messages, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
+        const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model) };
         this.ready = this.track(this.initModel());
         void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
@@ -1192,6 +1194,8 @@ export class Runtime {
         }
         const agent = this.agent;
         this.busy = true;
+        let settled!: () => void;
+        this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
         this.turnStartedAt = Date.now();
         const display = opts.display ?? text;
@@ -1229,7 +1233,9 @@ export class Runtime {
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind });
             }
         } catch (e) {
-            this.notice(`Unexpected error: ${redact((e as Error).message)}`, "error");
+            const message = `Unexpected error: ${redact((e as Error).message)}`;
+            this.session.recordNotice("error", message);
+            this.notice(message, "error");
             reason = "error";
             this.endTurn("error");
         } finally {
@@ -1242,6 +1248,7 @@ export class Runtime {
             this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             this.flush();
             this.engine.sessionChanged(this);
+            settled();
         }
         const elapsed = Date.now() - this.turnStartedAt;
         if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
@@ -1480,7 +1487,7 @@ export class Runtime {
     /** The timeline again from the transcript (after a rewind). */
     private rebuild() {
         const segments = readSegments(this.session.path);
-        const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
+        const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
         const agents = agentsFromTurns(turns, this.model && modelRef(this.model)).map((r) => {
             const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
@@ -1603,6 +1610,8 @@ export class Runtime {
     async close() {
         this.abort?.abort();
         this.cancelInteractions();
+        // A turn still running notes how it stopped (the interrupt, what it was retrying) before the file is let go.
+        if (this.turnDone) await Promise.race([this.turnDone, Bun.sleep(3000)]);
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
         this.closed = true;

@@ -9,6 +9,9 @@
 //   "slow"           streams a long answer slowly
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
+//   "reject400"      the request is refused (HTTP 400, as for a bad request)
+//   "hangforever"    nothing is ever sent back (until the request is cancelled)
+//   "emptyreply"     a response with no text and no tool calls
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -225,9 +228,22 @@ export function startMockLlm(o: MockOptions = {}) {
             const lastResult = String([...after].reverse().find((m) => m.role === "tool")?.content ?? "");
             calls++;
 
+            const isTitle = /name coding-assistant sessions/.test(system);
+            if (!isTitle && /\breject400\b/i.test(prompt)) {
+                requests.push({ model: body.model ?? "mock-opus", kind: body.tools?.length ? "turn" : "summary" });
+                return Response.json({ error: { message: "Invalid request: the mock refuses this one", code: 400 } }, { status: 400 });
+            }
+            if (!isTitle && /\bhangforever\b/i.test(prompt)) {
+                requests.push({ model: body.model ?? "mock-opus", kind: "turn" });
+                // Headers and all held back, until the client gives up.
+                await new Promise<void>((r) => req.signal.addEventListener("abort", () => r(), { once: true }));
+                return new Response(null, { status: 499 });
+            }
+
             let step: Step;
             if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
+            else if (/\bemptyreply\b/i.test(prompt)) step = {};
             else step = scenario(prompt, toolRounds, lastResult) ?? { text: "Done." };
 
             const enc = new TextEncoder();

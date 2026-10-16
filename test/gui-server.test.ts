@@ -289,6 +289,34 @@ describe("connecting", () => {
         await engine.stop();
     });
 
+    test("a turn that failed shows why when the session is opened again", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "reject400 this one" });
+            await whenIdle(rt);
+            await engine.handle(c, "session.close", { id });
+            const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
+            const t = snap.turns.at(-1)!;
+            expect(t.prompt?.text).toBe("reject400 this one");
+            expect(t.status).toBe("error");
+            expect(t.blocks.filter((b) => b.t === "notice").map((b) => (b as Extract<Block, { t: "notice" }>).text)).toEqual(["Mock: Invalid request: the mock refuses this one (400)"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const { engine, c, id } = await engineWithSession();
+        const before = mock.requests.length;
+        await engine.handle(c, "session.send", { id, text: "hangforever please" });
+        for (let i = 0; i < 200 && !mock.requests.slice(before).some((r) => r.kind === "turn"); i++) await Bun.sleep(10);
+        await engine.stop();
+        const lines = readFileSync(findSessionAnywhere(id)!, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+        const last = lines.filter((l) => l.t === "msg").at(-1);
+        expect(last.m.meta.kind).toBe("interrupt");
+    });
+
     test("a session opened again while it's being closed waits for that", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();
         await engine.handle(c, "session.send", { id, text: "first prompt" });

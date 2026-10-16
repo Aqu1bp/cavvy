@@ -183,6 +183,8 @@ export interface AgentOptions {
 }
 
 const MAX_RETRIES = 10;
+/** Requests that got nothing back for minutes (sse.ts) are tried this many more times. */
+const MAX_STALL_RETRIES = 2;
 /** Starts the text of a message the user sent while tools were running. */
 const STEERING = "The user sent this message while you were working:\n";
 
@@ -257,6 +259,8 @@ export class Agent {
     client: ProviderClient;
     readonly state: ToolState;
     private pendingReminders: string[] = [];
+    /** Why the model call is being retried right now (shown if the user stops it meanwhile). */
+    private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
     private running = false;
@@ -415,12 +419,14 @@ export class Agent {
         let pauses = 0;
         let stopHookRounds = 0;
         let overflowCompacted = false;
+        /** The model has said or done something this turn. */
+        let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
 
         while (true) {
             if (signal.aborted) return this.interrupted(false);
             if (++turns > maxTurns) {
-                this.emit({ type: "notice", level: "warn", message: `Stopped after ${maxTurns} model turn${maxTurns === 1 ? "" : "s"} (max turns).` });
+                this.endNotice("warn", `Stopped after ${maxTurns} model turn${maxTurns === 1 ? "" : "s"} (max turns).`);
                 this.emit({ type: "turn_end", reason: "max_turns" });
                 return "max_turns";
             }
@@ -448,7 +454,7 @@ export class Agent {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
                 }
-                this.emit({ type: "notice", level: "error", message: redact((e as Error).message || String(e)) });
+                this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
             }
@@ -463,6 +469,7 @@ export class Agent {
             if (msg.usage) this.recordUsage(msg.usage);
 
             const calls = toolCallsOf(msg);
+            if (calls.length || textOf(msg).trim()) answered = true;
 
             if (msg.stopReason === "pause_turn" && !calls.length && pauses++ < 5) continue;
 
@@ -478,12 +485,12 @@ export class Agent {
                     meta: { kind: "tool_results" },
                 });
                 if (msg.stopReason === "refusal") {
-                    this.emit({ type: "notice", level: "warn", message: "The model declined to continue this request." });
+                    this.endNotice("warn", "The model declined to continue this request.");
                     this.emit({ type: "turn_end", reason: "done" });
                     return "done";
                 }
                 if (++maxTokenStrikes >= 3) {
-                    this.emit({ type: "notice", level: "error", message: "The model kept hitting the output token limit. Try raising maxOutputTokens or asking for smaller steps." });
+                    this.endNotice("error", "The model kept hitting the output token limit. Try raising maxOutputTokens or asking for smaller steps.");
                     this.emit({ type: "turn_end", reason: "error" });
                     return "error";
                 }
@@ -492,8 +499,10 @@ export class Agent {
             }
 
             if (!calls.length) {
-                if (msg.stopReason === "max_tokens") this.emit({ type: "notice", level: "warn", message: "Response was cut off at the output token limit." });
-                else if (msg.stopReason === "refusal") this.emit({ type: "notice", level: "warn", message: "The model declined this request." });
+                if (msg.stopReason === "max_tokens") this.endNotice("warn", "Response was cut off at the output token limit.");
+                else if (msg.stopReason === "refusal") this.endNotice("warn", "The model declined this request.");
+                // Nothing at all came back this turn: say so rather than end it blank.
+                else if (!answered && !textOf(msg).trim()) this.endNotice("warn", `${this.model.name ?? this.model.id} sent back an empty response${msg.stopReason === "end_turn" ? "" : ` (stop reason: ${msg.stopReason})`}. Try again, or another model.`);
 
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
@@ -565,9 +574,22 @@ export class Agent {
     }
 
     private interrupted(_duringTools: boolean): TurnEndReason {
+        // Stopped while waiting to try again: what it was waiting on is why nothing came back.
+        if (this.retrying) this.session.recordNotice("warn", `Stopped while retrying: ${this.retrying}`);
+        this.retrying = undefined;
         this.session.push({ role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }], meta: { kind: "interrupt" } });
         this.emit({ type: "turn_end", reason: "aborted" });
         return "aborted";
+    }
+
+    /**
+     * A notice that says how the turn ended: shown now, and kept in the
+     * session file, so a reopened session shows why the turn stopped (it's
+     * never sent to a model).
+     */
+    private endNotice(level: "warn" | "error", message: string) {
+        this.session.recordNotice(level, message);
+        this.emit({ type: "notice", level, message });
     }
 
     private emit(e: AgentEvent) {
@@ -609,19 +631,30 @@ export class Agent {
     // Model calls with retries
 
     private async callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
-        for (let attempt = 1; ; attempt++) {
-            this.emit({ type: "request_start" });
-            try {
-                return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
-            } catch (e) {
-                if (isAbort(e, signal)) throw new ProviderError("aborted");
-                const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
-                if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
-                const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
-                const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
-                this.emit({ type: "retry", attempt, delayMs: delay, reason: redact(pe.message) });
-                await sleep(delay, signal);
+        let stalls = 0;
+        this.retrying = undefined;
+        try {
+            for (let attempt = 1; ; attempt++) {
+                this.emit({ type: "request_start" });
+                try {
+                    return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+                } catch (e) {
+                    if (isAbort(e, signal)) throw new ProviderError("aborted");
+                    const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
+                    // Each stall waits minutes for a byte: after a few, the provider is down, and the turn says so.
+                    if (pe.stalled && ++stalls > MAX_STALL_RETRIES) throw pe;
+                    if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
+                    const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
+                    const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
+                    const reason = redact(pe.message);
+                    this.retrying = `${reason} (attempt ${attempt})`;
+                    this.emit({ type: "retry", attempt, delayMs: delay, reason });
+                    await sleep(delay, signal);
+                }
             }
+        } finally {
+            // Interrupted while waiting, the reason is still there for interrupted().
+            if (!signal.aborted) this.retrying = undefined;
         }
     }
 
@@ -931,7 +964,7 @@ export class Agent {
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
-                this.emit({ type: "notice", level: "error", message: redact((e as Error).message || String(e)) });
+                this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
             }
@@ -943,11 +976,11 @@ export class Agent {
             }
             if (declined) return this.endBackendTurn(provider, "denied");
             if (result.reason === "error") {
-                this.emit({ type: "notice", level: "error", message: redact(result.error || `${name} stopped with an error.`) });
+                this.endNotice("error", redact(result.error || `${name} stopped with an error.`));
                 return this.endBackendTurn(provider, "error");
             }
             if (result.reason === "max_turns") {
-                this.emit({ type: "notice", level: "warn", message: `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).` });
+                this.endNotice("warn", `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).`);
                 return this.endBackendTurn(provider, "max_turns");
             }
             const settings = this.o.settings();

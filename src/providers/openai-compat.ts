@@ -4,7 +4,7 @@
 
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
-import { parseSse, stallMessage, stallTimer } from "./sse";
+import { parseSse, stallError, stallTimer } from "./sse";
 import {
     ProviderError,
     type AssistantContent,
@@ -36,7 +36,10 @@ export function httpError(status: number, statusText: string, body: string, retr
     }
     if (status === 401 || status === 403) message += `. ${authHint}`;
     if (status === 402) message += `. The account may be out of credits.`;
-    const retryable = [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529].includes(status);
+    // A quota of 0 (Gemini's free tier for a model it doesn't include) never frees up: no use retrying.
+    const noQuota = status === 429 && /\blimit:\s*0\b/.test(body);
+    if (noQuota) message += ". Not retried: the quota for this model is 0 on this key's plan.";
+    const retryable = !noQuota && [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529].includes(status);
     const ra = retryAfter ? Number(retryAfter) * 1000 || Date.parse(retryAfter) - Date.now() : undefined;
     return new ProviderError(message, status, retryable, ra && ra > 0 ? ra : undefined, body);
 }
@@ -203,7 +206,7 @@ export class OpenAICompatProvider implements ProviderClient {
                 signal: stall.signal,
             }).catch((e: Error) => {
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+                if (stall.stalled()) throw stallError(def.name, stall.limit());
                 throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
             });
         try {
@@ -227,7 +230,7 @@ export class OpenAICompatProvider implements ProviderClient {
         if (!res.ok || !res.body) {
             const text = await res.text().catch(() => "");
             if (req.signal?.aborted) throw new ProviderError("aborted");
-            if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+            if (stall.stalled()) throw stallError(def.name, stall.limit());
             throw this.apiError(res.status, res.statusText, text, res.headers.get("retry-after"));
         }
 
@@ -303,7 +306,7 @@ export class OpenAICompatProvider implements ProviderClient {
             }
         } catch (e) {
             if (req.signal?.aborted) throw new ProviderError("aborted");
-            if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+            if (stall.stalled()) throw stallError(def.name, stall.limit());
             if (e instanceof ProviderError) throw e;
             throw new ProviderError(`Stream from ${def.name} failed: ${(e as Error).message}`, undefined, true);
         }
