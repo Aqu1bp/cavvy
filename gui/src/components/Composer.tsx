@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { ArrowUp, FileText, Folder, ImagePlus, ListEnd, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc } from "../state/app";
+import { app, handleFor, reportError, rpc, toast } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
@@ -313,13 +313,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     /** A queued message back into the box, out of the queue. */
-    const editQueued = async (i: number) => {
+    // The server hands it back as a draft (with its images); by text, so a queue that moved on isn't misread.
+    const dequeue = async (i: number, edit: boolean) => {
         const q = st()?.queued[i];
         if (q === undefined || !p.sessionId) return;
         try {
-            await rpc.call("session.dequeue", { id: p.sessionId, index: i });
-            setText((t) => (t.trim() ? `${q}\n${t}` : q));
-            requestAnimationFrame(() => (resize(), ta?.focus()));
+            const { removed } = await rpc.call("session.dequeue", { id: p.sessionId, index: i, text: q, edit });
+            if (!removed) toast("That message has already been sent", "info");
         } catch (e) {
             reportError(e);
         }
@@ -365,10 +365,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 <Show when={i() === 0}>
                                     <span class="queue-hint">Sends after this step</span>
                                 </Show>
-                                <button class="hb sm" title="Edit" aria-label="Edit queued message" onClick={() => void editQueued(i())}>
+                                <button class="hb sm" title="Edit" aria-label="Edit queued message" onClick={() => void dequeue(i(), true)}>
                                     <Pencil size={13} />
                                 </button>
-                                <button class="hb sm" title="Remove from the queue" aria-label="Remove from the queue" onClick={() => void rpc.call("session.dequeue", { id: p.sessionId!, index: i() }).catch(reportError)}>
+                                <button class="hb sm" title="Remove from the queue" aria-label="Remove from the queue" onClick={() => void dequeue(i(), false)}>
                                     <X size={14} />
                                 </button>
                             </div>

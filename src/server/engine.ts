@@ -757,8 +757,7 @@ export class Engine {
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.dequeue":
-                this.runtime(p.id).dequeue(num(p.index, -1));
-                return null;
+                return { removed: this.runtime(p.id).dequeue(num(p.index, -1), { text: typeof p.text === "string" ? p.text : undefined, edit: p.edit === true }) };
             case "session.pin":
             case "session.settle":
             case "session.archive": {

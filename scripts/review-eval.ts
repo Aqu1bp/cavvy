@@ -36,7 +36,10 @@ const arg = (n: string) => {
     return i >= 0 ? args[i + 1] : undefined;
 };
 
-const target = await reviewTarget(arg("--model") ?? loadScope("user", homedir()).reviewModel);
+const target = await reviewTarget(arg("--model") ?? loadScope("user", homedir()).reviewModel).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+});
 if (!target) {
     console.error("No reviewer model: set reviewModel, add an Anthropic key, or pass --model provider:model.");
     process.exit(1);

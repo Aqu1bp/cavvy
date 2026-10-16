@@ -345,17 +345,22 @@ export const DEFAULT_REVIEW_MODEL = "anthropic:claude-sonnet-5-5";
 /**
  * Who reviews auto-mode actions: the reviewModel setting, else Claude Sonnet
  * 5.5 when there's an Anthropic key. Undefined: the session's own model does.
- * Never Claude Code or Codex, which can't answer one-off requests.
+ * Never Claude Code or Codex, which can't answer one-off requests. A reviewer
+ * the user chose that can't be used throws, so its actions go to the user
+ * rather than quietly to another model.
  */
 export async function reviewTarget(setting: string | undefined): Promise<{ client: ProviderClient; model: ModelInfo } | undefined> {
     const ref = setting || ((await getKey("anthropic")) ? DEFAULT_REVIEW_MODEL : undefined);
-    const p = ref ? parseModelRef(ref) : undefined;
-    const model = ref ? resolveModelInfo(ref) : undefined;
-    if (!p || !model) return undefined;
+    if (!ref) return undefined;
     try {
+        const p = parseModelRef(ref);
+        const model = resolveModelInfo(ref);
+        if (!p || !model) throw new ProviderError(`"${ref}" isn't a model ("provider:model")`);
         const client = await clientFor(p.provider);
-        return isAgentBackend(client) ? undefined : { client, model };
-    } catch {
+        if (isAgentBackend(client)) throw new ProviderError(`${getProvider(p.provider)?.name ?? p.provider} can't review actions; pick an API model`);
+        return { client, model };
+    } catch (e) {
+        if (setting) throw new ProviderError(`the reviewer you chose (${setting}) can't be used: ${(e as Error).message}`);
         return undefined;
     }
 }

@@ -149,7 +149,8 @@ export function parseVerdict(text: string): ClassifierVerdict | undefined {
 
 /** The quick step's word: only a plain ALLOW lets the action through. */
 export function parseFast(text: string): "allow" | "review" {
-    return /^\W*allow\b/i.test(text.trim()) && !/\breview\b/i.test(text) ? "allow" : "review";
+    // The word alone (formatting aside): "ALLOW, but only if…" or "Allow? No, block it" get the full review.
+    return /^[\W_]*allow[\W_]*$/i.test(text.trim()) ? "allow" : "review";
 }
 
 /** Larger actions go to the user rather than being shown to the reviewer in part. */
@@ -186,6 +187,8 @@ export function reviewPrompt(c: ClassifierInput): string {
 
 export class AutoClassifier {
     private cache = new Map<string, ClassifierVerdict>();
+    /** Bumped when the cache is cleared, so a review still running from before isn't stored after. */
+    private generation = 0;
     private warned = false;
     private inARow = 0;
     private total = 0;
@@ -194,13 +197,18 @@ export class AutoClassifier {
 
     setComplete(fn: CompleteFn | undefined) {
         this.complete = fn;
-        this.cache.clear();
+        this.clearCache();
         this.warned = false;
     }
 
-    /** Verdicts were judged against the user's requests; forget them when those go (/rewind). */
+    /** Forget verdicts: they were judged against the user's requests (gone after /rewind) and by one reviewer (another may be chosen). */
     clearCache() {
         this.cache.clear();
+        this.generation++;
+    }
+
+    private remember(generation: number, key: string, v: ClassifierVerdict) {
+        if (generation === this.generation) this.cache.set(key, v);
     }
 
     /** The user answered a prompt the reviewer sent their way: blocking starts over. */
@@ -228,6 +236,7 @@ export class AutoClassifier {
         const key = stableStringify([c.toolName, c.input, c.cwd, c.sandboxed ?? false, c.context.requests.slice(-3), c.context.summary ?? "", c.context.delegatedTask ?? ""]);
         const hit = this.cache.get(key);
         if (hit) return hit;
+        const generation = this.generation;
 
         const action = stableStringify(c.input);
         // Never approve what the reviewer didn't see: a truncated action could
@@ -245,7 +254,7 @@ export class AutoClassifier {
         }
         if (answer !== undefined && parseFast(answer) === "allow") {
             const v: ClassifierVerdict = { decision: "allow", reason: "routine" };
-            this.cache.set(key, v);
+            this.remember(generation, key, v);
             return v;
         }
         try {
@@ -254,20 +263,27 @@ export class AutoClassifier {
             if (signal?.aborted) throw e;
             if (!(e instanceof ReviewRefused)) return this.unavailable(e);
             const v: ClassifierVerdict = { decision: "block", reason: REFUSED };
-            this.cache.set(key, v);
+            this.remember(generation, key, v);
             return v;
         }
         const v = parseVerdict(answer);
         if (!v) return this.unavailable(new Error("unreadable answer"));
-        this.cache.set(key, v);
+        this.remember(generation, key, v);
         return v;
     }
 
     private async ask(prompt: string, stage: ReviewStage, signal?: AbortSignal): Promise<string> {
         const ms = stage === "fast" ? reviewTimeout.fastMs : reviewTimeout.fullMs;
         const timeout = AbortSignal.timeout(ms);
+        const stop = signal ? AbortSignal.any([signal, timeout]) : timeout;
+        // Over at the deadline even if the model call ignores its signal: a late answer never counts.
+        const deadline = new Promise<never>((_resolve, reject) => {
+            if (stop.aborted) reject(stop.reason);
+            else stop.addEventListener("abort", () => reject(stop.reason), { once: true });
+        });
+        deadline.catch(() => {});
         try {
-            return await this.complete!(SYSTEM, prompt, signal ? AbortSignal.any([signal, timeout]) : timeout, { review: stage });
+            return await Promise.race([this.complete!(SYSTEM, prompt, stop, { review: stage }), deadline]);
         } catch (e) {
             if (timeout.aborted && !signal?.aborted) throw new Error(`no answer in ${Math.round(ms / 1000)}s`);
             throw e;

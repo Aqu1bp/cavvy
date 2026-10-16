@@ -97,6 +97,8 @@ export class Runtime {
     readonly toolState: ToolState;
     readonly checker: PermissionChecker;
     readonly classifier: AutoClassifier;
+    /** The reviewModel the reviewer's verdicts came from. */
+    private reviewer: string | undefined;
     agent?: Agent;
     model?: ModelInfo;
     client?: ProviderClient;
@@ -152,6 +154,7 @@ export class Runtime {
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map() };
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
+        this.reviewer = ws.settings.reviewModel;
         this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
         if (opts.resumed) resetToolState(this.toolState, session.messages);
 
@@ -370,6 +373,8 @@ export class Runtime {
 
     /** A provider's key changed: rebuild the client, or deselect the model when the key is gone. */
     async keyChanged(providerId: string) {
+        // A key can change who reviews (Sonnet 5.5 once there's an Anthropic key).
+        this.classifier.clearCache();
         if (this.model?.provider !== providerId) {
             if (!this.model) await this.track(this.initModel());
             return;
@@ -536,6 +541,11 @@ export class Runtime {
     }
 
     workspaceChanged() {
+        // Another reviewer's verdicts don't stand for the one now chosen.
+        if (this.ws.settings.reviewModel !== this.reviewer) {
+            this.reviewer = this.ws.settings.reviewModel;
+            this.classifier.clearCache();
+        }
         this.setState({ mcp: this.ws.mcpStatus(), bypassAllowed: this.bypassAllowed() });
     }
 
@@ -1225,10 +1235,14 @@ export class Runtime {
         this.setState({ queued: [] });
     }
 
-    dequeue(index: number) {
-        if (index < 0 || index >= this.queued.length) return;
+    /** Out of the queue; with `edit`, back into the input box (text and images). */
+    dequeue(index: number, opts: { text?: string; edit?: boolean } = {}): boolean {
+        const q = this.queued[index];
+        if (!q || (opts.text !== undefined && q.text !== opts.text)) return false;
         this.queued.splice(index, 1);
-        this.setState({ queued: this.queued.map((q) => q.text) });
+        this.setState({ queued: this.queued.map((x) => x.text) });
+        if (opts.edit) this.engine.draft(this, q.text, q.images);
+        return true;
     }
 
     interrupt() {

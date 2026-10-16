@@ -1082,3 +1082,14 @@ describe("stop reasons and cut-off streams", () => {
         expect(seen[0]!.body.max_completion_tokens).toBeUndefined();
     });
 });
+
+describe("the auto-mode reviewer's model", () => {
+    test("one you chose that can't be used is an error (so you decide), not a quiet switch to the session's model", async () => {
+        const { reviewTarget } = await import("../src/providers/models");
+        // Nothing chosen and no Anthropic key: the session's own model reviews.
+        expect(await reviewTarget(undefined)).toBeUndefined();
+        await expect(reviewTarget("openrouter:some/model")).rejects.toThrow(/^the reviewer you chose \(openrouter:some\/model\) can't be used: /);
+        await expect(reviewTarget("not a model")).rejects.toThrow(/can't be used/);
+        await expect(reviewTarget("claude-code:claude-opus-5-5")).rejects.toThrow(/can't be used/);
+    });
+});

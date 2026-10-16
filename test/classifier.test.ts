@@ -63,6 +63,10 @@ describe("parseFast", () => {
         ["I'd allow it", "review"],
         ["", "review"],
         ["ALLOWED", "review"],
+        ["`ALLOW`", "allow"],
+        ["ALLOW only after the user confirms.", "review"],
+        ["ALLOW? No, BLOCK this action.", "review"],
+        ["Allow: it deletes the home folder, though", "review"],
     ])("%p is %p", (text, want) => {
         expect(parseFast(text)).toBe(want as "allow" | "review");
     });
@@ -314,6 +318,38 @@ describe("AutoClassifier", () => {
         } finally {
             Object.assign(reviewTimeout, prev);
         }
+    });
+
+    test("an answer after the deadline doesn't count, even from a model call that ignores its signal", async () => {
+        const prev = { ...reviewTimeout };
+        reviewTimeout.fastMs = 30;
+        reviewTimeout.fullMs = 30;
+        try {
+            const late = (text: string) => new Promise<string>((r) => setTimeout(() => r(text), 120));
+            expect(await new AutoClassifier(() => late(ALLOW)).classify(input())).toMatchObject({ decision: "ask", reason: "The reviewer couldn't decide (no answer in 0s)" });
+            const v = await new AutoClassifier((_s, _p, _sig, o) => (o?.review === "fast" ? Promise.resolve("REVIEW") : late('{"decision":"allow","reason":"late"}'))).classify(input());
+            expect(v.decision).toBe("ask");
+        } finally {
+            Object.assign(reviewTimeout, prev);
+        }
+    });
+
+    test("a verdict that arrives after the cache was cleared (another reviewer chosen) isn't kept", async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        let calls = 0;
+        const c = new AutoClassifier(async () => {
+            calls++;
+            if (calls === 1) await gate;
+            return ALLOW;
+        });
+        const first = c.classify(input());
+        await Bun.sleep(1);
+        c.clearCache();
+        release();
+        expect((await first).decision).toBe("allow");
+        await c.classify(input());
+        expect(calls).toBe(2);
     });
 
     test("the failure warning is given once", async () => {

@@ -179,7 +179,10 @@ export class App {
     }
 
     reloadSettings() {
+        const reviewer = this.settings.reviewModel;
         this.settings = loadSettings(this.cwd, { trusted: this.init.trusted });
+        // Another reviewer's verdicts don't stand for the one now chosen.
+        if (this.settings.reviewModel !== reviewer) this.classifier.clearCache();
         this.applyCliRules();
     }
 
