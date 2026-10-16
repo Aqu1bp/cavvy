@@ -3,7 +3,7 @@
 // and the fake Codex (test/fixtures) for plan limits.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -218,5 +218,55 @@ describe("slash commands the server doesn't know", () => {
         await c.until(() => done(c.view(id)));
         expect(c.view(id).turns[0]!.prompt).toMatchObject({ text: "/hello world", command: true });
         c.close();
+    });
+});
+
+describe("Claude Code's own commands", () => {
+    test("in a Claude Code session, those it listed go to it as the prompt, from a new session's first message on", async () => {
+        const bin = tempDir("harness-usage-cli-");
+        writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
+        chmodSync(join(bin, "claude"), 0o755);
+        for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+        saveAgentConfig("claude-code", { path: join(bin, "claude") });
+        process.env.FAKE_SCENARIO = "silent";
+        process.env.FAKE_LOG = join(bin, "log.jsonl");
+        const prompts = () =>
+            existsSync(process.env.FAKE_LOG!)
+                ? readFileSync(process.env.FAKE_LOG!, "utf-8")
+                      .trim()
+                      .split("\n")
+                      .map((l) => JSON.parse(l).received)
+                      .filter((m) => m?.type === "user")
+                      .flatMap((m) => m.message.content.filter((x: any) => x.type === "text").map((x: any) => x.text as string))
+                : [];
+        try {
+            const c = await client();
+            const cwd = project();
+            const claude = async () => {
+                const id = await c.create(cwd);
+                await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+                return id;
+            };
+            // Before Claude Code has said what it has, it's an unknown command (and offered as a message).
+            const first = await claude();
+            expect(await c.call("session.send", { id: first, text: "/code-review" })).toEqual({ queued: false, unknown: "code-review" });
+            await c.call("session.send", { id: first, text: "hello" });
+            await c.until(() => done(c.view(first)), 30_000);
+
+            const id = await claude();
+            expect(await c.call("session.send", { id, text: "/code-review src" })).toEqual({ queued: false });
+            await c.until(() => done(c.view(id)), 30_000);
+            // As the prompt, first (the harness's reminders, as for any prompt, come after it).
+            expect(prompts().some((t) => t.startsWith("/code-review src"))).toBe(true);
+            expect((await c.call<{ name: string }[]>("commands.list", { cwd, provider: "claude-code" })).map((x) => x.name)).toEqual(expect.arrayContaining(["code-review", "design:ux-copy"]));
+            expect((await c.call<{ name: string }[]>("commands.list", { cwd })).map((x) => x.name)).not.toContain("code-review");
+
+            // On another model it's still not a command.
+            const other = await c.create(cwd);
+            expect(await c.call("session.send", { id: other, text: "/code-review" })).toEqual({ queued: false, unknown: "code-review" });
+            c.close();
+        } finally {
+            for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+        }
     });
 });

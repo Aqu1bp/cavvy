@@ -218,6 +218,8 @@ export class Engine {
     private purgeTimer?: ReturnType<typeof setInterval>;
     /** The agent CLIs' plan limits as last reported, by provider: the account's, so every session shares them. */
     private limits = new Map<string, PlanLimits>();
+    /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
+    private cliCommandNames = new Map<string, Set<string>>();
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -258,6 +260,14 @@ export class Engine {
         const merged = mergeLimits(prev, l, partial);
         this.limits.set(l.provider, merged);
         this.broadcast({ type: "limits", limits: merged });
+    }
+
+    cliCommandsReported(provider: string, names: string[]) {
+        this.cliCommandNames.set(provider, new Set(names));
+    }
+
+    cliCommands(provider: string | undefined): ReadonlySet<string> {
+        return (provider && this.cliCommandNames.get(provider)) || new Set();
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -988,7 +998,8 @@ export class Engine {
         });
     }
 
-    private commandsFor(cwd: string): CommandInfo[] {
+    /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
+    private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
             { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
@@ -1007,7 +1018,10 @@ export class Engine {
         const ws = this.workspaces.get(resolve(cwd));
         // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
         const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
-        return [...builtin, ...custom];
+        const own = new Set([...builtin, ...custom].map((c) => c.name));
+        const name = provider ? (getProvider(provider)?.name ?? provider) : "";
+        const cli = [...this.cliCommands(provider)].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
+        return [...builtin, ...custom, ...cli];
     }
 
     // -----------------------------------------------------------------------
@@ -1315,7 +1329,7 @@ export class Engine {
             case "fs.exists":
                 return this.pathsExist(p);
             case "commands.list":
-                return this.commandsFor(str(p.cwd, "cwd"));
+                return this.commandsFor(str(p.cwd, "cwd"), optStr(p.provider));
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":

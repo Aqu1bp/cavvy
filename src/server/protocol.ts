@@ -862,7 +862,8 @@ export interface Methods {
     "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
-    "commands.list": { params: { cwd: string }; result: CommandInfo[] };
+    /** With `provider`, the commands that agent CLI runs itself too. */
+    "commands.list": { params: { cwd: string; provider?: string }; result: CommandInfo[] };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
     /** The agent CLIs' plan limits known so far (since the server started). */

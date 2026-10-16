@@ -424,7 +424,8 @@ async function turn(content: any[], uuid?: string) {
     }
     answering = uuid;
     const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario;
-    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+    // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill).
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: ["code-review", "simplify", "compact", "context", "design:ux-copy"] });
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });

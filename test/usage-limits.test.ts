@@ -20,6 +20,8 @@ const { usageSummary, usageDays, usageBounds, clearUsageCache } = await import("
 const { slashCommand } = await import("../src/commands/custom");
 const { meterOf, costText, windowLine, resetLabel, emptyText } = await import("../gui/src/lib/limits");
 const { clientAction, slashName } = await import("../gui/src/lib/commands");
+const { contextView } = await import("../gui/src/lib/context");
+const { cliCommandNames } = await import("../src/commands/custom");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PlanLimits = import("../src/server/protocol").PlanLimits;
@@ -584,5 +586,23 @@ describe("slash commands", () => {
         expect(slashName("  /Review 12")).toBe("review");
         expect(slashCommand("/review 12")).toEqual({ name: "review", args: "12" });
         expect(slashCommand("/git:pr")).toEqual({ name: "git:pr", args: "" });
+    });
+});
+
+describe("/context", () => {
+    test("shows the card even before the window's size is known (Claude Code, before its first result)", () => {
+        const fresh = { contextTokens: 0, model: { providerName: "Claude Code" } };
+        // Nothing drawn until asked for, then the ring and a card that says why there's no number.
+        expect(contextView(fresh, false).ring).toBe(false);
+        expect(contextView(fresh, true)).toEqual({ ring: true, line: "Not known yet: Claude Code reports the window's size after its first reply." });
+        expect(contextView({ contextTokens: 50_000, model: { contextWindow: 200_000 } }, false)).toEqual({ ring: true, pct: 0.25, line: "50k of 200k tokens" });
+        expect(contextView(undefined, true).ring).toBe(false);
+    });
+});
+
+describe("Claude Code's listed commands", () => {
+    test("names only, bounded and checked", () => {
+        expect(cliCommandNames(["code-review", "/Simplify", "design:ux-copy", "__remote-workflow", "bad name", "x".repeat(101), 3, "../etc"])).toEqual(["code-review", "simplify", "design:ux-copy", "__remote-workflow"]);
+        expect(cliCommandNames(undefined)).toBeUndefined();
     });
 });

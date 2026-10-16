@@ -1038,6 +1038,9 @@ export class Runtime {
             case "limits":
                 this.engine.limitsReported(e.limits, e.partial);
                 break;
+            case "cli_commands":
+                this.engine.cliCommandsReported(e.provider, e.names);
+                break;
             case "turn_end":
                 this.closeOpen();
                 this.endTurn(e.reason);
@@ -1534,6 +1537,8 @@ export class Runtime {
     unknownCommand(text: string): string | undefined {
         const c = slashCommand(text);
         if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name)) return undefined;
+        // One the session's agent CLI runs itself (Claude Code's /code-review, a skill).
+        if (this.engine.cliCommands(this.agent?.model.provider).has(c.name)) return undefined;
         return c.name;
     }
 

@@ -92,3 +92,17 @@ export function slashCommand(text: string): { name: string; args: string } | und
     if (!name || name.includes("/") || name.includes(".")) return undefined;
     return { name: name.toLowerCase(), args: args.trim() };
 }
+
+/**
+ * The command names an agent CLI lists as its own (Claude Code's system/init
+ * slash_commands: its built-ins, skills and plugins), bounded and checked like
+ * custom commands' names.
+ */
+export function cliCommandNames(v: unknown): string[] | undefined {
+    if (!Array.isArray(v)) return undefined;
+    return v
+        .slice(0, 1000)
+        .filter((n): n is string => typeof n === "string" && n.length <= 100)
+        .map((n) => n.replace(/^\//, "").toLowerCase())
+        .filter((n) => /^[a-z0-9_][a-z0-9:_-]*$/.test(n));
+}

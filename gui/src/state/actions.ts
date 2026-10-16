@@ -171,7 +171,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             }
             // Checked before there's a session, so a typo doesn't start one.
             const name = opts.literal ? undefined : slashName(text);
-            if (name && !(await rpc.call("commands.list", { cwd })).some((c) => c.name === name)) return unknown(name);
+            if (name && !(await rpc.call("commands.list", { cwd, provider: app.settings.model?.split(":")[0] })).some((c) => c.name === name)) return unknown(name);
             const h = await startIn(cwd);
             if (!h) return false;
             id = h.id;

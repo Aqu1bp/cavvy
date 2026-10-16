@@ -96,6 +96,8 @@ export type AgentEvent =
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
     | { type: "limits"; limits: PlanLimits; partial: boolean }
+    /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
+    | { type: "cli_commands"; provider: string; names: string[] }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";

@@ -15,6 +15,7 @@ import { Ring } from "./ui/bits";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { PlanMeter } from "./PlanMeter";
+import { contextView } from "../lib/context";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
@@ -28,19 +29,19 @@ function ContextRing(p: { sessionId: string }) {
     // Shared so /context can open it.
     const [open, setOpen] = [contextCardOpen, setContextCardOpen];
     const st = () => handleFor(p.sessionId)?.view.state;
-    const win = () => st()?.model?.contextWindow;
-    const pct = () => (st() && win() ? st()!.contextTokens / win()! : 0);
+    const view = () => contextView(st(), open());
+    const pct = () => view().pct ?? 0;
     const show = () => (clearTimeout(closeTimer), setOpen(true));
     const hide = () => (closeTimer = setTimeout(() => setOpen(false), 160));
     onCleanup(() => clearTimeout(closeTimer));
     return (
-        <Show when={st() && win()}>
+        <Show when={view().ring}>
             <button
                 ref={btn}
                 class="hb ctx-ring"
                 aria-haspopup="dialog"
                 aria-expanded={open()}
-                aria-label={`Context: ${Math.round(pct() * 100)}% used`}
+                aria-label={view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(pct() * 100)}% used`}
                 onMouseEnter={show}
                 onMouseLeave={hide}
                 onClick={() => setOpen(!open())}
@@ -51,14 +52,16 @@ function ContextRing(p: { sessionId: string }) {
                 <div onMouseEnter={show} onMouseLeave={hide}>
                     <div class="ctx-label">Context window</div>
                     <div class="ctx-line">
-                        <span class="num">
-                            {tokens(st()!.contextTokens)} of {tokens(win()!)} tokens
-                        </span>
-                        <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
+                        <span class="num">{view().line}</span>
+                        <Show when={view().pct !== undefined}>
+                            <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
+                        </Show>
                     </div>
-                    <div class="ctx-bar">
-                        <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
-                    </div>
+                    <Show when={view().pct !== undefined}>
+                        <div class="ctx-bar">
+                            <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
+                        </div>
+                    </Show>
                     <div class="ctx-grid">
                         <span>Spent</span>
                         <span class="num" title={st()!.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>

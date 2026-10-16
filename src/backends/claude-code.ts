@@ -36,6 +36,7 @@ import { parseRule, pathPattern } from "../permissions/rules";
 import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { cliCommandNames } from "../commands/custom";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
 import type { TurnEndReason } from "../agent/agent";
@@ -607,6 +608,8 @@ class ClaudeTurn {
                 }
                 // No API key behind it: the turn runs on the user's plan, not per-token billing.
                 this.billedToPlan = m.apiKeySource === "none";
+                // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
+                if (cliCommandNames(m.slash_commands)) this.host.emit({ type: "cli_commands", provider: this.def.id, names: cliCommandNames(m.slash_commands)! });
                 break;
             case "background_tasks_changed":
                 if (Array.isArray(m.tasks)) this.background = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
