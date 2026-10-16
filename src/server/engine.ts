@@ -1186,9 +1186,11 @@ export class Engine {
                     const head = p.expectedHead;
                     if (
                         !head || typeof head !== "object" || typeof head.detached !== "boolean" ||
-                        (head.detached ? head.branch !== undefined : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
+                        (head.detached
+                            ? head.branch !== undefined || typeof head.sha !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.sha)
+                            : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
                     ) {
-                        throw new RpcError("expectedHead must describe a branch or detached HEAD", "invalid");
+                        throw new RpcError("expectedHead must describe a branch or detached HEAD with its full SHA", "invalid");
                     }
                 }
                 return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead);

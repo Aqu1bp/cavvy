@@ -277,7 +277,7 @@ describe("connecting", () => {
             for (const message of [" ", "bad\0message", "界".repeat(22000), 12]) {
                 await expect(engine.handle(c, "session.gitCommit", { ...request, message })).rejects.toMatchObject({ code: "invalid" });
             }
-            for (const expectedHead of [null, "main", {}, { branch: "main" }, { detached: false }, { detached: true, branch: "main" }]) {
+            for (const expectedHead of [null, "main", {}, { branch: "main" }, { detached: false }, { detached: true, branch: "main" }, { detached: true }, { detached: true, sha: "1234567" }]) {
                 await expect(engine.handle(c, "session.gitCommit", { ...request, expectedHead })).rejects.toMatchObject({ code: "invalid" });
             }
             rt.busy = true;
@@ -315,7 +315,7 @@ describe("connecting", () => {
             git("checkout", "-q", "other");
             await expect(engine.handle(c, "session.gitCommit", {
                 ...request,
-                expectedHead: { detached: true },
+                expectedHead: { detached: true, sha: head.trim() },
             })).rejects.toMatchObject({ message: "The branch changed from detached HEAD to other; reopen the dialog." });
             expect(git("rev-parse", "HEAD")).toBe(head);
             expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
@@ -324,6 +324,36 @@ describe("connecting", () => {
                 expectedHead: { branch: "other", detached: false },
             });
             expect(result).toMatchObject({ branch: "other", subject: request.message });
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("commit RPC refuses a detached HEAD different from the dialog snapshot", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        const first = git("rev-parse", "HEAD").trim();
+        git("commit", "-q", "--allow-empty", "-m", "second commit");
+        const second = git("rev-parse", "HEAD").trim();
+        git("checkout", "-q", "--detach", first);
+        try {
+            await rt.ready;
+            const shown = await engine.handle(c, "session.gitChanges", { id, scope: "uncommitted" }) as { head: { sha: string } };
+            expect(shown.head.sha).toBe(first);
+            git("checkout", "-q", "--detach", second);
+            writeFileSync(join(cwd, "selected.txt"), "new\n");
+            const request = { id, paths: ["selected.txt"], message: "feat: selected file" };
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: shown.head.sha },
+            })).rejects.toMatchObject({ message: `The detached HEAD changed from ${first.slice(0, 7)} to ${second.slice(0, 7)}; reopen the dialog.` });
+            expect(git("rev-parse", "HEAD").trim()).toBe(second);
+            expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+            const result = await engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: second },
+            });
+            expect(result).toMatchObject({ subject: request.message });
         } finally {
             await engine.stop();
         }

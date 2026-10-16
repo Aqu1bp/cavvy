@@ -27,6 +27,7 @@ for (const branch of ["main", undefined]) {
     test(`commit dialog sends its displayed ${branch ?? "detached HEAD"} snapshot`, async () => {
         const effects: (() => unknown)[] = [];
         const calls: unknown[][] = [];
+        const sha = "1234567890abcdef1234567890abcdef12345678";
         const request = { id: "session", paths: ["selected.txt"] };
         let activeRequest: typeof request | undefined = request;
         const dependencies = {
@@ -42,7 +43,7 @@ for (const branch of ["main", undefined]) {
             Show: "Show",
             app: { activeId: request.id },
             handleFor: () => ({}),
-            rpc: { call: async () => ({ repo: true, head: { branch, sha: "1234567" }, files: [{ path: "selected.txt" }] }) },
+            rpc: { call: async () => ({ repo: true, head: { branch, sha }, files: [{ path: "selected.txt" }] }) },
             gitCommit: async (...args: unknown[]) => {
                 calls.push(args);
             },
@@ -64,7 +65,7 @@ for (const branch of ["main", undefined]) {
         find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "feat: selected file" } });
         find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
         await Promise.resolve();
-        expect(calls).toEqual([[request.id, request.paths, "feat: selected file", { branch, detached: !branch }]]);
+        expect(calls).toEqual([[request.id, request.paths, "feat: selected file", branch ? { branch, detached: false } : { sha, detached: true }]]);
         expect(activeRequest).toBeUndefined();
     });
 }

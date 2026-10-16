@@ -624,6 +624,8 @@ export interface GitChangesInfo extends ChangesInfo {
 export interface GitCommitHead {
     branch?: string;
     detached: boolean;
+    /** Full commit SHA, required for a detached HEAD snapshot. */
+    sha?: string;
 }
 
 export interface GitCommitInfo {

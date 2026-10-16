@@ -198,6 +198,9 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             const to = headRef.replace(/^refs\/heads\//, "") || "detached HEAD";
             throw new RpcError(`The branch changed from ${from} to ${to}; reopen the dialog.`, "git");
         }
+        if (expected?.detached && oldHead.out.trim() !== expected.sha) {
+            throw new RpcError(`The detached HEAD changed from ${expected.sha?.slice(0, 7)} to ${oldHead.out.trim().slice(0, 7)}; reopen the dialog.`, "git");
+        }
         await git(root, oldHead.code ? ["read-tree", "--empty"] : ["read-tree", oldHead.out.trim()], { index: privateIndex });
         // The real index copy preserves every unselected entry, including index flags.
         try {
