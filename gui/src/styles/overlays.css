@@ -492,3 +492,36 @@
     display: flex;
     gap: 4px;
 }
+
+/* A checkbox with its label on one line. */
+.check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.929rem;
+    cursor: pointer;
+}
+
+.check-row input {
+    flex: none;
+    margin: 0;
+}
+
+/* The setup script the New worktree dialog will run: its command in full, wrapped. */
+.wt-setup {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 0 0 1px var(--border);
+    font-size: 0.857rem;
+}
+
+.wt-setup-command {
+    margin: 0;
+    font-size: 0.821rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--fg-muted);
+}

@@ -2106,3 +2106,14 @@ button.strip-ctl[aria-expanded="true"] {
 .script-row.confirming .script-acts {
     display: flex;
 }
+
+/* The name, and a label on the setup script (the one that runs in each new worktree). */
+.script-name {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.script-badge {
+    flex: none;
+}

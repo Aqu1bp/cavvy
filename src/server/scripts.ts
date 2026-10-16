@@ -1,8 +1,10 @@
 // Project scripts: named shell commands per project ("dev", "test", "lint")
 // that the user runs from the GUI, each in a terminal tab. They belong to the
 // user, not the repository: they're kept in the Harness home (scripts.json),
-// never in the project's .harness/, and nothing runs one but a click in the GUI.
-// A repository's main checkout and its worktrees share one list.
+// never in the project's .harness/, and nothing runs one but a click in the GUI,
+// or, for the one the user marks as the setup script, creating a worktree from
+// the GUI (see setup.ts). A repository's main checkout and its worktrees share
+// one list.
 //
 // The file may be shared with another Harness (the desktop app and a
 // `harness gui` of another version) or edited by hand, so a write never drops
@@ -277,7 +279,8 @@ function readProject(store: Store, key: string): Project {
     const items = scripts.map((s): Item => {
         if (!isObject(s) || typeof s.id !== "string" || !SCRIPT_ID.test(s.id) || ids.get(s.id)! > 1 || (names.get(nameOf(s) ?? "") ?? 0) > 1) return { kept: s };
         try {
-            return { script: { id: s.id, ...validateScript(s) }, raw: s };
+            // Only a literal true marks the setup script; anything else is off (and kept as written, see entryOf).
+            return { script: { id: s.id, ...validateScript(s), ...(s.runOnWorktreeCreate === true ? { runOnWorktreeCreate: true } : {}) }, raw: s };
         } catch {
             // A two-line command, an unknown icon: not run, but not lost either.
             return { kept: s };
@@ -292,8 +295,10 @@ const keptAside = (p: Project) => p.items.flatMap((i) => ("kept" in i ? [i.kept]
 function entryOf(p: Project): Json | undefined {
     const scripts = p.items.map((i) => {
         if ("kept" in i) return i.kept;
-        const { icon: _icon, ...rest } = i.raw;
-        return { ...rest, id: i.script.id, name: i.script.name, command: i.script.command, ...(i.script.icon ? { icon: i.script.icon } : {}) };
+        const { icon: _icon, runOnWorktreeCreate: setup, ...rest } = i.raw;
+        // On is written as true; off drops a true, and leaves any other value (which reads as off) as it was.
+        const flag = i.script.runOnWorktreeCreate ? { runOnWorktreeCreate: true } : setup !== undefined && setup !== true ? { runOnWorktreeCreate: setup } : {};
+        return { ...rest, id: i.script.id, name: i.script.name, command: i.script.command, ...(i.script.icon ? { icon: i.script.icon } : {}), ...flag };
     });
     if (!scripts.length && !Object.keys(p.raw).length) return undefined;
     return { ...p.raw, scripts, ...(p.lastUsed !== undefined && scripts.length ? { lastUsed: p.lastUsed } : {}) };
@@ -525,10 +530,15 @@ export async function listScripts(cwd: unknown): Promise<ProjectScripts> {
     return view(project, readProject(readStore(), project));
 }
 
-/** Creates a script, or, given `id`, updates that one. */
-export async function saveScript(cwd: unknown, input: { id?: unknown; name?: unknown; command?: unknown; icon?: unknown }): Promise<{ project: string; script: ProjectScript }> {
+/**
+ * Creates a script, or, given `id`, updates that one. `runOnWorktreeCreate` true makes it the project's setup
+ * script (and no other); false makes it an ordinary one; left out, an edit keeps what the script had.
+ */
+export async function saveScript(cwd: unknown, input: { id?: unknown; name?: unknown; command?: unknown; icon?: unknown; runOnWorktreeCreate?: unknown }): Promise<{ project: string; script: ProjectScript }> {
     const fields = validateScript(input);
     const id = input.id === undefined || input.id === null || input.id === "" ? undefined : scriptId(input.id);
+    const setup = input.runOnWorktreeCreate;
+    if (setup !== undefined && setup !== null && typeof setup !== "boolean") throw new RpcError("runOnWorktreeCreate must be true or false", "invalid");
     const project = await keyOf(cwd);
     return updateProject(project, (p) => {
         const scripts = usable(p);
@@ -539,10 +549,19 @@ export async function saveScript(cwd: unknown, input: { id?: unknown; name?: unk
         if (aside.some((k) => nameOf(k) === fields.name.toLowerCase())) throw new RpcError(`An entry named “${fields.name}” in ${scriptsFile()} has been set aside (it can't be used as it is); pick another name, or fix or remove that entry`, "invalid");
         let newId = id ?? randomUUID();
         while (!id && aside.some((k) => idOf(k) === newId)) newId = randomUUID();
-        const script = { id: newId, ...fields };
-        if (id) {
-            const item = scripts.find((i) => i.script.id === id);
-            if (!item) throw gone();
+        const item = id ? scripts.find((i) => i.script.id === id) : undefined;
+        if (id && !item) throw gone();
+        const on = typeof setup === "boolean" ? setup : Boolean(item?.script.runOnWorktreeCreate);
+        const script: ProjectScript = { id: newId, ...fields, ...(on ? { runOnWorktreeCreate: true } : {}) };
+        // A project has one setup script at most: this one takes over from the one that had it.
+        if (on) {
+            for (const other of scripts) {
+                if (other === item || !other.script.runOnWorktreeCreate) continue;
+                const { runOnWorktreeCreate: _off, ...rest } = other.script;
+                other.script = rest;
+            }
+        }
+        if (item) {
             item.script = script;
         } else {
             // Entries kept aside count too: the file doesn't grow without bound.
@@ -585,6 +604,17 @@ export async function findScript(cwd: unknown, id: unknown): Promise<{ project: 
     const item = usable(readProject(readStore(), project)).find((i) => i.script.id === sid);
     if (!item) throw gone();
     return { project, script: { ...item.script } };
+}
+
+/**
+ * The script marked to run in each worktree created from the GUI, if any. Two marked (by a hand edit) is an
+ * error rather than a pick: which one runs mustn't depend on their order.
+ */
+export async function findSetupScript(cwd: unknown): Promise<{ project: string; script?: ProjectScript }> {
+    const project = await keyOf(cwd);
+    const marked = usable(readProject(readStore(), project)).filter((i) => i.script.runOnWorktreeCreate);
+    if (marked.length > 1) throw new RpcError(`Several scripts (${marked.map((i) => `“${i.script.name}”`).join(", ")}) are marked to run when a worktree is created; edit them so that one is at most`, "conflict");
+    return { project, ...(marked[0] ? { script: { ...marked[0].script } } : {}) };
 }
 
 /**
