@@ -2116,6 +2116,8 @@ describe("notes to the model on what changed", () => {
         const { engine, c, id, send } = await freshSession();
         try {
             await engine.handle(c, "session.setMode", { id, mode: "plan" });
+            // Picked again (the GUI lets you), it's still said.
+            await engine.handle(c, "session.setMode", { id, mode: "plan" });
             expect((await send("first prompt")).join("\n")).toContain("Plan mode is now active.");
         } finally {
             await engine.stop();

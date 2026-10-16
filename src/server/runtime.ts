@@ -827,7 +827,7 @@ export class Runtime {
         }
         const from = this.mode;
         this.mode = m;
-        if (!opts.fromAgent && this.agent) {
+        if (!opts.fromAgent && this.agent && from !== m) {
             // Before the first prompt only plan mode is news: the model has to know it may only plan. Any other
             // mode is where the session starts, so a note still queued (of plan mode, or one a rewind to the start kept) goes.
             if (!this.conversationStarted) this.agent.dropStateNote("mode");

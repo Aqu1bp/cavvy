@@ -109,8 +109,11 @@ function renderForTranscript(m: Message, cap: number, wholeUserText = false): { 
             if (p.kind === "pdf") part(`[the user attached ${p.name} earlier; its contents aren't included here]`, Infinity);
             else {
                 // Framed here too (shortened first), so a file can't pass for the transcript's own lines.
-                const text = framedText({ ...p, text: truncateMiddle(p.text, 4000) });
-                parts.push({ text, original: text.length + Math.max(0, p.text.length - 4000), kept: text.length, file: p.name });
+                // A paste is the user's own words, as their text is.
+                const inner = truncateMiddle(p.text, wholeUserText && p.pasted ? p.text.length : 4000);
+                const text = framedText({ ...p, text: inner });
+                const kept = text.length - inner.length + Math.min(p.text.length, inner === p.text ? p.text.length : 4000);
+                parts.push({ text, original: text.length - inner.length + p.text.length, kept, file: p.name });
             }
         }
     }

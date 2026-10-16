@@ -120,3 +120,14 @@ test("a handoff frames attached files, and drops a whole file rather than cut a 
     expect(tight.text).not.toContain("characters / ~");
     expect(tight.shortenedChars).toBeGreaterThanOrEqual(3000);
 });
+
+test("a long paste (sent as a file part) is the user's own words: a handoff keeps it whole, and counts only what it cut", () => {
+    const findings = Array.from({ length: 11 }, (_, i) => `Finding ${i + 1}: ` + "x".repeat(700)).join("\n");
+    const paste: Message = { role: "user", content: [{ type: "text", text: "Fix these." }, { type: "file", kind: "text", name: "Pasted text", size: findings.length, lines: 11, text: findings, pasted: true }] };
+    const whole = handoffTranscript([user("first"), assistant("ok"), paste], 60_000);
+    for (let n = 1; n <= 11; n++) expect(whole.text).toContain(`Finding ${n}:`);
+    expect(whole.shortenedChars).toBe(0);
+    // An attached file (not a paste) is cut to 4000 inside its frame: what's counted is what it lost, not the marker.
+    const attached: Message = { role: "user", content: [{ type: "file", kind: "text", name: "notes.txt", size: findings.length, lines: 11, text: findings }] };
+    expect(handoffTranscript([attached], 60_000).shortenedChars).toBe(findings.length - 4000);
+});
