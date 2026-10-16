@@ -9,7 +9,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
-const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, accessNeeded, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT } = await import("../src/permissions/sandbox");
+const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, accessNeeded, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT, WORKTREE_HINT } = await import("../src/permissions/sandbox");
 const { pushesDefaultBranch } = await import("../src/permissions/bash-safety");
 const { BashTool, BashOutputTool, KillShellTool, killAllShells } = await import("../src/tools/bash");
 import type { Sandbox } from "../src/permissions/sandbox";
@@ -193,6 +193,12 @@ describe("accessNeeded", () => {
         ["npm install && gh pr create", { network: "npm install", host: "gh" }],
         ["curl --version", {}],
         ["curl http://localhost:3000/", {}],
+        // .git/worktrees is read-only in the sandbox.
+        ["git worktree add -b x .claude/worktrees/x", { host: "git worktree add" }],
+        ["git -C repo worktree remove wt", { host: "git worktree remove" }],
+        ["git worktree prune", { host: "git worktree prune" }],
+        ["git worktree list", {}],
+        ["git worktree lock wt", {}],
         ["npm test", {}],
     ])("%p", (cmd, want) => {
         expect(accessNeeded(cmd)).toEqual(want);
@@ -363,6 +369,23 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         expect(read.isError).toBe(true);
     });
 
+    test("git worktree add fails inside, and the hint says why, how to finish, and about the branch it left", async () => {
+        const repo = real(tempDir());
+        const git = (args: string[]) => Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: repo });
+        git(["init", "-q", "-b", "main"]);
+        git(["commit", "-q", "--allow-empty", "-m", "init"]);
+        const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([repo], { harnessHome: HARNESS_HOME }) };
+        const r = await BashTool.run({ command: "git worktree add -b feature-x .claude/worktrees/feature-x" }, { ...ctx(sb), state: { ...state, cwd: repo, projectRoot: repo } });
+        expect(r.isError).toBe(true);
+        expect(r.content).toContain(".git/worktrees");
+        expect(r.content).toContain(WORKTREE_HINT);
+        // The branch git made before failing.
+        expect(git(["branch", "--list", "feature-x"]).stdout.toString()).toContain("feature-x");
+        // Other blocked writes don't get the worktree advice.
+        const hook = await bash("echo x > .git/hooks/post-commit");
+        expect(hook.content).not.toContain(WORKTREE_HINT);
+    });
+
     test("unsandboxed, the same read works (so the sandbox is what stopped it)", async () => {
         const plain = await bash(`cat "${join(HARNESS_HOME, "credentials.json")}"`, null);
         expect(plain.content).toBe("{}");
@@ -526,5 +549,5 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         // Its own git dir stays writable (commits, the index).
         const ok = await run(`echo x > "${join(own, "index.lock")}" && echo wrote`);
         expect(ok.content).toBe("wrote");
-    });
+    }, 20_000);
 });

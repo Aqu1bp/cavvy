@@ -20,9 +20,12 @@ import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
+import { codexReachedType, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
+import type { PlanLimits } from "../server/protocol";
 import { gitRoot } from "../util/git";
 import { canonical } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
+import { codexMcpOverrides } from "./codex-mcp";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 
@@ -107,7 +110,7 @@ function spawnRpc(providerId: string, cwd: string, onNotification: (method: stri
 }
 
 async function handshake(rpc: Rpc) {
-    await rpc.request("initialize", { clientInfo: { name: `${APP_NAME}_cli`, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
+    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
     rpc.notify("initialized");
 }
 
@@ -200,6 +203,9 @@ function codexPolicyKey(m: PermissionMode): string {
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
+/** Our name to Codex: it records it as the originator of the threads we start. */
+export const CODEX_CLIENT_NAME = `${APP_NAME}_cli`;
+
 const PLAN_NOTE =
     "<system-reminder>\nPlan mode is active: the user wants a plan before anything changes. Research with read-only commands, don't modify files, and reply with your plan. Changes will be refused until the user approves it.\n</system-reminder>";
 
@@ -207,6 +213,10 @@ const PLAN_NOTE =
 // the end of it. An approved change or command runs outside the sandbox (seen with 0.162).
 const MANUAL_NOTE =
     "<system-reminder>\nThe sandbox is read-only, but you can still change files and run other commands: each one goes to the user for approval first and runs once they approve. Make the changes the task needs; don't stop because the sandbox is read-only.\n</system-reminder>";
+
+// Said once for the thread, whatever the mode: the mode (and with it the sandbox) can change while the thread lives.
+const LISTENER_NOTE =
+    "In every permission mode but bypass, the sandbox has no network access, and that blocks local listeners too, including loopback servers that tests start. If a command needs one, ask to run that command outside the sandbox through the approval flow.";
 
 /** What a turn starts with for the mode: plan mode's rules, or (manual mode, an agent that may change things) that changes are asked about. */
 function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
@@ -226,6 +236,8 @@ export function codexFastTier(m: { serviceTiers?: { id: string }[]; additionalSp
 
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
+    /** Order account snapshots across sessions, including reads that finish in reverse order. */
+    private limitUpdates = { revision: 0, reads: 0, acceptedRead: 0 };
 
     constructor(readonly def: ProviderDef) {}
 
@@ -269,7 +281,7 @@ export class CodexBackend implements AgentBackendClient {
     private labels = new Map<string, string>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = new CodexTurn(this.def, t, this.labels);
+        const turn = new CodexTurn(this.def, t, this.labels, this.limitUpdates);
         this.turns.add(turn);
         try {
             return await turn.run();
@@ -281,7 +293,7 @@ export class CodexBackend implements AgentBackendClient {
     /** Codex's own compaction of the thread. */
     async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
         if (!t.resumeId) return { reason: "done", text: "", actions: [] };
-        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }).run({ compact: true });
+        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }, this.labels, this.limitUpdates).run({ compact: true });
     }
 
     /**
@@ -374,13 +386,22 @@ class CodexTurn {
     private turnsSeen = new Set<string>();
     /** Each thread's token totals as Codex last reported them. */
     private totals = new Map<string, Tokens>();
+    private threadModels = new Map<string, string>();
+    /** A reroute applies to the reported turn, not the next request for the thread. */
+    private turnModels = new Map<string, string>();
     private aborted = false;
     private failure?: string;
     private status?: string;
     private billedToPlan = false;
     private limitNoted = false;
+    /** The turn failed on the plan's usage limit (usageLimitExceeded). */
+    private limitHit = false;
+    /** The plan's limits as this turn has heard them. */
+    private limits?: PlanLimits;
     /** Reviewer noes shown from item/autoApprovalReview/completed, by thread and reason, whose guardianWarning hasn't come yet. */
     private noesShown = new Map<string, number>();
+    /** Codex's reviewer's approvals of items not started yet, by item id. */
+    private pendingApprovals = new Map<string, string>();
     /** What the user said when declining something, when it can't go into the running turn: it starts the next one. */
     private followUp?: string;
     private followUps = 0;
@@ -397,6 +418,7 @@ class CodexTurn {
         private t: BackendTurn,
         /** Sub-agents' labels by thread, kept across turns (the client's). */
         private labels = new Map<string, string>(),
+        private limitUpdates = { revision: 0, reads: 0, acceptedRead: 0 },
     ) {}
 
     modeChanged(m: PermissionMode) {
@@ -437,16 +459,21 @@ class CodexTurn {
                 return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.` };
             }
             this.billedToPlan = account.type === "chatgpt";
+            // Where the plan stands before the first update comes (they come only as it changes).
+            if (this.billedToPlan) void this.readLimits();
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
-            const o = t.orchestrator;
-            const developerInstructions = [t.appendSystemPrompt, o?.instructions].filter(Boolean).join("\n\n") || undefined;
-            let config = o ? orchestratorConfig(o) : undefined;
-            if (t.readOnly) {
-                const off = await this.mcpServersOff(t.cwd);
-                if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
-                config = off;
+            let o = t.orchestrator;
+            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), o?.name);
+            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
+            const off = overrides.config;
+            if (overrides.reservedCollision) {
+                this.host.emit({ type: "notice", level: "warn", message: "Codex already has a server named harness; it is disabled and this turn runs without Harness delegation to avoid merging server configurations." });
+                o = undefined;
             }
+            const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
+            const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
+            const config = o && !t.readOnly ? { mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
             // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
@@ -461,8 +488,8 @@ class CodexTurn {
                     return await this.rpc.request(method, params);
                 } catch (e) {
                     if (this.aborted || !o) throw e;
-                    const r = await this.rpc.request(method, { ...params, config: undefined, developerInstructions: t.appendSystemPrompt || undefined });
-                    this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them.` });
+                    const r = await this.rpc.request(method, { ...params, config: off, developerInstructions: baseInstructions });
+                    this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
                     return r;
                 }
             };
@@ -470,6 +497,7 @@ class CodexTurn {
                 try {
                     const r = await thread("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
                     this.threadId = r?.thread?.id ?? t.resumeId;
+                    if (typeof r?.model === "string") this.threadModels.set(this.threadId!, r.model);
                     tierNow = r?.serviceTier;
                 } catch (e) {
                     // Stopped by esc: the thread is fine and is resumed next time.
@@ -479,6 +507,7 @@ class CodexTurn {
             } else {
                 const r = await thread("thread/start", threadParams);
                 this.threadId = r?.thread?.id;
+                if (this.threadId && typeof r?.model === "string") this.threadModels.set(this.threadId, r.model);
                 tierNow = r?.serviceTier;
                 if (!this.threadId) throw new ProviderError("Codex didn't start a thread");
             }
@@ -499,6 +528,8 @@ class CodexTurn {
                     // The speed as it is now too: a sub-agent's session may have changed it since (its turn restarting, a queued message).
                     const tier = tierFor(this.host.fastMode?.() ?? t.fastMode);
                     const serviceTier = tier ?? (typeof tierNow === "string" && FAST_TIERS.has(tierNow) ? null : undefined);
+                    // Queued and restarted turns explicitly request this model again, even after a reroute.
+                    if (model) this.threadModels.set(this.threadId!, model);
                     await this.waitFor(async () => {
                         const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
@@ -516,11 +547,13 @@ class CodexTurn {
                     }
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
-                    const next = followUp ? [followUp] : this.host.drainQueued();
+                    const next = followUp ? [followUp] : await this.host.drainQueued();
                     if (!next.length) break;
                     text = next.join("\n\n");
                 }
             }
+            // Codex's error may not say when the limit resets; its limits do.
+            if (this.limitHit && !this.limits?.resetsAt && !this.aborted) await this.readLimits();
         } catch (e) {
             if (!this.aborted) this.failure = redact((e as Error).message);
         } finally {
@@ -534,8 +567,38 @@ class CodexTurn {
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.failure };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${this.failure.replace(/[\s.]*$/, ".")} ${resetSentence(this.limits?.resetsAt, "Codex")}` : this.failure };
         return { reason: "done", text, answer, actions: this.actions };
+    }
+
+    /** Ask Codex where the plan stands (account/rateLimits/read); an older Codex without it is left be. */
+    private async readLimits() {
+        const revision = this.limitUpdates.revision;
+        const read = ++this.limitUpdates.reads;
+        const at = Date.now();
+        try {
+            const r = await withTimeout(this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex didn't answer account/rateLimits/read");
+            // A newer push or successful read may already have replaced this snapshot in another session.
+            if (revision !== this.limitUpdates.revision || read < this.limitUpdates.acceptedRead) return;
+            const parsed = parseCodexRateLimits(r, { at });
+            if (parsed) {
+                this.limitUpdates.acceptedRead = read;
+                this.noteLimits(parsed);
+            }
+        } catch {
+            // Not known, then: the meter waits for an update.
+        }
+    }
+
+    private noteLimits(parsed: { limits: PlanLimits; partial: boolean }) {
+        this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
+        this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+    }
+
+    /** A failed turn's error (TurnError: message, codexErrorInfo). */
+    private fail(err: any, fallback: string) {
+        this.failure = redact(String(err?.message ?? fallback));
+        if (err?.codexErrorInfo === "usageLimitExceeded") this.limitHit = true;
     }
 
     private input(text: string, images: BackendTurn["images"]): unknown[] {
@@ -567,7 +630,18 @@ class CodexTurn {
 
     private onNotification(method: string, p: any) {
         const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
-        if (method === "turn/started" && typeof p.turn?.id === "string") this.turnsSeen.add(p.turn.id);
+        if (method === "thread/started" && typeof p?.thread?.id === "string" && typeof p.thread.model === "string") this.threadModels.set(p.thread.id, p.thread.model);
+        const modelThread = thread ?? this.threadId;
+        if (method === "model/rerouted" && typeof p?.toModel === "string" && modelThread) {
+            const turn = typeof p.turnId === "string" ? p.turnId : this.turnId;
+            if (turn) this.turnModels.set(`${modelThread}/${turn}`, p.toModel);
+        }
+        if (method === "turn/started" && typeof p.turn?.id === "string") {
+            this.turnsSeen.add(p.turn.id);
+            const model = modelThread && this.threadModels.get(modelThread);
+            const key = `${modelThread}/${p.turn.id}`;
+            if (model && !this.turnModels.has(key)) this.turnModels.set(key, model);
+        }
         if (method === "thread/tokenUsage/updated") return this.onUsage(p, thread);
         // Codex streams its sub-agents' threads (and its reviewer's) on the same connection. Its
         // reviewer's verdicts are about any thread's action; everything else is that thread's own.
@@ -604,7 +678,7 @@ class CodexTurn {
             case "turn/completed":
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
                 this.status = p.turn?.status;
-                if (p.turn?.status === "failed") this.failure = redact(String(p.turn?.error?.message ?? "Codex reported a failed turn"));
+                if (p.turn?.status === "failed") this.fail(p.turn?.error, "Codex reported a failed turn");
                 this.turnDone?.();
                 break;
             case "thread/compacted":
@@ -614,7 +688,7 @@ class CodexTurn {
                 break;
             case "error":
                 if (p.willRetry) this.host.emit({ type: "retry", attempt: 1, delayMs: 0, reason: redact(String(p.error?.message ?? "Codex is retrying")) });
-                else this.failure = redact(String(p.error?.message ?? "Codex reported an error"));
+                else this.fail(p.error, "Codex reported an error");
                 break;
             case "warning":
             case "configWarning":
@@ -624,6 +698,20 @@ class CodexTurn {
                 break;
             }
             case "item/autoApprovalReview/completed": {
+                if (p.review?.status === "approved") {
+                    // Without an item id there is no command block to attach the verdict to.
+                    if (typeof p.targetItemId !== "string" || !p.targetItemId) break;
+                    // Redacted before it's trimmed: a secret can end in a space.
+                    const reason = `Codex's reviewer (risk: ${redact(String(p.review.riskLevel ?? "unknown"))}): ${redact(String(p.review.rationale ?? "No reason supplied.")).trim()}`;
+                    const open = this.items.get(p.targetItemId);
+                    if (open) this.emitApproval(p.targetItemId, reason, open.sub);
+                    else {
+                        // Its item has ended (the block takes it now), or hasn't started (it waits for the block).
+                        this.emitApproval(p.targetItemId, reason, this.subs.get(p.threadId));
+                        this.pendingApprovals.set(p.targetItemId, reason);
+                    }
+                    break;
+                }
                 // Codex's reviewer said no: the model hears it from Codex; the user hears it here.
                 const status = p.review?.status;
                 if (status !== "denied" && status !== "timedOut") break;
@@ -639,10 +727,8 @@ class CodexTurn {
             }
             case "guardianWarning": {
                 const msg = String(p.message ?? "").trim();
-                // Its verdict on each action ("Automatic approval review approved (risk: low, …): why"): an
-                // approval is noise, and a no shown from item/autoApprovalReview/completed (same thread, same
-                // reason) isn't shown twice. Anything it can't match, a no that event didn't bring included, shows.
                 if (!msg || APPROVED_VERDICT.test(msg)) break;
+                // A rejection already shown with its action does not need a second notice.
                 const reason = msg.match(REVIEW_VERDICT)?.[1]?.trim();
                 const key = reason ? verdictKey(p.threadId, reason) : undefined;
                 const shown = key ? (this.noesShown.get(key) ?? 0) : 0;
@@ -658,14 +744,23 @@ class CodexTurn {
                 this.host.emit({ type: "notice", level: "info", message: `Codex switched models: ${String(p.reason ?? p.toModel ?? "").trim() || "rerouted"}` });
                 break;
             case "account/rateLimits/updated": {
-                const reached = p.rateLimits?.rateLimitReachedType;
+                this.limitUpdates.revision++;
+                const parsed = parseCodexRateLimits(p, { update: true });
+                if (parsed) this.noteLimits(parsed);
+                const reached = codexReachedType(p?.rateLimits);
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
-                    this.host.emit({ type: "notice", level: "warn", message: `Your Codex usage limit has been reached (${String(reached)}).` });
+                    this.host.emit({ type: "notice", level: "warn", message: `Your Codex usage limit has been reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
                 }
                 break;
             }
         }
+    }
+
+    private emitApproval(id: string, reason: string, sub?: SubAgent) {
+        const e: AgentEvent = { type: "tool_approved", id, reason, sandboxed: false };
+        if (sub) this.subEmit(sub, e);
+        else this.host.emit(e);
     }
 
     /**
@@ -693,6 +788,7 @@ class CodexTurn {
             spent = last;
         }
         if (!spent) return;
+        const model = this.turnModels.get(`${key}/${p.turnId}`) ?? this.threadModels.get(key);
         const usage: Usage = {
             inputTokens: Math.max(0, spent.inputTokens - spent.cachedInputTokens),
             outputTokens: spent.outputTokens,
@@ -701,6 +797,8 @@ class CodexTurn {
             reasoningTokens: spent.reasoningOutputTokens,
             // A ChatGPT plan isn't billed per token; with an API key the price isn't known here.
             cost: this.billedToPlan ? 0 : undefined,
+            billing: this.billedToPlan ? "plan" : "api",
+            resolvedModel: model ? `${this.def.id}:${model}` : undefined,
         };
         const main = !thread || !this.threadId || thread === this.threadId;
         if (main) {
@@ -870,6 +968,9 @@ class CodexTurn {
         const e: AgentEvent = { type: "tool_start", call: { type: "tool_call", id, name: open.name, input: open.input }, title: open.title };
         if (sub) this.subEmit(sub, e);
         else this.host.emit(e);
+        const approval = this.pendingApprovals.get(id);
+        if (approval) this.emitApproval(id, approval, sub);
+        this.pendingApprovals.delete(id);
     }
 
     private onItemCompleted(item: any, turn: string | undefined, sub?: SubAgent) {
@@ -984,23 +1085,17 @@ class CodexTurn {
         this.host.emit(e);
     }
 
-    /**
-     * For a read-only sub-agent: thread config that turns off the MCP
-     * servers in the user's Codex config (as seen from this folder), since
-     * Codex runs tools set to "approve" there without asking, and they may
-     * change things. Thread config is merged into the user's, so each is
-     * turned off by name. Why it can't, if Codex doesn't list them.
-     */
-    private async mcpServersOff(cwd: string): Promise<Record<string, unknown> | undefined | string> {
-        let servers: unknown;
+    /** Build MCP overrides for every turn from CLI config/provenance, or return an error if unsafe to start. */
+    private async mcpOverrides(cwd: string, readOnly: boolean, reservedName?: string) {
         try {
-            servers = (await this.rpc.request("config/read", { cwd }))?.config?.mcp_servers;
+            const r = codexMcpOverrides(await this.rpc.request("config/read", { cwd, includeLayers: true }), readOnly, reservedName);
+            if (r.missingProvenance) this.host.emit({ type: "notice", level: "warn", message: "Codex did not identify its config layers; all configured MCP servers are disabled for this turn." });
+            return r;
         } catch (e) {
             if (this.aborted) throw e;
-            return `Codex didn't list its MCP servers (${redact((e as Error).message).replace(/^Codex:\s*/, "")}), so a read-only task can't run on it: their tools couldn't be turned off.`;
+            // Errors from the CLI can contain server secrets; never echo them.
+            return "Codex didn't list its MCP servers safely, so this turn cannot run: unapproved servers could not be turned off.";
         }
-        const names = servers && typeof servers === "object" && !Array.isArray(servers) ? Object.keys(servers) : [];
-        return names.length ? { mcp_servers: Object.fromEntries(names.map((n) => [n, { enabled: false }])) } : undefined;
     }
 
     /** Where a request comes from, when it isn't the main thread: one of Codex's sub-agents (or a thread not known as one). */
@@ -1234,7 +1329,7 @@ interface Origin {
 /**
  * The harness's MCP server as Codex config for the thread (sent over the
  * app-server's stdin, never in arguments). Its tools run without Codex's
- * approval prompt: what a delegated agent does is checked when it does it.
+ * approval prompt: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
  */
 export function orchestratorConfig(o: OrchestratorServer): Record<string, unknown> {
     return {

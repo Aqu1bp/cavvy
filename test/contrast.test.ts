@@ -5,64 +5,25 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { cascade, contrast, parseRules, resolveColor, stack, type Root } from "./helpers/contrast";
+import { cascade, contrast, over, parseRules, resolveColor, stack } from "./helpers/contrast";
+import { AA, configurations, failures, measure, themes } from "./helpers/contrast-matrix";
 
 const CSS = readFileSync(resolve(import.meta.dir, "../gui/src/styles/tokens.css"), "utf8");
-const AA = 4.5;
-
-// Surfaces as layers, bottom first: a translucent token is measured over what it sits on.
-const PANELS = ["--bg", "--bg-sidebar", "--bg-card", "--bg-panel", "--bg-elev", "--bg > --glass", "--bg > --pop", "--bg > --bg-subtle"];
-// Neutral text also sits in inputs, code and diffs, and on chips and kbd (--bg-hover at rest).
-const NEUTRAL = [...PANELS, "--bg-input", "--bg > --bg-code", "--bg > --bg-hover"];
-const status = (soft: string) => [...PANELS, `--bg > ${soft}`, `--bg-elev > ${soft}`];
-const diff = (bg: string) => ["--bg", "--bg-sidebar", "--bg > --bg-subtle", "--bg > --bg-code", `--bg > --bg-code > ${bg}`];
-
-/** Each token used as a text color, and the surfaces it is used on. */
-const TEXT: [string, string[]][] = [
-    ["--fg", [...NEUTRAL, "--bg-user"]],
-    ["--fg-prose", NEUTRAL],
-    ["--fg-muted", [...NEUTRAL, "--bg-user"]],
-    ["--fg-subtle", NEUTRAL],
-    ["--link", PANELS],
-    ["--accent-text", PANELS],
-    ["--accent-fg", ["--bg > --accent"]],
-    ["--success", status("--success-soft")],
-    ["--warning", status("--warning-soft")],
-    ["--danger", status("--danger-soft")],
-    ["--auto", ["--bg", "--bg > --auto-soft"]],
-    ["--add-fg", diff("--add-bg")],
-    ["--del-fg", diff("--del-bg")],
-];
-
-/** Each theme block in the file, with the scheme it declares. */
-function themes(css: string): Root[] {
-    return parseRules(css).flatMap((rule) => {
-        const theme = rule.selectors.map((s) => /^\[data-theme="([^"]+)"\]$/.exec(s)?.[1]).find(Boolean);
-        const scheme = rule.decls.get("color-scheme");
-        return theme && (scheme === "light" || scheme === "dark") ? [{ theme, scheme }] : [];
-    });
-}
-
-function measure(css: string, root: Root) {
-    const vars = cascade(parseRules(css), root);
-    const color = (name: string) => resolveColor(`var(${name})`, vars);
-    return TEXT.flatMap(([token, surfaces]) =>
-        surfaces.map((surface) => ({ token, surface, ratio: contrast(color(token), stack(surface.split(" > ").map(color))) })),
-    );
-}
-
-const failures = (css: string, root: Root) =>
-    measure(css, root)
-        .filter((m) => m.ratio < AA)
-        .map((m) => `${m.token} on ${m.surface}: ${m.ratio.toFixed(2)}:1`);
-
 describe("WCAG contrast of GUI text tokens", () => {
     test("finds all six themes with their schemes", () => {
         expect(themes(CSS).map((t) => `${t.theme}/${t.scheme}`)).toEqual(["light/light", "paper/light", "dark/dark", "midnight/dark", "dusk/dark", "contrast/dark"]);
     });
 
-    for (const root of themes(CSS)) {
-        test(`${root.theme}: every text token reaches ${AA}:1 on its surfaces`, () => {
+    test("includes custom accents in both schemes", () => {
+        for (const theme of ["light", "dark"]) {
+            expect(configurations(CSS).filter((c) => c.theme === theme).map((c) => c.accent)).toEqual([
+                undefined, "blue", "indigo", "violet", "pink", "red", "orange", "green", "teal", "graphite",
+            ]);
+        }
+    });
+
+    for (const root of configurations(CSS)) {
+        test(`${root.theme}/${root.accent ?? "default"}: text reaches ${AA}:1 on its surfaces`, () => {
             expect(failures(CSS, root)).toEqual([]);
         });
     }
@@ -70,7 +31,9 @@ describe("WCAG contrast of GUI text tokens", () => {
     test("a text token lowered back toward the background fails", () => {
         // The pre-fix light --fg-subtle, appended so it wins the cascade.
         const lowered = `${CSS}\n[data-theme="light"] { --fg-subtle: #a1a1a6; }`;
-        expect(failures(lowered, { theme: "light", scheme: "light" })).toContain("--fg-subtle on --bg: 2.57:1");
+        const result = measure(lowered, { theme: "light", scheme: "light" }).find((m) => m.token === "--fg-subtle" && m.surface === "--bg");
+        expect(result?.ratio).toBeCloseTo(2.57, 2);
+        expect(failures(lowered, { theme: "light", scheme: "light" }).some((f) => f.startsWith("--fg-subtle on "))).toBe(true);
     });
 
     test("a color syntax it can't read fails instead of passing", () => {
@@ -87,3 +50,23 @@ describe("WCAG contrast of GUI text tokens", () => {
         expect(contrast(c("#ffffff"), stack([c("#ffffff"), c("color-mix(in srgb, #000000 50%, transparent)")]))).toBeCloseTo(3.98, 2);
     });
 });
+
+// A passing token is not enough if an entire card/turn is faded afterwards.
+// Reintroducing the old .75/.55 opacity must fail even with the new tokens.
+for (const [file, selector, surface] of [
+    ["layout.css", ".card.rec", "--bg-sidebar"],
+    ["transcript.css", ".turn.archived", "--bg"],
+] as const) {
+    test(`${selector}: group opacity preserves secondary-text contrast`, () => {
+        const rules = parseRules(readFileSync(resolve(import.meta.dir, `../gui/src/styles/${file}`), "utf8"));
+        const opacity = Number(rules.filter((r) => r.selectors.includes(selector) && r.decls.has("opacity")).at(-1)?.decls.get("opacity") ?? 1);
+        for (const root of themes(CSS)) {
+            const vars = cascade(parseRules(CSS), root);
+            const bg = resolveColor(`var(${surface})`, vars);
+            for (const token of ["--fg-muted", "--fg-subtle"]) {
+                const text = over(resolveColor(`var(${token})`, vars), bg);
+                expect(contrast({ ...text, a: opacity }, bg)).toBeGreaterThanOrEqual(AA);
+            }
+        }
+    });
+}

@@ -289,7 +289,7 @@ h3 {
 }
 
 .btn.primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 88%, #fff);
+    background: var(--accent-hover);
 }
 
 .btn.secondary {
@@ -725,6 +725,11 @@ input[type="range"] {
     color: var(--fg-muted);
 }
 
+.menu-item.danger,
+.menu-item.danger svg {
+    color: var(--danger);
+}
+
 .menu-item:hover:not(:disabled),
 .menu-item.sel {
     background: var(--bg-hover);
@@ -826,20 +831,24 @@ select:focus-visible {
     .menu-item.current,
     .mr.sel,
     .mr.on,
-    .rw-item.on {
+    .rw-item.on,
+    .rf-row.on {
         outline: 1px solid SelectedItem;
         outline-offset: -1px;
     }
 
     .toggle {
+        border: 1px solid ButtonText;
         background: GrayText;
     }
 
     .toggle.on {
+        outline: 1px solid Highlight;
         background: Highlight;
     }
 
     .toggle-knob {
+        border: 1px solid ButtonText;
         background: Canvas;
     }
 
@@ -850,6 +859,7 @@ select:focus-visible {
     /* button: outranks composer.css, which loads later. */
     button.send,
     button.send.stop {
+        border: 1px solid ButtonText;
         background: ButtonText;
         color: ButtonFace;
     }

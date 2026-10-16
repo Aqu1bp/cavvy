@@ -9,6 +9,11 @@
 //   "slow"           streams a long answer slowly
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
+//   "reject400"      the request is refused (HTTP 400, as for a bad request)
+//   "hangforever"    nothing is ever sent back (until the request is cancelled)
+//   "emptyreply"     a response with no text and no tool calls
+//   "untitled"       the request for the session's title is refused (HTTP 400)
+//   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -151,6 +156,17 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    // Asks for a secret, then uses it without ever seeing it. "checksum N M" (from `printf %s VALUE | cksum`) checks the value it got.
+    if (/\bsecret\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I need a token for this.", calls: [{ name: "RequestSecret", args: { name: "DEMO_TOKEN", purpose: "To call the demo API with curl." } }] };
+        if (toolRounds === 1) {
+            if (!lastResult.startsWith("The user provided")) return { text: "Understood, I'll carry on without it." };
+            const sum = /checksum (\d+ \d+)/.exec(p)?.[1];
+            const check = sum ? `; [ "$(printf %s "$DEMO_TOKEN" | cksum | awk '{print $1, $2}')" = "${sum}" ] && echo MATCH || echo NO-MATCH` : "";
+            return { text: "Using it now.", calls: [{ name: "Bash", args: { command: `echo "echo: $DEMO_TOKEN"; printenv | grep '^DEMO_TOKEN='; [ -n "$DEMO_TOKEN" ] && echo SET || echo UNSET${check}`, description: "Use the demo token" } }] };
+        }
+        return { text: `Done. The command printed:\n${lastResult}` };
+    }
     if (/\bquestion\b/.test(p)) {
         if (toolRounds === 0) return { text: "Before I start, one decision:", calls: [{ name: "AskUserQuestion", args: { question: "Which identity protocol should we support first?", options: [{ label: "SAML 2.0", description: "Most enterprise IdPs (Okta, Azure AD)" }, { label: "OpenID Connect", description: "Simpler, modern, JSON-based" }, { label: "Both", description: "More work up front" }] } }] };
         return { text: `Great, going with that. (${lastResult.replace(/^The user answered: /, "")})` };
@@ -165,6 +181,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds < 3) return { text: toolRounds === 0 ? "I'll track this as a short list." : undefined, calls: [{ name: "TodoWrite", args: { todos: todos(toolRounds) } }] };
         return { text: "All three steps are done." };
     }
+    if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };
     if (toolRounds > 0) return { text: "Done." };
     return {
@@ -178,6 +195,7 @@ function titleFor(prompt: string): string {
     if (/\bsso\b|\bdemo\b/.test(p)) return "Add enterprise SSO";
     if (/\bplan\b/.test(p)) return "Plan the SSO rollout";
     if (/\bquestion\b/.test(p)) return "Choose an identity protocol";
+    if (/\bsecret\b/.test(p)) return "Use a demo token";
     if (/\btodo\b/.test(p)) return "Track SSO tasks";
     if (/\bagents?\b/.test(p)) return "Review auth with agents";
     if (/\bnote\b/.test(p)) return "Write a release note";
@@ -192,8 +210,10 @@ function chunks(text: string): string[] {
 export function startMockLlm(o: MockOptions = {}) {
     const delay = o.delayMs ?? 12;
     let calls = 0;
-    /** Each completion asked for: the model, and what it was for. */
-    const requests: { model: string; kind: "title" | "summary" | "turn" }[] = [];
+    /** Each completion asked for: the model, what it was for, and the request body as sent. */
+    const requests: { model: string; kind: "title" | "summary" | "turn"; body: string }[] = [];
+    /** The latest requests' bodies as they arrived, for tests that check what the model was sent. */
+    const bodies: Json[] = [];
     const server = Bun.serve({
         hostname: "127.0.0.1",
         port: o.port ?? 0,
@@ -202,7 +222,10 @@ export function startMockLlm(o: MockOptions = {}) {
             const url = new URL(req.url);
             if (url.pathname.endsWith("/models")) return Response.json({ data: MODELS });
             if (!url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 });
-            const body = (await req.json()) as Json;
+            const raw = await req.text();
+            const body = JSON.parse(raw) as Json;
+            bodies.push(body);
+            if (bodies.length > 50) bodies.shift();
             const messages: Json[] = body.messages ?? [];
             const system = String(messages.find((m) => m.role === "system")?.content ?? "");
             // The prompt that started this turn and how many tool rounds have happened since.
@@ -225,15 +248,32 @@ export function startMockLlm(o: MockOptions = {}) {
             const lastResult = String([...after].reverse().find((m) => m.role === "tool")?.content ?? "");
             calls++;
 
+            const isTitle = /name coding-assistant sessions/.test(system);
+            if (isTitle && /\buntitled\b/i.test(prompt)) {
+                requests.push({ model: body.model ?? "mock-haiku", kind: "title" });
+                return Response.json({ error: { message: "No title for this one", code: 400 } }, { status: 400 });
+            }
+            if (!isTitle && /\breject400\b/i.test(prompt)) {
+                requests.push({ model: body.model ?? "mock-opus", kind: body.tools?.length ? "turn" : "summary" });
+                return Response.json({ error: { message: "Invalid request: the mock refuses this one", code: 400 } }, { status: 400 });
+            }
+            if (!isTitle && /\bhangforever\b/i.test(prompt)) {
+                requests.push({ model: body.model ?? "mock-opus", kind: "turn" });
+                // Headers and all held back, until the client gives up.
+                await new Promise<void>((r) => req.signal.addEventListener("abort", () => r(), { once: true }));
+                return new Response(null, { status: 499 });
+            }
+
             let step: Step;
             if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
+            else if (/\bemptyreply\b/i.test(prompt)) step = {};
             else step = scenario(prompt, toolRounds, lastResult) ?? { text: "Done." };
 
             const enc = new TextEncoder();
             const id = `chatcmpl-${calls}`;
             const model = body.model ?? "mock-opus";
-            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary" });
+            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary", body: raw });
             const stream = new ReadableStream({
                 async start(ctrl) {
                     const send = (obj: Json) => ctrl.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
@@ -266,7 +306,7 @@ export function startMockLlm(o: MockOptions = {}) {
             return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
         },
     });
-    return { url: `http://127.0.0.1:${server.port}/v1`, port: server.port, requests, stop: () => server.stop(true) };
+    return { url: `http://127.0.0.1:${server.port}/v1`, port: server.port, requests, bodies, stop: () => server.stop(true) };
 }
 
 if (import.meta.main) {

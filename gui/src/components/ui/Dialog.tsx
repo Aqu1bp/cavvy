@@ -30,8 +30,8 @@ const stack: object[] = [];
 const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
 function DialogInner(p: DialogProps) {
-    let box: HTMLDivElement | undefined;
     const titleId = createUniqueId();
+    let box: HTMLDivElement | undefined;
     const previous = document.activeElement as HTMLElement | null;
     onMount(() => {
         const me = {};
@@ -74,7 +74,15 @@ function DialogInner(p: DialogProps) {
     return (
         <Portal>
             <div class="dialog-backdrop" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
-                <div ref={box} class={`dialog ${p.class ?? ""}`} style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }} role="dialog" aria-modal="true" aria-labelledby={p.bare ? p.labelledBy : titleId} tabIndex={-1}>
+                <div
+                    ref={box}
+                    class={`dialog ${p.class ?? ""}`}
+                    style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby={p.bare ? p.labelledBy : p.title ? titleId : undefined}
+                    tabIndex={-1}
+                >
                     <Show when={!p.bare}>
                         <div class="dialog-head">
                             <div>

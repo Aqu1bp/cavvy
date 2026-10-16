@@ -5,9 +5,10 @@
 // sends it the prompt, shows what it does and answers its permission prompts.
 
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
-import type { ImagePart, ModelInfo, ProviderClient, Usage } from "../providers/types";
+import type { ImagePart, ModelInfo, PdfPart, ProviderClient, Usage } from "../providers/types";
 import type { PermissionMode } from "../permissions/modes";
 import type { Effort } from "../config/settings";
+import type { ApprovedMcpServers } from "../mcp/manager";
 import type { ToolDisplay } from "../tools/types";
 
 /** A permission prompt raised by the backend's own permission system. */
@@ -79,12 +80,14 @@ export interface BackendHost {
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
     /** Messages the user typed while the backend was working. */
-    drainQueued(): string[];
+    drainQueued(): string[] | Promise<string[]>;
 }
 
 export interface BackendTurn {
     prompt: string;
     images: ImagePart[];
+    /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
+    documents?: PdfPart[];
     cwd: string;
     model: ModelInfo;
     mode: PermissionMode;
@@ -94,6 +97,8 @@ export interface BackendTurn {
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
+    /** Snapshot of the MCP manager’s folder and approved definitions; absent means strict MCP isolation. */
+    approvedMcpServers?: ApprovedMcpServers;
     /** The harness's deny and ask rules, and the root their paths are relative to. */
     rules: { deny: string[]; ask: string[]; root: string };
     /** Stop after this many model turns (Claude Code). */

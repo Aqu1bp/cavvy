@@ -2,7 +2,7 @@
 // one line ("Read 3 files, searched 2 patterns · +13 −1"), which opens into
 // a row per call, which opens into the call's details.
 
-import { createMemo, createSignal, For, Match, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, on, Show, Switch, type JSX } from "solid-js";
 import {
     AlertTriangle,
     Bot,
@@ -20,16 +20,18 @@ import {
     Plug,
     Search,
     ShieldCheck,
+    SquareArrowOutUpRight,
     SquareTerminal,
     Wrench,
     X,
 } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
-import { duration, plural, splitTitle, stripAnsi, tokens } from "../../lib/format";
+import { duration, firstChangedLine, plural, splitTitle, stripAnsi, tokens } from "../../lib/format";
 import { now } from "../../lib/clock";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
-import { openAgents } from "../../state/actions";
+import { openAgents, openInEditor } from "../../state/actions";
+import { findReveal } from "../../state/ui";
 import { Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
 import { DiffView } from "./DiffView";
@@ -274,6 +276,9 @@ const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streami
 
 export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; agents?: AgentRun[] }) {
     const [open, setOpen] = createSignal(prefs.expandActivity);
+    // Find opens it to one of its calls; a lone call then shows as its row, the title find matched.
+    const [found, setFound] = createSignal(false);
+    createEffect(on(findReveal, (r) => r && p.tools.some((t) => t.id === r.part) && (setOpen(true), setFound(true))));
     const runs = createMemo(() => (p.agents ?? []).filter((a) => p.tools.some((t) => t.agent && t.id === a.id)));
     const plain = createMemo(() => p.tools.filter((t) => !runs().some((a) => a.id === t.id)));
     const running = createMemo(() => plain().find(isLive));
@@ -292,13 +297,13 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
     });
     const failed = () => done().filter((t) => t.status === "error").length;
     const denied = () => done().filter((t) => t.status === "denied").length;
-    const single = () => done().length === 1 && steps().length === 1;
+    const single = () => done().length === 1 && steps().length === 1 && !found();
 
     return (
         <>
             <Show when={done().length}>
                 <div class={`wgroup ${open() ? "open" : ""}`}>
-                    <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <button class="wrow" data-find-skip onClick={() => setOpen(!open())} aria-expanded={open()}>
                         <span class="slot">
                             <ToolIcon name={groupIcon(done())} size={16} />
                         </span>
@@ -328,7 +333,7 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
                     <Show when={open()}>
                         <div class="wkids">
                             <Show when={single()} fallback={<For each={steps()}>{(b) => (b.t === "tool" ? <ToolRow tool={b} /> : <div class="wthought">{(b as ThinkingBlock).text.trim().split("\n")[0]}</div>)}</For>}>
-                                <div class="tool-detail">
+                                <div class="tool-detail" data-find-skip>
                                     <ToolDetails tool={done()[0]!} />
                                 </div>
                             </Show>
@@ -348,6 +353,7 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
 
 /** The call running now: what it's doing, shimmering, and for how long. */
 function RunningRow(p: { tool: ToolBlock }) {
+    const found = () => findReveal()?.part === p.tool.id;
     const label = () => toolLabel(p.tool);
     const verb = () => {
         const t = p.tool;
@@ -358,25 +364,34 @@ function RunningRow(p: { tool: ToolBlock }) {
     const tail = () => (p.tool.progress ? stripAnsi(p.tool.progress).trimEnd().split("\n").slice(-4).join("\n") : undefined);
     return (
         <>
-            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""}`}>
+            {/* Find counts a running call by its argument: the verb, the timer and the output's tail change as it runs. */}
+            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""} ${found() ? "found" : ""}`} data-find={p.tool.id}>
                 <span class="slot">
                     <Show when={p.tool.status === "awaiting"} fallback={<ToolIcon name={p.tool.name} size={16} />}>
                         <Hand size={16} />
                     </Show>
                 </span>
-                <span class={p.tool.status === "awaiting" ? "wverb" : "wverb shimmer"}>{verb()}</span>
+                <span class={p.tool.status === "awaiting" ? "wverb" : "wverb shimmer"} data-find-skip>
+                    {verb()}
+                </span>
                 <Show when={label().arg && p.tool.status !== "streaming"}>
                     <span class="warg mono truncate">{label().arg}</span>
                 </Show>
                 <Show when={p.tool.status === "streaming" && p.tool.receiving}>
-                    <span class="warg truncate">{tokens(p.tool.receiving!)} chars</span>
+                    <span class="warg truncate" data-find-skip>
+                        {tokens(p.tool.receiving!)} chars
+                    </span>
                 </Show>
                 <Show when={p.tool.startedAt}>
-                    <span class="wtime num">{duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}</span>
+                    <span class="wtime num" data-find-skip>
+                        {duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}
+                    </span>
                 </Show>
             </div>
             <Show when={tail()}>
-                <pre class="activity-tail">{tail()}</pre>
+                <pre class="activity-tail" data-find-skip>
+                    {tail()}
+                </pre>
             </Show>
         </>
     );
@@ -412,6 +427,7 @@ export function agentLine(a: AgentRun): string {
 /** "2 sub-agents · 1 working · 1 done", opening into a row per agent that opens its own view. */
 export function SubAgentsRow(p: { runs: AgentRun[] }) {
     const [open, setOpen] = createSignal(p.runs.some(agentLive));
+    createEffect(on(findReveal, (r) => r && p.runs.some((a) => a.id === r.part) && setOpen(true)));
     const counts = () => {
         const n = (s: AgentRun["status"][]) => p.runs.filter((a) => s.includes(a.status)).length;
         return [
@@ -452,15 +468,16 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
                 <div class="agl">
                     <For each={p.runs}>
                         {(a) => (
-                            <button class="agr" onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
+                            <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
                                 <span class="av">
                                     <Bot size={14} />
                                     <span class={`nd st-${a.status}`} />
                                 </span>
                                 <span class="agr-text">
-                                    <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>
+                                    <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>{" "}
                                     <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`}>
                                         {a.model ? `${shortModelRef(a.model)} · ` : ""}
+                                        {a.effort ? `${a.effort} effort · ` : ""}
                                         {agentLine(a)}
                                     </span>
                                 </span>
@@ -496,9 +513,41 @@ function StatusIcon(p: { tool: ToolBlock }) {
     );
 }
 
+const FILE_TOOLS = new Set(["Read", "Edit", "MultiEdit", "Write", "NotebookEdit"]);
+
+/** The file a call read or changed, and the line to open it at, while there's a file to open. */
+export function toolFile(t: ToolBlock): { path: string; line?: number } | undefined {
+    if (!FILE_TOOLS.has(t.name) || t.agent || t.status === "error" || t.status === "denied") return undefined;
+    const i = t.input ?? {};
+    const path = i.file_path ?? i.notebook_path;
+    if (typeof path !== "string" || !path) return undefined;
+    const offset = t.name === "Read" && typeof i.offset === "number" && i.offset >= 1 ? Math.floor(i.offset) : undefined;
+    return { path, line: offset ?? firstChangedLine(t.diff) };
+}
+
+/** A small "Open in editor" button for a row. */
+export function OpenFileButton(p: { path: string; line?: number }) {
+    return (
+        <button
+            class="icon-btn row-open"
+            data-find-skip
+            title="Open in editor"
+            aria-label={`Open ${p.path} in editor`}
+            onClick={(e) => {
+                e.stopPropagation();
+                void openInEditor(p.path, p.line);
+            }}
+        >
+            <SquareArrowOutUpRight size={13} />
+        </button>
+    );
+}
+
 /** One call, as a plain line; opens into its details. */
-export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
+export function ToolRow(p: { tool: ToolBlock }) {
     const [open, setOpen] = createSignal(false);
+    // Shown by find: its whole title, where the match may be past the cut.
+    const found = () => findReveal()?.part === p.tool.id;
     const label = () => toolLabel(p.tool);
     const meta = () => {
         const t = p.tool;
@@ -507,41 +556,49 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
         return t.summary;
     };
     return (
-        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${p.nested ? "nested" : ""}`}>
-            <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                <span class="tool-icon">
-                    <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
-                </span>
-                <span class="tool-verb">{label().verb}</span>
-                <Show when={label().arg}>
-                    <span class="tool-arg truncate">{label().arg}</span>
-                </Show>
-                <span class="tool-meta">
-                    <Show when={p.tool.sandboxed}>
-                        <span class="tool-tag" title="Ran in the sandbox">
-                            <ShieldCheck size={11} /> sandbox
-                        </span>
+        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
+            <div class="tool-head">
+                <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <span class="tool-icon">
+                        <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
+                    </span>
+                    {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
+                    <span class="tool-verb" data-find-skip={isLive(p.tool) || undefined}>{label().verb}</span>{!isLive(p.tool) && " "}
+                    <Show when={label().arg}>
+                        <span class="tool-arg truncate" data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
                     </Show>
-                    <Show when={meta()}>
-                        <span class="truncate">{meta()}</span>
-                    </Show>
-                    <Show when={p.tool.diff && p.tool.status === "ok"}>
-                        <span class="stat">
-                            <span class="add">+{p.tool.diff!.added}</span>
-                            <span class="del">−{p.tool.diff!.removed}</span>
-                        </span>
-                    </Show>
-                    <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
-                        <span class="tool-dur num">{duration(p.tool.durationMs!)}</span>
-                    </Show>
-                    <StatusIcon tool={p.tool} />
-                </span>
-            </button>
+                    <span class="tool-meta" data-find-skip={isLive(p.tool) || undefined}>
+                        <Show when={p.tool.sandboxed}>
+                            <span class="tool-tag" title="Ran in the sandbox" data-find-skip>
+                                <ShieldCheck size={11} /> sandbox
+                            </span>
+                        </Show>
+                        <Show when={meta()}>
+                            <span class="truncate">{meta()}</span>
+                        </Show>
+                        <Show when={p.tool.diff && p.tool.status === "ok"}>
+                            <span class="stat" data-find-skip>
+                                <span class="add">+{p.tool.diff!.added}</span>
+                                <span class="del">−{p.tool.diff!.removed}</span>
+                            </span>
+                        </Show>
+                        <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
+                            <span class="tool-dur num" data-find-skip>
+                                {duration(p.tool.durationMs!)}
+                            </span>
+                        </Show>
+                        <StatusIcon tool={p.tool} />
+                    </span>
+                </button>
+                <Show when={toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
+            </div>
             <Show when={!open() && p.tool.status === "running" && p.tool.progress}>
-                <pre class="activity-tail nested">{stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(-6).join("\n")}</pre>
+                <pre class="activity-tail nested" data-find-skip>
+                    {stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(-6).join("\n")}
+                </pre>
             </Show>
             <Show when={open()}>
-                <div class="tool-detail">
+                <div class="tool-detail" data-find-skip>
                     <ToolDetails tool={p.tool} />
                 </div>
             </Show>
@@ -622,6 +679,13 @@ function ToolDetails(p: { tool: ToolBlock }) {
                     <ShieldCheck size={13} /> Approved by the auto-mode reviewer: {t().approval}
                 </div>
             </Show>
+            <Show when={!t().diff && toolFile(t())}>
+                {(f) => (
+                    <button class="link-btn tool-open" data-find-skip onClick={() => void openInEditor(f().path, f().line)}>
+                        <SquareArrowOutUpRight size={13} /> Open in editor
+                    </button>
+                )}
+            </Show>
             <Switch
                 fallback={
                     <>
@@ -635,7 +699,7 @@ function ToolDetails(p: { tool: ToolBlock }) {
                 }
             >
                 <Match when={t().diff}>
-                    <DiffView diff={t().diff!} maxLines={80} header />
+                    <DiffView diff={t().diff!} maxLines={80} header headerAction={<Show when={toolFile(t())}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>} />
                     <Show when={t().status === "error"}>
                         <Output tool={t()} />
                     </Show>
@@ -654,13 +718,6 @@ function ToolDetails(p: { tool: ToolBlock }) {
                     <button class="link-btn" onClick={() => openAgents(t().id)}>
                         <Bot size={13} /> View its activity
                     </button>
-                    <Show when={t().sub}>
-                        <Section label={`${t().sub!.label} · ${plural(t().sub!.toolCount, "tool use")}${t().sub!.tokens ? ` · ${tokens(t().sub!.tokens)} tokens` : ""}`}>
-                            <div class="sub-rows">
-                                <For each={t().sub!.tools}>{(x) => <ToolRow tool={x} nested />}</For>
-                            </div>
-                        </Section>
-                    </Show>
                     <Show when={t().output && t().status !== "running"}>
                         <Section label="Report">
                             <Markdown text={t().output ?? ""} class="small" />

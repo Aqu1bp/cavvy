@@ -87,7 +87,7 @@ export function ProjectScripts(p: { cwd: string }) {
 
     return (
         <>
-            <div ref={anchor} class={`split ${open() ? "open" : ""}`}>
+            <div ref={anchor} class={`script-split ${open() ? "open" : ""}`}>
                 <Show
                     when={main()}
                     fallback={
@@ -98,11 +98,11 @@ export function ProjectScripts(p: { cwd: string }) {
                 >
                     {(s) => (
                         <>
-                            <button class="hb split-main" title={`Run “${s().name}”: ${s().command}`} aria-label={`Run script ${s().name}`} disabled={offline()} onClick={() => run(s())}>
+                            <button class="hb script-split-main" title={`Run “${s().name}”: ${s().command}`} aria-label={`Run script ${s().name}`} disabled={offline()} onClick={() => run(s())}>
                                 <ScriptGlyph icon={s().icon} size={14} />
-                                <span class="split-label truncate">{s().name}</span>
+                                <span class="script-split-label truncate">{s().name}</span>
                             </button>
-                            <button class="hb split-more" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
+                            <button class="hb script-split-more" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
                                 <ChevronDown size={13} />
                             </button>
                         </>
@@ -217,17 +217,17 @@ function ScriptDialog(p: { cwd: string; editing?: { script?: ProjectScript }; on
             title={p.editing?.script ? "Edit script" : "Add script"}
             subtitle="Runs in a terminal tab in the session's folder, only when you click it. Shared by this repository's worktrees; stored in your Harness home, not the repository."
         >
-            <label class="field">
-                <span class="field-label">Name</span>
+            <label class="script-field">
+                <span class="script-field-label">Name</span>
                 <input class="input" value={name()} maxLength={SCRIPT_LIMITS.name} placeholder="dev" spellcheck={false} autofocus onInput={(e) => setName(e.currentTarget.value)} onKeyDown={onKey} />
             </label>
-            <label class="field">
-                <span class="field-label">Command</span>
+            <label class="script-field">
+                <span class="script-field-label">Command</span>
                 <input class="input mono" value={command()} maxLength={SCRIPT_LIMITS.command} placeholder="bun run dev" spellcheck={false} autocomplete="off" autocapitalize="off" onInput={(e) => setCommand(e.currentTarget.value)} onKeyDown={onKey} />
-                <span class="field-hint">One line, typed into the shell as if you had typed it. Join several commands with && or ;.</span>
+                <span class="script-field-hint">One line, typed into the shell as if you had typed it. Join several commands with && or ;.</span>
             </label>
-            <div class="field">
-                <span class="field-label">Icon</span>
+            <div class="script-field">
+                <span class="script-field-label">Icon</span>
                 <div class="script-icons" role="group" aria-label="Icon">
                     <For each={SCRIPT_ICONS}>
                         {(id) => {
@@ -241,7 +241,7 @@ function ScriptDialog(p: { cwd: string; editing?: { script?: ProjectScript }; on
                 </div>
             </div>
             <Show when={error()}>
-                <div class="field-error" role="alert">{error()}</div>
+                <div class="script-field-error" role="alert">{error()}</div>
             </Show>
             <div class="dialog-actions">
                 <button class="btn ghost" onClick={p.onClose}>Cancel</button>

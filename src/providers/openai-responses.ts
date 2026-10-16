@@ -8,7 +8,8 @@
 import { apiFastModeInfo } from "./fast-mode";
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
-import { parseSse, stallMessage, stallTimer } from "./sse";
+import { parseSse, stallError, stallTimer } from "./sse";
+import { fileAsText, fitRequest, frameName, readsPdf } from "./files";
 import { httpError } from "./openai-compat";
 import {
     ProviderError,
@@ -62,7 +63,7 @@ function sanitizeCallId(id: string): string {
     return s || "call";
 }
 
-export function toResponsesInput(messages: Message[], def: ProviderDef, modelId: string): Json[] {
+export function toResponsesInput(messages: Message[], def: ProviderDef, modelId: string, pdf = true): Json[] {
     const out: Json[] = [];
     for (const msg of messages) {
         if (msg.role === "user") {
@@ -79,6 +80,7 @@ export function toResponsesInput(messages: Message[], def: ProviderDef, modelId:
             for (const p of msg.content) {
                 if (p.type === "text" && p.text) parts.push({ type: "input_text", text: p.text });
                 else if (p.type === "image") parts.push({ type: "input_image", image_url: `data:${p.mediaType};base64,${p.data}`, detail: "auto" });
+                else if (p.type === "file") parts.push(p.kind === "pdf" && pdf ? { type: "input_file", filename: frameName(p.name), file_data: `data:application/pdf;base64,${p.data}` } : { type: "input_text", text: fileAsText(p) });
             }
             if (parts.length) out.push({ type: "message", role: "user", content: parts });
             continue;
@@ -122,11 +124,10 @@ export class OpenAIResponsesProvider implements ProviderClient {
     async stream(req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<AssistantMessage> {
         const def = this.def;
         const m = req.model;
-        const body: Json = {
+        const body: Json & { input?: never } = {
             model: m.id,
             store: false,
             stream: true,
-            input: toResponsesInput(req.messages, def, m.id),
         };
         // Left out, the project's own tier applies (auto); "default" would override it, so only fast is asked for.
         if (req.fastMode && m.supportsFastMode && def.id === "openai" && apiFastModeInfo(def.id, m.id, this.base).supportsFastMode) body.service_tier = "fast";
@@ -146,6 +147,8 @@ export class OpenAIResponsesProvider implements ProviderClient {
         }
         if (req.cacheKey && !req.lightweight) body.prompt_cache_key = req.cacheKey;
 
+        const payload = fitRequest(req.messages, readsPdf(m), (messages) => JSON.stringify({ ...body, input: toResponsesInput(messages, def, m.id, readsPdf(m)) }));
+
         const items: Json[] = [];
         // Argument deltas carry item_id, not call_id: map from output_item.added.
         const calls = new Map<string, { callId: string; name: string }>();
@@ -157,18 +160,18 @@ export class OpenAIResponsesProvider implements ProviderClient {
             const res = await fetch(`${this.base}/responses`, {
                 method: "POST",
                 headers: this.headers(),
-                body: JSON.stringify(body),
+                body: payload,
                 signal: stall.signal,
             }).catch((e: Error) => {
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+                if (stall.stalled()) throw stallError(def.name, stall.limit());
                 throw new ProviderError(`Connection error to ${def.name}: ${e.message}`, undefined, true);
             });
             stall.touch();
             if (!res.ok || !res.body) {
                 const text = await res.text().catch(() => "");
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+                if (stall.stalled()) throw stallError(def.name, stall.limit());
                 throw httpError(res.status, res.statusText, text, res.headers.get("retry-after"), def.name);
             }
 
@@ -225,7 +228,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
                 }
             } catch (e) {
                 if (req.signal?.aborted) throw new ProviderError("aborted");
-                if (stall.stalled()) throw new ProviderError(stallMessage(def.name, stall.limit()), undefined, true);
+                if (stall.stalled()) throw stallError(def.name, stall.limit());
                 if (e instanceof ProviderError) throw e;
                 throw new ProviderError(`Stream from ${def.name} failed: ${(e as Error).message}`, undefined, true);
             }
