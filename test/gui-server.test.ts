@@ -1690,6 +1690,10 @@ describe("reopening a Claude Code session", () => {
             const was = structuredClone(c.view(id));
             // What it shows is in the log within a moment, not only once the turn ends.
             await Bun.sleep(200);
+            // Its record says which prompt it's of.
+            const { findSessionAnywhere } = await import("../src/agent/session");
+            const ui = readFileSync(join(dirname(findSessionAnywhere(id)!), "ui", `${id}.jsonl`), "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+            expect(ui.some((r) => r.t === "turn" && r.index === 0 && typeof r.prompt === "string")).toBe(true);
             child.kill("SIGKILL");
             await child.exited;
             c.close();

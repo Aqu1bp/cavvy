@@ -95,8 +95,8 @@ export type AgentHead = { [K in keyof Omit<AgentRun, "blocks">]?: AgentRun[K] | 
 
 export type UiRecord =
     | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; at?: number }
-    /** A turn's start (no `end`) begins its record afresh; its end adds to it. */
-    | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus }
+    /** A turn's start (no `end`) begins its record afresh; its end adds to it, and so does its prompt's promptKey once that's in the history. */
+    | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus; prompt?: string }
     | { t: "pending-turn"; text: string; at: number }
     /**
      * A step of a turn Claude Code or Codex answered, as it was shown
@@ -170,7 +170,7 @@ export class UiLog {
         else if (r.t === "turn") {
             const k = `${r.seg}:${r.index}`;
             // A turn starting where another was (that one was rewound) owes it nothing.
-            const start = r.end === undefined && r.status === undefined;
+            const start = r.end === undefined && r.status === undefined && r.prompt === undefined;
             if (start) {
                 this.steps.delete(k);
                 this.lastStarted = k;
@@ -385,11 +385,13 @@ const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.
  * or died before the turn could say. Not when the history went on after it
  * (in a terminal, which keeps no log), was rewound past it, or compacted.
  */
-export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[]): number | undefined {
+export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[], notices: TurnNotice[] = []): number | undefined {
     const rec = ui.lastStarted ? ui.turns.get(ui.lastStarted) : undefined;
     if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined) return undefined;
     const prompt = messages[rec.index];
     if (!prompt || !startsTurn(prompt) || messages.slice(rec.index + 1).some(startsTurn)) return undefined;
+    // Another prompt there (that one was rewound in a terminal, this one sent there), or the history says how it ended (an error).
+    if ((rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) || notices.some((n) => n.index > rec.index)) return undefined;
     const last = messages[messages.length - 1]!;
     if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;
     // Interrupted already (as a stop writes it, for tools too).

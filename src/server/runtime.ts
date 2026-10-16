@@ -201,7 +201,7 @@ export class Runtime {
     private agentsDirty = new Map<string, Set<string>>();
     private agentsLogged = new Map<string, { head: Map<string, string>; blocks: Map<string, string> }>();
     /** The log's record of the turn running now (where it started): its end goes there, a steering message's turn's too. */
-    private uiTurn?: { seg: number; index: number; at: number };
+    private uiTurn?: { seg: number; index: number; at: number; prompt?: string };
     /** The mode it was left in, when that isn't the one it reopened in (bypass, not chosen again): the model is told. */
     private leftIn?: PermissionMode;
 
@@ -235,7 +235,7 @@ export class Runtime {
         const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
         this.segment = segments.length - 1;
         // Its last turn was cut off (the server stopped or died before it could end): the history says so now, as a stop would have.
-        if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
+        if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
         this.ready = this.track(this.initModel());
@@ -328,6 +328,15 @@ export class Runtime {
     // changed (at most once a flush), so a turn cut off part way keeps what
     // it did. What's still being written (text streaming in, a call's input)
     // waits until it's done, or the turn or session ends.
+
+    /** Which prompt the running turn's record is of, once it's in the history: one sent at its place later isn't taken for it. */
+    private notePrompt() {
+        const t = this.uiTurn;
+        const m = t && !t.prompt ? this.session.messages[t.index] : undefined;
+        if (!t || m?.role !== "user") return;
+        t.prompt = promptKey(m);
+        this.ui.write({ t: "turn", ...t });
+    }
 
     /** A view change to note for the log, if it's of such a turn or sub-agent. */
     private noteStep(o: SessionOp) {
@@ -894,6 +903,7 @@ export class Runtime {
                 this.closeOpen();
                 this.responseBlocks = [];
                 this.activity("Thinking");
+                this.notePrompt();
                 break;
             case "text": {
                 if (!this.openText) {

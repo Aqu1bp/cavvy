@@ -441,6 +441,16 @@ describe("replay", () => {
         expect(cutOffPrompt(new UiLog(file, "c"), 0, [...went, calling, steering])).toBeUndefined();
         log.write({ t: "turn", seg: 0, index: 4, at: 5, end: 6, status: "denied" });
         expect(cutOffPrompt(new UiLog(file, "c"), 0, went)).toBeUndefined();
+        // Once its prompt is known, another sent there (in a terminal, after a rewind) isn't it.
+        const third = user("third") as UserMessage;
+        log.write({ t: "turn", seg: 0, index: 6, at: 7 });
+        log.write({ t: "turn", seg: 0, index: 6, at: 7, prompt: promptKey(third) });
+        const after = [...went, answered];
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third])).toBe(6);
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, user("something else")])).toBeUndefined();
+        // A note of how it ended (an error) says it did.
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third], [{ index: 7, level: "error", text: "Boom.", at: 8 }])).toBeUndefined();
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third], [{ index: 6, level: "error", text: "Earlier.", at: 6 }])).toBe(6);
     });
 
     test("turns from before a compaction are kept, marked archived and not rewindable", () => {
