@@ -392,6 +392,31 @@ test("a global LFS-style filter runs status through an installed program", () =>
     }
 });
 
+test("a relative PATH entry can't make a bare driver name run the repo's own program", () => {
+    const dir = freshRepo();
+    const marker = join(dir, ".git", "repo-lfs-ran");
+    // The repo ships its own git-lfs; with "." first in PATH it would win over an installed one.
+    writeFileSync(join(dir, "git-lfs"), `#!/bin/sh\ntouch '${marker}'\ncat\n`, { mode: 0o700 });
+    const global = join(dir, ".git", "global-config");
+    run(dir, ["config", "--file", global, "filter.lfs.clean", "git-lfs clean -- %f"]);
+    writeFileSync(join(dir, ".gitattributes"), "a filter=lfs\n");
+    staleFile(dir);
+    const beforeGlobal = process.env.GIT_CONFIG_GLOBAL;
+    const beforePath = process.env.PATH;
+    process.env.GIT_CONFIG_GLOBAL = global;
+    process.env.PATH = `.:${beforePath}`;
+    try {
+        gitSnapshot(dir);
+        gitListFiles(dir);
+        expect(existsSync(marker)).toBe(false);
+    } finally {
+        if (beforeGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+        else process.env.GIT_CONFIG_GLOBAL = beforeGlobal;
+        if (beforePath === undefined) delete process.env.PATH;
+        else process.env.PATH = beforePath;
+    }
+});
+
 for (const key of ["credential.helper", "gpg.program", "gpg.ssh.program", "core.sshCommand", "core.askPass"]) test(`local ${key} does not suppress status or execute`, () => {
     const dir = freshRepo();
     const { script, marker } = markerScript(dir);

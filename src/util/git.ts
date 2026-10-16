@@ -1,5 +1,6 @@
 import { spawnSync } from "bun";
 import { lstatSync } from "fs";
+import { delimiter, isAbsolute } from "path";
 import { childEnv } from "./env";
 import { trustedByUser } from "../config/trust";
 
@@ -19,7 +20,11 @@ export function gitEnv(): Record<string, string> {
 function untrustedGitEnv(): Record<string, string> {
     // Git before 2.45 ignores GIT_NO_LAZY_FETCH. As in git-changes, deny every
     // real protocol too, so missing objects cannot invoke a promisor transport.
-    return { ...gitEnv(), GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "harness-none" };
+    // A relative PATH entry ("." or empty) would let the repo supply the program a
+    // bare driver name (git-lfs) or git itself resolves to; only absolute ones stay.
+    const env = gitEnv();
+    if (env.PATH !== undefined) env.PATH = env.PATH.split(delimiter).filter((d) => isAbsolute(d)).join(delimiter);
+    return { ...env, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "harness-none" };
 }
 
 function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined {
