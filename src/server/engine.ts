@@ -39,6 +39,7 @@ import type {
     Methods,
     PermissionModeId,
     ProjectInfo,
+    RemoveWorktreeResult,
     ProviderInfo,
     ProviderModels,
     ServerEvent,
@@ -165,6 +166,8 @@ export class Engine {
     private unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
     /** Sessions being unloaded (their SessionEnd hooks running): opened again once that's done. */
     private closing = new Map<string, Promise<void>>();
+    /** Their folders, meanwhile: hooks may still be running there. */
+    private closingIn = new Map<string, string>();
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
@@ -339,27 +342,33 @@ export class Engine {
     }
 
     /**
-     * Refused while a session (here, or in a terminal) is open inside it. From
-     * the check until Git is done no session can open there; its idle
-     * workspaces (picked while their paths still resolve) close after.
+     * Refused while a session is open inside it: one here (or still closing),
+     * or one in another process (a terminal) once it has sent a message and
+     * so holds its lock. From the check until Git is done no session can
+     * open there from this server, nor can another removal of it start; its
+     * idle workspaces (picked while their paths still resolve) close after.
      */
-    private async removeWorktree(path: string, worktree: string): Promise<null> {
+    private async removeWorktree(path: string, worktree: string, deleteIgnored?: string): Promise<RemoveWorktreeResult> {
         const held = heldSessionFolders();
-        const plan = planRemoval({ path, worktree, inUse: (dir) => [...this.runtimes.values()].some((rt) => within(dir)(rt.ws.cwd)) || held.some(within(dir)) });
+        const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...held];
+        const plan = planRemoval({ path, worktree, inUse: (dir) => open().some(within(dir)) });
         const reserved = realPath(plan.path);
+        if ([...this.removing].some((dir) => within(dir)(reserved) || within(reserved)(dir))) throw new RpcError(`${plan.path} is already being removed.`, "busy");
         this.removing.add(reserved);
         const idle = [...this.workspaces].filter(([cwd]) => within(plan.path)(cwd));
+        let result: RemoveWorktreeResult;
         try {
-            await runRemoval(plan, this.o.log);
+            result = await runRemoval(plan, { deleteIgnored }, this.o.log);
         } finally {
             this.removing.delete(reserved);
         }
+        if (!result.removed) return result;
         for (const [cwd, ws] of idle) {
             if (this.workspaces.get(cwd) !== ws || [...this.runtimes.values()].some((rt) => rt.ws === ws)) continue;
             this.workspaces.delete(cwd);
             void ws.mcp.closeAll().catch(() => undefined);
         }
-        return null;
+        return result;
     }
 
     private recentProjects(): ProjectInfo[] {
@@ -483,9 +492,13 @@ export class Engine {
             .close()
             .catch(() => undefined)
             .finally(() => {
-                if (this.closing.get(id) === done) this.closing.delete(id);
+                if (this.closing.get(id) === done) {
+                    this.closing.delete(id);
+                    this.closingIn.delete(id);
+                }
             });
         this.closing.set(id, done);
+        this.closingIn.set(id, rt.ws.cwd);
     }
 
     private unloadLater(id: string) {
@@ -891,7 +904,7 @@ export class Engine {
                     this.o.log,
                 );
             case "projects.removeWorktree":
-                return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096));
+                return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));
             case "projects.trust":
                 return this.trustProject(str(p.path, "path"), Boolean(p.trust));
             case "projects.forget": {

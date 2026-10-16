@@ -393,6 +393,9 @@ export interface WorktreeInfo {
     managed: boolean;
 }
 
+/** Removed, or not yet: these ignored files (the first few of `total`) would be deleted with it. */
+export type RemoveWorktreeResult = { removed: true } | { removed: false; ignored: string[]; total: number; confirm: string };
+
 /** A worktree on a new branch; without `location` it goes in <main worktree>/.claude/worktrees/<folder>. */
 export interface CreateWorktreeParams {
     /** A folder in the repository (any of its worktrees). */
@@ -560,8 +563,11 @@ export interface Methods {
     "projects.worktrees": { params: { path: string }; result: WorktreeInfo[] };
     /** `git worktree add -b`, with the repository's hooks off. */
     "projects.createWorktree": { params: CreateWorktreeParams; result: { path: string; branch: string } };
-    /** `git worktree remove` without --force, for a managed worktree; its branch is kept. `path` is any folder in the repository. */
-    "projects.removeWorktree": { params: { path: string; worktree: string }; result: null };
+    /**
+     * `git worktree remove` without --force, for a managed worktree; its branch is kept. `path` is any folder in
+     * the repository. With ignored files in it, nothing happens until `deleteIgnored` is the `confirm` it returned.
+     */
+    "projects.removeWorktree": { params: { path: string; worktree: string; deleteIgnored?: string }; result: RemoveWorktreeResult };
     "projects.trust": { params: { path: string; trust: boolean }; result: ProjectInfo };
     "projects.forget": { params: { path: string }; result: null };
     "fs.mentions": { params: { cwd: string; query: string }; result: string[] };

@@ -369,6 +369,22 @@
     overflow-wrap: anywhere;
 }
 
+.wt-ignored {
+    align-items: flex-start;
+}
+
+.wt-ignored svg {
+    margin-top: 2px;
+}
+
+.wt-ignored ul {
+    margin: 6px 0 2px;
+    padding-left: 18px;
+    max-height: 160px;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+}
+
 .wt-confirm {
     margin: 0;
     overflow-wrap: anywhere;

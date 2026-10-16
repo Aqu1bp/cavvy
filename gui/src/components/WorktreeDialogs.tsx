@@ -2,7 +2,7 @@
 // server checks everything again; these only collect the choice and show its
 // answer next to the field it's about.
 
-import { createSignal, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
 import type { WorktreeInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
@@ -177,7 +177,9 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
 }
 
 export interface RemoveWorktreeRequest {
-    /** The main worktree's root: the request runs there, and a new chat moves there if it was in the removed one. */
+    /** The folder the picker was opened in: the request names it, and trusting means trusting it. */
+    cwd: string;
+    /** The main worktree's root: a new chat moves there if it was in the removed one. */
     main: string;
     worktree: WorktreeInfo;
 }
@@ -185,13 +187,16 @@ export interface RemoveWorktreeRequest {
 export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClose: () => void }) {
     const w = p.request.worktree;
     const [busy, setBusy] = createSignal(false);
-    const [error, setError] = createSignal<string>();
+    const [error, setError] = createSignal<FormError>();
+    /** Ignored files Git would delete with it: removal waits for the user to agree to exactly these. */
+    const [ignored, setIgnored] = createSignal<{ names: string[]; total: number; confirm: string }>();
     const close = () => !busy() && p.onClose();
-    const remove = async () => {
+    const remove = async (deleteIgnored?: string) => {
         setError(undefined);
         setBusy(true);
         try {
-            await rpc.call("projects.removeWorktree", { path: p.request.main, worktree: w.path });
+            const r = await rpc.call("projects.removeWorktree", { path: p.request.cwd, worktree: w.path, deleteIgnored });
+            if (!r.removed) return setIgnored({ names: r.ignored, total: r.total, confirm: r.confirm });
             setBusy(false);
             p.onClose();
             toast(`Removed worktree ${tildify(w.path, app.hello?.homeDir)}`, "success");
@@ -199,10 +204,19 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
             const here = app.homeCwd;
             if (here && !(await rpc.call("projects.inspect", { path: here }).catch(() => undefined))?.exists) await openProject(p.request.main);
         } catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
+            setError(errorOf(e));
         } finally {
             setBusy(false);
         }
+    };
+    /** The repository's own Git config can run commands when Git compares the files: the user decides. */
+    const trustAndRemove = async () => {
+        try {
+            await rpc.call("projects.trust", { path: p.request.cwd, trust: true });
+        } catch (e) {
+            return setError(errorOf(e));
+        }
+        await remove(ignored()?.confirm);
     };
     return (
         <Dialog open onClose={close} title="Remove worktree" width={500}>
@@ -213,15 +227,38 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
                 </Show>
             </p>
             <p class="muted small">
-                <Show when={w.exists} fallback="Its folder is already gone; this clears Git's record of it.">
-                    Git refuses if it has uncommitted or untracked changes.
+                <Show when={w.exists} fallback="Its folder is already gone; this clears Git's record of it (and only its).">
+                    Git refuses if it has uncommitted or untracked changes. Ignored files (an .env, node_modules) are listed for you before anything is deleted.
                 </Show>
             </p>
+            <Show when={ignored()}>
+                {(i) => (
+                    <div class="rw-confirm wt-ignored">
+                        <AlertTriangle size={14} />
+                        <div>
+                            <div>
+                                These ignored {i().total === 1 ? "file would" : "files and folders would"} be deleted with it:
+                            </div>
+                            <ul class="mono">
+                                <For each={i().names}>{(n) => <li>{n}</li>}</For>
+                            </ul>
+                            <Show when={i().total > i().names.length}>
+                                <div>and {i().total - i().names.length} more.</div>
+                            </Show>
+                        </div>
+                    </div>
+                )}
+            </Show>
             <Show when={error()}>
                 {(m) => (
                     <div class="rw-confirm">
                         <AlertTriangle size={14} />
-                        <span>{m()}</span>
+                        <span>{m().message}</span>
+                        <Show when={m().code === "needs_trust"}>
+                            <button class="btn secondary sm" disabled={busy()} onClick={() => void trustAndRemove()}>
+                                Trust and remove
+                            </button>
+                        </Show>
                     </div>
                 )}
             </Show>
@@ -230,9 +267,20 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
                 <button class="btn ghost" disabled={busy()} onClick={close}>
                     Cancel
                 </button>
-                <button class="btn danger" disabled={busy()} onClick={() => void remove()}>
-                    {busy() ? <Spinner size={12} /> : "Remove"}
-                </button>
+                <Show
+                    when={ignored()}
+                    fallback={
+                        <button class="btn danger" disabled={busy()} onClick={() => void remove()}>
+                            {busy() ? <Spinner size={12} /> : "Remove"}
+                        </button>
+                    }
+                >
+                    {(i) => (
+                        <button class="btn danger" disabled={busy()} onClick={() => void remove(i().confirm)}>
+                            {busy() ? <Spinner size={12} /> : "Delete them and remove"}
+                        </button>
+                    )}
+                </Show>
             </div>
         </Dialog>
     );

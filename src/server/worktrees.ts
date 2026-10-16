@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "bun";
+import { createHash } from "crypto";
 import { lstatSync, mkdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { gitArgv, gitEnv } from "../util/git";
@@ -6,7 +7,7 @@ import { isInside } from "../util/files";
 import { trustedByUser } from "../config/trust";
 import { redact } from "../util/redact";
 import { RpcError } from "./rpc-error";
-import type { CreateWorktreeParams, WorktreeInfo } from "./protocol";
+import type { CreateWorktreeParams, RemoveWorktreeResult, WorktreeInfo } from "./protocol";
 
 type WorktreeRecord = Omit<WorktreeInfo, "current" | "exists" | "main" | "managed"> & { bare: boolean };
 
@@ -31,8 +32,15 @@ export function parseWorktrees(output: string): WorktreeRecord[] {
     return records;
 }
 
+/**
+ * In a partial clone, a missing object makes Git fetch it through the
+ * promisor remote, which can run that remote's configured commands. None of
+ * the checks and reads here need one.
+ */
+const noLazyFetch = () => ({ ...gitEnv(), GIT_NO_LAZY_FETCH: "1" });
+
 function runGit(cwd: string, args: string[]): string | undefined {
-    const result = spawnSync(gitArgv(args), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe", timeout: 3000 });
+    const result = spawnSync(gitArgv(args), { cwd, env: noLazyFetch(), stdout: "pipe", stderr: "pipe", timeout: 3000 });
     return result.exitCode === 0 ? result.stdout.toString() : undefined;
 }
 
@@ -80,7 +88,7 @@ export function listWorktrees(cwd: string): WorktreeInfo[] {
 /** Checking out a big repository takes a while. */
 const CREATE_TIMEOUT_MS = 5 * 60_000;
 const REMOVE_TIMEOUT_MS = 2 * 60_000;
-/** The repository's hooks (post-checkout) don't run: the project needn't be trusted to create a worktree in it. */
+/** The repository's hooks (post-checkout) never run; its other config is checked (checkConfigTrust). */
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 export type Log = (message: string) => void;
@@ -208,16 +216,50 @@ function chosenTarget(location: string): Target {
     return { path, prepare: () => {} };
 }
 
-async function runGitAsync(cwd: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stderr: string; timedOut: boolean }> {
-    const proc = spawn(gitArgv(args), { cwd, env: gitEnv(), stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+/** How long output is still read once Git has exited: a filter's background child can hold the pipe open indefinitely. */
+const DRAIN_MS = 500;
+
+interface GitRun {
+    code: number | null;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+}
+
+/** Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself. */
+async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean } = {}): Promise<GitRun> {
+    const proc = spawn(gitArgv(args), { cwd, env: o.lazyFetch ? gitEnv() : noLazyFetch(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
     const timer = setTimeout(() => {
         timedOut = true;
         proc.kill();
     }, timeoutMs);
+    const readers: { cancel(): Promise<void> }[] = [];
+    const collect = async (stream: ReadableStream<Uint8Array>) => {
+        const reader = stream.getReader();
+        readers.push(reader);
+        const chunks: Uint8Array[] = [];
+        try {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+            }
+        } catch {
+            // cancelled below
+        }
+        return chunks;
+    };
+    const out = collect(proc.stdout);
+    const err = collect(proc.stderr);
     try {
-        const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-        return { code, stderr, timedOut };
+        const code = await proc.exited;
+        let drained: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([Promise.all([out, err]), new Promise((r) => (drained = setTimeout(r, DRAIN_MS)))]);
+        clearTimeout(drained);
+        for (const reader of readers) reader.cancel().catch(() => undefined);
+        const text = async (p: Promise<Uint8Array[]>) => Buffer.concat(await p).toString();
+        return { code, stdout: await text(out), stderr: await text(err), timedOut };
     } finally {
         clearTimeout(timer);
     }
@@ -242,33 +284,46 @@ const INERT_CONFIG = [
     /^(user\.(name|email|signingkey)|commit\.gpgsign|tag\.gpgsign|init\.defaultbranch|pull\.(rebase|ff)|push\.(default|autosetupremote)|fetch\.prune|status\.showuntrackedfiles|rerere\.enabled|lfs\.repositoryformatversion)$/,
 ];
 
-/** The repository's own config (local, and the worktree's) that isn't known to be inert; undefined when it can't be read. */
-function riskyConfig(main: string): string[] | undefined {
-    const keys: string[] = [];
-    // Per-worktree config exists only with this extension (without it git refuses --worktree once there are several).
-    const perWorktree = runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() === "true";
-    // --local and --worktree don't follow includes: an include directive shows up as itself.
-    for (const scope of perWorktree ? ["--local", "--worktree"] : ["--local"]) {
-        const out = runGit(main, ["config", scope, "--list", "--name-only", "-z"]);
-        if (out === undefined) return undefined;
-        keys.push(...out.split("\0").filter(Boolean));
+/**
+ * The repository's own config that isn't known to be inert: the shared
+ * config, and the per-worktree config of each worktree Git will run in.
+ * Undefined when it can't be read.
+ */
+function riskyConfig(main: string, worktrees: string[]): string[] | undefined {
+    // A single file (--local, --file) doesn't follow includes: an include directive shows up as itself.
+    const read = (cwd: string, scope: string[]) => runGit(cwd, ["config", ...scope, "--list", "--name-only", "-z"])?.split("\0").filter(Boolean);
+    const keys = read(main, ["--local"]);
+    if (!keys) return undefined;
+    // Per-worktree config is read only with this extension, from each worktree's own file (which needn't exist).
+    if (runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() === "true") {
+        for (const dir of new Set([main, ...worktrees].filter(isDir))) {
+            const file = runGit(dir, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"])?.replace(/\n$/, "");
+            if (!file) return undefined;
+            if (!lexists(file)) continue;
+            const own = read(dir, ["--file", file]);
+            if (!own) return undefined;
+            keys.push(...own);
+        }
     }
     return [...new Set(keys.filter((k) => !INERT_CONFIG.some((re) => re.test(k))))];
 }
 
 /**
- * Hooks are off, but checking files out still runs whatever the repository's
- * own config sets up (filter drivers above all). In a project the user hasn't
- * trusted, only a config with nothing like that is used.
+ * Hooks are off, but Git reading file contents (checking files out, or
+ * comparing them for status) still runs whatever the repository's own config
+ * sets up: filter drivers above all. In a project the user hasn't trusted,
+ * only a config with nothing like that is used. Comes before any other Git
+ * call that could read objects or files. `worktrees`: where Git will run.
  */
-function checkConfigTrust(main: string, cwd: string) {
-    if (trustedByUser(main) || trustedByUser(cwd)) return;
-    const risky = riskyConfig(main);
+function checkConfigTrust(main: string, worktrees: string[], action: "create" | "remove") {
+    if (trustedByUser(main) || worktrees.some((w) => trustedByUser(w))) return;
+    const risky = riskyConfig(main, worktrees);
     if (risky && !risky.length) return;
     // Only section names: a key's middle part can be a URL with credentials in it.
     const sections = risky ? [...new Set(risky.map((k) => k.split(".")[0]))].slice(0, 6).join(", ") : "";
+    const when = action === "create" ? "while files are checked out" : "while Git checks the worktree for changes";
     throw new RpcError(
-        `This repository's Git configuration ${sections ? `has settings (${sections}) that can` : "couldn't be checked, and could"} run commands while files are checked out. Trust the project to create worktrees in it.`,
+        `This repository's Git configuration ${sections ? `has settings (${sections}) that can` : "couldn't be checked, and could"} run commands ${when}. Trust the project to ${action === "create" ? "create" : "remove"} worktrees in it.`,
         "needs_trust",
     );
 }
@@ -277,13 +332,14 @@ function checkConfigTrust(main: string, cwd: string) {
 export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
     const cwd = resolve(o.path);
     const repo = repoOf(cwd);
+    checkConfigTrust(repo.main, [cwd], "create");
     const branch = checkBranch(cwd, o.branch);
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
     const commit = resolveBase(cwd, o.base);
     const target = o.location ? chosenTarget(o.location) : managedTarget(repo.main, o.folder || defaultFolder(branch));
-    checkConfigTrust(repo.main, cwd);
     target.prepare();
-    const r = await runGitAsync(repo.main, [...NO_HOOKS, "worktree", "add", "-b", branch, target.path, commit], CREATE_TIMEOUT_MS);
+    // A partial clone fetches the files it checks out (its config is trusted, or it would have been refused above).
+    const r = await runGitAsync(repo.main, [...NO_HOOKS, "worktree", "add", "-b", branch, target.path, commit], CREATE_TIMEOUT_MS, { lazyFetch: true });
     if (r.timedOut) {
         logFailure(log, "git worktree add timed out", r.stderr);
         throw new RpcError(`Git took too long to create the worktree. If ${target.path} was left half made, remove it with git worktree remove --force.`, "timeout");
@@ -305,11 +361,6 @@ function reachable(main: string, commit: string | undefined): boolean {
     return Boolean(runGit(main, ["for-each-ref", "--count=1", "--format=%(refname)", "--contains", commit])?.trim());
 }
 
-/** A detached HEAD's commit is kept only by the worktree's own HEAD and reflog, which go with it. */
-function unreachable(path: string): RpcError {
-    return new RpcError(`${path} is on a detached HEAD whose commit isn't on any branch. Create a branch for it first.`, "unreachable");
-}
-
 export interface Removal {
     main: string;
     /** As Git records it. */
@@ -323,7 +374,8 @@ export interface Removal {
  * worktree that isn't locked and has no session open in it (`inUse`).
  */
 export function planRemoval(o: { path: string; worktree: string; inUse: (path: string) => boolean }): Removal {
-    const repo = repoOf(resolve(o.path));
+    const cwd = resolve(o.path);
+    const repo = repoOf(cwd);
     const wanted = resolve(o.worktree);
     const index = repo.records.findIndex((r) => resolve(r.path) === wanted || canonical(r.path) === canonical(wanted));
     const record = repo.records[index];
@@ -332,30 +384,44 @@ export function planRemoval(o: { path: string; worktree: string; inUse: (path: s
     const exists = isDir(record.path);
     if (!isManaged(repo.main, record.path, exists)) throw new RpcError(`Only worktrees in ${join(repo.main, WORKTREES_DIR)} can be removed here.`, "not_managed");
     if (record.locked !== undefined) throw new RpcError(`${record.path} is locked${record.locked ? ` (${record.locked})` : ""}. Unlock it with git worktree unlock first.`, "locked");
-    if (o.inUse(record.path)) throw new RpcError(`A Harness session is open in ${record.path}. Close it first.`, "in_use");
-    if (exists) {
-        if (record.detached && !reachable(repo.main, record.head)) throw unreachable(record.path);
-    } else {
-        // Pruning drops every missing worktree that isn't locked, not just this one.
-        const lost = repo.records.find((r, i) => i > 0 && r.locked === undefined && !isDir(r.path) && r.detached && !reachable(repo.main, r.head));
-        if (lost) throw unreachable(lost.path);
-    }
+    if (o.inUse(record.path)) throw new RpcError(`A Harness session is open in ${record.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
+    // Git's status runs in the worktree itself, and runs clean filters on files whose stat changed.
+    checkConfigTrust(repo.main, exists ? [cwd, record.path] : [cwd], "remove");
+    // A detached HEAD's commit is kept only by the worktree's own HEAD and reflog, which go with it.
+    if (record.detached && !reachable(repo.main, record.head)) throw new RpcError(`${record.path} is on a detached HEAD whose commit isn't on any branch. Create a branch for it first.`, "unreachable");
     return { main: repo.main, path: record.path, exists };
 }
 
-/** `git worktree remove` without --force, so Git refuses when anything would be lost; the branch stays. A folder that's already gone is pruned. */
-export async function runRemoval(plan: Removal, log?: Log): Promise<string> {
-    if (!plan.exists) {
-        // Only Git's records go; there are no files to lose.
-        const r = await runGitAsync(plan.main, ["worktree", "prune"], REMOVE_TIMEOUT_MS);
-        if (r.code !== 0) {
-            logFailure(log, "git worktree prune failed", r.stderr);
-            throw new RpcError("Git couldn't forget the missing worktree.", "git_failed");
-        }
-        return plan.path;
+/** At most this many ignored entries are named; the token covers them all. */
+const IGNORED_SHOWN = 12;
+
+/** Ignored files and folders (collapsed to the folder) in the worktree, read without reading any contents. */
+async function ignoredEntries(path: string, log?: Log): Promise<string[]> {
+    const r = await runGitAsync(path, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], REMOVE_TIMEOUT_MS);
+    if (r.code !== 0 || r.timedOut) {
+        logFailure(log, "git ls-files for ignored files failed", r.stderr);
+        throw new RpcError("Git couldn't list the worktree's ignored files, so nothing was removed.", "git_failed");
+    }
+    return r.stdout.split("\0").filter(Boolean).sort();
+}
+
+const ignoredToken = (path: string, entries: string[]) => createHash("sha256").update([path, ...entries].join("\0")).digest("hex");
+
+/**
+ * `git worktree remove` without --force, so Git refuses when anything tracked
+ * or untracked would be lost; the branch stays. Git would delete ignored files
+ * (an .env, node_modules/) without asking, so they're listed first, and only
+ * deleted when `deleteIgnored` is the token for exactly the list the user saw.
+ * A folder that's already gone loses only its own record.
+ */
+export async function runRemoval(plan: Removal, o: { deleteIgnored?: string } = {}, log?: Log): Promise<RemoveWorktreeResult> {
+    if (plan.exists) {
+        const entries = await ignoredEntries(plan.path, log);
+        const confirm = ignoredToken(plan.path, entries);
+        if (entries.length && o.deleteIgnored !== confirm) return { removed: false, ignored: entries.slice(0, IGNORED_SHOWN), total: entries.length, confirm };
     }
     // Untracked files count even where the user's config hides them from status.
-    const r = await runGitAsync(plan.main, [...NO_HOOKS, "-c", "status.showUntrackedFiles=normal", "worktree", "remove", canonical(plan.path)], REMOVE_TIMEOUT_MS);
+    const r = await runGitAsync(plan.main, [...NO_HOOKS, "-c", "status.showUntrackedFiles=normal", "worktree", "remove", plan.exists ? canonical(plan.path) : plan.path], REMOVE_TIMEOUT_MS);
     if (r.timedOut) {
         logFailure(log, "git worktree remove timed out", r.stderr);
         throw new RpcError("Git took too long to remove the worktree.", "timeout");
@@ -367,9 +433,9 @@ export async function runRemoval(plan: Removal, log?: Log): Promise<string> {
         if (/submodule/.test(r.stderr)) throw new RpcError("Git can't remove a worktree that contains submodules.", "git_failed");
         throw new RpcError("Git couldn't remove the worktree.", "git_failed");
     }
-    return plan.path;
+    return { removed: true };
 }
 
-export async function removeWorktree(o: { path: string; worktree: string; inUse: (path: string) => boolean }, log?: Log): Promise<string> {
-    return runRemoval(planRemoval(o), log);
+export async function removeWorktree(o: { path: string; worktree: string; inUse: (path: string) => boolean; deleteIgnored?: string }, log?: Log): Promise<RemoveWorktreeResult> {
+    return runRemoval(planRemoval(o), o, log);
 }

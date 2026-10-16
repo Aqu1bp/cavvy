@@ -58,7 +58,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                             <Show when={w.managed && main()}>
                                 <button class="icon-btn wt-remove" title="Remove this worktree…" aria-label={`Remove worktree ${label(w)}`} onClick={() => {
                                     setOpen(false);
-                                    setRemoving({ main: main()!.path, worktree: w });
+                                    setRemoving({ cwd: p.cwd, main: main()!.path, worktree: w });
                                 }}>
                                     <Trash2 size={14} />
                                 </button>

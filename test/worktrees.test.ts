@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -295,7 +295,7 @@ describe("removing a worktree", () => {
 
     test("a clean worktree goes and its branch stays", async () => {
         const { main, path, branch } = await setup("remove clean");
-        expect(await removeWorktree({ path: main, worktree: path, inUse: noop })).toBe(path);
+        expect(await removeWorktree({ path: main, worktree: path, inUse: noop })).toEqual({ removed: true });
         expect(existsSync(path)).toBe(false);
         expect(listWorktrees(main).map((w) => w.path)).toEqual([main]);
         expect(git(main, "branch", "--list", branch)).toContain(branch);
@@ -355,19 +355,30 @@ describe("removing a worktree", () => {
         expect(existsSync(path)).toBe(false);
     });
 
-    test("pruning is refused while any missing worktree's detached commit is on no branch", async () => {
-        const { main, path } = await setup("remove prune guard");
+    test("a missing worktree loses only its own record, not those of others that are away (#3)", async () => {
+        const { main, path } = await setup("remove missing only");
+        const away = join(realpathSync(iso.home), "remove-missing-only-away");
+        git(main, "worktree", "add", "-b", "away", away);
+        rmSync(path, { recursive: true });
+        // Like a drive that isn't mounted right now.
+        renameSync(away, `${away}-unmounted`);
+        expect(await removeWorktree({ path: main, worktree: path, inUse: noop })).toEqual({ removed: true });
+        const left = listWorktrees(main);
+        expect(left.map((w) => w.path)).toEqual([main, away]);
+        expect(left[1]?.exists).toBe(false);
+    });
+
+    test("a missing detached worktree whose commit is on no branch is refused", async () => {
+        const main = repo("remove missing detached");
         const detached = join(managedDir(main), "lost");
         git(main, "worktree", "add", "--detach", detached);
         git(detached, "commit", "--allow-empty", "-m", "only here");
         rmSync(detached, { recursive: true });
-        rmSync(path, { recursive: true });
-        await expect(removeWorktree({ path: main, worktree: path, inUse: noop })).rejects.toMatchObject({ code: "unreachable" });
         await expect(removeWorktree({ path: main, worktree: detached, inUse: noop })).rejects.toMatchObject({ code: "unreachable" });
-        expect(listWorktrees(main)).toHaveLength(3);
+        expect(listWorktrees(main)).toHaveLength(2);
     });
 
-    test("one whose folder is already gone is pruned", async () => {
+    test("one whose folder is already gone loses its record", async () => {
         const { main, path } = await setup("remove gone");
         rmSync(path, { recursive: true });
         expect(listWorktrees(main).find((w) => w.path === path)).toMatchObject({ exists: false, managed: true });
@@ -401,7 +412,7 @@ describe("the worktree RPCs", () => {
                 await rt.close();
             }
             expect(engine.workspaces.has(made.path)).toBe(true);
-            expect(await engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path })).toBeNull();
+            expect(await engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path })).toEqual({ removed: true });
             expect(existsSync(made.path)).toBe(false);
             expect(engine.workspaces.has(made.path)).toBe(false);
         } finally { await engine.stop(); }
@@ -446,5 +457,174 @@ describe("the worktree RPCs", () => {
             await expect(engine.handle(client, "projects.removeWorktree", { path: main })).rejects.toThrow("worktree must be a string");
             expect(existsSync(join(main, ".claude"))).toBe(false);
         } finally { await engine.stop(); }
+    });
+});
+
+/** A repository whose *.txt files have `attribute` set, and a script that leaves a mark then passes its input through. */
+function withFilterScript(name: string) {
+    const main = repo(name);
+    writeFileSync(join(main, ".gitattributes"), "*.txt filter=evil\n");
+    writeFileSync(join(main, "a.txt"), "hi\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "files");
+    const mark = join(main, "..", `${name}-ran`);
+    const script = join(main, "..", `${name}-filter.sh`);
+    writeFileSync(script, `#!/bin/sh\ntouch '${mark}'\ncat\n`, { mode: 0o755 });
+    return { main, mark, script };
+}
+
+describe("review fixes", () => {
+    test("#1 removal in an untrusted project doesn't let status run the repository's clean filter", async () => {
+        const { main, mark, script } = withFilterScript("rm-clean");
+        const made = await createWorktree({ path: main, branch: "wt" });
+        git(main, "config", "filter.evil.clean", `'${script}'`);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(join(made.path, "a.txt"), later, later);
+        await expect(removeWorktree({ path: main, worktree: made.path, inUse: noop })).rejects.toMatchObject({ code: "needs_trust" });
+        expect(existsSync(mark)).toBe(false);
+        expect(existsSync(made.path)).toBe(true);
+    });
+
+    test("#1 the worktree's own per-worktree config is audited too", async () => {
+        const { main, mark, script } = withFilterScript("rm-wtconfig");
+        const made = await createWorktree({ path: main, branch: "wt" });
+        git(main, "config", "extensions.worktreeConfig", "true");
+        git(made.path, "config", "--worktree", "filter.evil.clean", `'${script}'`);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(join(made.path, "a.txt"), later, later);
+        await expect(removeWorktree({ path: main, worktree: made.path, inUse: noop })).rejects.toMatchObject({ code: "needs_trust" });
+        expect(existsSync(mark)).toBe(false);
+    });
+
+    test("#1 in a trusted project removal goes ahead", async () => {
+        const { main, script } = withFilterScript("rm-trusted");
+        const made = await createWorktree({ path: main, branch: "wt" });
+        git(main, "config", "filter.evil.clean", `'${script}'`);
+        trustFolder(main);
+        expect(await removeWorktree({ path: main, worktree: made.path, inUse: noop })).toEqual({ removed: true });
+    });
+
+    /** A partial clone (blobs fetched on demand) whose promisor remote runs a marked upload-pack. */
+    function partialClone(name: string) {
+        const src = repo(`${name}-src`);
+        writeFileSync(join(src, "f.txt"), "content\n");
+        git(src, "add", ".");
+        git(src, "commit", "-m", "f");
+        git(src, "config", "uploadpack.allowFilter", "true");
+        const pc = join(realpathSync(iso.home), `${name}-pc`);
+        git(iso.home, "clone", "-q", "--filter=blob:none", `file://${src}`, pc);
+        const mark = join(realpathSync(iso.home), `${name}-fetched`);
+        const script = join(realpathSync(iso.home), `${name}-upload-pack.sh`);
+        writeFileSync(script, `#!/bin/sh\ntouch '${mark}'\nexec git-upload-pack "$@"\n`, { mode: 0o755 });
+        git(pc, "config", "remote.origin.uploadpack", script);
+        return { pc, mark };
+    }
+    const missing = "0123456789abcdef0123456789abcdef01234567";
+
+    test("#2 in an untrusted partial clone the trust check comes before resolving the base", async () => {
+        const { pc, mark } = partialClone("pc-untrusted");
+        await expect(createWorktree({ path: pc, branch: "x1", base: missing })).rejects.toMatchObject({ code: "needs_trust" });
+        expect(existsSync(mark)).toBe(false);
+    });
+
+    test("#2 even in a trusted one, checking the base doesn't fetch", async () => {
+        const { pc, mark } = partialClone("pc-trusted");
+        trustFolder(pc);
+        await expect(createWorktree({ path: pc, branch: "x1", base: missing })).rejects.toMatchObject({ code: "bad_base" });
+        expect(existsSync(mark)).toBe(false);
+    });
+
+    test("#2 the per-worktree config of the folder the request comes from is audited", async () => {
+        const { main, mark, script } = withFilterScript("cwd-wtconfig");
+        const linked = join(realpathSync(iso.home), "cwd-wtconfig-linked");
+        git(main, "worktree", "add", "-b", "linked", linked);
+        git(main, "config", "extensions.worktreeConfig", "true");
+        git(linked, "config", "--worktree", "filter.evil.smudge", `'${script}'`);
+        await expect(createWorktree({ path: linked, branch: "next" })).rejects.toMatchObject({ code: "needs_trust" });
+        expect(existsSync(mark)).toBe(false);
+    });
+
+    test("with per-worktree config turned on but no worktree having any, nothing needs trust", async () => {
+        const main = repo("wtconfig-empty");
+        git(main, "worktree", "add", "-b", "linked", join(realpathSync(iso.home), "wtconfig-empty-linked"));
+        git(main, "config", "extensions.worktreeConfig", "true");
+        const made = await createWorktree({ path: main, branch: "wt" });
+        expect(await removeWorktree({ path: main, worktree: made.path, inUse: noop })).toEqual({ removed: true });
+    });
+
+    test("#4 ignored files aren't deleted until the user has seen exactly them", async () => {
+        const main = repo("rm-ignored");
+        writeFileSync(join(main, ".gitignore"), ".env\nnode_modules/\n*.log\n");
+        git(main, "add", ".");
+        git(main, "commit", "-m", "ignore");
+        const made = await createWorktree({ path: main, branch: "wt" });
+        writeFileSync(join(made.path, ".env"), "SECRET=1\n");
+        mkdirSync(join(made.path, "node_modules", "pkg"), { recursive: true });
+        writeFileSync(join(made.path, "node_modules", "pkg", "index.js"), "");
+        const first = await removeWorktree({ path: main, worktree: made.path, inUse: noop });
+        expect(first).toMatchObject({ removed: false, ignored: [".env", "node_modules/"], total: 2 });
+        expect(existsSync(join(made.path, ".env"))).toBe(true);
+        if (first.removed) throw new Error("unreachable");
+        // Something new appeared after the user looked: asked again.
+        writeFileSync(join(made.path, "debug.log"), "");
+        const second = await removeWorktree({ path: main, worktree: made.path, inUse: noop, deleteIgnored: first.confirm });
+        expect(second).toMatchObject({ removed: false, ignored: [".env", "debug.log", "node_modules/"], total: 3 });
+        expect(existsSync(join(made.path, ".env"))).toBe(true);
+        if (second.removed) throw new Error("unreachable");
+        expect(await removeWorktree({ path: main, worktree: made.path, inUse: noop, deleteIgnored: "0".repeat(64) })).toMatchObject({ removed: false });
+        expect(await removeWorktree({ path: main, worktree: made.path, inUse: noop, deleteIgnored: second.confirm })).toEqual({ removed: true });
+        expect(existsSync(made.path)).toBe(false);
+    });
+
+    test("#5 a filter's background child holding stderr open doesn't hold the call", async () => {
+        const main = repo("slow-filter");
+        writeFileSync(join(main, ".gitattributes"), "*.txt filter=slow\n");
+        writeFileSync(join(main, "a.txt"), "hi\n");
+        git(main, "add", ".");
+        git(main, "commit", "-m", "files");
+        git(main, "config", "filter.slow.smudge", "sh -c 'sleep 8 >/dev/null </dev/null & cat'");
+        trustFolder(main);
+        const start = Date.now();
+        const made = await createWorktree({ path: main, branch: "wt" });
+        expect(Date.now() - start).toBeLessThan(3000);
+        expect(existsSync(join(made.path, "a.txt"))).toBe(true);
+    });
+
+    test("#6 a second removal of a worktree that's being removed is refused", async () => {
+        const main = repo("rm-overlap");
+        const engine = new Engine({ listModels: async () => [] });
+        const client = { subs: new Set<string>(), send: () => {} };
+        try {
+            const made = (await engine.handle(client, "projects.createWorktree", { path: main, branch: "wt" })) as { path: string };
+            const first = engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path });
+            await expect(engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path })).rejects.toMatchObject({ code: "busy" });
+            expect(await first).toEqual({ removed: true });
+        } finally { await engine.stop(); }
+    });
+
+    test("#7 a session that's still closing in the worktree keeps it from being removed", async () => {
+        const main = repo("rm-closing");
+        const engine = new Engine({ listModels: async () => [], unloadAfterMs: 1 });
+        const client = { subs: new Set<string>(), send: () => {} };
+        engine.clients.add(client);
+        let release = () => {};
+        const gate = new Promise<void>((r) => (release = r));
+        try {
+            const made = (await engine.handle(client, "projects.createWorktree", { path: main, branch: "wt" })) as { path: string };
+            await engine.handle(client, "session.create", { cwd: made.path });
+            const rt = [...engine.runtimes.values()][0]!;
+            const close = rt.close.bind(rt);
+            rt.close = () => gate.then(close);
+            engine.dropClient(client);
+            for (let i = 0; i < 100 && engine.runtimes.size; i++) await Bun.sleep(10);
+            expect(engine.runtimes.size).toBe(0);
+            await expect(engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path })).rejects.toMatchObject({ code: "in_use" });
+            release();
+            await Bun.sleep(20);
+            expect(await engine.handle(client, "projects.removeWorktree", { path: main, worktree: made.path })).toEqual({ removed: true });
+        } finally {
+            release();
+            await engine.stop();
+        }
     });
 });
