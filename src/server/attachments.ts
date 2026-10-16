@@ -87,7 +87,7 @@ export function checkFiles(raw: unknown): FilePart[] {
     return out;
 }
 
-/** The newest message is kept whole by serializers, so its media must fit on its own. */
+/** Refuse oversized attachments early, before serializers have to leave any out. */
 export function checkMedia(parts: readonly AttachedPart[]): void {
     const total = parts.reduce((n, p) => n + (p.type === "image" || p.kind === "pdf" ? base64Size(p.data) : 0), 0);
     if (total > MEDIA_BUDGET) throw new RpcError(`PDFs and images in one message can come to ${formatBytes(MEDIA_BUDGET)} at most. Remove some.`);

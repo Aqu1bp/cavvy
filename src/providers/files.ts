@@ -79,8 +79,8 @@ const AGAIN = "the conversation carries too many attachments to send them all";
 
 /**
  * The conversation with its PDFs and images inside MEDIA_BUDGET: the newest
- * are kept (all of the latest message that has any), older ones past it
- * become a note saying so, so the model can ask for them again. Only what's
+ * take priority, in message order, and anything past the budget becomes a
+ * note saying so, so the model can ask for it again. Only what's
  * sent changes, not the transcript; the same conversation always comes out
  * the same (prompt caches match on prefix). `pdf`: whether PDFs are sent as
  * documents at all (if not, they're a note anyway and cost nothing).
@@ -95,20 +95,23 @@ export function fitMedia(messages: Message[], pdf: boolean, budget = MEDIA_BUDGE
         const sizes = m.content.map((p) => mediaSize(p, pdf));
         const total = sizes.reduce((a, b) => a + b, 0);
         if (!total) continue;
-        if (newest || used + total <= budget) {
-            newest = false;
+        const earlier = newest ? "" : " earlier";
+        const anymore = newest ? "" : " any more";
+        const reason = newest ? "too much to send in one request" : AGAIN;
+        newest = false;
+        if (used + total <= budget) {
             used += total;
             continue;
         }
         const fits = (n: number) => (used + n <= budget ? ((used += n), true) : false);
         const content = m.content.map((p, j): UserContent => {
             if (!sizes[j]) return p;
-            if (p.type === "image") return fits(sizes[j]!) ? p : { type: "text", text: `[An image the user attached earlier isn't included any more: ${AGAIN}. Ask them to attach it again if you need it.]` };
-            if (p.type === "file" && p.kind === "pdf") return fits(sizes[j]!) ? p : { type: "text", text: `[The user attached ${frameName(p.name)} earlier; it isn't included any more: ${AGAIN}. Ask them to attach it again if you need it.]` };
+            if (p.type === "image") return fits(sizes[j]!) ? p : { type: "text", text: `[An image the user attached${earlier} isn't included${anymore}: ${reason}. Ask them to attach it again if you need it.]` };
+            if (p.type === "file" && p.kind === "pdf") return fits(sizes[j]!) ? p : { type: "text", text: `[The user attached ${frameName(p.name)}${earlier}; it isn't included${anymore}: ${reason}. Ask them to attach it again if you need it.]` };
             if (p.type === "tool_result") {
                 const images = (p.images ?? []).filter((img) => fits(base64Size(img.data)));
                 const gone = (p.images?.length ?? 0) - images.length;
-                return gone ? { ...p, images, content: `${p.content}\n[${gone === 1 ? "An image" : `${gone} images`} this returned ${gone === 1 ? "isn't" : "aren't"} included any more: ${AGAIN}.]` } : p;
+                return gone ? { ...p, images, content: `${p.content}\n[${gone === 1 ? "An image" : `${gone} images`} this returned ${gone === 1 ? "isn't" : "aren't"} included${anymore}: ${reason}.]` } : p;
             }
             return p;
         });

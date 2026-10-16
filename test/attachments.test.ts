@@ -13,9 +13,9 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { RpcError } = await import("../src/server/rpc-error");
-const { checkFiles, sanitizeName } = await import("../src/server/attachments");
+const { checkFiles, checkMedia, sanitizeName } = await import("../src/server/attachments");
 const { framedText, readsPdf, attachmentsNote, fitMedia } = await import("../src/providers/files");
-const { MEDIA_BUDGET } = await import("../src/util/media");
+const { MEDIA_BUDGET, base64Size } = await import("../src/util/media");
 const { OpenAICompatProvider } = await import("../src/providers/openai-compat");
 const { Agent } = await import("../src/agent/agent");
 const { PermissionChecker } = await import("../src/permissions/checker");
@@ -29,8 +29,9 @@ const { Session, findSessionAnywhere } = await import("../src/agent/session");
 const { redactedJson, registerSecret } = await import("../src/util/redact");
 const { App } = await import("../src/ui/app");
 const { stripAnsi } = await import("../src/ui/ansi");
+const { expandMentions } = await import("../src/ui/mentions");
 const gui = await import("../gui/src/lib/attachments");
-import type { FilePart, Message, UserMessage } from "../src/providers/types";
+import type { FilePart, Message, ToolResultPart, UserMessage } from "../src/providers/types";
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
@@ -659,7 +660,7 @@ describe("conversation-wide limits, and the user's own words", () => {
         }
     }, 60_000);
 
-    test("the budget counts images too, the newest message always goes whole, and the result is the same every time", () => {
+    test("the budget counts images too, keeps a newest message that fits whole, and is deterministic", () => {
         const img = (mb: number) => ({ type: "image" as const, mediaType: "image/png", data: b64(Buffer.alloc(mb * 1024 * 1024, 1)) });
         const msgs: Message[] = [
             { role: "user", content: [{ type: "text", text: "old" }, img(9)], meta: { kind: "prompt" } },
@@ -680,6 +681,56 @@ describe("conversation-wide limits, and the user's own words", () => {
         const r = fitMedia(two, true)[0]!.content[0] as { images: unknown[]; content: string };
         expect(r.images).toEqual([]);
         expect(r.content).toBe("shot\n[An image this returned isn't included any more: the conversation carries too many attachments to send them all.]");
+    });
+
+    test("PDFs plus @mentioned images in the newest prompt stay inside the request budget", () => {
+        const cwd = tempDir();
+        const image = Buffer.alloc(3 * 1024 * 1024, 1);
+        for (const name of ["a.png", "b.png"]) writeFileSync(join(cwd, name), image);
+        const pdf = Buffer.alloc(10 * 1024 * 1024, 0x20);
+        pdf.write("%PDF-1.4\n");
+        const files = checkFiles(["a.pdf", "b.pdf"].map((name) => ({ name, data: b64(pdf) })));
+        expect(() => checkMedia(files)).not.toThrow();
+        // Runtime expands mentions after the send checks, then appends the attached files.
+        const { parts, attached } = expandMentions("Read @a.png @b.png", { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, [cwd]);
+        expect(attached).toEqual(["a.png", "b.png"]);
+        const msgs: Message[] = [{ role: "user", content: [...parts, ...files], meta: { kind: "prompt" } }];
+        const fitted = fitMedia(msgs, true);
+        expect(fitted[0]!.content.slice(0, 4)).toEqual([...parts, files[0]!]);
+        expect(fitted[0]!.content[4]).toEqual({ type: "text", text: expect.stringContaining("The user attached b.pdf; it isn't included: too much to send in one request") });
+        const media = fitted[0]!.content.reduce((n, p) => n + (p.type === "image" || (p.type === "file" && p.kind === "pdf") ? base64Size(p.data) : 0), 0);
+        expect(media).toBe(16 * 1024 * 1024);
+        expect(media).toBeLessThanOrEqual(MEDIA_BUDGET);
+        expect(JSON.stringify(toAnthropicMessages(fitted)).length).toBeLessThan(28 * 1024 * 1024);
+        expect(msgs[0]!.content).toEqual([...parts, ...files]); // Stored attachments are untouched.
+        // If the PDFs come first, they fit exactly and the images become notes instead.
+        const pdfFirst = fitMedia([{ role: "user", content: [...files, ...parts] }], true)[0]!;
+        expect(pdfFirst.content.slice(0, 2)).toEqual(files);
+        for (const p of pdfFirst.content.slice(3)) expect(p).toEqual({ type: "text", text: expect.stringContaining("An image the user attached isn't included: too much to send in one request") });
+    });
+
+    test("an oversized newest MCP tool result keeps images in order within the hard budget", () => {
+        const images = [12, 10, 8].map((mb) => ({ type: "image" as const, mediaType: "image/png", data: b64(Buffer.alloc(mb * 1024 * 1024, mb)) }));
+        const result: ToolResultPart = { type: "tool_result", toolCallId: "c", toolName: "mcp__screenshots", content: "Screenshots returned", images };
+        const msgs: Message[] = [
+            { role: "user", content: [{ type: "image", mediaType: "image/png", data: PNG }] },
+            { role: "assistant", content: [{ type: "tool_call", id: "c", name: "mcp__screenshots", input: {} }] },
+            { role: "user", content: [result], meta: { kind: "tool_results" } },
+        ];
+        const fitted = fitMedia(msgs, true);
+        const kept = fitted[2]!.content[0] as ToolResultPart;
+        expect(kept.images).toEqual([images[0]!, images[2]!]);
+        expect(kept.images!.reduce((n, img) => n + base64Size(img.data), 0)).toBe(MEDIA_BUDGET);
+        expect(kept.content).toBe("Screenshots returned\n[An image this returned isn't included: too much to send in one request.]");
+        expect(fitted[0]!.content[0]).toEqual({ type: "text", text: expect.stringContaining("attached earlier isn't included any more") });
+        expect(JSON.stringify(toAnthropicMessages(fitted)).length).toBeLessThan(28 * 1024 * 1024);
+        expect(fitMedia(msgs, true)).toEqual(fitted);
+        expect(result.images).toBe(images);
+        expect(result.content).toBe("Screenshots returned");
+        // Even a single image bigger than the entire budget must be omitted.
+        const allGone = fitMedia(msgs, true, 1)[2]!.content[0] as ToolResultPart;
+        expect(allGone.images).toEqual([]);
+        expect(allGone.content).toContain("3 images this returned aren't included: too much to send in one request");
     });
 
     test("a long paste reads as part of the user's message; an attached file stays data", () => {
