@@ -11,7 +11,11 @@ export interface SimpleCommand {
     argv: string[];
     /** The operator before it: ";", "\n", "&&", "||", "|" or "&" (none for the first). */
     after?: string;
-    /** A redirection on it opens a file (`< f`, `> f`, `2>> f`): the shell can fail on that before it runs. */
+    /**
+     * A redirection on it opens a file (`< f`, `> f`, `2>> f`) or copies a
+     * descriptor past stderr (`<&9`, `>&3`, closed unless something opened
+     * it): the shell can fail on that before it runs.
+     */
     opensFile?: true;
 }
 
@@ -210,8 +214,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 wordStarted = false;
             }
             endWord();
-            // `< f` and `<> f` open a file; `<<`, `<<<` and `<&3` don't.
-            if (c === "<" && n !== "<" && cmd[i - 1] !== "<" && n !== "&" && n !== "(") opensFile = true;
+            // `< f` and `<> f` open a file, `<&9` needs fd 9 open; `<<`, `<<<`, `<&0` and `<&-` can't fail.
+            if (c === "<" && n !== "<" && cmd[i - 1] !== "<" && n !== "(" && !(n === "&" && /^&([012]|-)(?![0-9])/.test(cmd.slice(i + 1)))) opensFile = true;
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
             if (c === ">") {
@@ -220,8 +224,9 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 if (cmd[j] === ">" || cmd[j] === "|") j++;
                 const fd = cmd[j] === "&" ? /^(\d+|-)(?=$|[ \t\n;|&)<>])/.exec(cmd.slice(j + 1)) : null;
                 if (fd) {
-                    // >&2 / >&- style: fd duplication or close, harmless
+                    // >&2 / >&- style: fd duplication or close, harmless; past stderr (>&3) only if it's open
                     end = j + fd[0].length;
+                    if (!/^([012]|-)$/.test(fd[1]!)) opensFile = true;
                 } else {
                     if (cmd[j] === "&") j++; // `>&file` sends stdout and stderr to a file
                     while (cmd[j] === " " || cmd[j] === "\t") j++;

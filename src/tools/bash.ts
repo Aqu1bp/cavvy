@@ -16,8 +16,15 @@ export { childEnv };
 const MAX_OUTPUT = 30_000;
 /** Kept of a command's output before the rest is dropped. */
 const MAX_KEPT = MAX_OUTPUT * 20;
-/** The shell's own error (a glob with no match, a file it couldn't open, a missing command): then status 1 may be the shell's. */
-const SHELL_ERROR = /^(?:\S*\/)?(?:zsh|bash|sh|dash|ksh|\(eval\))(?::\d+)?: /m;
+/**
+ * The shell's own error (a glob with no match, a file it couldn't open, a
+ * missing command), anywhere: after output with no newline it starts mid-line
+ * (`Checking... zsh:1: no matches found`). Then status 1 may be the shell's.
+ */
+function shellComplained(output: string, shell = pickShell()): boolean {
+    const name = (shell.split("/").pop() ?? "").replace(/[^\w.-]/g, "");
+    return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `).test(output);
+}
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
@@ -247,7 +254,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
         // A last grep that found nothing exits 1: that's the answer, not a failure of what came before it.
         // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have.
-        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.output.length < MAX_KEPT && !SHELL_ERROR.test(stripAnsi(res.output)) ? finalSearch(input.command) : undefined;
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
         else if (search) {

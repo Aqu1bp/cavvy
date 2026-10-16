@@ -358,6 +358,13 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["grep x f > /no/such/dir/out", undefined],
         ["grep x f 2>err.log", undefined],
         ["cat < f | grep x", undefined],
+        // A descriptor past stderr is closed unless something opened it.
+        ["grep x 2>/dev/null <&9", undefined],
+        ["grep x f >&3", undefined],
+        ["grep x f 1>&3", undefined],
+        ["grep x f 2>&1", "grep"],
+        ["grep x <&0", "grep"],
+        ["grep x f 2>&-", "grep"],
         // Negated: 1 is a match.
         ["! cat package.json | grep -q name", undefined],
         ["time ! cat f | grep x", undefined],
@@ -410,7 +417,7 @@ describe("a last grep that finds nothing isn't an error", () => {
 
     test("a 1 that isn't grep's stays an error", async () => {
         // grep never ran: the shell couldn't open its input, or output file.
-        for (const cmd of ["grep x < /no/such/file", "grep x 2>/dev/null < /no/such/file", "grep x /dev/null > /no/such/dir/out"]) {
+        for (const cmd of ["grep x < /no/such/file", "grep x 2>/dev/null < /no/such/file", "grep x /dev/null > /no/such/dir/out", "grep x 2>/dev/null <&9"]) {
             const r = await bash(cmd);
             expect(r.isError).toBe(true);
             expect(r.content).toContain("Exit code: 1");
@@ -424,6 +431,10 @@ describe("a last grep that finds nothing isn't an error", () => {
         const glob = await bash("grep x *.nomatchglob");
         expect(glob.isError).toBe(true);
         expect(glob.content).not.toContain("found no matches");
+        // Its complaint mid-line, after output with no newline.
+        const midLine = await bash("printf 'Checking... ' >&2; grep x *.nomatchglob");
+        expect(midLine.isError).toBe(true);
+        expect(midLine.content).not.toContain("found no matches");
     });
 
     test("a piped grep's 1 says what came before it may have failed", async () => {
