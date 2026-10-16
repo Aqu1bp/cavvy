@@ -155,8 +155,9 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         // Not a session message, so redact here (WebFetch pages, reviewer prompts).
         const res = await s.client.stream({ model: s.model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) }, () => {});
         if (res.usage) {
-            const c = costOf(res.usage, s.model).usd;
-            session.recordUsage(modelRef(s.model), res.usage, c);
+            const est = costOf(res.usage, s.model);
+            const c = est.usd;
+            session.recordUsage(modelRef(s.model), res.usage, c, est.unknown);
             totalCost += c;
             totalUsage = addUsage(totalUsage, res.usage);
         }

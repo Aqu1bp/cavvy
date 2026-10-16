@@ -55,6 +55,19 @@ export function redactMessage(m: Message): Message {
     return changed ? { ...m, content } : m;
 }
 
+/**
+ * How a turn ended when that isn't in the conversation itself (an error, the
+ * output limit, max turns): shown when the session is opened again, never
+ * sent to a model. `index` is how many messages there were when it happened,
+ * so it belongs to the turn of the prompt before it.
+ */
+export interface TurnNotice {
+    index: number;
+    level: "info" | "warn" | "error";
+    text: string;
+    at: number;
+}
+
 type Line =
     | ({ t: "meta" } & SessionMeta)
     | { t: "msg"; m: Message }
@@ -63,7 +76,9 @@ type Line =
     | { t: "title"; title: string }
     | { t: "compact"; summary: string }
     | { t: "rewind"; count: number }
-    | { t: "usage"; usage: Usage; cost: number; model: string }
+    /** unknown: no price was known for this usage, so cost (0) leaves it out. */
+    | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true }
+    | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
     | { t: "backend"; provider: string; id: string | null; synced?: number };
 
@@ -98,9 +113,13 @@ export class Session {
     summary?: string;
     /** USD spent in this session (estimates included). */
     cost = 0;
-    usageByModel = new Map<string, { usage: Usage; cost: number }>();
+    /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
+    costUnknown = false;
+    usageByModel = new Map<string, { usage: Usage; cost: number; unknown?: boolean }>();
     /** Agent backends' own sessions, by provider. */
     backends = new Map<string, BackendSession>();
+    /** How turns of the current history ended, where the messages don't say (see TurnNotice). */
+    notices: TurnNotice[] = [];
     private file: string;
     private persist: boolean;
 
@@ -199,14 +218,24 @@ export class Session {
         this.write({ t: "title", title });
     }
 
-    recordUsage(model: string, usage: Usage, cost: number) {
-        this.accumulate(model, usage, cost);
-        this.write({ t: "usage", usage, cost, model });
+    /** Keep a note of how the current turn ended (redacted, like everything written). */
+    recordNotice(level: TurnNotice["level"], text: string) {
+        const n: TurnNotice = { index: this.messages.length, level, text: redact(text), at: Date.now() };
+        this.notices.push(n);
+        this.write({ t: "notice", ...n });
     }
 
-    private accumulate(model: string, usage: Usage, cost: number) {
+    /** `unknown`: no price is known for it (`cost` is then 0, which doesn't mean free). */
+    recordUsage(model: string, usage: Usage, cost: number, unknown = false) {
+        this.accumulate(model, usage, cost, unknown);
+        this.write({ t: "usage", usage, cost, model, ...(unknown ? { unknown: true as const } : {}) });
+    }
+
+    private accumulate(model: string, usage: Usage, cost: number, unknown: boolean) {
         this.cost += cost;
-        const cur = this.usageByModel.get(model) ?? { usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, cost: 0 };
+        if (unknown) this.costUnknown = true;
+        const cur: { usage: Usage; cost: number; unknown?: boolean } = this.usageByModel.get(model) ?? { usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, cost: 0 };
+        if (unknown) cur.unknown = true;
         cur.usage.inputTokens += usage.inputTokens;
         cur.usage.outputTokens += usage.outputTokens;
         cur.usage.cacheReadTokens = (cur.usage.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0);
@@ -241,6 +270,7 @@ export class Session {
      */
     rewind(count: number) {
         this.messages = this.messages.slice(0, count);
+        this.notices = noticesUpTo(this.notices, count);
         this.dropBackendsAfter(count);
         this.write({ t: "rewind", count });
     }
@@ -248,6 +278,7 @@ export class Session {
     /** Replace history with a compacted version. Backend sessions start over from the summary. */
     compact(summary: string, messages: Message[]) {
         this.messages = [];
+        this.notices = [];
         this.backends.clear();
         this.summary = summary;
         this.write({ t: "compact", summary });
@@ -298,12 +329,18 @@ export class Session {
             if (l.t === "msg") s.messages.push(l.m);
             else if (l.t === "compact") {
                 s.messages = [];
+                s.notices = [];
                 s.backends.clear();
                 s.summary = l.summary;
             }
             else if (l.t === "rewind") {
                 s.messages = s.messages.slice(0, l.count);
+                s.notices = noticesUpTo(s.notices, l.count);
                 s.dropBackendsAfter(l.count);
+            }
+            else if (l.t === "notice") {
+                const n = turnNotice(l);
+                if (n) s.notices.push(n);
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
@@ -313,11 +350,23 @@ export class Session {
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
-            else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost);
+            else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
         }
         repairTail(s);
         return s;
     }
+}
+
+/** A notice line as read from disk, or undefined if it isn't one. */
+export function turnNotice(l: Partial<TurnNotice>): TurnNotice | undefined {
+    if (typeof l.text !== "string" || typeof l.index !== "number") return undefined;
+    const level = l.level === "error" || l.level === "warn" ? l.level : "info";
+    return { index: l.index, level, text: l.text, at: typeof l.at === "number" ? l.at : 0 };
+}
+
+/** The notices of the turns a rewind to `count` messages keeps. */
+export function noticesUpTo(notices: TurnNotice[], count: number): TurnNotice[] {
+    return notices.filter((n) => n.index <= count);
 }
 
 // ---------------------------------------------------------------------------
@@ -594,7 +643,7 @@ function sessionHead(file: string): SessionHead {
         let wanted: boolean | undefined;
         const decide = () => {
             const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend)"/.test(prefix);
+            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice)"/.test(prefix);
             if (!wanted) parts = [Buffer.from(prefix, "latin1")];
         };
         for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {

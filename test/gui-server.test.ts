@@ -212,7 +212,7 @@ describe("connecting", () => {
     });
 
     // These start one request while another is half way, so they talk to the engine directly.
-    async function engineWithSession(o: { unloadAfterMs?: number } = {}) {
+    async function engineWithSession(o: { unloadAfterMs?: number; log?: (msg: string) => void } = {}) {
         const { Engine } = await import("../src/server/engine");
         const engine = new Engine(o);
         const c = { subs: new Set<string>(), send() {} };
@@ -288,6 +288,186 @@ describe("connecting", () => {
         expect(mock.requests.slice(before).filter((r) => r.kind !== "title").map((r) => r.model)).toEqual(["mock-haiku"]);
         await engine.stop();
     });
+
+    test("a turn that failed shows why when the session is opened again", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "reject400 this one" });
+            await whenIdle(rt);
+            await engine.handle(c, "session.close", { id });
+            const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
+            const t = snap.turns.at(-1)!;
+            expect(t.prompt?.text).toBe("reject400 this one");
+            expect(t.status).toBe("error");
+            expect(t.blocks.filter((b) => b.t === "notice").map((b) => (b as Extract<Block, { t: "notice" }>).text)).toEqual(["Mock: Invalid request: the mock refuses this one (400)"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("spend on a model with no known price shows as unknown, then and after reopening", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "first prompt" });
+            await whenIdle(rt);
+            // The mock's models have no prices.
+            expect(rt.snapshot().state).toMatchObject({ cost: 0, costUnknown: true });
+            await engine.handle(c, "session.close", { id });
+            const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
+            expect(snap.state).toMatchObject({ cost: 0, costUnknown: true });
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a greeting doesn't name the session, and a title that failed is asked for again: the next real prompt names it", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        const titles = () => mock.requests.filter((r) => r.kind === "title").length;
+        const titled = async () => {
+            for (let i = 0; i < 100 && !rt.session.title; i++) await Bun.sleep(20);
+        };
+        try {
+            const before = titles();
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            await engine.handle(c, "session.send", { id, text: "hello there!" });
+            await whenIdle(rt);
+            expect(titles()).toBe(before);
+            // This one is asked about, and the request fails.
+            await engine.handle(c, "session.send", { id, text: "an untitled one" });
+            await whenIdle(rt);
+            for (let i = 0; i < 100 && titles() === before; i++) await Bun.sleep(20);
+            await Bun.sleep(50);
+            expect(rt.session.title).toBeUndefined();
+            await engine.handle(c, "session.send", { id, text: "explain the layout" });
+            await whenIdle(rt);
+            await titled();
+            expect(rt.session.title).toBe("Explain the layout");
+            expect(titles()).toBe(before + 2);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a title that fails every try comes from the first prompt that said something, and each failure is logged", async () => {
+        const logged: string[] = [];
+        const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
+        const titles = () => mock.requests.filter((r) => r.kind === "title").length;
+        try {
+            const before = titles();
+            for (const [i, text] of ["untitled: fix the login bug", "an untitled second", "still untitled"].entries()) {
+                await engine.handle(c, "session.send", { id, text });
+                await whenIdle(rt);
+                for (let k = 0; k < 100 && logged.length <= i; k++) await Bun.sleep(20);
+                expect(logged[i]).toContain(`no title (try ${i + 1} of 3)`);
+                if (i < 2) expect(rt.session.title).toBeUndefined();
+            }
+            for (let k = 0; k < 100 && !rt.session.title; k++) await Bun.sleep(20);
+            expect(rt.session.title).toBe("Untitled: fix the login bug");
+            expect(titles()).toBe(before + 3);
+            // Named: no more asking.
+            await engine.handle(c, "session.send", { id, text: "explain the layout" });
+            await whenIdle(rt);
+            await Bun.sleep(50);
+            expect(titles()).toBe(before + 3);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    for (const provider of ["claude-code", "codex"] as const)
+    test(`a ${provider} session with no smallModel is named from its prompt: ${provider} can't be asked for a title`, async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig(provider, { path: provider === "codex" ? fakeCodex() : fakeClaude() });
+        process.env.FAKE_SCENARIO = provider === "codex" ? "cmd" : "silent";
+        const logged: string[] = [];
+        const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
+        const titles = () => mock.requests.filter((r) => r.kind === "title").length;
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: `${provider}:default`, persist: false });
+            expect(rt.model?.provider).toBe(provider);
+            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+            const before = titles();
+            await engine.handle(c, "session.send", { id, text: "## map the auth module\nand say how sign-in strategies are registered" });
+            for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
+            expect(rt.session.title).toBe("Map the auth module");
+            expect(titles()).toBe(before);
+            expect(logged).toEqual([]);
+        } finally {
+            await engine.stop();
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig(provider);
+        }
+    }, 30_000);
+
+    test("a title made from the prompt has no key in it, cut or capitalized", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const secret = "abcdefghijklmnopqrstuvwx";
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "silent";
+        registerSecret(secret, "test-key");
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: "claude-code:default", persist: false });
+            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+            // First (it would be capitalized), and long enough to be cut in the middle.
+            await engine.handle(c, "session.send", { id, text: `${secret} investigate auth, then ${secret}${secret} and more words after it` });
+            for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
+            const title = rt.session.title!;
+            expect(title).toStartWith("[REDACTED test-key] investigate auth");
+            expect(title.toLowerCase()).not.toContain(secret.slice(0, 8));
+        } finally {
+            await engine.stop();
+            unregisterSecret(secret);
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }, 30_000);
+
+    test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const { engine, c, id } = await engineWithSession();
+        const before = mock.requests.length;
+        await engine.handle(c, "session.send", { id, text: "hangforever please" });
+        for (let i = 0; i < 200 && !mock.requests.slice(before).some((r) => r.kind === "turn"); i++) await Bun.sleep(10);
+        await engine.stop();
+        const lines = readFileSync(findSessionAnywhere(id)!, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+        const last = lines.filter((l) => l.t === "msg").at(-1);
+        expect(last.m.meta.kind).toBe("interrupt");
+    });
+
+    test("a turn still stopping when the server stops has its interrupt noted for it, once", async () => {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        const { closeTiming } = await import("../src/server/runtime");
+        const { engine, c, id, rt } = await engineWithSession();
+        rt.ws.settings.permissions = { allow: ["Bash"] };
+        // Closing outlasts the command, which stops 2s after SIGTERM (SIGKILL).
+        rt.ws.settings.hooks = { SessionEnd: [{ command: "sleep 3" }] };
+        const saved = closeTiming.turnMs;
+        closeTiming.turnMs = 200;
+        try {
+            await engine.handle(c, "session.send", { id, text: "stubborn please" });
+            const running = () => rt.snapshot().turns.at(-1)?.blocks.some((b) => b.t === "tool" && b.status === "running");
+            for (let i = 0; i < 300 && !running(); i++) await Bun.sleep(10);
+            expect(running()).toBe(true);
+            await Bun.sleep(100);
+            await engine.stop();
+            const msgs = readFileSync(findSessionAnywhere(id)!, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => l.t === "msg").map((l) => l.m);
+            const call = msgs.findIndex((m) => m.role === "assistant" && m.content.some((p: any) => p.type === "tool_call"));
+            expect(call).toBeGreaterThan(0);
+            // Its call answered, and the interrupt, as the turn would have; nothing after it.
+            expect(msgs.slice(call + 1)).toHaveLength(1);
+            const last = msgs.at(-1);
+            expect(last.meta.kind).toBe("tool_results");
+            expect(last.content[0]).toMatchObject({ type: "tool_result", toolName: "Bash", isError: true });
+            expect(last.content.at(-1).text).toBe("[Request interrupted by user for tool use]");
+        } finally {
+            closeTiming.turnMs = saved;
+        }
+    }, 20_000);
 
     test("a session opened again while it's being closed waits for that", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();

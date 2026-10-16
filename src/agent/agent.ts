@@ -183,6 +183,10 @@ export interface AgentOptions {
 }
 
 const MAX_RETRIES = 10;
+/** Requests that got nothing back for minutes (sse.ts) are tried this many more times. */
+const MAX_STALL_RETRIES = 2;
+/** After the results of tools a turn was stopped in. */
+const TOOL_INTERRUPT = "[Request interrupted by user for tool use]";
 /** Starts the text of a message the user sent while tools were running. */
 const STEERING = "The user sent this message while you were working:\n";
 
@@ -251,15 +255,57 @@ function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
 }
 
+/** Notes that say where something is now: only the latest of each kind matters. */
+type StateKind = "mode" | "model";
+
+interface PendingNote {
+    text: string;
+    kind?: StateKind;
+    /** For a state note: where it was when the model last heard ("" when that's unknown, after a rewind). */
+    from?: string;
+}
+
+const PLAN_NOTE =
+    "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.";
+
+/** What the model hears when the mode went from `from` (as it last heard) to `to`. */
+function modeNote(from: string, to: PermissionMode): string {
+    if (to === "plan") return PLAN_NOTE;
+    if (from === "plan") return `Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`;
+    return `The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`;
+}
+
+/** Which state a note (a reminder's text) reports, this version's wording or an earlier one's. */
+function stateKind(note: string): StateKind | undefined {
+    if (/^(Plan mode is now active\.|Plan mode has ended\.|The user switched the permission mode to |The permission mode is ")/.test(note)) return "mode";
+    if (/^(The user switched the model to |You are running as )/.test(note)) return "model";
+    return undefined;
+}
+
+/**
+ * A message without its notes on the mode or model: in the transcript a
+ * backend is given of turns it missed they're stale ("You are now running
+ * as" another model), and its own turn says where things are now.
+ */
+function withoutStateNotes(m: Message): Message {
+    if (m.role !== "user") return m;
+    const content = m.content.filter((p) => p.type !== "text" || !promptNotes({ ...m, content: [p] }).some((n) => stateKind(n)));
+    return content.length === m.content.length ? m : { ...m, content };
+}
+
 export class Agent {
     readonly session: Session;
     model: ModelInfo;
     client: ProviderClient;
     readonly state: ToolState;
-    private pendingReminders: string[] = [];
+    private pendingReminders: PendingNote[] = [];
+    /** Why the model call is being retried right now (shown if the user stops it meanwhile). */
+    private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
     private running = false;
+    /** This turn's prompt is in the session. */
+    private prompted = false;
     /** Prompt tokens of the most recent request (context usage). */
     contextTokens = 0;
     private lastUsageTotal = 0;
@@ -303,7 +349,18 @@ export class Agent {
 
     /** Queue a note for the model, delivered with the next user message. */
     addReminder(text: string) {
-        this.pendingReminders.push(text);
+        this.pendingReminders.push({ text });
+    }
+
+    /**
+     * A note of where the mode or model is now, replacing one of the same kind
+     * not sent yet: the model hears the current state once, not each step on
+     * the way (and nothing if it's back where the model last heard it was).
+     */
+    private noteState(kind: StateKind, from: string, to: string, text: (from: string) => string) {
+        const origin = this.pendingReminders.find((r) => r.kind === kind)?.from ?? from;
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== kind);
+        if (origin !== to) this.pendingReminders.push({ kind, from: origin, text: text(origin) });
     }
 
     noteModeChange(from: PermissionMode, to: PermissionMode) {
@@ -312,15 +369,13 @@ export class Agent {
         // sub-agents running on Claude Code or Codex, each in its own mode (a read-only one stays read-only).
         if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
         for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(to);
-        if (to === "plan") {
-            this.addReminder(
-                "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.",
-            );
-        } else if (from === "plan") {
-            this.addReminder(`Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`);
-        } else {
-            this.addReminder(`The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`);
-        }
+        this.noteState("mode", from, to, (origin) => modeNote(origin, to));
+    }
+
+    /** The user picked another model (`from` is the one before, provider:id). */
+    noteModelChange(from: string, to: ModelInfo) {
+        const ref = modelRef(to);
+        this.noteState("model", from, ref, () => `The user switched the model to ${to.name ?? to.id} (${ref}). You are now running as this model.`);
     }
 
     /** The system prompt as sent: the session's, plus --append-system-prompt. */
@@ -370,6 +425,7 @@ export class Agent {
     async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
+        this.prompted = false;
         // Interrupting a turn stops the delegated tasks still running, those in the background too
         // (delegated on an earlier turn, maybe before a switch to another model).
         const onAbort = () => this.cancelTasks();
@@ -379,6 +435,7 @@ export class Agent {
         } finally {
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
+            this.prompted = false;
         }
     }
 
@@ -404,8 +461,9 @@ export class Agent {
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
-        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r));
+        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint: this.checkpoint() } });
+        this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
         if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal);
@@ -415,22 +473,27 @@ export class Agent {
         let pauses = 0;
         let stopHookRounds = 0;
         let overflowCompacted = false;
+        /** The model has said or done something this turn. */
+        let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
 
         while (true) {
             if (signal.aborted) return this.interrupted(false);
             if (++turns > maxTurns) {
-                this.emit({ type: "notice", level: "warn", message: `Stopped after ${maxTurns} model turn${maxTurns === 1 ? "" : "s"} (max turns).` });
+                this.endNotice("warn", `Stopped after ${maxTurns} model turn${maxTurns === 1 ? "" : "s"} (max turns).`);
                 this.emit({ type: "turn_end", reason: "max_turns" });
                 return "max_turns";
             }
 
             if (this.shouldAutoCompact()) {
-                const ok = await this.compact({ auto: true, signal, continuing: true }).catch((e) => {
-                    if (isAbort(e, signal)) throw e;
+                let ok = false;
+                try {
+                    ok = await this.compact({ auto: true, signal, continuing: true });
+                } catch (e) {
+                    // Stopped while compacting: an interrupt like any other, not an unexpected error.
+                    if (isAbort(e, signal)) return this.interrupted(false);
                     this.emit({ type: "notice", level: "warn", message: `Auto-compact failed: ${(e as Error).message}` });
-                    return false;
-                });
+                }
                 if (ok) overflowCompacted = true;
             }
 
@@ -448,7 +511,7 @@ export class Agent {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
                 }
-                this.emit({ type: "notice", level: "error", message: redact((e as Error).message || String(e)) });
+                this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
             }
@@ -463,6 +526,7 @@ export class Agent {
             if (msg.usage) this.recordUsage(msg.usage);
 
             const calls = toolCallsOf(msg);
+            if (calls.length || textOf(msg).trim()) answered = true;
 
             if (msg.stopReason === "pause_turn" && !calls.length && pauses++ < 5) continue;
 
@@ -478,12 +542,12 @@ export class Agent {
                     meta: { kind: "tool_results" },
                 });
                 if (msg.stopReason === "refusal") {
-                    this.emit({ type: "notice", level: "warn", message: "The model declined to continue this request." });
+                    this.endNotice("warn", "The model declined to continue this request.");
                     this.emit({ type: "turn_end", reason: "done" });
                     return "done";
                 }
                 if (++maxTokenStrikes >= 3) {
-                    this.emit({ type: "notice", level: "error", message: "The model kept hitting the output token limit. Try raising maxOutputTokens or asking for smaller steps." });
+                    this.endNotice("error", "The model kept hitting the output token limit. Try raising maxOutputTokens or asking for smaller steps.");
                     this.emit({ type: "turn_end", reason: "error" });
                     return "error";
                 }
@@ -492,8 +556,10 @@ export class Agent {
             }
 
             if (!calls.length) {
-                if (msg.stopReason === "max_tokens") this.emit({ type: "notice", level: "warn", message: "Response was cut off at the output token limit." });
-                else if (msg.stopReason === "refusal") this.emit({ type: "notice", level: "warn", message: "The model declined this request." });
+                if (msg.stopReason === "max_tokens") this.endNotice("warn", "Response was cut off at the output token limit.");
+                else if (msg.stopReason === "refusal") this.endNotice("warn", "The model declined this request.");
+                // Nothing at all came back this turn: say so rather than end it blank.
+                else if (!answered && !textOf(msg).trim()) this.endNotice("warn", `${this.model.name ?? this.model.id} sent back an empty response${msg.stopReason === "end_turn" ? "" : ` (stop reason: ${msg.stopReason})`}. Try again, or another model.`);
 
                 // Messages typed while the model was answering: deliver them now.
                 const queued = this.o.host.drainQueued?.() ?? [];
@@ -521,7 +587,7 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = this.toolHookContext.splice(0).map(reminder);
-            if (signal.aborted) extra.push({ type: "text", text: "[Request interrupted by user for tool use]" });
+            if (signal.aborted) extra.push({ type: "text", text: TOOL_INTERRUPT });
             else {
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
@@ -551,23 +617,67 @@ export class Agent {
      */
     rewind(index: number) {
         if (this.running) throw new Error("Agent is already running");
-        const prompt = this.session.messages[index];
+        const dropped = this.session.messages.slice(index);
+        const prompt = dropped[0];
         this.session.rewind(index);
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
         resetToolState(this.state, this.session.messages);
         this.o.classifier?.clearCache();
-        if (prompt?.role === "user") this.pendingReminders.unshift(...promptNotes(prompt));
+        // Notes about the mode or model aren't queued again as they were: what's current is said instead.
+        const notes = prompt?.role === "user" ? promptNotes(prompt) : [];
+        this.pendingReminders.unshift(...notes.filter((n) => !stateKind(n)).map((text) => ({ text })));
         // The mode may have changed in the dropped turns: say what it is now.
         const mode = this.o.mode.get();
-        if (mode === "plan") this.noteModeChange("default", "plan");
-        else this.addReminder(`The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}`);
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
+        this.pendingReminders.push({ kind: "mode", from: "", text: mode === "plan" ? modeNote("", "plan") : `The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}` });
+        // So may the model, if a dropped prompt told it of a switch (a switch since is still queued).
+        const switched = dropped.some((m) => m.role === "user" && promptNotes(m).some((n) => stateKind(n) === "model"));
+        if (switched && !this.pendingReminders.some((r) => r.kind === "model")) {
+            this.pendingReminders.push({ kind: "model", from: "", text: `You are running as ${this.model.name ?? this.model.id} (${modelRef(this.model)}).` });
+        }
     }
 
     private interrupted(_duringTools: boolean): TurnEndReason {
+        // Stopped while waiting to try again: what it was waiting on is why nothing came back.
+        if (this.retrying) this.session.recordNotice("warn", `Stopped while retrying: ${this.retrying}`);
+        this.retrying = undefined;
         this.session.push({ role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }], meta: { kind: "interrupt" } });
         this.emit({ type: "turn_end", reason: "aborted" });
         return "aborted";
+    }
+
+    /**
+     * Its session is being closed while this turn is still stopping (a CLI
+     * backend gets seconds to answer an interrupt; a tool may not stop at
+     * once): note the interrupt now, as the turn would have. The caller lets
+     * the file go right after, so what the turn still writes is dropped, not
+     * recorded after this.
+     */
+    noteStopped(): void {
+        // Not running, or its prompt isn't in yet (then nothing of the turn is).
+        if (!this.running || !this.prompted) return;
+        const last = this.session.messages.at(-1);
+        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return;
+        const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
+        if (!calls.length) return void this.interrupted(false);
+        // Tools still running: their calls get results, or the next request is refused.
+        this.session.push({
+            role: "user",
+            content: [...calls.map((c) => ({ type: "tool_result" as const, toolCallId: c.id, toolName: c.name, content: "Interrupted by user", isError: true })), { type: "text", text: TOOL_INTERRUPT }],
+            meta: { kind: "tool_results" },
+        });
+        this.emit({ type: "turn_end", reason: "aborted" });
+    }
+
+    /**
+     * A notice that says how the turn ended: shown now, and kept in the
+     * session file, so a reopened session shows why the turn stopped (it's
+     * never sent to a model).
+     */
+    private endNotice(level: "warn" | "error", message: string) {
+        this.session.recordNotice(level, message);
+        this.emit({ type: "notice", level, message });
     }
 
     private emit(e: AgentEvent) {
@@ -580,7 +690,7 @@ export class Agent {
 
     private recordUsage(usage: Usage) {
         const cost = costOf(usage, this.model);
-        this.session.recordUsage(modelRef(this.model), usage, cost.usd);
+        this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         this.contextTokens = promptTokens(usage) + usage.outputTokens;
         this.lastUsageTotal = this.session.messages.length;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
@@ -609,19 +719,30 @@ export class Agent {
     // Model calls with retries
 
     private async callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
-        for (let attempt = 1; ; attempt++) {
-            this.emit({ type: "request_start" });
-            try {
-                return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
-            } catch (e) {
-                if (isAbort(e, signal)) throw new ProviderError("aborted");
-                const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
-                if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
-                const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
-                const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
-                this.emit({ type: "retry", attempt, delayMs: delay, reason: redact(pe.message) });
-                await sleep(delay, signal);
+        let stalls = 0;
+        this.retrying = undefined;
+        try {
+            for (let attempt = 1; ; attempt++) {
+                this.emit({ type: "request_start" });
+                try {
+                    return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+                } catch (e) {
+                    if (isAbort(e, signal)) throw new ProviderError("aborted");
+                    const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
+                    // Each stall waits minutes for a byte: after a few, the provider is down, and the turn says so.
+                    if (pe.stalled && ++stalls > MAX_STALL_RETRIES) throw pe;
+                    if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
+                    const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
+                    const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
+                    const reason = redact(pe.message);
+                    this.retrying = `${reason} (attempt ${attempt})`;
+                    this.emit({ type: "retry", attempt, delayMs: delay, reason });
+                    await sleep(delay, signal);
+                }
             }
+        } finally {
+            // Interrupted while waiting, the reason is still there for interrupted().
+            if (!signal.aborted) this.retrying = undefined;
         }
     }
 
@@ -664,7 +785,7 @@ export class Agent {
             summary = textOf(res);
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
-                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd);
+                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
             }
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
@@ -849,7 +970,7 @@ export class Agent {
      * one gets what other models said since its last turn.
      */
     private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
-        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex);
+        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
         const transcript = missed.length ? transcriptText(missed, 60_000) : "";
         if (!transcript) return text;
         const intro = resume
@@ -931,7 +1052,7 @@ export class Agent {
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
-                this.emit({ type: "notice", level: "error", message: redact((e as Error).message || String(e)) });
+                this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
             }
@@ -943,11 +1064,11 @@ export class Agent {
             }
             if (declined) return this.endBackendTurn(provider, "denied");
             if (result.reason === "error") {
-                this.emit({ type: "notice", level: "error", message: redact(result.error || `${name} stopped with an error.`) });
+                this.endNotice("error", redact(result.error || `${name} stopped with an error.`));
                 return this.endBackendTurn(provider, "error");
             }
             if (result.reason === "max_turns") {
-                this.emit({ type: "notice", level: "warn", message: `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).` });
+                this.endNotice("warn", `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).`);
                 return this.endBackendTurn(provider, "max_turns");
             }
             const settings = this.o.settings();
@@ -1075,7 +1196,7 @@ export class Agent {
 
     private recordBackendUsage(usage: Usage, o: { contextTokens?: number; contextWindow?: number }) {
         const cost = costOf(usage, this.model);
-        this.session.recordUsage(modelRef(this.model), usage, cost.usd);
+        this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;
         if (o.contextTokens) this.contextTokens = o.contextTokens;
         this.lastUsageTotal = this.session.messages.length;
@@ -1190,8 +1311,9 @@ export class Agent {
             setMode: (m) => {
                 const from = this.o.mode.get();
                 this.o.mode.set(m);
-                // ExitPlanMode reports the change in its own result.
+                // ExitPlanMode reports the change in its own result: the model knows the mode now.
                 if (from !== "plan") this.noteModeChange(from, m);
+                else this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
             },
             onProgress: (text) => this.emit({ type: "tool_progress", id: callId, text }),
             ui: this.o.host.ui,
@@ -1566,7 +1688,7 @@ export class Agent {
         let tokens = 0;
         let cost = 0;
         for (const [m, u] of session.usageByModel) {
-            this.session.recordUsage(m, u.usage, u.cost);
+            this.session.recordUsage(m, u.usage, u.cost, u.unknown);
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }

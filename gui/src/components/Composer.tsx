@@ -5,7 +5,7 @@ import { app, handleFor, reportError, rpc, toast } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
-import { tokens, usd } from "../lib/format";
+import { cost, tokens } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
 import { EffortMenu, FastModeToggle, ModelPicker } from "./ModelPicker";
 import { ModePicker, nextMode } from "./ModePicker";
@@ -61,7 +61,9 @@ function ContextRing(p: { sessionId: string }) {
                     </div>
                     <div class="ctx-grid">
                         <span>Spent</span>
-                        <span class="num">{usd(st()!.cost)}</span>
+                        <span class="num" title={st()!.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>
+                            {cost(st()!.cost, st()!.costUnknown)}
+                        </span>
                         <span>Tokens</span>
                         <span class="num">
                             {tokens(st()!.tokensIn)} in · {tokens(st()!.tokensOut)} out

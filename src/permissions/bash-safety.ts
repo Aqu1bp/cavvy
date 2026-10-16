@@ -9,6 +9,25 @@ import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
 export interface SimpleCommand {
     text: string;
     argv: string[];
+    /** The operator before it: ";", "\n", "&&", "||", "|" or "&" (none for the first). */
+    after?: string;
+    /**
+     * A redirection on it that the shell can fail on before it runs: any but
+     * output to /dev/null and copies onto stdout or stderr (`2>&1`, `>&2`).
+     * Input (`< f`, `<&9`), files (`> f`, `>/dev/stdout`), closes (`2>&-`)
+     * and other descriptors (`>&3`) all count.
+     */
+    redirectMayFail?: true;
+    /**
+     * Indexes of the words with a glob whose first character isn't known: it starts with the
+     * unquoted `*`, `?` or `[` (after nothing but empty quotes, `""*`) or with an expansion
+     * (`$e*`, with e empty). Their expansion can be anything, `-v` too.
+     */
+    globStart?: number[];
+    /** Indexes of the words with a `$` expansion in them (not in single quotes): what they'll be isn't known. */
+    expands?: number[];
+    /** Indexes of the words with an unquoted `*`, `?` or `[` anywhere: they can become any number of words. */
+    globbed?: number[];
 }
 
 export interface CommandAnalysis {
@@ -28,6 +47,12 @@ export interface CommandAnalysis {
     unsafeExpansion: boolean;
     /** Targets of `>` / `>>` / `>|` / `>&file` redirections, quotes removed. */
     redirects: string[];
+    /** The operator after the last command, if the line ends with one (`cmd &`). */
+    trailing?: string;
+    /** A here-document (`<<EOF`): its lines aren't commands, though they're split as if they were. */
+    heredoc?: true;
+    /** A command of redirections alone, which isn't in `commands`. */
+    bareRedirect?: true;
 }
 
 /** `${NAME}`, `${1}`, `${#NAME}`, `${?}`... at `i` (pointing at `$`) are plain lookups. */
@@ -87,18 +112,53 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     let wordQuoted = false;
     let text = "";
     let quote: "'" | '"' | null = null;
+    /** The operator after the last command pushed (`a &&` then a blank line: still &&). */
+    let lastOp: string | undefined;
+    let redirectMayFail = false;
+    let heredoc = false;
+    /** A command that's only redirections (`2>/dev/null 1>&9`): it has a status of its own, though no words. */
+    let bareRedirect = false;
+    /** What the word starts with so far: nothing yet, a known character, or a glob or expansion. */
+    let wordLead: "none" | "known" | "unknown" = "none";
+    const lead = (unknown: boolean) => {
+        if (wordLead === "none") wordLead = unknown ? "unknown" : "known";
+    };
+    let globStart: number[] = [];
+    let wordExpands = false;
+    let expands: number[] = [];
+    let wordGlobbed = false;
+    let globbed: number[] = [];
+    /** `$` at `i` starts an expansion (`$x`, `${x}`, `$1`, `$?`), not a literal dollar (`a$`, `$ `). */
+    const expansionAt = (i: number) => cmd[i] === "$" && /[A-Za-z_{0-9?#@*!$=~^+-]/.test(cmd[i + 1] ?? "");
 
     const endWord = () => {
-        if (wordStarted) argv.push(word);
+        if (wordStarted) {
+            // A lone `[` matches nothing (it's the test command): no glob.
+            if (word === "[" && !wordQuoted) wordGlobbed = false;
+            if (wordGlobbed && wordLead === "unknown") globStart.push(argv.length);
+            if (wordExpands) expands.push(argv.length);
+            if (wordGlobbed) globbed.push(argv.length);
+            argv.push(word);
+        }
         word = "";
         wordStarted = false;
         wordQuoted = false;
+        wordLead = "none";
+        wordExpands = false;
+        wordGlobbed = false;
     };
-    const endCommand = () => {
+    const endCommand = (op?: string) => {
         endWord();
-        if (argv.length) commands.push({ text: text.trim(), argv });
+        if (argv.length) {
+            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(redirectMayFail ? { redirectMayFail: true as const } : {}), ...(globStart.length ? { globStart } : {}), ...(expands.length ? { expands } : {}), ...(globbed.length ? { globbed } : {}) });
+            lastOp = op;
+        } else if (/[<>]/.test(text)) bareRedirect = true;
+        globStart = [];
+        expands = [];
+        globbed = [];
         argv = [];
         text = "";
+        redirectMayFail = false;
     };
 
     for (let i = 0; i < cmd.length; i++) {
@@ -106,13 +166,20 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         const n = cmd[i + 1];
         if (quote === "'") {
             if (c === "'") quote = null;
-            else word += c;
+            else {
+                lead(false);
+                word += c;
+            }
             text += c;
             continue;
         }
         if (quote === '"') {
             if (c === "\\" && n !== undefined) {
-                word += n;
+                // In double quotes a backslash only escapes $ ` " \ and a newline; before anything else it stays (`"\u0025d"`).
+                if (n !== "\n") {
+                    lead(false);
+                    word += '$`"\\'.includes(n) ? n : c + n;
+                }
                 text += c + n;
                 i++;
                 continue;
@@ -121,6 +188,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             else {
                 if (c === "`" || (c === "$" && n === "(")) hasSubstitution = true;
                 if (c === "$" && (n === "[" || (n === "{" && !plainBraceParam(cmd, i)))) unsafeExpansion = true;
+                if (expansionAt(i)) wordExpands = true;
+                lead(expansionAt(i));
                 word += c;
             }
             text += c;
@@ -131,6 +200,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 i++;
                 continue;
             }
+            lead(false);
             word += n;
             wordStarted = true;
             wordQuoted = true;
@@ -143,6 +213,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         // and the command is never read-only.
         if (c === "$" && n === "'") {
             const [decoded, end] = ansiC(cmd, i + 2);
+            if (decoded) lead(false);
             word += decoded;
             wordStarted = true;
             wordQuoted = true;
@@ -174,7 +245,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         if (c === "#" && !wordStarted && (i === 0 || /[ \t\n]/.test(cmd[i - 1]!))) {
             // comment to end of line
             while (i < cmd.length && cmd[i] !== "\n") i++;
-            endCommand();
+            endCommand(i < cmd.length ? "\n" : undefined);
             continue;
         }
         if (c === ";" || c === "\n" || c === "|" || c === "&") {
@@ -184,18 +255,25 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 text += c;
                 continue;
             }
-            if ((c === "|" || c === "&") && n === c) i++;
-            endCommand();
+            const doubled = (c === "|" || c === "&") && n === c;
+            if (doubled) i++;
+            endCommand(doubled ? c + c : c);
             continue;
         }
         if (c === ">" || c === "<") {
             // `2>`, `2>>`, `0<`: an unquoted digit right before the operator is the fd, not an argument.
             // Only one digit: zsh passes `10>x`'s 10 to the command (bash takes it as fd 10).
             if (/^\d$/.test(word) && !wordQuoted) {
+                // A redirection of a descriptor other than stdout and stderr: 0 and 3+ may be closed.
+                if (c === ">" && word !== "1" && word !== "2") redirectMayFail = true;
                 word = "";
                 wordStarted = false;
-            }
+            } else if (/^\d+$/.test(word) && !wordQuoted) redirectMayFail = true; // bash takes `10>x` as fd 10
             endWord();
+            if (c === "<") {
+                redirectMayFail = true;
+                if (n === "<" && cmd[i - 1] !== "<" && cmd[i + 2] !== "<") heredoc = true;
+            }
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
             if (c === ">") {
@@ -204,17 +282,23 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 if (cmd[j] === ">" || cmd[j] === "|") j++;
                 const fd = cmd[j] === "&" ? /^(\d+|-)(?=$|[ \t\n;|&)<>])/.exec(cmd.slice(j + 1)) : null;
                 if (fd) {
-                    // >&2 / >&- style: fd duplication or close, harmless
+                    // >&2 / >&- style: fd duplication or close, harmless (onto stdout or stderr, which are open, it can't fail)
                     end = j + fd[0].length;
+                    if (fd[1] !== "1" && fd[1] !== "2") redirectMayFail = true;
                 } else {
                     if (cmd[j] === "&") j++; // `>&file` sends stdout and stderr to a file
                     while (cmd[j] === " " || cmd[j] === "\t") j++;
                     // The whole word, however its pieces are quoted: `"src"/../../out` is one target.
                     const raw = cmd.slice(j).match(/^(?:"[^"]*"|'[^']*'|[^ \t\n;|&<>"'])+/)?.[0] ?? "";
-                    const target = raw.replace(/["']/g, "");
-                    if (/^\/dev\/(null|stdout|stderr)$/.test(target)) end = j + raw.length - 1;
-                    else {
+                    // Quotes removed as the shell does: `'"x"'` is the name "x" with its double quotes.
+                    const target = (raw.match(/"[^"]*"|'[^']*'|\\.?|[^"'\\]+/g) ?? []).map((p) => (p[0] === "'" || p[0] === '"' ? p.slice(1, -1) : p[0] === "\\" ? p.slice(1) : p)).join("");
+                    if (/^\/dev\/(null|stdout|stderr)$/.test(target)) {
+                        end = j + raw.length - 1;
+                        // Opening /dev/stdout or /dev/stderr fails when that descriptor is closed.
+                        if (target !== "/dev/null") redirectMayFail = true;
+                    } else {
                         writesFiles = true;
+                        redirectMayFail = true;
                         redirects.push(target);
                     }
                 }
@@ -228,13 +312,16 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             text += c;
             continue;
         }
+        if (c === "*" || c === "?" || c === "[") wordGlobbed = true;
+        if (expansionAt(i)) wordExpands = true;
+        lead(c === "*" || c === "?" || c === "[" || expansionAt(i));
         word += c;
         wordStarted = true;
         text += c;
     }
     const unparsable = quote !== null;
     endCommand();
-    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects };
+    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects, ...(lastOp !== undefined ? { trailing: lastOp } : {}), ...(heredoc ? { heredoc: true as const } : {}), ...(bareRedirect ? { bareRedirect: true as const } : {}) };
 }
 
 /** Strip leading env assignments (FOO=bar cmd) and wrappers like `time`. */
@@ -248,7 +335,10 @@ export function effectiveArgv(argv: string[]): string[] {
 
 // Variables that only change formatting. Anything else (GIT_EXTERNAL_DIFF,
 // PAGER, LD_PRELOAD, NODE_OPTIONS, ...) can make a harmless command run code.
-const SAFE_ENV = /^(LANG|LANGUAGE|LC_[A-Z]+|TZ|NO_COLOR|FORCE_COLOR|CLICOLOR|CLICOLOR_FORCE|COLUMNS|LINES|TERM)=/;
+// COLUMNS and LINES are integers to zsh, which evaluates their value as
+// arithmetic: `COLUMNS='PATH=0'` empties PATH, `COLUMNS='a[$(cmd)]'` runs cmd.
+// So only a number, written out.
+const SAFE_ENV = /^(?:(?:LANG|LANGUAGE|LC_[A-Z]+|TZ|NO_COLOR|FORCE_COLOR|CLICOLOR|CLICOLOR_FORCE|TERM)=|(?:COLUMNS|LINES)=\d*$)/;
 
 /** True when every leading `NAME=value` (including after time/nice/command) is a formatting-only variable. */
 export function onlySafeAssignments(argv: string[]): boolean {
@@ -347,6 +437,64 @@ function sedReadOnly(args: string[]): boolean {
 // `--exec-path`, `-p` (pager) and friends can all execute commands.
 const GIT_SAFE_GLOBAL = new Set(["--no-pager", "-P", "--no-optional-locks", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs"]);
 
+/** `--name` or `--name=value` where name is at least `min` letters of `option` (getopt and git take unambiguous abbreviations). */
+function longPrefixOf(arg: string, option: string, min: number): boolean {
+    if (!arg.startsWith("--")) return false;
+    const name = arg.slice(2).split("=")[0]!;
+    return name.length >= min && option.startsWith(name);
+}
+
+/** `git branch` options that only filter or format the listing. */
+const BRANCH_DISPLAY = new Set(["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current", "-i", "--ignore-case", "--no-color", "--no-column", "--no-abbrev", "--omit-empty"]);
+/** Filters that put `git branch` in list mode, with the commit they take (`--merged` and friends default to HEAD). */
+const BRANCH_FILTERS = new Set(["--merged", "--no-merged", "--contains", "--no-contains", "--points-at"]);
+
+/**
+ * `git branch` that only lists. Its other words are patterns only in list
+ * mode (--list, or a filter such as --merged, which takes a commit); without
+ * one, `git branch -v name` and `git branch --sort=x name` create `name`.
+ */
+function gitBranchListsOnly(args: string[]): boolean {
+    let list = false;
+    let words = 0;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (a === "--") {
+            words += args.length - i - 1;
+            break;
+        }
+        if (!a.startsWith("-") || a === "-") {
+            words++;
+            continue;
+        }
+        if (BRANCH_DISPLAY.has(a)) continue;
+        if (a === "--list" || /^-[arvil]*l[arvil]*$/.test(a)) {
+            list = true;
+            continue;
+        }
+        if (/^-[arvi]+$/.test(a)) continue;
+        if (BRANCH_FILTERS.has(a)) {
+            list = true;
+            // The commit: --points-at needs one; the others take the next word unless it's an option.
+            if (a === "--points-at" || (args[i + 1] !== undefined && !args[i + 1]!.startsWith("-"))) i++;
+            continue;
+        }
+        const name = a.match(/^--([a-z-]+)=/)?.[1];
+        if (name && BRANCH_FILTERS.has(`--${name}`)) {
+            list = true;
+            continue;
+        }
+        if (name && ["sort", "format", "color", "column", "abbrev"].includes(name)) continue;
+        if (a === "--sort" || a === "--format") {
+            i++;
+            continue;
+        }
+        if (a === "--color" || a === "--column") continue;
+        return false;
+    }
+    return list || words === 0;
+}
+
 function gitReadOnly(args: string[]): boolean {
     let i = 0;
     while (i < args.length && args[i]!.startsWith("-")) {
@@ -357,11 +505,13 @@ function gitReadOnly(args: string[]): boolean {
     const sub = args[i];
     if (!sub) return false;
     const subArgs = args.slice(i + 1);
-    // Options that write files or run programs even on read-only subcommands.
-    if (subArgs.some((a) => /^--(output|ext-diff|open-files-in-pager)(=|$)/.test(a) || (sub === "grep" && /^-[a-zA-Z]*O/.test(a)))) return false;
+    // Options that write files or run programs even on read-only subcommands. git grep takes any
+    // unambiguous start of a long option (`--open=sh` is --open-files-in-pager=sh), and -O after
+    // other letters or a context count in one word (`-n1Osh`).
+    if (subArgs.some((a) => /^--(output|ext-diff|open-files-in-pager)(=|$)/.test(a) || (sub === "grep" && (/^-[a-zA-Z0-9]*O/.test(a) || longPrefixOf(a, "open-files-in-pager", 2))))) return false;
     if (sub === "reflog") return !["expire", "delete", "drop"].includes(subArgs[0] ?? "");
     if (GIT_READ_ONLY.has(sub)) return true;
-    if (sub === "branch") return subArgs.every((a) => ["-a", "-r", "-v", "-vv", "--list", "--show-current", "--all", "--remotes", "--contains", "--merged", "--no-merged"].includes(a) || !a.startsWith("-")) && positional(subArgs).length === 0;
+    if (sub === "branch") return gitBranchListsOnly(subArgs);
     if (sub === "remote") return subArgs.every((a) => a === "-v" || a === "--verbose") || ((subArgs[0] === "show" || subArgs[0] === "get-url") && subArgs.slice(1).every((a) => !a.startsWith("-") || a === "-n" || a === "--all" || a === "--push"));
     if (sub === "tag") return subArgs.length === 0 || subArgs.every((a) => a === "-l" || a === "--list" || a.startsWith("--sort") || a === "-n");
     if (sub === "stash") return subArgs[0] === "list" || subArgs[0] === "show";
@@ -387,6 +537,8 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (args.length === 1 && VERSION_FLAGS.has(args[0]!) && (READ_ONLY_PROGRAMS.has(base) || TWO_WORD.has(base) || KNOWN_CLIS.has(base))) return true;
     // `printf -v 'a[$(cmd)]' x`: zsh evaluates the subscript.
     if (base === "printf" && args.some((a) => /^-[a-zA-Z]*v/.test(a))) return false;
+    // zsh's stat builtin (zmodload zsh/stat) stores into the array -A or -H names: `stat -A 'a[$(cmd)]' f`.
+    if (base === "stat" && args.some((a) => /^-[a-zA-Z]*[AH]/.test(a))) return false;
     if (base === "find") return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprintf|fls)/.test(a));
     if (base === "sed") return sedReadOnly(args);
     if (base === "sort") return !args.some((a) => /^-[a-zA-Z]*o/.test(a) || a.startsWith("--output") || a.startsWith("--compress-program"));
@@ -429,7 +581,265 @@ export function isReadOnlyCommand(cmd: string): boolean {
     const a = analyzeCommand(cmd);
     if (a.unparsable || a.hasSubstitution || a.writesFiles || a.unsafeExpansion) return false;
     if (!a.commands.length) return true;
+    // A variable set on the line can expand to anything after (`X=-Oprog; git grep $X ...`), options included.
+    for (const [i, c] of a.commands.entries()) {
+        if (effectiveArgv(c.argv).length) continue;
+        for (const assignment of c.argv) {
+            if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(assignment)) continue;
+            const name = assignment.slice(0, assignment.indexOf("="));
+            const use = new RegExp(`\\$[{=~^#+]*${name}(?![A-Za-z0-9_])`);
+            if (a.commands.slice(i + 1).some((d) => d.argv.some((w) => use.test(w)))) return false;
+        }
+    }
+    // `$_` is the last word of the command before, which the line itself chose: `echo -delete; find . $_`.
+    if (a.commands.some((c) => c.expands?.some((i) => /\$\{?_(?![A-Za-z0-9_])/.test(c.argv[i]!)))) return false;
+    // The checks read words as written. An expansion inside other text can be empty and leave text they
+    // never saw (an option, say); one standing alone, or before a path, is a value, not hidden text.
+    if (a.commands.some((c) => c.expands?.some((i) => !STANDALONE_EXPANSION.test(c.argv[i]!)))) return false;
+    if (a.commands.some((c) => globTurnsUnsafe(c) || mathRuns(c))) return false;
     return a.commands.every((c) => isReadOnlySimple(c.argv));
+}
+
+/** A word that's one parameter (`$x`, `${x}`, `$1`, `${#x}`, `$?`), alone or before a path: its value, nothing spliced into text. */
+const STANDALONE_EXPANSION = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\d|[#?$!@*-]|\{#?(?:[A-Za-z_][A-Za-z0-9_]*|\d+|[#?$!@*-])\})(?:\/.*)?$/;
+
+/** Read-only whatever options or operands they're given (none runs a program or writes a file). Not stat: zsh/stat's -A names a parameter. */
+const GLOB_SAFE = new Set(["cat", "head", "tail", "wc", "ls", "echo", "du", "df", "grep", "egrep", "fgrep", "cut", "tr", "diff", "cmp", "comm", "nl", "column", "basename", "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "sha1sum", "hexdump", "od", "strings", "true", "false", "which", "whereis", "type", "sleep", "seq", "expr", "cd", "pwd"]);
+
+/**
+ * The read-only checks see the words as written, but a glob becomes the
+ * names it matches: a file named `-Osh` makes `git grep -l x *` run sh, one
+ * named `-i.txt` makes `sed -n p *` edit in place, and `uniq src/*` writes
+ * to its second match. A glob that could start with `-` (it's first, after
+ * an expansion or empty quotes, or after a `-`: `--open*`), before any `--`,
+ * is fine only for programs no option makes unsafe; uniq and xxd take no
+ * glob at all (a second operand is their output file).
+ */
+function globTurnsUnsafe(c: SimpleCommand): boolean {
+    if (!c.globbed?.length) return false;
+    const words = effectiveArgv(c.argv);
+    const base = (words[0] ?? "").split("/").pop()!;
+    if (base === "uniq" || base === "xxd") return true;
+    // printf takes options only before its format, which mathRuns checks with its arguments.
+    if (GLOB_SAFE.has(base) || base === "printf") return false;
+    // find takes `-delete` and `-exec` after its paths, `--` or not.
+    const end = base === "find" ? -1 : optionsEnd(c);
+    return c.globbed.some((i) => (end < 0 || i < end) && (c.globStart?.includes(i) || c.argv[i]!.startsWith("-")));
+}
+
+/** printf conversions that print their argument as text; zsh evaluates any other's (and `*`'s) as arithmetic. */
+const TEXT_CONVERSION = /^%(?:%|[-+ #0'0-9.$]*[sbqc])$/;
+/** An argument arithmetic can only read: a plain number. */
+const PLAIN_NUMBER = /^[-+]?(?:0[xX][0-9a-fA-F]+|\d+\.?\d*|\.\d+)$/;
+
+/**
+ * zsh evaluates some builtins' arguments as arithmetic, and arithmetic can
+ * assign: `printf %d 'a[$(cmd)]=1'` runs cmd, `printf %d PATH=1` empties
+ * PATH for what follows. So do printf's `%n` and `*`, and `test -t`. Such an
+ * argument must be a plain number, written out (not an expansion or glob);
+ * bash's `test -v` and `-R` take a name, which must be a plain one.
+ * A format that's an expansion or glob can be anything, `%n` too.
+ */
+function mathRuns(c: SimpleCommand): boolean {
+    const words = effectiveArgv(c.argv);
+    const base = (words[0] ?? "").split("/").pop()!;
+    const off = c.argv.length - words.length;
+    const plain = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && PLAIN_NUMBER.test(words[i]!);
+    // bash (4.2+) reads `-v`'s and `-R`'s operand as a name, `a[$(cmd)]` included: it must be a plain name.
+    const name = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(words[i]!);
+    // An operator we can't read (an expansion or glob: `echo -t; test $_ …`) could be `-t`/`-v`/`-R`; if the
+    // operand it would govern is a literal carrying a command substitution, that substitution runs.
+    const hiddenOp = (i: number) => !!(c.expands?.includes(off + i) || c.globbed?.includes(off + i));
+    const inject = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && /\$\(|`/.test(words[i]!);
+    if (base === "test" || base === "[") return words.some((w, i) => i + 1 < words.length && words[i + 1] !== "]" && ((w === "-t" && !plain(i + 1)) || ((w === "-v" || w === "-R") && !name(i + 1)) || (hiddenOp(i) && inject(i + 1))));
+    if (base !== "printf") return false;
+    const f = words[1] === "--" ? 2 : 1;
+    if (f >= words.length) return false;
+    if (c.expands?.includes(off + f) || c.globbed?.includes(off + f)) return true;
+    // zsh reads `\u0025d` as `%d` before it looks for conversions: other than plain ones (`\n`), an escape could be one.
+    const format = words[f]!.replace(/\\[ntrabfve\\"']/g, "");
+    const specs = format.match(/%[^a-zA-Z%]*[a-zA-Z%]?/g) ?? [];
+    if (!format.includes("\\") && specs.every((sp) => TEXT_CONVERSION.test(sp))) return false;
+    return words.slice(f + 1).some((_, k) => !plain(f + 1 + k));
+}
+
+/**
+ * Where the options surely end: at a `--` no option could take as its value
+ * (`git grep -e -- *` searches for `--`, and the `*` can still be options).
+ * Only after a word that isn't an option, a `--`, or a `--name=value`, and
+ * isn't an expansion (`-e $empty -- *` is `-e -- *`).
+ */
+function optionsEnd(c: SimpleCommand): number {
+    const { argv } = c;
+    for (let i = 1; i < argv.length; i++) {
+        if (argv[i] !== "--") continue;
+        const prev = argv[i - 1]!;
+        if (c.expands?.includes(i - 1)) continue;
+        if (!prev.startsWith("-") || prev === "-" || prev === "--" || (prev.startsWith("--") && prev.includes("="))) return i;
+    }
+    return -1;
+}
+
+// Not zgrep: it exits 1 for errors of its own (macOS: "Illegal seek" on a bad stream).
+const GREPS = new Set(["grep", "egrep", "fgrep", "ggrep", "rg"]);
+const SHELL_SYNTAX = /(^|[\s;&|])(if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|exit|return|set|setopt|trap)(?=$|[\s;&|])|[{}]|pipe_?fail/i;
+/**
+ * Reserved words, and builtins that change what a later command is or how
+ * its errors show, or end the shell (an error in a POSIX special builtin ends
+ * a POSIX shell, silently with `2>/dev/null`). Before the search, it can't
+ * run, quoted or not (`e""xit 1`, `command -p eval ...`).
+ */
+const SHELL_WORDS = new Set([
+    "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "function", "select", "coproc", "repeat", "foreach", "end",
+    "break", "continue", "eval", "exec", "exit", "export", "readonly", "return", "set", "shift", "times", "trap", "unset",
+    "source", "alias", "unalias", "builtin", "emulate", "setopt", "unsetopt", "typeset", "declare", "local", "integer", "float", "hash", "rehash", "unhash",
+    "enable", "disable", "functions", "unfunction", "autoload", "zmodload", "shopt", "logout", "bye", "ulimit", "limit", "unlimit",
+]);
+/** Special builtins whose names are common arguments too (`ls .`): only where a command starts. */
+const SHELL_COMMANDS = new Set([".", ":"]);
+
+interface SearchOptions {
+    /** Short options on their own. Digits (`-3`, context lines) are always fine. */
+    flags: string;
+    /** Short options that take a value: the rest of the word, or the next word. */
+    valued: string;
+    long: Set<string>;
+    /** Long options that take a value: after `=`, or the next word. */
+    longValued: Set<string>;
+}
+
+/**
+ * Search options whose status 1 still means "no match". Anything else, or an
+ * abbreviation (getopt takes them), and the status isn't read as no match:
+ * -v and -L invert it, BSD grep's -Z/-J/-X/-M and rg's -z exit 1 on a stream
+ * they can't decompress, git grep's --not inverts too.
+ */
+const SEARCH_OPTIONS: Record<string, SearchOptions> = {
+    grep: {
+        flags: "abcEFGhHiIlnoPqrRswxU",
+        valued: "ABCefm",
+        long: new Set(["text", "byte-offset", "count", "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "no-filename", "with-filename", "ignore-case", "no-ignore-case", "files-with-matches", "line-number", "only-matching", "quiet", "silent", "no-messages", "word-regexp", "line-regexp", "recursive", "dereference-recursive", "line-buffered", "binary", "color", "colour", "null"]),
+        longValued: new Set(["include", "exclude", "exclude-dir", "exclude-from", "binary-files", "context", "after-context", "before-context", "max-count", "regexp", "file", "label", "color", "colour", "directories", "devices"]),
+    },
+    rg: {
+        flags: "iSsFwxnNlcoqHIaUPLp.u0",
+        valued: "ABCefgtTmMjdE",
+        long: new Set(["hidden", "no-ignore", "no-ignore-vcs", "ignore-case", "smart-case", "case-sensitive", "fixed-strings", "word-regexp", "line-regexp", "line-number", "no-line-number", "files-with-matches", "count", "count-matches", "only-matching", "quiet", "multiline", "pcre2", "follow", "no-heading", "heading", "no-messages", "with-filename", "no-filename", "text", "unrestricted", "vimgrep", "column", "no-config", "null"]),
+        longValued: new Set(["glob", "iglob", "type", "type-not", "max-count", "max-depth", "context", "after-context", "before-context", "regexp", "file", "color", "colors", "sort", "sortr", "max-columns", "threads", "encoding", "max-filesize"]),
+    },
+    git: {
+        flags: "niwlchHEFGPoqWIa",
+        valued: "ABCefm",
+        long: new Set(["line-number", "ignore-case", "word-regexp", "files-with-matches", "name-only", "count", "no-index", "untracked", "cached", "heading", "break", "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "only-matching", "quiet", "and", "or", "all-match", "full-name", "recurse-submodules", "column", "show-function", "function-context", "text", "null"]),
+        longValued: new Set(["max-depth", "context", "after-context", "before-context", "max-count", "regexp", "file", "color", "threads"]),
+    },
+};
+
+/** A max count that makes it look: a plain number above 0 (`-m 0`, `+0`, `-0` and `0x0` don't, or aren't plain). */
+const searchingCount = (value: string | undefined) => value === undefined || (/^\d+$/.test(value) && Number(value) > 0);
+
+/**
+ * Every option in `args` is one of `o`'s, and none is a max count of 0 (then
+ * it doesn't look). The long options it takes as options go in `seen`.
+ */
+function plainSearch(args: string[], o: SearchOptions, seen = new Set<string>()): boolean {
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (a === "--") return true;
+        // An operand (a pattern, a path); GNU grep takes options after them too, so keep looking.
+        if (!a.startsWith("-") || a === "-") continue;
+        if (a.startsWith("--")) {
+            const eq = a.indexOf("=");
+            const name = a.slice(2, eq < 0 ? undefined : eq);
+            let value = eq < 0 ? undefined : a.slice(eq + 1);
+            seen.add(name);
+            if (eq < 0 && o.long.has(name)) continue;
+            if (!o.longValued.has(name)) return false;
+            // --color and --context take theirs only after `=`.
+            if (value === undefined && !["color", "colour", "context"].includes(name)) value = args[++i];
+            if (name === "max-count" && !searchingCount(value)) return false;
+            continue;
+        }
+        for (let k = 1; k < a.length; k++) {
+            const ch = a[k]!;
+            if (/[0-9]/.test(ch)) continue;
+            if (o.valued.includes(ch)) {
+                // -C only takes the next word when it's a number: BSD grep's takes its own only in the
+                // same word, so in `-C -v` the -v is an option. The others always take the next word (`-m +0`).
+                const value = k + 1 < a.length ? a.slice(k + 1) : ch !== "C" || /^\d+$/.test(args[i + 1] ?? "") ? args[++i] : undefined;
+                if (ch === "m" && !searchingCount(value)) return false;
+                break;
+            }
+            if (!o.flags.includes(ch)) return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * The search program (grep, rg, git grep) whose exit status is the whole
+ * command's, when the text makes that certain. Their status 1 means "no
+ * match", not a failure. It must be:
+ * - last, the real one (`./grep`, `rg --pre`, `git grep -O` run something else),
+ *   run directly (`nice grep` exits 1 itself when it can't lower the priority),
+ *   and not inverted (`-v`, `-L`: then 1 isn't "no match");
+ * - run (not after `&&`, where an earlier failure ends the list with its own status),
+ *   not backgrounded, negated (`! a | grep x`) or behind pipefail;
+ * - with no redirection in its pipeline the shell can fail on before it runs
+ *   (`grep x < f`: if f can't be opened, the 1 is the shell's);
+ * - after nothing that changes the shell or can end it (builtins, assignments
+ *   other than formatting ones: `UID=5 true 2>/dev/null` ends zsh with 1),
+ *   and with no here-document, whose lines aren't commands.
+ * `piped`: other commands feed it, and their failures don't show in its status.
+ */
+export function finalSearch(cmd: string, env: Record<string, string | undefined> = process.env): { name: string; piped: boolean } | undefined {
+    const a = analyzeCommand(cmd);
+    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion || a.heredoc || a.bareRedirect || SHELL_SYNTAX.test(cmd) || !a.commands.length) return undefined;
+    if (a.trailing !== undefined && a.trailing !== ";" && a.trailing !== "\n") return undefined;
+    const last = a.commands.length - 1;
+    const argv = effectiveArgv(a.commands[last]!.argv);
+    const prog = (argv[0] ?? "").split("/").pop()!;
+    const name = GREPS.has(prog) ? prog : prog === "git" && argv[gitSubcommand(argv).index] === "grep" ? "git grep" : undefined;
+    if (!name) return undefined;
+    const raw = a.commands[last]!.argv;
+    if (raw.length - raw.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) !== argv.length) return undefined;
+    // ggrep is GNU grep.
+    if (!isReadOnlySimple(name === "ggrep" ? [argv[0]!.replace(/[^/]*$/, "grep"), ...argv.slice(1)] : argv)) return undefined;
+    // Its words are what it gets: none may expand to an option (`grep $o x f`, or `grep x *` with a file named -v).
+    if (a.commands[last]!.expands?.length || a.commands[last]!.globStart?.length) return undefined;
+    // Only options known to leave status 1 meaning "no match" (not -v, -L, git's --not, decompressing, -m 0).
+    const kind = name === "git grep" ? "git" : name === "rg" ? "rg" : "grep";
+    const args = name === "git grep" ? argv.slice(gitSubcommand(argv).index + 1) : argv.slice(1);
+    const seen = new Set<string>();
+    if (!plainSearch(args, SEARCH_OPTIONS[kind]!, seen)) return undefined;
+    // Options from the environment count too: BSD grep reads GREP_OPTIONS, rg its config file (one per
+    // line) unless told --no-config. A relative config path is the shell's cwd's, which isn't known here.
+    if (kind === "grep" && env.GREP_OPTIONS?.trim() && !plainSearch(env.GREP_OPTIONS.trim().split(/\s+/), SEARCH_OPTIONS.grep!)) return undefined;
+    // --no-config as an option, not a pattern (`-e --no-config`).
+    if (kind === "rg" && env.RIPGREP_CONFIG_PATH && !seen.has("no-config")) {
+        // All of it, or not at all: options past what's read would go unseen.
+        const config = env.RIPGREP_CONFIG_PATH.startsWith("/") ? readSmallFile(env.RIPGREP_CONFIG_PATH, 65537) : undefined;
+        if (config === undefined || Buffer.byteLength(config) > 65536) return undefined;
+        if (!plainSearch(config.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")), SEARCH_OPTIONS.rg!)) return undefined;
+    }
+    for (const [i, c] of a.commands.entries()) {
+        if (!onlySafeAssignments(c.argv)) return undefined;
+        if (i === last) continue;
+        if (c.argv.some((w) => SHELL_WORDS.has(w))) return undefined;
+        const words = effectiveArgv(c.argv);
+        const command = words.find((w) => !w.startsWith("-")) ?? "";
+        // A command name that's an expansion can be any builtin (`$X 1` with X=exit).
+        const at = c.argv.length - words.length + words.indexOf(command);
+        if (SHELL_COMMANDS.has(command) || c.expands?.includes(at) || c.globStart?.includes(at)) return undefined;
+    }
+    // The pipeline it ends, and what comes before that.
+    let first = last;
+    while (first > 0 && a.commands[first]!.after === "|") first--;
+    if (a.commands[first]!.after === "&&") return undefined;
+    const pipeline = a.commands.slice(first, last + 1);
+    // Negated anywhere in it (`time -p ! a | grep x` negates the pipeline too).
+    if (pipeline.some((c) => c.redirectMayFail || c.argv.includes("!"))) return undefined;
+    return { name, piped: first < last };
 }
 
 const DANGEROUS: [RegExp, string][] = [

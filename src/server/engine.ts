@@ -178,6 +178,10 @@ export class Engine {
         this.fallbackModel = o.fallbackModel;
     }
 
+    log(msg: string) {
+        this.o.log?.(redact(msg));
+    }
+
     async start() {
         void this.firstListings();
     }

@@ -3,6 +3,7 @@ import { APP_TITLE } from "../config/paths";
 import { gitSnapshot, gitRoot } from "../util/git";
 import { formatMemory, loadMemory } from "./memory";
 import type { ModelInfo } from "../providers/types";
+import { pickShell } from "../tools/bash";
 
 const CORE = `You are ${APP_TITLE}, an interactive command-line coding agent. You help the user with software engineering work in their terminal: fixing bugs, adding features, refactoring, explaining code, running commands and more. Use the instructions below and the tools available to you.
 
@@ -60,7 +61,8 @@ export function environmentBlock(cwd: string, model: ModelInfo, includeGit = tru
         `Working directory: ${cwd}`,
         `Is a git repository: ${root ? "yes" : "no"}${root && root !== cwd ? ` (root: ${root})` : ""}`,
         `Platform: ${platform()} ${release()}`,
-        `Shell: ${process.env.SHELL ?? "unknown"}`,
+        `Shell: ${pickShell()}`,
+        ...shellNotes(platform(), pickShell()),
         `Today's date: ${new Date().toISOString().slice(0, 10)}`,
         `Model: ${model.name ?? model.id} (${model.provider}:${model.id})`,
     ];
@@ -80,6 +82,20 @@ export function environmentBlock(cwd: string, model: ModelInfo, includeGit = tru
         }
     }
     return lines.join("\n");
+}
+
+/** Habits from GNU and bash that fail here, in a line or two (`which`: where a program is, if it's on PATH). */
+export function shellNotes(os: string, shell: string, which: (prog: string) => string | null = Bun.which): string[] {
+    const notes: string[] = [];
+    if (os === "darwin") {
+        const bsd: string[] = [];
+        if (!which("timeout")) bsd.push("there is no `timeout` (use the Bash tool's timeout)");
+        if (which("sed") === "/usr/bin/sed") bsd.push("`sed -i` needs a suffix argument (`sed -i '' 's/a/b/' file`)");
+        if (which("date") === "/bin/date") bsd.push("`date` has no -d");
+        if (bsd.length) notes.push(`macOS has BSD tools, not GNU: ${bsd.join(", ")}.`);
+    }
+    if (/\/zsh$/.test(shell)) notes.push("zsh: an unquoted glob that matches nothing is an error, so quote patterns (`--include='*.ts'`); a pipeline's exit codes are in `$pipestatus`, not `$PIPESTATUS`.");
+    return notes;
 }
 
 export function buildSystemPrompt(o: SystemPromptOptions): string {

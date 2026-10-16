@@ -304,6 +304,8 @@ export interface SessionState {
     activity?: { label: string; since: number; detail?: string };
     contextTokens: number;
     cost: number;
+    /** Some usage had no known price: `cost` leaves it out (it isn't free). */
+    costUnknown?: boolean;
     tokensIn: number;
     tokensOut: number;
     todos: TodoEntry[];

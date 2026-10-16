@@ -37,7 +37,7 @@ import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tool
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
-import { formatTokens, formatUsd } from "../providers/pricing";
+import { formatCost, formatTokens } from "../providers/pricing";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, runCommand } from "../commands/index";
@@ -239,7 +239,7 @@ export class App {
         this.stopTicker();
         this.screen.setLive([]);
         const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
-        if (this.session?.cost) this.screen.print(theme.muted(`Total cost: ${formatUsd(this.session.cost)}`));
+        if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
@@ -393,7 +393,7 @@ export class App {
         else {
             this.agent.setModel(info, client);
             this.agent.options.nativeWebSearch = this.nativeSearch();
-            if (prev && modelRef(prev) !== ref) this.agent.addReminder(`The user switched the model to ${info.name ?? info.id} (${ref}). You are now running as this model.`);
+            if (prev) this.agent.noteModelChange(modelRef(prev), info);
         }
         if (opts.persist) {
             const { updateSettings } = await import("../config/settings");
@@ -472,7 +472,8 @@ export class App {
         );
         if (res.usage) {
             const { costOf } = await import("../providers/pricing");
-            this.session.recordUsage(modelRef(model), res.usage, costOf(res.usage, model).usd);
+            const c = costOf(res.usage, model);
+            this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
         }
         return opts?.review ? reviewText(res) : textOf(res);
     }
@@ -613,9 +614,21 @@ export class App {
         const id = this.session.meta.id;
         const count = msgs.length;
         const tail = msgs.slice(-40);
+        const from = count - tail.length;
+        // How turns ended where the messages don't say (an error, a limit): each after the message before it.
+        const notices = this.session.notices.filter((n) => n.index > from).sort((a, b) => a.index - b.index);
         this.screen.print((cols) => {
             const out: string[] = ["", theme.muted(`── Resumed session ${id} (${count} messages) ──`)];
-            for (const m of tail) {
+            let next = 0;
+            const noticesUpTo = (index: number) => {
+                for (; next < notices.length && notices[next]!.index <= index; next++) {
+                    const n = notices[next]!;
+                    const color = n.level === "error" ? theme.error : n.level === "warn" ? theme.warning : theme.muted;
+                    out.push(...wrapLine(n.text, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+                }
+            };
+            tail.forEach((m, i) => {
+                noticesUpTo(from + i);
                 if (m.role === "user") {
                     const kind = m.meta?.kind ?? "prompt";
                     if (kind === "prompt" || kind === "summary") {
@@ -631,7 +644,8 @@ export class App {
                     }
                     for (const p of m.content) if (p.type === "tool_call") out.push(theme.muted(`  ${BULLET} ${p.name}`));
                 }
-            }
+            });
+            noticesUpTo(Infinity);
             out.push(theme.muted("── end of resumed history ──"));
             return out;
         });
@@ -1627,7 +1641,7 @@ export class App {
                 parts.push(pct >= 70 ? theme.warning(`${pct}% context`) : `${pct}% context`);
             }
         }
-        if (this.session?.cost) parts.push(formatUsd(this.session.cost));
+        if (this.session?.cost) parts.push(formatCost(this.session.cost, this.session.costUnknown));
         const mcpFailed = [...this.mcp.servers.values()].filter((s) => s.status === "failed").length;
         if (mcpFailed) parts.push(theme.error(`${mcpFailed} MCP failed · /mcp`));
         const custom = this.statusLineText();

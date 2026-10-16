@@ -23,6 +23,7 @@ import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
 import { costOf } from "../providers/pricing";
+import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, toolCallsOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -74,6 +75,42 @@ export function cleanTitle(title: string): string {
     return title.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+/** A first message that's only a greeting, a thanks, a yes or a test: nothing to name a session after. */
+const SMALL_TALK = /^(h(i+|ello|ey+|iya|owdy)|yo|sup|hola|greetings|good (morning|afternoon|evening|day)|thanks?( you)?( so much| a lot)?|thx|ty|ok(ay)?|k|cool|nice|great|yes|no|yep|nope|sure|test(ing)?|ping|hm+|\?+)(\s+(there|all|everyone|again|claude|harness|buddy|friend|mate))?[\s!.?,:)(]*$/i;
+
+/** Whether a prompt says enough to name the session after (a later one is tried if not). */
+export function titleWorthy(prompt: string): boolean {
+    const t = prompt.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+    return t.replace(/[^\p{L}\p{N}]/gu, "").length >= 3 && !SMALL_TALK.test(t);
+}
+
+/** Title requests per session, failures included: a model that can't give one isn't asked forever. */
+const TITLE_TRIES = 3;
+
+/**
+ * A title made from the prompt itself, for when no model gives one: its
+ * first line that says something, cut at a word to 60 characters.
+ */
+export function promptTitle(prompt: string): string | undefined {
+    const line = prompt
+        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
+        .split("\n")
+        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\s+/g, " ").trim())
+        .find((l) => /[\p{L}\p{N}]/u.test(l));
+    if (!line) return undefined;
+    let t = line;
+    if (t.length > 60) {
+        const cut = t.slice(0, 60);
+        const space = cut.lastIndexOf(" ");
+        t = `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
+    } else t = t.replace(/[\s.]+$/, "");
+    // A plain first word starts it in capitals, as a model's title would; not a path or a name like `src/x`.
+    return /^\p{Ll}[\p{L}']*(?=[\s,:;!?]|$)/u.test(t) ? t[0]!.toUpperCase() + t.slice(1) : t;
+}
+
+/** How long closing waits for a turn to stop on its own before noting the interrupt for it (changeable for tests). */
+export const closeTiming = { turnMs: 3000 };
+
 export function modelSummary(m: ModelInfo): ModelSummary {
     const p = getProvider(m.provider);
     return {
@@ -123,7 +160,11 @@ export class Runtime {
     /** Compactions so far: the transcript segment new prompts belong to. */
     private segment = 0;
     private ids = 0;
+    /** A title request is running or got one; cleared when it failed, so a later prompt tries again. */
     private titleAsked = false;
+    private titleTries = 0;
+    /** The first prompt a title was asked about: the one to name the session after when no model will. */
+    private titleFrom?: string;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
@@ -134,6 +175,8 @@ export class Runtime {
     // What the current turn is building
     private turnId?: string;
     private turnStartedAt = 0;
+    /** Settles when the running turn has ended (and written how). */
+    private turnDone?: Promise<void>;
     private openText?: string;
     private openThinking?: string;
     /** Blocks from the model response being streamed (dropped if it's retried). */
@@ -169,7 +212,7 @@ export class Runtime {
 
         const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
         this.segment = segments.length - 1;
-        const turns = opts.resumed ? replay({ segments, current: session.messages, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
+        const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model) };
         this.ready = this.track(this.initModel());
         void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
@@ -224,6 +267,7 @@ export class Runtime {
             busy: false,
             contextTokens: 0,
             cost: this.session.cost,
+            costUnknown: this.session.costUnknown,
             ...this.tokenTotals(),
             todos: this.toolState.todos.map((t) => ({ ...t })),
             queued: [],
@@ -358,7 +402,7 @@ export class Runtime {
         else {
             this.agent.setModel(info, client);
             this.agent.options.nativeWebSearch = this.nativeSearch();
-            if (prev && modelRef(prev) !== ref) this.agent.addReminder(`The user switched the model to ${info.name ?? info.id} (${ref}). You are now running as this model.`);
+            if (prev) this.agent.noteModelChange(modelRef(prev), info);
         }
         if (opts.persist) {
             try {
@@ -413,14 +457,31 @@ export class Runtime {
     async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
-        const smallRef = this.settings().smallModel;
         if (opts?.review) {
             // The reviewer, or with none the session's own model.
             const r = await reviewTarget(this.settings().reviewModel);
             if (r) ({ model, client } = r);
         } else if (opts?.main) {
             // the session's own model
-        } else if (smallRef) {
+        } else ({ model, client } = await this.smallTarget());
+        const res = await client.stream(
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            () => {},
+        );
+        if (res.usage) {
+            const c = costOf(res.usage, model);
+            this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
+            this.setState({ cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals() });
+        }
+        return opts?.review ? reviewText(res) : textOf(res);
+    }
+
+    /** Who answers one-off requests (titles, summaries): smallModel, else a small model of the session's provider, else its own. */
+    private async smallTarget(): Promise<{ model: ModelInfo; client: ProviderClient }> {
+        let model = this.model!;
+        let client = this.client!;
+        const smallRef = this.settings().smallModel;
+        if (smallRef) {
             const p = parseModelRef(smallRef);
             if (p) {
                 try {
@@ -434,15 +495,7 @@ export class Runtime {
             const small = smallModelFor(model.provider, this.engine.listings);
             if (small) model = small;
         }
-        const res = await client.stream(
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
-            () => {},
-        );
-        if (res.usage) {
-            this.session.recordUsage(modelRef(model), res.usage, costOf(res.usage, model).usd);
-            this.setState({ cost: this.session.cost, ...this.tokenTotals() });
-        }
-        return opts?.review ? reviewText(res) : textOf(res);
+        return { model, client };
     }
 
     tools(): Tool<any>[] {
@@ -552,7 +605,8 @@ export class Runtime {
     }
 
     rename(title: string) {
-        const t = cleanTitle(title);
+        // Shown and listed as it is: a key in the prompt it was made from stays out (on disk it's redacted anyway).
+        const t = cleanTitle(redact(title));
         // A title still being made when it was closed.
         if (!t || this.closed) return;
         this.session.setTitle(t);
@@ -721,7 +775,7 @@ export class Runtime {
             case "usage": {
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
-                this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, ...this.tokenTotals(), ...window });
+                this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });
                 break;
             }
             case "compact_start":
@@ -1192,6 +1246,8 @@ export class Runtime {
         }
         const agent = this.agent;
         this.busy = true;
+        let settled!: () => void;
+        this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
         this.turnStartedAt = Date.now();
         const display = opts.display ?? text;
@@ -1209,7 +1265,9 @@ export class Runtime {
         this.ui.write({ t: "turn", seg: this.segment, index, at: this.turnStartedAt });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
-        if (!this.session.title && !this.titleAsked) void this.generateTitle(display);
+        // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
+        const about = opts.kind === "command" ? text : display;
+        if (!this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;
         try {
@@ -1229,7 +1287,9 @@ export class Runtime {
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind });
             }
         } catch (e) {
-            this.notice(`Unexpected error: ${redact((e as Error).message)}`, "error");
+            const message = `Unexpected error: ${redact((e as Error).message)}`;
+            this.session.recordNotice("error", message);
+            this.notice(message, "error");
             reason = "error";
             this.endTurn("error");
         } finally {
@@ -1242,6 +1302,7 @@ export class Runtime {
             this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             this.flush();
             this.engine.sessionChanged(this);
+            settled();
         }
         const elapsed = Date.now() - this.turnStartedAt;
         if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
@@ -1302,15 +1363,26 @@ export class Runtime {
     }
 
     private async generateTitle(prompt: string) {
+        if (!this.client) return;
         this.titleAsked = true;
-        if (!this.client || prompt.trim().length < 3) return;
+        this.titleTries++;
+        // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
+        this.titleFrom ??= redact(prompt);
+        let title: string | undefined;
+        // Claude Code and Codex run whole turns only, so they can't be asked for one: without a
+        // smallModel on another provider the prompt names the session.
+        if (isAgentBackend((await this.smallTarget().catch(() => undefined))?.client ?? this.client)) {
+            const t = promptTitle(this.titleFrom);
+            if (t && !this.session.title) this.rename(t);
+            return;
+        }
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
                 prompt.slice(0, 3000),
                 AbortSignal.timeout(20_000),
             );
-            const title = raw
+            title = raw
                 .replace(/<[^>]*>/g, "")
                 .split("\n")
                 .map((l) => l.trim())
@@ -1318,10 +1390,19 @@ export class Runtime {
                 ?.replace(/^title:\s*/i, "")
                 .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
                 .slice(0, 60);
-            if (title && !this.session.title) this.rename(title);
-        } catch {
-            // the first prompt names it instead
+            // Not a title: the prompt said back, or a paragraph.
+            if (title && title.split(/\s+/).length > 10) {
+                this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
+                title = undefined;
+            }
+        } catch (e) {
+            this.engine.log(`session ${this.id}: no title (try ${this.titleTries} of ${TITLE_TRIES}): ${(e as Error).message}`);
         }
+        // The last try failed too: the first prompt that said something names it.
+        if (!title && this.titleTries >= TITLE_TRIES) title = promptTitle(this.titleFrom);
+        if (title && !this.session.title) this.rename(title);
+        // Until one comes, the sidebar shows the first prompt; a later prompt asks again.
+        else if (!title) this.titleAsked = false;
     }
 
     /** `!command` from the input box: the user runs it themselves; the model sees it with the next prompt. */
@@ -1480,7 +1561,7 @@ export class Runtime {
     /** The timeline again from the transcript (after a rewind). */
     private rebuild() {
         const segments = readSegments(this.session.path);
-        const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
+        const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
         const agents = agentsFromTurns(turns, this.model && modelRef(this.model)).map((r) => {
             const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
@@ -1607,8 +1688,17 @@ export class Runtime {
         this.flush();
         this.closed = true;
         // Delegated tasks still running stop with the session.
+        const ending = Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
         try {
-            await Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
+            // A turn still running notes how it stopped (the interrupt, what it was retrying) before the file is let go.
+            const turn = this.turnDone;
+            if (turn && !(await Promise.race([turn.then(() => true), Bun.sleep(closeTiming.turnMs).then(() => false)]))) {
+                // Still stopping (the server's own exit doesn't wait long enough for a CLI backend's): noted for it,
+                // and the file let go now, so what it writes when it does stop isn't recorded after that.
+                this.agent?.noteStopped();
+                this.session.release();
+            }
+            await ending;
         } finally {
             this.session.release();
         }

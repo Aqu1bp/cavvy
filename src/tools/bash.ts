@@ -9,10 +9,22 @@ import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
 import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
+import { finalSearch } from "../permissions/bash-safety";
 
 export { childEnv };
 
 const MAX_OUTPUT = 30_000;
+/** Kept of a command's output before the rest is dropped. */
+const MAX_KEPT = MAX_OUTPUT * 20;
+/**
+ * The shell's own error (a glob with no match, a file it couldn't open, a
+ * missing command), anywhere: after output with no newline it starts mid-line
+ * (`Checking... zsh:1: no matches found`). Then status 1 may be the shell's.
+ */
+function shellComplained(output: string, shell = pickShell()): boolean {
+    const name = (shell.split("/").pop() ?? "").replace(/[^\w.-]/g, "");
+    return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `).test(output);
+}
 const MAX_TIMEOUT = 600_000;
 const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
@@ -30,11 +42,12 @@ async function sandboxedEnv(env: Record<string, string>, sandbox: Sandbox, hosts
 
 /** What to tell the model after a sandboxed command failed, if the sandbox looks like the reason. */
 function failureHint(sandbox: Sandbox, output: string, proxy: CommandProxy | undefined): string | undefined {
-    const hints = [proxy && refusedHint(proxy.refused()), blockedBySandbox(output) ? sandboxHint(sandbox.kind) : undefined].filter(Boolean);
+    const hints = [proxy && refusedHint(proxy.refused()), blockedBySandbox(output) ? sandboxHint(sandbox.kind, output) : undefined].filter(Boolean);
     return hints.length ? hints.join("\n") : undefined;
 }
 
-function pickShell(): string {
+/** The shell commands run in: the user's, if it's bash or zsh. */
+export function pickShell(): string {
     const sh = process.env.SHELL ?? "";
     if (/\/(bash|zsh)$/.test(sh) && existsSync(sh)) return sh;
     return existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
@@ -97,7 +110,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
         };
         const onChunk = (b: Buffer) => {
             const s = b.toString("utf-8");
-            if (output.length < MAX_OUTPUT * 20) output += s;
+            if (output.length < MAX_KEPT) output += s;
             opts.onData?.(s);
         };
         child.stdout?.on("data", onChunk);
@@ -238,18 +251,27 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
             }
         }
         let out = truncateMiddle(cleanOutput(res.output), MAX_OUTPUT);
+        const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
+        // A last grep that found nothing exits 1: that's the answer, not a failure of what came before it.
+        // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have,
+        // or the shell stopped before the end of the script (errexit, a failed special builtin): then it's not
+        // the last command's 1. The line after the command records the cwd, so a cwd means it got there.
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command, env) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
+        else if (search) {
+            const piped = search.piped ? " What was piped into it may still have failed: that doesn't change its status." : "";
+            out += `${out.trim() ? "\n\n" : ""}Exit code: 1 (the last command, ${search.name}, found no matches: that's its status for no match, not an error.${piped}${out.trim() ? " The output above is everything the command printed." : ""})`;
+        }
         else if (res.exitCode !== 0 && res.exitCode !== null) out += `\n\nExit code: ${res.exitCode}`;
         else if (res.signal) out += `\n\nTerminated by signal ${res.signal}`;
         out += notes;
-        const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
         const hint = ctx.sandbox && failed && !res.aborted ? failureHint(ctx.sandbox, res.output, proxy) : undefined;
         if (hint) out += `\n\n${hint}`;
         const lineCount = out.trim() ? out.trim().split("\n").length : 0;
         return {
             content: out.trim() || "(no output)",
-            isError: failed && !res.aborted,
+            isError: failed && !res.aborted && !search,
             display: {
                 summary: res.timedOut ? "Timed out" : res.aborted ? "Interrupted" : lineCount === 0 ? (failed ? `Exit code ${res.exitCode}` : "(no output)") : undefined,
                 body: out.trim() || undefined,

@@ -162,6 +162,8 @@ export function parseModelRef(ref: string): { provider: string; id: string } | u
 }
 
 export class ProviderError extends Error {
+    /** Nothing came back for minutes (sse.ts): retried only a few times. */
+    stalled?: boolean;
     constructor(
         message: string,
         public status?: number,

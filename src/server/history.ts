@@ -11,6 +11,7 @@ import { redactedJson } from "../util/redact";
 import { fileDiff, trimInput, truncateText } from "./diffs";
 import type { AgentRun, Block, FileDiff, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
+import { noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
 import { allProviders, getProvider } from "../providers/registry";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
@@ -33,6 +34,8 @@ export interface Segment {
     /** The summary that started this segment (none for the first). */
     summary?: string;
     messages: Message[];
+    /** How its turns ended, where the messages don't say (errors, limits). */
+    notices?: TurnNotice[];
 }
 
 /** Every segment of a session file: a compaction starts a new one, a rewind cuts the current one. */
@@ -46,7 +49,7 @@ export function readSegments(file: string): Segment[] {
     }
     for (const raw of text.split("\n")) {
         if (!raw) continue;
-        let l: { t: string; m?: Message; summary?: string; count?: number };
+        let l: { t: string; m?: Message; summary?: string; count?: number } & Partial<TurnNotice>;
         try {
             l = JSON.parse(raw);
         } catch {
@@ -55,7 +58,13 @@ export function readSegments(file: string): Segment[] {
         const cur = segments[segments.length - 1]!;
         if (l.t === "msg" && l.m) cur.messages.push(l.m);
         else if (l.t === "compact") segments.push({ summary: l.summary ?? "", messages: [] });
-        else if (l.t === "rewind" && typeof l.count === "number") cur.messages = cur.messages.slice(0, l.count);
+        else if (l.t === "rewind" && typeof l.count === "number") {
+            cur.messages = cur.messages.slice(0, l.count);
+            if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);
+        } else if (l.t === "notice") {
+            const n = turnNotice(l);
+            if (n) (cur.notices ??= []).push(n);
+        }
     }
     return segments;
 }
@@ -227,6 +236,8 @@ export interface ReplayInput {
     segments: Segment[];
     /** The current segment as the live session has it (repaired tail included). */
     current: Message[];
+    /** The live session's notices for the current segment (the file's when not given). */
+    currentNotices?: TurnNotice[];
     ui: UiLog;
     meta: (call: ToolCallPart) => ToolMeta;
     newId: () => string;
@@ -234,7 +245,8 @@ export interface ReplayInput {
 
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
-    const segs = [...o.segments.slice(0, -1), { summary: o.segments[o.segments.length - 1]?.summary, messages: o.current }];
+    const last = o.segments[o.segments.length - 1];
+    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, messages: o.current, notices: o.currentNotices ?? last?.notices }];
     segs.forEach((seg, si) => {
         const archived = si < segs.length - 1;
         let turn: Turn | undefined;
@@ -251,7 +263,18 @@ export function replay(o: ReplayInput): Turn[] {
             t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false });
             turn = undefined;
         }
+        // Notices go to the turn they ended: the one before the message that came next.
+        const notices = [...(seg.notices ?? [])].sort((a, b) => a.index - b.index);
+        const noticesBefore = (index: number) => {
+            while (notices.length && notices[0]!.index <= index) {
+                const n = notices.shift()!;
+                const t = ensure();
+                t.blocks.push({ t: "notice", id: o.newId(), level: n.level, text: n.text });
+                if (n.level === "error" && t.status === "done") t.status = "error";
+            }
+        };
         seg.messages.forEach((m, index) => {
+            noticesBefore(index);
             if (m.role === "user") {
                 const kind = m.meta?.kind ?? "prompt";
                 if (kind === "summary" || kind === "reminder") return;
@@ -295,6 +318,7 @@ export function replay(o: ReplayInput): Turn[] {
                 }
             }
         });
+        noticesBefore(Infinity);
     });
     // A tool call never answered (only the very end of a live session).
     return turns;
