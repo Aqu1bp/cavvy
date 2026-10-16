@@ -1,5 +1,6 @@
 import { createResource, createSignal } from "solid-js";
 import type { ChangesInfo, GitChangesInfo, GitScope } from "@shared/protocol";
+import { coalesce, type Slot } from "@shared/coalesce";
 import type { SessionHandle } from "./app";
 import { reportError, rpc } from "./app";
 
@@ -17,20 +18,19 @@ export function useChanges(handle: () => SessionHandle) {
 /** Git's answer, or why there isn't one (a base that's gone, a folder too big). */
 export type GitView = GitChangesInfo & { error?: string };
 
-const asked = new Map<string, Promise<GitView>>();
+const asked = new Map<string, Slot<GitView>>();
 
-/** One request per session, scope and base at a time: the panel and the pane asking together share it. */
+/**
+ * One request per session, scope and base at a time: the panel and the pane asking together
+ * share it, and a refresh asked for mid-request (a turn ending during the scan its start
+ * began) gets one more, after it.
+ */
 export function fetchGitChanges(id: string, scope: GitScope, base?: string, path?: string): Promise<GitView> {
-    const key = JSON.stringify([id, scope, base, path]);
-    let p = asked.get(key);
-    if (!p) {
-        p = rpc
+    return coalesce(asked, JSON.stringify([id, scope, base, path]), () =>
+        rpc
             .call("session.gitChanges", { id, scope, ...(base ? { base } : {}), ...(path !== undefined ? { path } : {}) })
-            .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) }))
-            .finally(() => asked.delete(key));
-        asked.set(key, p);
-    }
-    return p;
+            .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) })),
+    );
 }
 
 const [outside, setOutside] = createSignal(0);

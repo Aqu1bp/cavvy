@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { gitChanges } = await import("../src/server/git-changes");
+const { findRenames, gitChanges, render } = await import("../src/server/git-changes");
+const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
 
@@ -82,8 +83,10 @@ describe("git changes", () => {
 
     test("a clean tree has nothing, and an untouched file with a new mtime isn't a change", async () => {
         const dir = repo({ "a.txt": "same\n" });
-        const t = new Date(Date.now() + 5000);
-        Bun.spawnSync(["touch", "-d", t.toISOString().slice(0, 19), join(dir, "a.txt")]);
+        const before = statSync(join(dir, "a.txt")).mtimeMs;
+        const later = new Date(before + 60_000);
+        utimesSync(join(dir, "a.txt"), later, later);
+        expect(statSync(join(dir, "a.txt")).mtimeMs).not.toBe(before);
         const r = await gitChanges(dir, { scope: "uncommitted" });
         expect(r.files).toEqual([]);
     });
@@ -283,6 +286,76 @@ describe("git changes", () => {
         expect(r.files.map((f) => `${f.change} ${f.path}`)).toEqual(["modified d.txt"]);
     });
 
+    test("a staged new file deleted on disk is still listed", async () => {
+        const dir = repo({ "a.txt": "a\n" });
+        write(dir, "new.txt", "new\n");
+        git(dir, "add", "new.txt");
+        rmSync(join(dir, "new.txt"));
+        expect(git(dir, "status", "--porcelain")).toBe("AD new.txt\n");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files.map((f) => [f.change, f.path, f.note])).toEqual([["added", "new.txt", "Staged as a new file, then deleted on disk."]]);
+    });
+
+    test("a staged mode change undone on disk is still listed", async () => {
+        const dir = repo({ "a.txt": "a\n" });
+        chmodSync(join(dir, "a.txt"), 0o755);
+        git(dir, "add", "a.txt");
+        chmodSync(join(dir, "a.txt"), 0o644);
+        expect(git(dir, "status", "--porcelain")).toBe("MM a.txt\n");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files.map((f) => [f.path, f.note])).toEqual([["a.txt", "Staged mode change (100644 → 100755) the file itself no longer has."]]);
+    });
+
+    test("in a CRLF checkout, a one-line edit is one line", async () => {
+        const dir = repo({ ".gitattributes": "*.txt text eol=crlf\n", "a.txt": "one\ntwo\n" });
+        expect(git(dir, "show", "HEAD:a.txt")).toBe("one\ntwo\n");
+        write(dir, "a.txt", "one\r\nTWO\r\n");
+        expect(git(dir, "diff", "--numstat").trim()).toBe("1\t1\ta.txt");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(summary(r)).toEqual(["modified a.txt +1 -1"]);
+        expect(r.files[0]!.hunks[0]!.lines.map((l) => `${l.t}:${l.text}`)).toEqual(["ctx:one", "del:two", "add:TWO"]);
+    });
+
+    test("with autocrlf, a staged change whose file normalizes back is still listed", async () => {
+        const dir = repo({ "a.txt": "one\ntwo\n" });
+        git(dir, "config", "core.autocrlf", "true");
+        write(dir, "a.txt", "staged\n");
+        git(dir, "add", "a.txt");
+        write(dir, "a.txt", "one\r\ntwo\r\n");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files.map((f) => [f.path, f.note])).toEqual([["a.txt", "Staged changes the file itself no longer has."]]);
+    });
+
+    test("renames among 50,000 identical deleted files take linear time", async () => {
+        const oid = "e69de29bb2d1d6434b8b29ae775ad8c2e48cc391";
+        const changes: any[] = [];
+        for (let i = 0; i < 50_000; i++) changes.push({ path: `old/${i}`, change: "deleted", old: { mode: "100644", oid, size: 0 } });
+        for (let i = 0; i < 50_000; i++) changes.push({ path: `new/${i}`, change: "added", now: { mode: "100644", oid, size: 0 } });
+        let checks = 0;
+        const t = performance.now();
+        await findRenames(changes, undefined as any, false, () => void checks++);
+        expect(performance.now() - t).toBeLessThan(1000);
+        expect(changes.length).toBe(50_000);
+        expect(changes.every((c) => c.change === "renamed")).toBe(true);
+        expect(new Set(changes.map((c) => c.from)).size).toBe(50_000);
+        expect(checks).toBe(50_000);
+    });
+
+    test("past the deadline, render leaves files for their own requests", async () => {
+        const dir = repo({ "a.txt": "a\n" });
+        write(dir, "a.txt", "b\n");
+        const oid = git(dir, "rev-parse", "HEAD:a.txt").trim();
+        const files = await render([{ path: "a.txt", change: "modified", old: { mode: "100644", oid, size: 2 }, now: { mode: "100644", oid: "x", size: 2 } }], {
+            root: dir,
+            wt: undefined as any,
+            shown: (p: string) => p,
+            single: false,
+            deadline: Date.now() - 1,
+            normalizesEol: () => false,
+        });
+        expect(files.map((f) => [f.path, f.deferred, f.hunks.length])).toEqual([["a.txt", true, 0]]);
+    });
+
     test("secrets in a diff are redacted", async () => {
         const dir = repo({ "conf.txt": "nothing\n" });
         write(dir, "conf.txt", "key = sk-ant-api03-" + "a".repeat(90) + "\n");
@@ -401,7 +474,9 @@ describe("files git converts on check-in", () => {
     test("an entry not older than the index itself (racy) isn't trusted as clean", async () => {
         const { dir } = filtered();
         // Stamped later than the index file, then recorded: git itself would re-read it.
-        Bun.spawnSync(["touch", "-t", "209901010000", join(dir, "big.lfs")]);
+        const future = new Date("2099-01-01T00:00:00Z");
+        utimesSync(join(dir, "big.lfs"), future, future);
+        expect(statSync(join(dir, "big.lfs")).mtime.getUTCFullYear()).toBe(2099);
         git(dir, "update-index", "--refresh");
         const r = await gitChanges(dir, { scope: "uncommitted" });
         expect(r.files.map((f) => [f.path, f.filter])).toEqual([["big.lfs", "up"]]);
@@ -417,6 +492,49 @@ describe("a session in a subfolder", () => {
         expect(r.files.map((f) => f.path)).toEqual(["x.txt", "../top.txt"]); // in the repository's order, as git status lists them
         const one = await gitChanges(join(dir, "sub"), { scope: "uncommitted", path: "../top.txt" });
         expect(one.files.map((f) => f.path)).toEqual(["../top.txt"]);
+        // A turn card may name it absolutely.
+        const abs = await gitChanges(join(dir, "sub"), { scope: "uncommitted", path: join(dir, "top.txt") });
+        expect(abs.files.map((f) => f.path)).toEqual(["../top.txt"]);
+    });
+});
+
+describe("coalescing", () => {
+    /** After every pending promise reaction. */
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    test("a request made during a run gets a run that starts after it", async () => {
+        const slots = new Map();
+        let runs = 0;
+        let release: () => void = () => {};
+        const run = () => {
+            const n = ++runs;
+            return new Promise<number>((done) => (release = () => done(n)));
+        };
+        const first = coalesce(slots, "k", run);
+        const second = coalesce(slots, "k", run);
+        const third = coalesce(slots, "k", run);
+        expect(runs).toBe(1);
+        release();
+        expect(await first).toBe(1);
+        await tick();
+        expect(runs).toBe(2);
+        // Asked during the second run: a third run, not the second's result.
+        const fourth = coalesce(slots, "k", run);
+        release();
+        expect([await second, await third]).toEqual([2, 2]);
+        await tick();
+        release();
+        expect(await fourth).toBe(3);
+        expect(slots.size).toBe(0);
+    });
+
+    test("a failed run doesn't stop the next one", async () => {
+        const slots = new Map();
+        let n = 0;
+        const run = () => (++n === 1 ? Promise.reject(new Error("no")) : Promise.resolve(n));
+        const first = coalesce(slots, "k", run);
+        const second = coalesce(slots, "k", run);
+        await expect(first).rejects.toThrow("no");
+        expect(await second).toBe(2);
     });
 });
 

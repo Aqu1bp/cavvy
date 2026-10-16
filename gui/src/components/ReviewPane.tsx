@@ -125,15 +125,31 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const more = () => (shownScope() !== "harness" && git()?.more) || 0;
     const error = () => (shownScope() !== "harness" ? git()?.error : undefined);
 
-    /** Turn cards name files relative to the folder or absolutely; the lists, relative. */
-    const rel = (path: string) => {
-        const cwd = p.handle.view.state.cwd;
-        return path.startsWith(cwd + "/") ? path.slice(cwd.length + 1) : path.replace(/^\.\//, "");
+    const absolute = (path: string) => {
+        const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${p.handle.view.state.cwd}/${path}`;
+        // Files elsewhere in the repository come as ../path.
+        const parts: string[] = [];
+        for (const part of full.split("/")) {
+            if (part === "..") parts.pop();
+            else if (part !== ".") parts.push(part);
+        }
+        return parts.join("/") || "/";
     };
-    const file = createMemo(() => {
-        const want = picked() && rel(picked()!);
-        return files().find((f) => rel(f.path) === want) ?? files()[0];
+    /** Turn cards name files relative to the folder or absolutely; the lists, relative (../ for the rest of the repository). */
+    const same = (a: string, b: string) => absolute(a) === absolute(b);
+    const listedPick = createMemo(() => {
+        const want = picked();
+        return want ? files().find((f) => same(f.path, want)) : undefined;
     });
+    // Asked for a file the list doesn't hold (past its 300): fetched by itself.
+    const [unlisted] = createResource(
+        () => {
+            const want = picked();
+            return shownScope() !== "harness" && view() && want && !listedPick() ? { id: id(), scope: gitScope(), base: base(), path: want } : false;
+        },
+        async (k) => (await fetchGitChanges(k.id, k.scope, k.base, k.path)).files[0],
+    );
+    const file = createMemo((): Row | undefined => listedPick() ?? (picked() && unlisted() && same(unlisted()!.path, picked()!) ? unlisted() : undefined) ?? files()[0]);
     // A file whose hunks didn't fit in the list's reply is fetched on its own.
     const [full, { refetch: refetchFull }] = createResource(
         () => {
@@ -148,16 +164,6 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     );
     const loaded = () => (full()?.path === file()?.path ? full() : undefined);
     const shownFile = (): Row | undefined => (file()?.deferred ? (loaded()?.file ?? file()) : file());
-    const absolute = (path: string) => {
-        const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${p.handle.view.state.cwd}/${path}`;
-        // Files elsewhere in the repository come as ../path.
-        const parts: string[] = [];
-        for (const part of full.split("/")) {
-            if (part === "..") parts.pop();
-            else if (part !== ".") parts.push(part);
-        }
-        return parts.join("/") || "/";
-    };
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
     const [fallback] = createResource(
         () => gitScope() === "branch" && git()?.error && !git()?.bases.length && id(),

@@ -18,6 +18,7 @@ import { isAbsolute, join, relative } from "path";
 import { canonical } from "../agent/checkpoints";
 import { gitArgv, gitEnv } from "../util/git";
 import { redact } from "../util/redact";
+import { coalesce, type Slot } from "./coalesce";
 import { fileDiff, MAX_DIFF_INPUT, textOf } from "./diffs";
 import type { GitChangesInfo, GitFileDiff, GitScope } from "./protocol";
 import { RpcError } from "./rpc-error";
@@ -81,8 +82,12 @@ async function drain(stream: ReadableStream<Uint8Array>, max: number, skim = fal
     }
 }
 
-/** One git call: argv only, a timeout, and no more than `maxBytes` of output. */
-async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string> } = {}): Promise<GitOut> {
+const tooLong = () => new RpcError("Looking for changes took too long in this folder.", "timeout");
+
+/** One git call: argv only, a timeout (no later than the request's deadline), and no more than `maxBytes` of output. */
+async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string>; deadline?: number } = {}): Promise<GitOut> {
+    const left = Math.min(GIT_TIMEOUT_MS, (o.deadline ?? Infinity) - Date.now());
+    if (left <= 0) throw tooLong();
     const env: Record<string, string> = { ...gitEnv(), ...o.env };
     // Where the repository is comes from cwd alone, not from a variable the server happened to inherit.
     for (const k of REPO_VARS) delete env[k];
@@ -97,7 +102,7 @@ async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: 
         stderr: "pipe",
     });
     let timedOut = false;
-    const timer = setTimeout(() => ((timedOut = true), proc.kill()), GIT_TIMEOUT_MS);
+    const timer = setTimeout(() => ((timedOut = true), proc.kill()), left);
     try {
         const [out, err] = await Promise.all([
             drain(proc.stdout, o.maxBytes ?? 64 * 1024 * 1024).then((r) => (r.cut && proc.kill(), r)),
@@ -129,10 +134,10 @@ interface Refs {
     default?: string;
 }
 
-async function listRefs(root: string): Promise<Refs> {
+async function listRefs(root: string, deadline: number): Promise<Refs> {
     const [list, originHead] = await Promise.all([
-        git(root, ["for-each-ref", "--sort=-committerdate", "--format=%(refname) %(symref)", "refs/heads", "refs/remotes"], { maxBytes: 4 * 1024 * 1024 }),
-        git(root, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]),
+        git(root, ["for-each-ref", "--sort=-committerdate", "--format=%(refname) %(symref)", "refs/heads", "refs/remotes"], { maxBytes: 4 * 1024 * 1024, deadline }),
+        git(root, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { deadline }),
     ]);
     const full = new Map<string, string>();
     // Refnames can't hold spaces or control characters, so lines split cleanly.
@@ -289,9 +294,14 @@ class WorkTree {
         private algo: Algo,
         private filemode: boolean,
         private inTime: () => void,
+        private deadline: number,
     ) {}
 
-    /** Every folder on the way is a real folder, not a link that could lead out of the repo. */
+    /**
+     * Every folder on the way is a real folder, not a link that could lead out of the repo.
+     * A folder swapped for a link between this check and the read isn't caught; only a
+     * process already running as the user could do that, and it could read the file itself.
+     */
     private inside(rel: string): Promise<boolean> {
         const i = rel.lastIndexOf("/");
         if (i < 0) return Promise.resolve(true);
@@ -343,7 +353,7 @@ class WorkTree {
         const st = await this.stat(rel);
         if (!st?.isDirectory() || !(await lstat(join(this.root, rel, ".git")).catch(() => undefined))) return undefined;
         // The ceiling keeps git from walking up into this repository if the submodule's own .git is broken.
-        const r = await git(join(this.root, rel), ["rev-parse", "-q", "--verify", "HEAD"], { env: { GIT_CEILING_DIRECTORIES: this.root } });
+        const r = await git(join(this.root, rel), ["rev-parse", "-q", "--verify", "HEAD"], { env: { GIT_CEILING_DIRECTORIES: this.root }, deadline: this.deadline });
         return r.code === 0 ? trimNl(r.out) : undefined;
     }
 }
@@ -366,8 +376,8 @@ interface IndexStat {
  * index file's own mtime (for racy entries). Its format is documented as
  * subject to change; an entry this can't read just isn't trusted as clean.
  */
-async function indexStats(root: string): Promise<{ entries: Map<string, IndexStat>; mtime: bigint } | undefined> {
-    const [list, where] = await Promise.all([git(root, ["ls-files", "--debug", "-s", "-z"]), git(root, ["rev-parse", "--git-path", "index"])]);
+async function indexStats(root: string, deadline: number): Promise<{ entries: Map<string, IndexStat>; mtime: bigint } | undefined> {
+    const [list, where] = await Promise.all([git(root, ["ls-files", "--debug", "-s", "-z"], { deadline }), git(root, ["rev-parse", "--git-path", "index"], { deadline })]);
     if (list.code !== 0 || list.cut || where.code !== 0) return undefined;
     const file = trimNl(where.out);
     const st = await lstat(isAbsolute(file) ? file : join(root, file), { bigint: true }).catch(() => undefined);
@@ -427,8 +437,8 @@ export function statClean(st: BigIntStats, e: IndexStat | undefined, indexMtime:
 }
 
 /** Attributes for paths, as check-attr reports them ("unspecified" when not set). */
-async function attributes(root: string, paths: string[]): Promise<Map<string, Record<string, string>>> {
-    const r = await git(root, ["check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding", "text", "eol"], { input: paths.join("\0") + "\0" });
+async function attributes(root: string, paths: string[], deadline: number): Promise<Map<string, Record<string, string>>> {
+    const r = await git(root, ["check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding", "text", "eol"], { input: paths.join("\0") + "\0", deadline });
     const recs = records(r.out);
     const out = new Map<string, Record<string, string>>();
     for (let i = 0; i + 2 < recs.length; i += 3) out.set(recs[i]!, { ...out.get(recs[i]!), [recs[i + 1]!]: recs[i + 2]! });
@@ -438,7 +448,7 @@ async function attributes(root: string, paths: string[]): Promise<Map<string, Re
 // ---------------------------------------------------------------------------
 // Comparing
 
-interface Change {
+export interface Change {
     path: string;
     change: GitFileDiff["change"];
     old?: Entry;
@@ -473,17 +483,11 @@ function boolConfig(v: string | undefined, fallback: boolean): boolean {
     return !/^(false|no|off|0)$/i.test(v.trim());
 }
 
-/** In-flight requests, so a pane and a panel asking at once share one walk. */
-const inflight = new Map<string, Promise<GitChangesInfo>>();
+/** Walks under way, so a pane and a panel asking at once share one, and one asking mid-walk gets the next. */
+const inflight = new Map<string, Slot<GitChangesInfo>>();
 
 export function gitChanges(cwd: string, req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
-    const key = JSON.stringify([cwd, req.scope, req.base, req.path]);
-    let p = inflight.get(key);
-    if (!p) {
-        p = collect(cwd, req).finally(() => inflight.delete(key));
-        inflight.set(key, p);
-    }
-    return p;
+    return coalesce(inflight, JSON.stringify([cwd, req.scope, req.base, req.path]), () => collect(cwd, req));
 }
 
 function notRepo(scope: GitScope, reason: string): GitChangesInfo {
@@ -493,11 +497,11 @@ function notRepo(scope: GitScope, reason: string): GitChangesInfo {
 async function collect(cwd: string, req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
     const deadline = Date.now() + DEADLINE_MS;
     const inTime = () => {
-        if (Date.now() > deadline) throw new RpcError("Looking for changes took too long in this folder.", "timeout");
+        if (Date.now() > deadline) throw tooLong();
     };
     let top: GitOut;
     try {
-        top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+        top = await git(cwd, ["rev-parse", "--show-toplevel"], { deadline });
     } catch (e) {
         if (e instanceof RpcError) throw e;
         return notRepo(req.scope, "Git isn't available, so this shows the edits Harness made.");
@@ -509,11 +513,11 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // A folder's name can end in a newline; only git's own is taken off.
     const root = trimNl(top.out);
     const [head, branch, format, config, refs] = await Promise.all([
-        git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"]),
-        git(root, ["symbolic-ref", "-q", "--short", "HEAD"]),
-        git(root, ["rev-parse", "--show-object-format"]),
-        git(root, ["config", "-z", "--get-regexp", "^(core\\.(filemode|autocrlf|trustctime|checkstat)|filter\\..+\\.(clean|process))$"]),
-        listRefs(root),
+        git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], { deadline }),
+        git(root, ["symbolic-ref", "-q", "--short", "HEAD"], { deadline }),
+        git(root, ["rev-parse", "--show-object-format"], { deadline }),
+        git(root, ["config", "-z", "--get-regexp", "^(core\\.(filemode|autocrlf|trustctime|checkstat)|filter\\..+\\.(clean|process))$"], { deadline }),
+        listRefs(root, deadline),
     ]);
     const headSha = head.code === 0 ? trimNl(head.out) : undefined;
     const algo: Algo = format.code === 0 && trimNl(format.out) === "sha256" ? "sha256" : "sha1";
@@ -538,18 +542,18 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         if (!name) throw new RpcError("There's no main branch to compare with. Pick a base branch.", "invalid");
         if (name.startsWith("-") || !refs.full.has(name)) throw new RpcError(`“${name.slice(0, 200)}” isn't a branch in this repository.`, "invalid");
         if (!headSha) throw new RpcError("This branch has no commits yet.", "invalid");
-        const mb = await git(root, ["merge-base", headSha, refs.full.get(name)!]);
+        const mb = await git(root, ["merge-base", headSha, refs.full.get(name)!], { deadline });
         if (mb.code !== 0 || !mb.out.length) throw new RpcError(`${branchName ?? "HEAD"} and ${name} share no history.`, "invalid");
         baseSha = trimNl(mb.out);
         base = { ref: name, sha: baseSha };
     }
 
     const [tree, index, others, folders] = await Promise.all([
-        baseSha ? git(root, ["ls-tree", "-r", "-l", "-z", "--full-tree", baseSha]) : undefined,
-        git(root, ["ls-files", "-s", "-v", "-z"]),
-        git(root, ["ls-files", "-z", "--others", "--exclude-standard"], { maxBytes: 4 * 1024 * 1024 }),
+        baseSha ? git(root, ["ls-tree", "-r", "-l", "-z", "--full-tree", baseSha], { deadline }) : undefined,
+        git(root, ["ls-files", "-s", "-v", "-z"], { deadline }),
+        git(root, ["ls-files", "-z", "--others", "--exclude-standard"], { maxBytes: 4 * 1024 * 1024, deadline }),
         // The same, with wholly untracked folders as one path each ("dir/"), as `git status` shows them.
-        git(root, ["ls-files", "-z", "--others", "--exclude-standard", "--directory"], { maxBytes: 4 * 1024 * 1024 }),
+        git(root, ["ls-files", "-z", "--others", "--exclude-standard", "--directory"], { maxBytes: 4 * 1024 * 1024, deadline }),
     ]);
     if (tree?.cut || index.cut) throw new RpcError("This repository has too many files to compare.", "limit");
     if ((tree && tree.code !== 0) || index.code !== 0) throw new RpcError("Git couldn't list this repository's files.");
@@ -558,7 +562,19 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const untracked = untrackedEntries(records(others.out), others.cut, records(folders.out));
     inTime();
 
-    const wt = new WorkTree(root, algo, filemode, inTime);
+    const wt = new WorkTree(root, algo, filemode, inTime, deadline);
+    /**
+     * Why git would still list a file that's back as it was: a conflict left unresolved, or a
+     * staged version (content or mode) that differs, so committing now would commit it.
+     */
+    const stillListed = (was: Entry, ix: IndexEntry | undefined): string | undefined => {
+        if (ix?.tag === "M") return "Unmerged: the conflict isn't marked resolved.";
+        if (req.scope !== "uncommitted") return undefined;
+        if (!ix) return "Staged for deletion, though the file is still here.";
+        if (ix.oid !== was.oid) return "Staged changes the file itself no longer has.";
+        if (ix.mode !== was.mode) return `Staged mode change (${was.mode} → ${ix.mode}) the file itself no longer has.`;
+        return undefined;
+    };
     const changes: Change[] = [];
     /** Differ only in CRLF line endings: unchanged if git converts this path's endings. */
     const crlfOnly: Change[] = [];
@@ -582,15 +598,16 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
             now = ix;
             indexed = true;
         } else now = await wt.entry(path, was);
-        if (!was && !now) return;
+        if (!was && !now) {
+            // Staged as a new file, then deleted on disk: git still lists it ("AD").
+            if (ix && req.scope === "uncommitted") changes.push({ path, change: "added", now: ix, indexed: true, kind: kindOf(ix.mode), note: "Staged as a new file, then deleted on disk." });
+            return;
+        }
         if (!was) return void changes.push({ path, change: "added", now: now!, kind: kindOf(now!.mode), indexed });
         if (!now) return void changes.push({ path, change: "deleted", old: was, kind: kindOf(was.mode) });
         const sameMode = was.mode === now.mode || (!filemode && isFileMode(was.mode) && isFileMode(now.mode));
         if (sameMode && was.oid === now.oid) {
-            // The file is back as it was, but git would still say so: a conflict left unresolved, or
-            // a staged version that differs (committing now would commit it).
-            const staged = req.scope === "uncommitted" && (!ix ? "Staged for deletion, though the file is still here." : ix.oid !== was.oid ? "Staged changes the file itself no longer has." : undefined);
-            const note = ix?.tag === "M" ? "Unmerged: the conflict isn't marked resolved." : staged;
+            const note = stillListed(was, ix);
             if (note) changes.push({ path, change: "modified", old: was, now, kind: kindOf(was.mode), note });
             return;
         }
@@ -606,13 +623,21 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // filter, so these are settled the way git settles most files: by the index's stat data.
     const tracked = (c: Change) => !c.indexed && !!c.now && isFileMode(c.now.mode) && staged.get(c.path)?.tag === "H" && isFileMode(staged.get(c.path)!.mode);
     const candidates = changes.filter((c) => (c.change === "added" || c.change === "modified" || c.change === "typechange") && tracked(c));
+    // check-attr only reads .gitattributes; it runs nothing.
+    const attrs = candidates.length || crlfOnly.length ? await attributes(root, [...candidates, ...crlfOnly].map((c) => c.path), deadline) : new Map<string, Record<string, string>>();
+    const unset = (v?: string) => v === undefined || v === "unspecified" || v === "unset";
+    const eolConverts = (a: Record<string, string> = {}) => a.text !== "unset" && (a.text === "set" || a.text === "auto" || !unset(a.eol) || autocrlf);
+    /** Git turns this path's CRLFs into LFs on check-in, so its diff should too. */
+    const normalizesEol = (path: string) => attrs.has(path) && eolConverts(attrs.get(path));
     if (candidates.length || crlfOnly.length) {
-        // check-attr only reads .gitattributes; it runs nothing.
-        const attrs = await attributes(root, [...candidates, ...crlfOnly].map((c) => c.path));
-        const unset = (v?: string) => v === undefined || v === "unspecified" || v === "unset";
-        const eolConverts = (a: Record<string, string> = {}) => a.text !== "unset" && (a.text === "set" || a.text === "auto" || !unset(a.eol) || autocrlf);
-        // Only paths whose endings git converts are unchanged; others really did gain CRLFs.
-        for (const c of crlfOnly) if (!eolConverts(attrs.get(c.path))) changes.push(c);
+        for (const c of crlfOnly) {
+            // Only paths whose endings git converts are unchanged; others really did gain CRLFs.
+            if (!normalizesEol(c.path)) changes.push(c);
+            else {
+                const note = stillListed(c.old!, staged.get(c.path));
+                if (note) changes.push({ ...c, change: "modified", note });
+            }
+        }
         const settle = candidates
             .map((c) => {
                 const a = attrs.get(c.path) ?? {};
@@ -623,7 +648,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
             })
             .filter((x) => x !== undefined);
         if (settle.length) {
-            const index = await indexStats(root);
+            const index = await indexStats(root, deadline);
             const drop = new Set<Change>();
             await eachLimit(settle, 32, async ({ c, filter }) => {
                 const ix = staged.get(c.path)!;
@@ -645,7 +670,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
 
     // A path the base tracks is compared above, even if the index has since dropped it.
     changes.push(...untracked.changes.filter((c) => !old.has(c.path)));
-    await findRenames(changes, wt, untracked.changes.length <= 2000);
+    await findRenames(changes, wt, untracked.changes.length <= 2000, inTime);
     // As `git status` lists them: tracked changes, then untracked files.
     const rank = (c: Change) => (c.change === "untracked" ? 1 : 0);
     changes.sort((a, b) => rank(a) - rank(b) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -656,14 +681,18 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const shown = (rel: string) => relative(here, join(root, rel)) || ".";
     let listed = changes;
     let more = 0;
-    // The path exactly as a list gave it: a repository-relative name could be another file.
-    if (req.path !== undefined) listed = changes.filter((c) => shown(c.path) === req.path).slice(0, 1);
+    // The path as a list gave it (a repository-relative name could be another file), or an
+    // absolute one, as a turn card may have it.
+    if (req.path !== undefined) {
+        const want = isAbsolute(req.path) ? relative(here, canonical(req.path)) || "." : req.path;
+        listed = changes.filter((c) => shown(c.path) === want).slice(0, 1);
+    }
     else if (changes.length > MAX_FILES) {
         listed = changes.slice(0, MAX_FILES);
         more = changes.length - MAX_FILES;
     }
 
-    const files = await render(listed, root, wt, shown, req.path !== undefined);
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, normalizesEol });
     let added = 0;
     let removed = 0;
     for (const f of files) {
@@ -708,7 +737,11 @@ function untrackedEntries(flat: string[], flatCut: boolean, collapsed: string[])
         let dir: string | undefined;
         for (let i = path.indexOf("/"); i >= 0 && !dir; i = path.indexOf("/", i + 1)) if (dirs.has(path.slice(0, i + 1))) dir = path.slice(0, i + 1);
         if (!dir) changes.push({ path, change: "untracked" });
-        else inDir.set(dir, [...(inDir.get(dir) ?? []), path]);
+        else {
+            const list = inDir.get(dir);
+            if (list) list.push(path);
+            else inDir.set(dir, [path]);
+        }
     }
     for (const dir of dirs) {
         if (repos.has(dir)) continue; // a nested repository, already listed
@@ -725,16 +758,27 @@ function untrackedEntries(flat: string[], flatCut: boolean, collapsed: string[])
     return { changes, cut };
 }
 
-/** Exact renames only: a deleted file whose content turned up under a new name. Cheap, since both ids are known. */
-async function findRenames(changes: Change[], wt: WorkTree, hashUntracked: boolean): Promise<void> {
+/**
+ * Exact renames only: a deleted file whose content turned up under a new name.
+ * Cheap, since both ids are known; linear, even for 50k deleted empty files.
+ */
+export async function findRenames(changes: Change[], wt: WorkTree, hashUntracked: boolean, inTime: () => void): Promise<void> {
+    /** Deleted files by blob id, each taken once (from the end). */
     const gone = new Map<string, Change[]>();
-    for (const c of changes) if (c.change === "deleted" && c.old && isFileMode(c.old.mode)) gone.set(c.old.oid, [...(gone.get(c.old.oid) ?? []), c]);
+    const sizes = new Set<number | undefined>();
+    for (const c of changes) {
+        if (c.change !== "deleted" || !c.old || !isFileMode(c.old.mode)) continue;
+        const bucket = gone.get(c.old.oid);
+        if (bucket) bucket.push(c);
+        else gone.set(c.old.oid, [c]);
+        sizes.add(c.old.size);
+    }
     if (!gone.size) return;
-    // Same content means the same size: only those untracked files are worth hashing.
-    const sizes = new Set([...gone.values()].flat().map((c) => c.old!.size));
     const taken = new Set<Change>();
     for (const c of changes) {
-        if (c.change !== "added" && !(c.change === "untracked" && hashUntracked && !c.kind)) continue;
+        if (c.note || (c.change !== "added" && !(c.change === "untracked" && hashUntracked && !c.kind))) continue;
+        inTime();
+        // Same content means the same size: only those untracked files are worth hashing.
         if (!c.now) {
             const st = await wt.stat(c.path);
             if (!st?.isFile() || !sizes.has(st.size)) continue;
@@ -742,21 +786,21 @@ async function findRenames(changes: Change[], wt: WorkTree, hashUntracked: boole
         const now = c.now ?? (await wt.entry(c.path));
         if (!now || !isFileMode(now.mode)) continue;
         c.now = now;
-        const from = gone.get(now.oid)?.find((d) => !taken.has(d));
+        const from = gone.get(now.oid)?.pop();
         if (!from) continue;
         taken.add(from);
         c.change = "renamed";
         c.from = from.path;
         c.old = from.old;
     }
-    for (let i = changes.length - 1; i >= 0; i--) if (taken.has(changes[i]!)) changes.splice(i, 1);
+    if (taken.size) changes.splice(0, changes.length, ...changes.filter((c) => !taken.has(c)));
 }
 
 /** Old contents for the listed files, as raw blobs: `cat-file --batch` without --filters runs no filter. */
-async function blobs(root: string, oids: string[]): Promise<Map<string, Buffer>> {
+async function blobs(root: string, oids: string[], deadline: number): Promise<Map<string, Buffer>> {
     const out = new Map<string, Buffer>();
     if (!oids.length) return out;
-    const r = await git(root, ["cat-file", "--batch"], { input: oids.join("\n") + "\n", maxBytes: MAX_REPLY_BYTES + oids.length * 100 });
+    const r = await git(root, ["cat-file", "--batch"], { input: oids.join("\n") + "\n", maxBytes: MAX_REPLY_BYTES + oids.length * 100, deadline });
     const buf = r.out;
     let pos = 0;
     while (pos < buf.length) {
@@ -778,7 +822,17 @@ async function blobs(root: string, oids: string[]): Promise<Map<string, Buffer>>
 const short = (sha?: string) => (sha ? sha.slice(0, 7) : "none");
 const statusOf = (c: Change): GitFileDiff["status"] => (c.change === "deleted" ? "deleted" : c.change === "added" || c.change === "untracked" ? "added" : "modified");
 
-async function render(listed: Change[], root: string, wt: WorkTree, shown: (rel: string) => string, single: boolean): Promise<GitFileDiff[]> {
+export interface RenderContext {
+    root: string;
+    wt: WorkTree;
+    shown: (rel: string) => string;
+    /** One file asked for by path: no reply budget. */
+    single: boolean;
+    deadline: number;
+    normalizesEol: (path: string) => boolean;
+}
+
+export async function render(listed: Change[], { root, wt, shown, single, deadline, normalizesEol }: RenderContext): Promise<GitFileDiff[]> {
     const wanted = new Map<string, number>();
     const readable = (e?: Entry): e is Entry => !!e && (isFileMode(e.mode) || e.mode === SYMLINK) && (e.size ?? 0) <= MAX_DIFF_INPUT;
     for (const c of listed) {
@@ -793,7 +847,11 @@ async function render(listed: Change[], root: string, wt: WorkTree, shown: (rel:
         budget -= size;
         take.push(oid);
     }
-    const olds = await blobs(root, take);
+    // Out of time, the old sides are left for each file's own request.
+    const olds = await blobs(root, take, deadline).catch((e) => {
+        if (e instanceof RpcError && e.code === "timeout") return new Map<string, Buffer>();
+        throw e;
+    });
     let lines = 0;
     const files: GitFileDiff[] = [];
     for (const c of listed) {
@@ -820,6 +878,11 @@ async function render(listed: Change[], root: string, wt: WorkTree, shown: (rel:
             files.push(note(c.old && c.now ? `Submodule ${short(c.old.oid)} → ${short(c.now.oid)}` : c.old ? `Submodule removed (was at ${short(c.old.oid)})` : `Submodule added at ${short(c.now?.oid)}`));
             continue;
         }
+        // Past the deadline, the rest are left for their own requests, which get a fresh one.
+        if (Date.now() > deadline) {
+            files.push({ ...base, deferred: true });
+            continue;
+        }
         const before = c.old ? oldSide(c.old, olds) : null;
         const after = c.change === "deleted" ? null : c.indexed ? oldSide(c.now!, olds) : await current(c, wt, budget);
         if (after && "bytes" in after) budget -= after.bytes;
@@ -833,7 +896,9 @@ async function render(listed: Change[], root: string, wt: WorkTree, shown: (rel:
             continue;
         }
         const b = before ? redact(before.text) : null;
-        const a = after ? redact(after.text) : null;
+        // Git compares this path's working text with its line endings converted, so a one-line
+        // edit in a CRLF checkout is one line, not every line.
+        const a = after ? redact(c.indexed || !normalizesEol(c.path) ? after.text : after.text.replace(/\r\n/g, "\n")) : null;
         const d = fileDiff(path, b, a);
         const out: GitFileDiff = { ...base, ...d, status: base.status };
         if (c.old && c.now && c.old.mode !== c.now.mode && isFileMode(c.old.mode) && isFileMode(c.now.mode) && !d.hunks.length) out.note = `Mode changed ${c.old.mode} → ${c.now.mode}`;
