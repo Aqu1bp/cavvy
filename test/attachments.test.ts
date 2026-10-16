@@ -14,7 +14,7 @@ const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { RpcError } = await import("../src/server/rpc-error");
 const { checkFiles, checkMedia, sanitizeName } = await import("../src/server/attachments");
-const { framedText, readsPdf, attachmentsNote, fitMedia } = await import("../src/providers/files");
+const { framedText, readsPdf, attachmentsNote, fitMedia, fitRequest, REQUEST_LIMIT } = await import("../src/providers/files");
 const { MEDIA_BUDGET, base64Size } = await import("../src/util/media");
 const { OpenAICompatProvider } = await import("../src/providers/openai-compat");
 const { Agent } = await import("../src/agent/agent");
@@ -659,6 +659,73 @@ describe("conversation-wide limits, and the user's own words", () => {
             server.stop(true);
         }
     }, 60_000);
+
+    test("all three providers bound the final body with media, escaped files, history, system text and tools", async () => {
+        const { AnthropicProvider } = await import("../src/providers/anthropic");
+        const { OpenAIResponsesProvider } = await import("../src/providers/openai-responses");
+        const bodies: string[] = [];
+        const server = Bun.serve({ port: 0, hostname: "127.0.0.1", maxRequestBodySize: 64 * 1024 * 1024, fetch: async (req) => (bodies.push(await req.text()), new Response("{}", { status: 400 })) });
+        try {
+            const text = '\t"'.repeat(256 * 1024); // 512 KB per file, twice that on the wire.
+            const files = checkFiles(Array.from({ length: 10 }, (_, i) => ({ name: `${i}.txt`, data: b64(text) })));
+            const images = [1, 2].map((n) => ({ type: "image" as const, mediaType: "image/png", data: b64(Buffer.alloc(10 * 1024 * 1024, n)) }));
+            expect(() => checkMedia([...files, ...images])).not.toThrow();
+            const messages: Message[] = [
+                { role: "user", content: [{ type: "text", text: "earlier request" }] },
+                { role: "assistant", content: [{ type: "text", text: "history ".repeat(128 * 1024) }] },
+                { role: "user", content: [{ type: "text", text: "read these" }, ...images, ...files] },
+            ];
+            const system = "界".repeat(512 * 1024); // UTF-8 bytes, not JS string length.
+            const tools = [{ name: "lookup", description: "tool description ".repeat(32 * 1024), parameters: { type: "object", properties: {} } }];
+            // Even before options, this valid prompt exceeds the limit with the normal media budget.
+            expect(Buffer.byteLength(JSON.stringify({ system, tools, messages: toAnthropicMessages(fitMedia(messages, true)) }))).toBeGreaterThan(REQUEST_LIMIT);
+            const baseUrl = `http://127.0.0.1:${server.port}`;
+            const clients = [
+                { provider: "anthropic", id: "claude-x", client: new AnthropicProvider({ ...getProvider("anthropic")!, baseUrl }, "sk-ant-api03-" + "x".repeat(40)) },
+                { provider: "openai", id: "gpt-6-sol", client: new OpenAIResponsesProvider({ ...getProvider("openai")!, baseUrl }, "sk-proj-" + "x".repeat(40)) },
+                { provider: "openrouter", id: "mock-opus", client: new OpenAICompatProvider({ ...getProvider("openrouter")!, baseUrl }, "sk-or-test") },
+            ];
+            for (const { provider, id, client } of clients) {
+                await expect(client.stream({ model: { provider, id }, system, tools, messages, maxTokens: 100, signal: AbortSignal.timeout(20_000) }, () => {})).rejects.toThrow();
+                const body = bodies.at(-1)!;
+                expect(Buffer.byteLength(body)).toBeLessThanOrEqual(REQUEST_LIMIT);
+                expect(body).toContain("too much to send in one request");
+                expect(body).toContain(system);
+                expect(body).toContain(tools[0]!.description);
+                expect(body).toContain("history ");
+                expect(body).toContain("9.txt");
+                expect(body.match(/"type":"(?:input_image|image_url|image)"/g)).toHaveLength(1);
+            }
+            expect(bodies).toHaveLength(3);
+            expect(messages[2]!.content.filter((p) => p.type === "image")).toHaveLength(2);
+        } finally {
+            server.stop(true);
+        }
+    }, 60_000);
+
+    test("request fitting lowers the media actually retained, even when the normal cap is underfilled", () => {
+        const messages: Message[] = [{ role: "user", content: [{ type: "image", mediaType: "image/png", data: b64(Buffer.alloc(1024 * 1024)) }] }];
+        const system = "s".repeat(REQUEST_LIMIT - 512 * 1024);
+        let builds = 0;
+        const body = fitRequest(messages, true, (messages) => (builds++, { system, messages }));
+        expect(builds).toBe(2);
+        expect(Buffer.byteLength(JSON.stringify(body))).toBeLessThanOrEqual(REQUEST_LIMIT);
+        expect(body.messages[0]!.content[0]!.type).toBe("text");
+        expect(messages[0]!.content[0]!.type).toBe("image");
+    });
+
+    test("oversized non-media is left for the provider to reject, without a rebuild loop", () => {
+        const system = "s".repeat(REQUEST_LIMIT + 1);
+        for (const withImage of [false, true]) {
+            const messages: Message[] = [{ role: "user", content: withImage ? [{ type: "image", mediaType: "image/png", data: PNG }] : [{ type: "text", text: "hello" }] }];
+            let builds = 0;
+            const body = fitRequest(messages, true, (messages) => (builds++, { system, messages }));
+            expect(builds).toBe(withImage ? 2 : 1);
+            expect(body.system).toBe(system);
+            expect(Buffer.byteLength(JSON.stringify(body))).toBeGreaterThan(REQUEST_LIMIT);
+            expect(body.messages[0]!.content.every((p) => p.type === "text")).toBe(true);
+        }
+    });
 
     test("the budget counts images too, keeps a newest message that fits whole, and is deterministic", () => {
         const img = (mb: number) => ({ type: "image" as const, mediaType: "image/png", data: b64(Buffer.alloc(mb * 1024 * 1024, 1)) });

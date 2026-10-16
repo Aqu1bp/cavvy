@@ -9,7 +9,7 @@ import { apiFastModeInfo } from "./fast-mode";
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
-import { fileAsText, fitMedia, frameName, readsPdf } from "./files";
+import { fileAsText, fitRequest, frameName, readsPdf } from "./files";
 import { httpError } from "./openai-compat";
 import {
     ProviderError,
@@ -128,7 +128,6 @@ export class OpenAIResponsesProvider implements ProviderClient {
             model: m.id,
             store: false,
             stream: true,
-            input: toResponsesInput(fitMedia(req.messages, readsPdf(req.model)), def, m.id, readsPdf(req.model)),
         };
         // Left out, the project's own tier applies (auto); "default" would override it, so only fast is asked for.
         if (req.fastMode && m.supportsFastMode && def.id === "openai" && apiFastModeInfo(def.id, m.id, this.base).supportsFastMode) body.service_tier = "fast";
@@ -148,6 +147,8 @@ export class OpenAIResponsesProvider implements ProviderClient {
         }
         if (req.cacheKey && !req.lightweight) body.prompt_cache_key = req.cacheKey;
 
+        const payload = JSON.stringify(fitRequest(req.messages, readsPdf(m), (messages) => ({ ...body, input: toResponsesInput(messages, def, m.id, readsPdf(m)) })));
+
         const items: Json[] = [];
         // Argument deltas carry item_id, not call_id: map from output_item.added.
         const calls = new Map<string, { callId: string; name: string }>();
@@ -159,7 +160,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
             const res = await fetch(`${this.base}/responses`, {
                 method: "POST",
                 headers: this.headers(),
-                body: JSON.stringify(body),
+                body: payload,
                 signal: stall.signal,
             }).catch((e: Error) => {
                 if (req.signal?.aborted) throw new ProviderError("aborted");

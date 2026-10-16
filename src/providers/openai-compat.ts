@@ -5,7 +5,7 @@
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
-import { fileAsText, fitMedia, frameName, providerReadsPdf } from "./files";
+import { fileAsText, fitRequest, frameName, providerReadsPdf } from "./files";
 import {
     ProviderError,
     type AssistantContent,
@@ -184,7 +184,6 @@ export class OpenAICompatProvider implements ProviderClient {
         const m = req.model;
         const body: Json = {
             model: m.id,
-            messages: toOpenAIMessages(req.system, fitMedia(req.messages, providerReadsPdf(def)), def),
             stream: true,
         };
         if (req.tools.length) {
@@ -201,7 +200,7 @@ export class OpenAICompatProvider implements ProviderClient {
             else body.reasoning_effort = effort;
         }
 
-        const payload = JSON.stringify(body);
+        const payload = JSON.stringify(fitRequest(req.messages, providerReadsPdf(def), (messages) => ({ ...body, messages: toOpenAIMessages(req.system, messages, def) })));
         // A request that stops sending anything is retried instead of waited on forever.
         const stall = stallTimer(req.signal, def.id === "vertex");
         const post = async (fresh: boolean) =>

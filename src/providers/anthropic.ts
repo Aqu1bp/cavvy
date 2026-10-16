@@ -27,7 +27,7 @@ import {
 import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS } from "./anthropic-models";
 import type { Effort } from "../config/settings";
 import { plainErrorText } from "../util/html";
-import { fileAsText, fitMedia, readsPdf } from "./files";
+import { fileAsText, fitRequest, readsPdf } from "./files";
 
 type BetaParams = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type BetaMessageParam = Anthropic.Beta.Messages.BetaMessageParam;
@@ -183,7 +183,7 @@ export class AnthropicProvider implements ProviderClient {
             model: m.id,
             max_tokens: maxOut,
             system: req.system ? [{ type: "text", text: req.system, ...(req.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}) }] : undefined,
-            messages: toAnthropicMessages(fitMedia(req.messages, readsPdf(req.model)), stripThinking, readsPdf(req.model)),
+            messages: [],
             tools: tools.length ? tools : undefined,
             stream: true,
         };
@@ -221,7 +221,7 @@ export class AnthropicProvider implements ProviderClient {
             betas.push("server-side-fallback-2026-07-01");
         }
         if (betas.length) params.betas = betas as Anthropic.Beta.AnthropicBeta[];
-        return { params, features };
+        return { params: fitRequest(req.messages, readsPdf(m), (messages) => ({ ...params, messages: toAnthropicMessages(messages, stripThinking, readsPdf(m)) })), features };
     }
 
     private async runStream(params: BetaParams, req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<AssistantMessage> {
