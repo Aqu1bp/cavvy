@@ -331,7 +331,14 @@ function checkConfigTrust(main: string, cwd: string, worktrees: string[], action
         if (!risky || risky.length) throw refuse("This repository's Git configuration", cwd, risky);
     }
     if (runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() !== "true") return;
-    for (const dir of new Set([main, cwd, ...worktrees].filter(isDir))) {
+    // Each folder as the worktree it's in: trusting a subfolder isn't trusting its worktree's config.
+    const roots = new Set<string>();
+    for (const dir of [main, cwd, ...worktrees].filter(isDir)) {
+        const root = runGit(dir, ["rev-parse", "--show-toplevel"])?.replace(/\n$/, "");
+        if (!root) throw refuse(`The worktree configuration of ${dir}`, dir, undefined);
+        roots.add(canonical(root));
+    }
+    for (const dir of roots) {
         if (trustedByUser(dir)) continue;
         const own = perWorktreeKeys(dir);
         const risky = own && notInert(own);

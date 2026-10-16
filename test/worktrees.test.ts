@@ -662,4 +662,19 @@ describe("review fixes", () => {
         const r = await runGitAsync(main, ["-c", `alias.slowexit=${alias}`, "slowexit"], 400);
         expect(r).toMatchObject({ code: 0, timedOut: false });
     });
+
+    test("final review: trusting a subfolder of a worktree doesn't accept that worktree's own config", async () => {
+        const { main, mark, script } = withFilterScript("sub-trusted");
+        const a = await createWorktree({ path: main, branch: "a" });
+        git(main, "config", "extensions.worktreeConfig", "true");
+        git(a.path, "config", "--worktree", "filter.evil.smudge", `'${script}'`);
+        const sub = join(a.path, "sub");
+        mkdirSync(sub);
+        trustFolder(sub);
+        await expect(createWorktree({ path: sub, branch: "next" })).rejects.toMatchObject({ code: "needs_trust", folder: a.path });
+        expect(existsSync(mark)).toBe(false);
+        // Trusting the worktree itself is what counts.
+        trustFolder(a.path);
+        expect((await createWorktree({ path: sub, branch: "next" })).branch).toBe("next");
+    });
 });
