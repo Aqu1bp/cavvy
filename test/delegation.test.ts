@@ -4,7 +4,7 @@
 // real ones; nothing here runs the real CLIs or touches the network.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -18,9 +18,13 @@ const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
 const { registerTools, serverTiming, stopServer } = await import("../src/mcp/server");
 const { McpClient } = await import("../src/mcp/client");
+const { McpManager } = await import("../src/mcp/manager");
+const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
+const { loadSettings } = await import("../src/config/settings");
 const { redact } = await import("../src/util/redact");
 const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
+const { attachTiming } = await import("../src/backends/claude-code");
 const { SecretStore } = await import("../src/agent/secrets");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
@@ -120,7 +124,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
+    for (const k of ["FAKE_PROJECT_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -145,6 +149,7 @@ const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "not
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
 interface Opts {
+    approvedMcpServers?: () => import("../src/mcp/manager").ApprovedMcpServers;
     provider: string;
     model?: Partial<ModelInfo>;
     client?: unknown;
@@ -171,6 +176,7 @@ async function makeAgent(o: Opts) {
         model: { provider: o.provider, id: "default", ...o.model },
         client: client as any,
         settings: () => settings,
+        approvedMcpServers: o.approvedMcpServers,
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -968,7 +974,7 @@ describe("Claude Code as the main agent", () => {
         calls([{ tool: "delegate", args: { task: "Look around", description: "Look", model: "codex:gpt-test", agent: "explore" } }]);
         const { run } = await makeAgent({ provider: "claude-code" });
         expect(await run("go")).toBe("done");
-        expect(received().find((m) => m.method === "config/read")!.params).toEqual({ cwd });
+        expect(received().find((m) => m.method === "config/read")!.params).toEqual({ cwd, includeLayers: true });
         expect(received().find((m) => m.method === "thread/start")!.params.config).toEqual({ mcp_servers: { files: { enabled: false }, "web.search": { enabled: false } } });
 
         // Codex can't list them: the task doesn't run there.
@@ -979,8 +985,42 @@ describe("Claude Code as the main agent", () => {
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
         const [result] = mcpResults();
         expect(result.isError).toBe(true);
-        expect(result.text).toContain("Codex didn't list its MCP servers (config/read failed: invalid configuration), so a read-only task can't run on it");
+        expect(result.text).toContain("Codex didn't list its MCP servers safely, so this turn cannot run");
     }, 20_000);
+
+    test("an approved server named harness cannot replace the delegation server", async () => {
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { harness: { command: "must-not-run" } } }));
+        trust.trustFolder(cwd);
+        saveApproval(cwd, "harness", mcpFingerprint({ command: "must-not-run" }, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        expect(manager.approvedServers().servers.harness?.source).toBe("project");
+        const { run } = await makeAgent({ provider: "claude-code", approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("hi")).toBe("done");
+        expect(setServers()).toHaveLength(1);
+        expect(setServers()[0].request.servers.harness.type).toBe("http");
+        expect(setServers()[0].request.servers.harness.command).toBeUndefined();
+        expect(logLines().some((l) => l.mcpConnected === "harness")).toBe(true);
+        const argv = starts()[0].argv;
+        expect(argv).not.toContain("--strict-mcp-config");
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]).disabledMcpjsonServers).toContain("harness");
+    });
+
+    for (const response of ["hang", "1", "exit"]) test(`delegation attachment distinguishes timeout from refusal or exit (${response})`, async () => {
+        const previousTimeout = attachTiming.timeoutMs;
+        attachTiming.timeoutMs = response === "hang" ? 50 : 5000;
+        process.env.FAKE_MCP_REFUSE = response;
+        try {
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            expect(await run("hello")).toBe(response === "exit" ? "error" : "done");
+            const warning = response === "hang" ? "warn: Claude Code timed out waiting for MCP servers: harness." : "warn: Claude Code couldn't connect to MCP servers: harness.";
+            expect(notices(events)).toContain(warning);
+            expect(notices(events).some((n) => n.includes("timed out"))).toBe(response === "hang");
+        } finally {
+            attachTiming.timeoutMs = previousTimeout;
+            delete process.env.FAKE_MCP_REFUSE;
+        }
+    });
 
     test("without the server (turned off, nobody to delegate to, or Claude Code refusing it) the turn runs as before", async () => {
         const { run } = await makeAgent({ provider: "claude-code", settings: { delegation: false } });
@@ -999,7 +1039,7 @@ describe("Claude Code as the main agent", () => {
         const third = await makeAgent({ provider: "claude-code" });
         expect(await third.run("hi")).toBe("done");
         expect(setServers()).toHaveLength(1);
-        expect(notices(third.events)).toContain("warn: Claude Code couldn't connect to Harness's delegation tools (Unsupported control request subtype: mcp_set_servers); this turn runs without them.");
+        expect(notices(third.events)).toContain("warn: Claude Code couldn't connect to MCP servers: harness.");
         expect(readFileSync(join(cwd, "out.txt"), "utf-8")).toBe("hi\n");
     });
 });
@@ -1069,6 +1109,52 @@ describe("Codex as the main agent", () => {
         // No harness server for the child.
         expect(setServers()).toEqual([]);
         expect(mcpResults()[0].text).toContain('(explore on claude-code:default) finished');
+    });
+
+    test("switching to Claude after a persisted cd falls back to strict MCP", async () => {
+        const subdir = join(cwd, "subdir");
+        mkdirSync(subdir);
+        const fixture = JSON.stringify(join(import.meta.dir, "fixtures/mcp-stdio-server.ts"));
+        writeFileSync(join(cwd, "server.js"), `await import(${fixture});`);
+        writeFileSync(join(subdir, "server.js"), `import { writeFileSync } from "fs"; writeFileSync("wrong-server-ran", ""); await import(${fixture});`);
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
+            relative: { command: process.execPath, args: ["--no-env-file", "./server.js"] },
+        } }));
+        saveApproval(cwd, "relative", mcpFingerprint({ command: process.execPath, args: ["--no-env-file", "./server.js"] }, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        expect(manager.approvedServers().servers.relative?.source).toBe("project");
+        script = (_req, n) => n === 1 ? use("cd", "Bash", { command: "cd subdir" }) : say("Changed directory");
+        trust.trustFolder(cwd);
+        const { agent, run, events } = await makeAgent({ provider: "gemini", client: childClient, approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("change directory")).toBe("done");
+        expect(realpathSync(agent.state.cwd)).toBe(subdir);
+        agent.setModel({ provider: "claude-code", id: "default" }, await clientFor("claude-code"));
+        expect(await run("hello")).toBe("done");
+        expect(starts().find((s) => s.argv.includes("--strict-mcp-config"))?.cwd).toBe(subdir);
+        expect(existsSync(join(subdir, "wrong-server-ran"))).toBe(false);
+        expect(setServers().every((m) => !m.request.servers.relative)).toBe(true);
+        const warnings = notices(events).filter((n) => n.startsWith("warn:"));
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatch(/folder|directory/);
+        expect(warnings[0]).toMatch(/strict/i);
+    });
+
+    test("a read-only Claude delegate does not attach its parent's approved MCP servers", async () => {
+        trust.trustFolder(cwd);
+        process.env.FAKE_CODEX_SCENARIO = "mcp";
+        process.env.FAKE_SCENARIO = "bash";
+        calls([{ tool: "delegate", args: { task: "Inspect files", description: "Inspect", model: "claude-code:default", agent: "explore" } }]);
+        const manager = new McpManager(cwd, () => ({ mcpServers: { approved: {
+            command: process.execPath, args: ["--no-env-file", join(import.meta.dir, "fixtures/mcp-stdio-server.ts")],
+        } } }), true);
+        manager.load();
+        expect(Object.keys(manager.approvedServers().servers)).toEqual(["approved"]);
+        const { run } = await makeAgent({ provider: "codex", approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("go")).toBe("done");
+        expect(starts().some((s) => s.argv.includes("--strict-mcp-config"))).toBe(true);
+        expect(setServers()).toEqual([]);
+        expect(mcpResults()[0].text).toContain("(explore on claude-code:default) finished");
     });
 
     test("a read-only agent on Claude Code runs read-only commands without asking", async () => {
@@ -1147,13 +1233,35 @@ describe("Codex as the main agent", () => {
         expect(resumes[1].developerInstructions).not.toContain("delegate");
         expect(resumes[1].threadId).toBe("thr-new");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
-        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this turn runs without them.");
+        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this turn runs without them, preserving MCP restrictions.");
         expect(notices(events).join("\n")).not.toContain("Starting a new one");
 
         const fresh = await makeAgent({ provider: "codex" });
         expect(await fresh.run("new")).toBe("done");
         const starts = received().filter((m) => m.method === "thread/start").map((m) => m.params);
         expect(starts.map((s) => Boolean(s.config))).toEqual([true, false]);
+    });
+
+    test("delegation fallback preserves project MCP disables on start and resume", async () => {
+        process.env.FAKE_PROJECT_MCP = JSON.stringify({ project: { command: "unapproved" } });
+        process.env.FAKE_REJECT_CONFIG = "1";
+        const { run } = await makeAgent({ provider: "codex" });
+        expect(await run("first")).toBe("done");
+        expect(await run("second")).toBe("done");
+        for (const method of ["thread/start", "thread/resume"]) {
+            const threads = received().filter((m) => m.method === method).map((m) => m.params);
+            expect(threads).toHaveLength(2);
+            expect(threads[0].config.mcp_servers.project).toEqual({ enabled: false });
+            expect(threads[1].config).toEqual({ mcp_servers: { project: { enabled: false } } });
+        }
+    });
+
+    test("a project harness server stays disabled instead of merging with delegation", async () => {
+        process.env.FAKE_PROJECT_MCP = JSON.stringify({ harness: { command: "unapproved", env: { X: "unapproved" } } });
+        const { run, events } = await makeAgent({ provider: "codex" });
+        expect(await run("hello")).toBe("done");
+        expect(received().find((m) => m.method === "thread/start").params.config).toEqual({ mcp_servers: { harness: { enabled: false } } });
+        expect(notices(events).join("\n")).toContain("avoid merging server configurations");
     });
 
     test("no server with nobody to delegate to", async () => {

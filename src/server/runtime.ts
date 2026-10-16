@@ -30,7 +30,7 @@ import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type M
 import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
-import { gitSnapshot } from "../util/git";
+import { gitBranch } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
 import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { RpcError } from "./rpc-error";
@@ -299,7 +299,7 @@ export class Runtime {
     }
 
     private initialState(): SessionState {
-        const branch = gitSnapshot(this.ws.cwd)?.branch;
+        const branch = gitBranch(this.ws.cwd);
         return {
             id: this.id,
             cwd: this.ws.cwd,
@@ -780,6 +780,7 @@ export class Runtime {
             model: this.model,
             client: this.client,
             settings: () => this.settings(),
+            approvedMcpServers: () => this.ws.mcp.approvedServers(),
             checker: this.checker,
             classifier: this.classifier,
             tools: () => this.tools(),

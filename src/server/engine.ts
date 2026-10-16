@@ -26,7 +26,7 @@ import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
-import { gitRoot, gitSnapshot } from "../util/git";
+import { gitRoot, gitBranch } from "../util/git";
 import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
@@ -419,7 +419,7 @@ export class Engine {
             exists,
             trusted: trusted || (!found.length && exists),
             needsTrust: trusted || this.declined.has(p) ? [] : found,
-            branch: git ? gitSnapshot(p)?.branch : undefined,
+            branch: git ? gitBranch(p) : undefined,
             git,
             openedAt: readStore().recent?.find((r) => r.path === p)?.at,
         };

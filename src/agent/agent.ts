@@ -25,6 +25,7 @@ import type {
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
 import type { Effort, Settings } from "../config/settings";
+import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
@@ -159,6 +160,8 @@ export interface AgentOptions {
     model: ModelInfo;
     client: ProviderClient;
     settings: () => Settings;
+    /** Read the current manager at each turn (including after approval changes). */
+    approvedMcpServers?: () => ApprovedMcpServers;
     checker: PermissionChecker;
     classifier?: AutoClassifier;
     /** Fixed list, or a getter (MCP tools appear once their servers connect). */
@@ -883,8 +886,28 @@ export class Agent {
     // -----------------------------------------------------------------------
     // Agent backends (src/backends): Claude Code and Codex run the turn
 
+    /** Approvals as they stand for each CLI launch (a Stop-hook continuation or a resume retry starts another), never more than the turn began with. */
+    private freshApprovals(base: { approvedMcpServers?: ApprovedMcpServers }): ApprovedMcpServers | undefined {
+        if (!base.approvedMcpServers) return undefined;
+        try {
+            return this.o.approvedMcpServers?.();
+        } catch {
+            return undefined;
+        }
+    }
+
     private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
         const s = this.o.settings();
+        let trusted = false;
+        let approvedMcpServers: ApprovedMcpServers | undefined;
+        try {
+            // Implicit session trust does not authorize CLI project configuration.
+            trusted = trustedByUser(this.state.cwd);
+            approvedMcpServers = this.o.approvedMcpServers?.();
+        } catch {
+            trusted = false;
+            host.emit({ type: "notice", level: "warn", message: "Could not check folder trust or approved MCP servers; this turn runs without project configuration or MCP servers." });
+        }
         return {
             cwd: this.state.cwd,
             model: this.model,
@@ -893,8 +916,8 @@ export class Agent {
             fastMode: this.fastMode(),
             appendSystemPrompt: this.o.appendSystemPrompt,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
-            // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.
-            trusted: trustedByUser(this.state.cwd),
+            trusted,
+            approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
             orchestrator: this.orchestrator(),
@@ -1134,12 +1157,12 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);

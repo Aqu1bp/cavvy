@@ -540,6 +540,54 @@ describe("McpManager.load and project .mcp.json approval", () => {
         expect(m.needsApproval().map((s) => s.name)).toEqual(["unapproved"]);
     });
 
+    test("approved set follows start policy, excluding collision refusals and header clashes", () => {
+        const m = new McpManager(proj, () => ({ ...base, mcpServers: {
+            ...base.mcpServers, "same name": cfg("first"), same_name: cfg("collision"),
+            headerClash: { url: "https://example.invalid/mcp", headers: { Authorization: "first", authorization: "second" } },
+        } }), true);
+        m.load();
+        m.servers.get("approved")!.status = "failed";
+        expect(m.approvedServers()).toEqual({ cwd: proj, servers: {
+            fromSettings: { config: cfg("s"), source: "settings" },
+            dup: { config: cfg("from-settings"), source: "settings" },
+            approved: { config: cfg("approved"), source: "project", fingerprint: m.servers.get("approved")!.approval!.fingerprint },
+            "same name": { config: cfg("first"), source: "settings" },
+        } });
+    });
+
+    for (const connectionStatus of ["pending", "connecting", "connected", "failed", "needs-approval"] as const) {
+        test(`connection status ${connectionStatus} neither grants nor revokes approval`, () => {
+            const m = new McpManager(proj, () => base, true);
+            m.load();
+            for (const st of m.servers.values()) st.status = connectionStatus;
+            expect(Object.keys(m.approvedServers().servers).sort()).toEqual(["approved", "dup", "fromSettings"]);
+        });
+    }
+
+    test("a server disabled for this session leaves the approved set", () => {
+        const m = new McpManager(proj, () => base, true);
+        m.load();
+        m.servers.get("approved")!.status = "disabled";
+        expect(Object.keys(m.approvedServers().servers).sort()).toEqual(["dup", "fromSettings"]);
+    });
+
+    test("approved snapshots retain manager provenance and original definitions", () => {
+        const implicit = cfg("implicit");
+        const explicit = { ...cfg("explicit"), cwd: "/elsewhere" };
+        const http = { url: "https://example.invalid/mcp" };
+        const m = new McpManager(proj, () => ({ mcpServers: { implicit, explicit, http } }), true);
+        m.load();
+        const snapshot = m.approvedServers();
+        expect(snapshot).toEqual({ cwd: proj, servers: {
+            implicit: { config: implicit, source: "settings" },
+            explicit: { config: explicit, source: "settings" },
+            http: { config: http, source: "settings" },
+        } });
+        snapshot.servers.implicit!.config.command = "changed outside the manager";
+        expect(m.approvedServers().servers.implicit!.config).toEqual(implicit);
+        expect(implicit).not.toHaveProperty("cwd");
+    });
+
     test("enableAllProjectMcpServers approves every project server (rejections still win)", () => {
         // In a folder the user trusted (not one trusted only for having had nothing to protect).
         trustFolder(proj);

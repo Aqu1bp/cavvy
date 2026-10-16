@@ -418,7 +418,7 @@ export function approvalMeaning(provider: string | undefined, userTrusted: boole
     const here = "Approving starts the server in Harness for this folder, and its tools go to sessions here that run on Harness's own models.";
     if (provider === "claude-code") {
         return userTrusted
-            ? `${here} This session runs on Claude Code, which doesn't get them. Claude Code reads .mcp.json itself, and Harness runs it as "claude -p", which starts the servers in .mcp.json without asking, whatever you decide here. Only Claude Code's own disabledMcpjsonServers keeps one out of it. (Read-only sub-agents get no MCP servers.)`
+            ? `${here} This session runs on Claude Code, which starts its own copies from .mcp.json. Harness enables only project servers its manager permits starting whose definitions still match the approved configuration and whose working directory matches this folder. All other project servers are disabled; if Harness cannot safely check the configuration, it isolates Claude Code from project MCP servers. (Read-only sub-agents get no MCP servers.)`
             : `${here} This session runs on Claude Code, which doesn't get them. It gets no servers from .mcp.json in this folder either, because you haven't trusted the folder yourself.`;
     }
     if (provider === "codex") return `${here} This session runs on Codex, which doesn't get them and takes its MCP servers from its own config, not from .mcp.json.`;

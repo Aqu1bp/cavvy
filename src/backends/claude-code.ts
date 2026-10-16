@@ -34,15 +34,16 @@ import type { ToolDisplay } from "../tools/types";
 import type { PlanLimits } from "../server/protocol";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { APP_TITLE, paths } from "../config/paths";
+import { paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { cliCommandNames } from "../commands/custom";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
+import { claudeMcpPolicy } from "./claude-mcp-policy";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
-/** How long Claude Code may take to connect to the harness's MCP server before the prompt goes without it (changeable for tests). */
+/** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background sub-agents once the prompt is answered (changeable for tests). */
@@ -319,18 +320,20 @@ class ClaudeTurn {
         if (t.appendSystemPrompt) a.push("--append-system-prompt", t.appendSystemPrompt);
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
-        if (!t.trusted) a.push("--setting-sources", "user", "--strict-mcp-config");
+        if (!t.trusted) a.push("--setting-sources", "user");
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
         // Always override external preferences: an unsupported model must not silently switch to Opus.
         const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
+        const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
+        if (mcp.strict) a.push("--strict-mcp-config");
+        if (mcp.warning) this.host.emit({ type: "notice", level: "warn", message: mcp.warning });
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
         a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-        if (t.trusted) a.push("--strict-mcp-config");
         const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
         a.push("--settings", JSON.stringify(settings));
         return a;
@@ -478,40 +481,36 @@ class ClaudeTurn {
         void this.proc.stop(this.aborted ? 1000 : 3000).then(() => this.proc.kill());
     }
 
-    /**
-     * Give Claude Code the harness's MCP server for this run. It goes over
-     * stdin (mcp_set_servers, as the Agent SDK sends it), so the token is in
-     * neither its arguments, which other local users can list, nor the
-     * environment its commands inherit. Claude Code answers once it has
-     * connected (or given up); the harness's tools need no prompt.
-     */
-    private async attach(o: OrchestratorServer) {
+    /** Keep delegation credentials on stdin; native project/user/plugin MCP servers load through Claude Code. */
+    private async attach() {
+        const o = this.t.orchestrator;
+        if (!o || this.t.readOnly) return;
+        const warn = (message: string) => this.host.emit({ type: "notice", level: "warn", message });
+        const servers = {
+            [o.name]: {
+                type: "http",
+                url: o.url,
+                headers: { Authorization: o.authorization },
+                timeout: o.toolTimeoutSec * 1000,
+                alwaysLoad: true,
+                tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
+            },
+        };
         const id = requestId();
         const answered = new Promise<Record<string, any>>((resolve) => this.controls.set(id, resolve));
-        this.proc.send({
-            type: "control_request",
-            request_id: id,
-            request: {
-                subtype: "mcp_set_servers",
-                servers: {
-                    [o.name]: {
-                        type: "http",
-                        url: o.url,
-                        headers: { Authorization: o.authorization },
-                        timeout: o.toolTimeoutSec * 1000,
-                        alwaysLoad: true,
-                        tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
-                    },
-                },
-            },
-        });
+        this.proc.send({ type: "control_request", request_id: id, request: { subtype: "mcp_set_servers", servers } });
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const r = await Promise.race([answered, this.proc.exited.then(() => undefined), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), attachTiming.timeoutMs)))]);
+        let timedOut = false;
+        const r = await Promise.race([answered, this.proc.exited.then(() => undefined), new Promise<undefined>((resolve) => (timer = setTimeout(() => {
+            timedOut = true;
+            resolve(undefined);
+        }, attachTiming.timeoutMs)))]);
         clearTimeout(timer);
         this.controls.delete(id);
         if (this.aborted) return;
-        const why = !r ? "it didn't answer" : r.subtype !== "success" ? String(r.error ?? "it refused") : r.response?.errors?.[o.name];
-        if (why) this.host.emit({ type: "notice", level: "warn", message: `Claude Code couldn't connect to ${APP_TITLE}'s delegation tools (${redact(String(why))}); this turn runs without them.` });
+        // CLI errors may echo arbitrary env/header values; names and static reasons only.
+        const failed = !r || r.subtype !== "success" ? Object.keys(servers) : Object.keys(servers).filter((name) => r.response?.errors?.[name]);
+        if (failed.length) warn(`Claude Code ${timedOut ? "timed out waiting for" : "couldn't connect to"} MCP servers: ${failed.map((name) => redact(name)).join(", ")}.`);
     }
 
     async run(content: unknown[]): Promise<BackendResult> {
@@ -530,9 +529,7 @@ class ClaudeTurn {
         signal.addEventListener("abort", onAbort, { once: true });
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
-        const o = this.t.orchestrator;
-        if (o) void this.attach(o).then(() => this.aborted || this.sendUser(content));
-        else this.sendUser(content);
+        void this.attach().then(() => this.aborted || this.sendUser(content));
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {

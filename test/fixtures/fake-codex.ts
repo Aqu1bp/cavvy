@@ -48,6 +48,7 @@
 // FAKE_CODEX_REROUTED_FIRST=1  FAKE_CODEX_REROUTED applies only to the first turn
 // FAKE_SCENARIO=usage-limit  the turn fails on the plan's limit (codexErrorInfo usageLimitExceeded)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
+// FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 //
 // Token usage is each thread's running total, kept beside the log as Codex keeps it with the thread. Like
 // Codex 0.163 (checked against it with a stand-in model server), it reports the last usage again on
@@ -382,14 +383,23 @@ async function handle(m: any) {
     const reply = (result: unknown) => out({ id: m.id, result });
     const fail = (message: string) => out({ id: m.id, error: { code: -32600, message } });
     const p = m.params ?? {};
-    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
+    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config?.mcp_servers?.harness?.url && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
     switch (m.method) {
         case "initialize":
             if (process.env.FAKE_HANG_INIT === "1") return;
             return reply({ userAgent: "fake-codex/0.0.1", codexHome: "/tmp/none", platformFamily: "unix", platformOs: "linux" });
         case "config/read":
             if (process.env.FAKE_NO_CONFIG_READ === "1") return fail("config/read failed: invalid configuration");
-            return reply({ config: { model: null, ...(process.env.FAKE_USER_MCP ? { mcp_servers: JSON.parse(process.env.FAKE_USER_MCP) } : {}) }, origins: {} });
+            const userMcp = JSON.parse(process.env.FAKE_USER_MCP ?? "{}");
+            const projectMcp = JSON.parse(process.env.FAKE_PROJECT_MCP ?? "{}");
+            return reply({
+                config: { model: null, mcp_servers: { ...userMcp, ...projectMcp } },
+                origins: {},
+                ...(process.env.FAKE_NO_CONFIG_LAYERS === "1" ? {} : { layers: process.env.FAKE_CONFIG_LAYERS ? JSON.parse(process.env.FAKE_CONFIG_LAYERS) : [
+                    { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp } },
+                    { name: { type: "project", dotCodexFolder: `${cwd}/.codex` }, config: { mcp_servers: projectMcp } },
+                ] }),
+            });
         case "initialized":
             return;
         case "account/read": {
