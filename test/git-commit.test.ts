@@ -58,6 +58,41 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("a linked worktree commits using its separate gitdir and preserves unchecked staging", async () => {
+        const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n" });
+        const worktree = join(realpathSync(iso.home), `linked-${n++}`);
+        git(dir, "worktree", "add", "-qb", "linked", worktree);
+        write(worktree, "selected.txt", "new\n");
+        write(worktree, "unchecked.txt", "staged\n");
+        git(worktree, "add", "--", "unchecked.txt");
+        write(worktree, "unchecked.txt", "working\n");
+        const before = untouched(worktree, ["unchecked.txt"]);
+        const originalHead = git(dir, "rev-parse", "HEAD");
+
+        const result = await gitCommit(worktree, ["selected.txt"], "linked worktree change");
+
+        expect(result.branch).toBe("linked");
+        expect(changed(worktree)).toEqual(["selected.txt"]);
+        expect(untouched(worktree, ["unchecked.txt"])).toEqual(before);
+        expect(git(dir, "rev-parse", "HEAD")).toBe(originalHead);
+        const lock = git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index.lock").trim();
+        expect(existsSync(lock)).toBe(false);
+    });
+
+    test("relative core.hooksPath runs hooks from the repository root", async () => {
+        const dir = repo({ "sub/selected.txt": "old\n" });
+        write(dir, "sub/selected.txt", "new\n");
+        mkdirSync(join(dir, "repo-hooks"));
+        hook(dir, "commit-msg", 'appendFileSync(process.argv[2], "\\nrelative hook ran\\n");');
+        renameSync(join(dir, ".git", "hooks", "commit-msg"), join(dir, "repo-hooks", "commit-msg"));
+        git(dir, "config", "core.hooksPath", "repo-hooks");
+
+        await gitCommit(join(dir, "sub"), ["selected.txt"], "subject\n");
+
+        expect(git(dir, "log", "-1", "--format=%B")).toContain("subject\n\nrelative hook ran\n");
+        expect(changed(dir)).toEqual(["sub/selected.txt"]);
+    });
+
     test("a commit-msg hook leaving only whitespace aborts without changing HEAD or staging", async () => {
         const dir = repo({ "selected.txt": "old\n" });
         write(dir, "selected.txt", "new\n");
