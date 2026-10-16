@@ -176,8 +176,9 @@ export async function exportSession(id: string) {
  * Send from the composer: to the open session, or a new one in the home
  * screen's project. A /word that names no command isn't sent (false keeps it
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
+ * `accepted` identifies the receiving session, including one just created from Home.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
@@ -188,7 +189,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         // The toast stays, with its action, until the send succeeds.
         toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: async () => {
             // A failure is shown once, in this toast, with its retry.
-            if (!(await send(text, attachments, { literal: true, to, throwErrors: true }))) return false;
+            if (!(await send(text, attachments, { literal: true, to, throwErrors: true, accepted: opts.accepted }))) return false;
             if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
             opts.sent?.();
         } });
@@ -209,6 +210,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             created = true;
         }
         await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
+        opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
         if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);
         return true;
