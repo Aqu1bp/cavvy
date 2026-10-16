@@ -1625,6 +1625,18 @@ describe("Claude Code MCP approval boundary", () => {
         expect(warnings).toEqual(["MCP servers omitted from Claude Code: missing (server launch directory is unavailable); elsewhere (server launch directory differs from the Claude Code turn)."]);
     });
 
+    test("a missing stdio cwd omits only that server from a mixed approved set", async () => {
+        const { claudeMcpServers } = await import("../src/backends/claude-mcp");
+        const warnings: string[] = [];
+        const servers = claudeMcpServers({
+            remote: { url: "https://example.invalid/mcp" },
+            missing: { ...config(), cwd: join(cwd, "missing-directory") },
+            healthy: { ...config(), cwd },
+        }, cwd, (message) => warnings.push(message));
+        expect(servers).toEqual({ remote: { type: "http", url: "https://example.invalid/mcp" }, healthy: { type: "stdio", ...config() } });
+        expect(warnings).toEqual(["MCP servers omitted from Claude Code: missing (its launch directory can't be resolved)."]);
+    });
+
     test("incompatible cwd and interpolated HTTP headers are omitted in one warning", async () => {
         const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => ({
             elsewhere: { ...config(), cwd: bin }, expanded: { url: "https://example.invalid/mcp", headers: { Authorization: "${SECRET}" } },

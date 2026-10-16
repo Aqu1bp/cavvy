@@ -29,7 +29,13 @@ export function claudeMcpServers(approved: Record<string, McpServerConfig>, cwd:
             if (typeof cfg.command !== "string" || !cfg.command || (cfg.args !== undefined && (!Array.isArray(cfg.args) || !cfg.args.every((v) => typeof v === "string"))) || (cfg.env !== undefined && !isStringMap(cfg.env))) throw new Error("Invalid MCP stdio configuration");
             // Claude ignores cwd even over mcp_set_servers; relative commands must still refer to the approved files.
             if (typeof cfg.cwd !== "string") { skip("server launch directory is unavailable"); continue; }
-            if (realpathSync(cfg.cwd) !== realpathSync(cwd)) { skip("server launch directory differs from the Claude Code turn"); continue; }
+            try {
+                if (realpathSync(cfg.cwd) !== realpathSync(cwd)) { skip("server launch directory differs from the Claude Code turn"); continue; }
+            } catch {
+                // A removed directory must not discard other approved servers.
+                skip("its launch directory can't be resolved");
+                continue;
+            }
             // mcp_set_servers preserves literal ${VAR} and ~ in command/args/env, as Harness does.
             entries.push([name, { type: "stdio", command: cfg.command, ...(cfg.args ? { args: [...cfg.args] } : {}), ...(cfg.env ? { env: { ...cfg.env } } : {}) }]);
         }
