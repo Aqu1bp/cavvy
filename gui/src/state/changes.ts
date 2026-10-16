@@ -7,6 +7,14 @@ import { reportError, rpc } from "./app";
 /** The review pane's views: what git says changed, or only what Harness's edit tools did. */
 export type ReviewScope = GitScope | "harness";
 
+/** Visible work that can still edit the folder; the server also enforces idle. */
+export function commitUnavailable(handle: SessionHandle | undefined): string | undefined {
+    if (!handle) return "This session is no longer open.";
+    const state = handle.view.state;
+    if (state.busy || state.queued.length || state.interactions.length || state.shells.some((s) => s.running) || handle.view.agents.some((a) => !a.replayed && (a.status === "running" || a.status === "waiting"))) return "Wait for the session's responses, questions, shells, and tasks to finish before committing.";
+    if (!state.trusted) return "Trust this folder before committing: Git runs the repository's hooks.";
+}
+
 /** What the agent's edit tools changed in a session; fetched again as edits land and when a turn ends. */
 export function useChanges(handle: () => SessionHandle) {
     return createResource(
@@ -34,6 +42,8 @@ export function fetchGitChanges(id: string, scope: GitScope, base?: string, path
 }
 
 const [outside, setOutside] = createSignal(0);
+/** Refresh every mounted git view after a user commits. */
+export const refreshGitChanges = () => setOutside((n) => n + 1);
 let watching = false;
 
 /**

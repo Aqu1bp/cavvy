@@ -3,7 +3,7 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -12,7 +12,9 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { AgentRun, Block, CliSessionsList, InteractionResponse, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+const { gitArgv, gitEnv } = await import("../src/util/git");
+import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentEvent } from "../src/agent/agent";
 import type { SnapshotTurn } from "../src/agent/turn-snapshots";
 
 const TOKEN = "test-token-0123456789";
@@ -43,6 +45,22 @@ async function snapshotRecords(id: string): Promise<SnapshotTurn[]> {
     return readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 }
 
+function commitRepo(cwd: string) {
+    const git = (...args: string[]) => {
+        const result = Bun.spawnSync(gitArgv(args), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+        if (result.exitCode) throw new Error(result.stderr.toString());
+        return result.stdout.toString();
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Harness Test");
+    git("config", "user.email", "test@example.invalid");
+    git("config", "commit.gpgsign", "false");
+    git("config", "core.hooksPath", join(cwd, ".git", "hooks"));
+    git("add", "-A");
+    git("commit", "-q", "-m", "feat: initial project");
+    return git;
+}
+
 beforeAll(async () => {
     srv = await startServer({ token: TOKEN, unloadAfterMs: 300 });
 });
@@ -60,11 +78,14 @@ class Client {
     private waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
     views = new Map<string, { state: SessionState; turns: Turn[]; agents: AgentRun[]; seq: number }>();
     events: ServerEvent[] = [];
+    /** Every message as it came off the wire (to check what never reaches a client). */
+    raw: string[] = [];
     private listeners = new Set<() => void>();
 
     constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port) {
         this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`], headers } as any);
         this.ws.onmessage = (m) => {
+            this.raw.push(String(m.data));
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
                 const ev = msg.event as ServerEvent;
@@ -419,6 +440,254 @@ describe("connecting", () => {
         }
     });
 
+    test("commit RPCs validate requests and refuse busy and untrusted sessions", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "new\n");
+        const head = git("rev-parse", "HEAD");
+        const request = { id, paths: ["selected.txt"], message: "feat: selected file" };
+        try {
+            await rt.ready;
+            for (const paths of [[], [1], ["bad\0path"], ["x".repeat(4097)], Array(1001).fill("selected.txt")]) {
+                await expect(engine.handle(c, "session.gitCommit", { ...request, paths })).rejects.toMatchObject({ code: "invalid" });
+                await expect(engine.handle(c, "session.gitCommitMessage", { id, paths })).rejects.toMatchObject({ code: "invalid" });
+            }
+            for (const message of [" ", "bad\0message", "界".repeat(22000), 12]) {
+                await expect(engine.handle(c, "session.gitCommit", { ...request, message })).rejects.toMatchObject({ code: "invalid" });
+            }
+            for (const expectedHead of [null, "main", {}, { branch: "main" }, { detached: false }, { detached: true, branch: "main" }, { detached: true }, { detached: true, sha: "1234567" }]) {
+                await expect(engine.handle(c, "session.gitCommit", { ...request, expectedHead })).rejects.toMatchObject({ code: "invalid" });
+            }
+            rt.busy = true;
+            await expect(engine.handle(c, "session.gitCommit", request)).rejects.toMatchObject({ code: "busy", message: expect.stringContaining("still working") });
+            await expect(engine.handle(c, "session.gitCommitMessage", request)).rejects.toMatchObject({ code: "busy" });
+            rt.busy = false;
+            rt.ws.trusted = false;
+            await expect(engine.handle(c, "session.gitCommit", request)).rejects.toMatchObject({ code: "needs_trust", message: expect.stringContaining("hooks") });
+            await expect(engine.handle(c, "session.gitCommitMessage", request)).rejects.toMatchObject({ code: "needs_trust" });
+            expect(git("rev-parse", "HEAD")).toBe(head);
+        } finally {
+            rt.busy = false;
+            await engine.stop();
+        }
+    });
+
+    test("commit RPC refuses a branch different from the dialog snapshot", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "new\n");
+        const head = git("rev-parse", "HEAD");
+        const request = { id, paths: ["selected.txt"], message: "feat: selected file" };
+        try {
+            await rt.ready;
+            git("checkout", "-q", "-b", "other");
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { branch: "main", detached: false },
+            })).rejects.toMatchObject({ message: "The branch changed from main to other; reopen the dialog." });
+            git("checkout", "-q", "--detach");
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { branch: "other", detached: false },
+            })).rejects.toMatchObject({ message: "The branch changed from other to detached HEAD; reopen the dialog." });
+            git("checkout", "-q", "other");
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: head.trim() },
+            })).rejects.toMatchObject({ message: "The branch changed from detached HEAD to other; reopen the dialog." });
+            expect(git("rev-parse", "HEAD")).toBe(head);
+            expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+            const result = await engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { branch: "other", detached: false },
+            });
+            expect(result).toMatchObject({ branch: "other", subject: request.message });
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("commit RPC refuses a detached HEAD different from the dialog snapshot", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        const first = git("rev-parse", "HEAD").trim();
+        git("commit", "-q", "--allow-empty", "-m", "second commit");
+        const second = git("rev-parse", "HEAD").trim();
+        git("checkout", "-q", "--detach", first);
+        try {
+            await rt.ready;
+            const shown = await engine.handle(c, "session.gitChanges", { id, scope: "uncommitted" }) as { head: { sha: string } };
+            expect(shown.head.sha).toBe(first);
+            git("checkout", "-q", "--detach", second);
+            writeFileSync(join(cwd, "selected.txt"), "new\n");
+            const request = { id, paths: ["selected.txt"], message: "feat: selected file" };
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: shown.head.sha },
+            })).rejects.toMatchObject({ message: `The detached HEAD changed from ${first.slice(0, 7)} to ${second.slice(0, 7)}; reopen the dialog.` });
+            expect(git("rev-parse", "HEAD").trim()).toBe(second);
+            expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+            const result = await engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: second },
+            });
+            expect(result).toMatchObject({ subject: request.message });
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("commit message generation uses the small model, redacts selected diffs, and never commits", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        const secret = "commit-generation-secret-abcdefghijklmnop";
+        registerSecret(secret, "commit-test");
+        writeFileSync(join(cwd, "selected.txt"), `selected content ${secret}\n`);
+        writeFileSync(join(cwd, "other.txt"), "unselected content must not be sent\n");
+        const head = git("rev-parse", "HEAD");
+        const message = "feat: add selected file\n\nAn editable body.";
+        let calls = 0;
+        const original = rt.complete;
+        rt.complete = async (system, prompt, signal, opts) => {
+            calls++;
+            expect(system).toContain("72 characters");
+            expect(prompt).toContain("feat: initial project");
+            expect(prompt).toContain("selected content");
+            expect(prompt).toContain("[REDACTED commit-test]");
+            expect(prompt).not.toContain(secret);
+            expect(prompt).not.toContain("unselected content");
+            expect(signal).toBeInstanceOf(AbortSignal);
+            expect(opts?.target?.model.id).toBe("mock-haiku");
+            return message;
+        };
+        try {
+            await rt.ready;
+            expect(calls).toBe(0);
+            const result = await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] });
+            expect(result).toEqual({ message, model: "mock:mock-haiku" });
+            expect(calls).toBe(1);
+            expect(git("rev-parse", "HEAD")).toBe(head);
+            expect(git("diff", "--cached", "--name-only")).toBe("");
+        } finally {
+            rt.complete = original;
+            unregisterSecret(secret);
+            await engine.stop();
+        }
+    });
+
+    test("agent backends explain the small-model setting and generate messages with another provider", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "selected\n");
+        const head = git("rev-parse", "HEAD");
+        const original = rt.complete;
+        let calls = 0;
+        rt.complete = async (_system, _prompt, _signal, opts) => {
+            calls++;
+            expect(opts?.target?.model).toMatchObject({ provider: "mock", id: "mock-haiku" });
+            expect((opts?.target?.client as { agentBackend?: boolean }).agentBackend).not.toBe(true);
+            return "feat: add selected file";
+        };
+        try {
+            await rt.ready;
+            // The same capability flag exposed by both Claude Code and Codex clients.
+            rt.client = Object.assign({}, rt.client, { agentBackend: true });
+            for (const provider of ["claude-code", "codex"]) {
+                rt.model = { ...rt.model!, provider, id: "default" };
+                rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+                const before = calls;
+                await expect(engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).rejects.toMatchObject({ code: "no_model", message: "Set a small model from another provider in Settings to generate messages." });
+                expect(calls).toBe(before);
+                rt.ws.settings = { ...rt.ws.settings, smallModel: "mock:mock-haiku" };
+                expect(await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).toEqual({ message: "feat: add selected file", model: "mock:mock-haiku" });
+                expect(calls).toBe(before + 1);
+            }
+            expect(git("rev-parse", "HEAD")).toBe(head);
+        } finally {
+            rt.complete = original;
+            await engine.stop();
+        }
+    });
+
+    test("a commit reserves the session while its repository hook runs", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "new\n");
+        const hooks = join(cwd, ".git", "hooks");
+        writeFileSync(join(hooks, "pre-commit"), '#!/bin/sh\ntouch .git/commit-started\nwhile [ ! -e .git/commit-release ]; do sleep 0.02; done\n');
+        chmodSync(join(hooks, "pre-commit"), 0o755);
+        let pending: Promise<unknown> | undefined;
+        try {
+            await rt.ready;
+            pending = engine.handle(c, "session.gitCommit", { id, paths: ["selected.txt"], message: "feat: selected file" });
+            for (let i = 0; i < 200 && !existsSync(join(cwd, ".git", "commit-started")); i++) await Bun.sleep(10);
+            expect(existsSync(join(cwd, ".git", "commit-started"))).toBe(true);
+            expect(rt.idle).toBe(false);
+            await expect(engine.handle(c, "session.send", { id, text: "!touch should-not-run" })).rejects.toMatchObject({ code: "busy" });
+            await expect(engine.handle(c, "session.gitCommit", { id, paths: ["selected.txt"], message: "another commit" })).rejects.toMatchObject({ code: "busy" });
+            expect(existsSync(join(cwd, "should-not-run"))).toBe(false);
+            writeFileSync(join(cwd, ".git", "commit-release"), "");
+            await pending;
+            expect(rt.idle).toBe(true);
+            expect(git("log", "-1", "--format=%s").trim()).toBe("feat: selected file");
+        } finally {
+            writeFileSync(join(cwd, ".git", "commit-release"), "");
+            await pending?.catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    for (const phase of ["pre-commit", "reference-transaction"]) {
+        test(`stopping the engine during ${phase} cleans up the hook and index lock`, async () => {
+            const { engine, c, cwd, id, rt } = await engineWithSession();
+            const git = commitRepo(cwd);
+            const head = git("rev-parse", "HEAD");
+            const index = readFileSync(join(cwd, ".git", "index"));
+            writeFileSync(join(cwd, "selected.txt"), "new\n");
+            const hook = join(cwd, ".git", "hooks", phase);
+            const guard = phase === "reference-transaction" ? '[ "$1" = committed ] || exit 0\n' : "";
+            writeFileSync(hook, '#!/bin/sh\n' + guard + 'trap "" TERM\necho $$ > .git/commit-hook-pid\nwhile [ ! -e .git/commit-release ]; do sleep 0.02; done\n');
+            chmodSync(hook, 0o755);
+            let pending: Promise<unknown> | undefined;
+            try {
+                await rt.ready;
+                pending = engine.handle(c, "session.gitCommit", { id, paths: ["selected.txt"], message: "interrupted commit" }).catch((e) => e);
+                for (let i = 0; i < 200 && !existsSync(join(cwd, ".git", "commit-hook-pid")); i++) await Bun.sleep(10);
+                expect(existsSync(join(cwd, ".git", "commit-hook-pid"))).toBe(true);
+                const pid = Number(readFileSync(join(cwd, ".git", "commit-hook-pid"), "utf8"));
+                const started = Date.now();
+                await engine.stop();
+                expect(Date.now() - started).toBeLessThan(6500);
+                expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+                const alive = () => {
+                    try {
+                        process.kill(pid, 0);
+                        return true;
+                    } catch (e) {
+                        if ((e as NodeJS.ErrnoException).code === "ESRCH") return false;
+                        throw e;
+                    }
+                };
+                for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(10);
+                expect(alive()).toBe(false);
+                if (phase === "pre-commit") {
+                    expect(await pending).toMatchObject({ code: "git_cancelled" });
+                    expect(git("rev-parse", "HEAD")).toBe(head);
+                    expect(readFileSync(join(cwd, ".git", "index"))).toEqual(index);
+                } else {
+                    expect(await pending).toMatchObject({ subject: "interrupted commit" });
+                    expect(git("show", "HEAD:selected.txt")).toBe("new\n");
+                    expect(git("diff", "--cached")).toBe("");
+                }
+            } finally {
+                writeFileSync(join(cwd, ".git", "commit-release"), "");
+                await pending;
+                await engine.stop();
+            }
+        }, 10_000);
+    }
+
     test("a new chat saves its speed; an older chat without one gets the default without being written to", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id, rt } = await engineWithSession();
@@ -753,6 +1022,8 @@ describe("sessions", () => {
         const write = await c.answer(id, { kind: "permission", choice: "yes" });
         expect(write.kind === "permission" && write.heading).toBe("Create a file");
         expect(write.kind === "permission" && write.diff?.status).toBe("added");
+        // The session's own agent asks: the notification needs no name.
+        expect(c.events.flatMap((e) => (e.type === "notify" && e.kind === "permission" ? [e.body] : []))[0]).toBe("Wants to create a file");
         const edit = await c.answer(id, { kind: "permission", choice: "yes" });
         expect(edit.kind === "permission" && edit.diff?.added).toBeGreaterThan(0);
         const bash = await c.answer(id, { kind: "permission", choice: "yes" });
@@ -1132,6 +1403,33 @@ describe("sessions", () => {
         c.close();
     });
 
+    test("the commit RPC commits selected files and preserves another file's staging", async () => {
+        const cwd = project();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "selected\n");
+        writeFileSync(join(cwd, "with space.txt"), "second selected\n");
+        writeFileSync(join(cwd, "other.txt"), "staged\n");
+        git("add", "--", "other.txt");
+        writeFileSync(join(cwd, "other.txt"), "unstaged\n");
+        const staged = git("diff", "--cached", "--", "other.txt");
+        const unstaged = git("diff", "--", "other.txt");
+        const c = await client();
+        try {
+            const id = await c.open("session.create", { cwd });
+            const message = 'feat: "two files"\n\nKeep the body verbatim.\n';
+            const result = await c.call("session.gitCommit", { id, paths: ["selected.txt", "with space.txt"], message });
+            expect(result).toMatchObject({ branch: "main", subject: 'feat: "two files"' });
+            expect(git("rev-parse", "HEAD").trim().startsWith(result.hash)).toBe(true);
+            expect(git("show", "--format=", "--name-only", "HEAD").trim().split("\n")).toEqual(["selected.txt", "with space.txt"]);
+            expect(git("cat-file", "commit", "HEAD").split("\n\n").slice(1).join("\n\n")).toBe(message);
+            expect(git("diff", "--cached", "--", "other.txt")).toBe(staged);
+            expect(git("diff", "--", "other.txt")).toBe(unstaged);
+            expect((await c.call("session.gitChanges", { id, scope: "uncommitted" })).files.map((f: { path: string }) => f.path)).toEqual(["other.txt"]);
+        } finally {
+            c.close();
+        }
+    });
+
     test("! runs a shell command for the user", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });
@@ -1306,6 +1604,103 @@ describe("sub-agents", () => {
             delete process.env.FAKE_SCENARIO;
             delete process.env.FAKE_MCP_CALLS;
             removeAgentConfig("claude-code");
+        }
+    }, 45_000);
+
+    test("a delegated Codex task's own sub-agent is an agent of its own under the task: its steps, its report, asking as itself", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const claude = fakeClaude();
+        const codex = fakeCodex();
+        saveAgentConfig("claude-code", { path: claude });
+        saveAgentConfig("codex", { path: codex });
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_CODEX_SCENARIO = "subagent";
+        process.env.FAKE_MCP_CALLS = JSON.stringify([{ tool: "delegate", args: { task: "Count the files in src.", description: "Count", model: "codex:gpt-test" } }]);
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "count the files" });
+            // Its sub-agent's command asks (Manual mode): as that sub-agent, under the task, and it's the one waiting.
+            let during: unknown;
+            const ask = await c.answer(id, { kind: "permission", choice: "yes" }, () => {
+                during = c.view(id).agents.map((a) => [a.description, a.status]);
+            });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            expect(v.agents.map((a) => a.description)).toEqual(["Count", "Count the files"]);
+            const [task, sub] = v.agents as [AgentRun, AgentRun];
+            expect([task.taskId, task.model, task.status, task.parentId]).toEqual(["task-1", "codex:gpt-test", "done", undefined]);
+            // Shown under the task's call to it, on the task's model, with what it did and what it answered.
+            expect([sub.parentId, sub.turnId, sub.model, sub.status, sub.taskId, sub.report]).toEqual([task.id, task.turnId, "codex:gpt-test", "done", undefined, "CHILD_REPORT: 2 files."]);
+            expect(task.blocks.some((b) => b.id === sub.id && b.t === "tool" && b.agent)).toBe(true);
+            expect(sub.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            expect(sub.toolCount).toBe(1);
+            expect(sub.tokens).toBe(5050);
+            // The task's own steps don't take in its sub-agent's.
+            expect(task.blocks.flatMap((b) => (b.t === "tool" ? [b.name] : []))).toEqual(["Task", "wait"]);
+            // Its call's row in the turn opens it; the row doesn't carry its steps over again with each one.
+            const patches = c.events.flatMap((e) => (e.type === "session.ops" ? e.ops : [])).filter((o) => o.op === "block.patch" && o.blockId === task.id);
+            expect(patches.length).toBeGreaterThan(0);
+            expect(patches.some((o) => o.op === "block.patch" && "sub" in o.patch)).toBe(false);
+            expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(["Bash", "Count (codex:gpt-test) › Count the files", sub.id]);
+            expect(during).toEqual([
+                ["Count", "running"],
+                ["Count the files", "waiting"],
+            ]);
+            // The notification says who asks.
+            const note = c.events.find((e) => e.type === "notify" && e.kind === "permission");
+            expect(note?.type === "notify" && note.body).toBe('Sub-agent "Count (codex:gpt-test) › Count the files" wants to run a shell command');
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CODEX_SCENARIO;
+            delete process.env.FAKE_MCP_CALLS;
+            removeAgentConfig("claude-code");
+            removeAgentConfig("codex");
+        }
+    }, 45_000);
+
+    test("a delegated Codex task's own sub-agent asking after the turn is over keeps asking, as the task does", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const claude = fakeClaude();
+        const codex = fakeCodex();
+        saveAgentConfig("claude-code", { path: claude });
+        saveAgentConfig("codex", { path: codex });
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_CODEX_SCENARIO = "subagent";
+        // In the background, then a while waiting on it: the sub-agent asks during Claude Code's turn, which ends while it goes on.
+        process.env.FAKE_MCP_CALLS = JSON.stringify([
+            { tool: "delegate", args: { task: "Count the files in src.", description: "Count", model: "codex:gpt-test", wait: false } },
+            { tool: "task_status", args: { task_id: "task-1", wait_seconds: 2 } },
+        ]);
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "count the files" });
+            await c.until(id, (v) => done(v) && v.state.interactions.length > 0, 20_000);
+            await Bun.sleep(200);
+            const v = c.view(id);
+            expect(v.state.status).toBe("waiting");
+            const sub = v.agents.find((a) => a.parentId)!;
+            const ask = v.state.interactions[0]!;
+            expect(ask.kind === "permission" && [ask.agentId, sub.status]).toEqual([sub.id, "waiting"]);
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, (x) => x.agents.length === 2 && x.agents.every((a) => a.status === "done"), 20_000);
+            expect(c.view(id).agents.map((a) => [a.description, a.report?.split("\n")[0]])).toEqual([
+                ["Count", "Finished."],
+                ["Count the files", "CHILD_REPORT: 2 files."],
+            ]);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CODEX_SCENARIO;
+            delete process.env.FAKE_MCP_CALLS;
+            removeAgentConfig("claude-code");
+            removeAgentConfig("codex");
         }
     }, 45_000);
 
@@ -1550,6 +1945,8 @@ describe("sub-agents", () => {
             const ask = v.state.interactions[0]!;
             expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(["Write", "Write a note (mock:mock-haiku)", v.agents[0]!.id]);
             expect(v.agents[0]!.activity).toBe("Waiting for approval");
+            // Its notification says who asks: not the session's own agent.
+            expect(c.events.flatMap((e) => (e.type === "notify" && e.kind === "permission" ? [e.body] : []))).toEqual(['Sub-agent "Write a note (mock:mock-haiku)" wants to create a file']);
 
             expect(await c.call("session.stopAgent", { id, agentId: v.agents[0]!.id })).toEqual({ stopped: 1 });
             await c.until(id, (x) => x.state.interactions.length === 0 && x.agents[0]?.status === "stopped", 10_000);
@@ -2187,4 +2584,332 @@ describe("project scripts", () => {
             c.close();
         }
     }, 20_000);
+});
+
+describe("notes to the model on what changed", () => {
+    async function freshSession() {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({});
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        const snap = (await engine.handle(c, "session.create", { cwd: project() })) as SessionSnapshot;
+        const id = snap.state.id;
+        const rt = engine.runtimes.get(id)!;
+        // The mock model, whatever earlier tests left as the default.
+        await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+        /** The prompt as the model got it: its text and the notes that went with it. */
+        const send = async (text: string) => {
+            await engine.handle(c, "session.send", { id, text });
+            const sent = () => rt.session.messages.find((m) => m.role === "user" && m.meta?.kind === "prompt" && m.meta.display === text);
+            for (let i = 0; i < 200 && !(sent() && rt.idle); i++) await Bun.sleep(50);
+            expect(rt.idle).toBe(true);
+            return sent()!.content.flatMap((p) => (p.type === "text" ? [p.text] : []));
+        };
+        return { engine, c, id, rt, send };
+    }
+
+    test("a model and mode picked before the first prompt are where the session starts: no switch to tell of then, only after", async () => {
+        const { engine, c, id, send } = await freshSession();
+        try {
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
+            await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
+            expect(await send("first prompt")).toEqual(["first prompt"]);
+            // Once the conversation is going, a switch is news.
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+            await engine.handle(c, "session.setMode", { id, mode: "default" });
+            const second = (await send("second prompt")).join("\n");
+            expect(second).toContain("The user switched the model to");
+            expect(second).toContain("The user switched the permission mode to");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("plan mode picked before the first prompt is still said: the model has to know it may only plan", async () => {
+        const { engine, c, id, send } = await freshSession();
+        try {
+            await engine.handle(c, "session.setMode", { id, mode: "plan" });
+            // Picked again (the GUI lets you), it's still said.
+            await engine.handle(c, "session.setMode", { id, mode: "plan" });
+            expect((await send("first prompt")).join("\n")).toContain("Plan mode is now active.");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("plan mode picked and left again before the first prompt leaves nothing to tell, whatever the mode is next", async () => {
+        const { engine, c, id, send } = await freshSession();
+        try {
+            // Back to where it was, then straight from plan mode to another.
+            for (const mode of ["plan", "default", "plan", "acceptEdits"]) await engine.handle(c, "session.setMode", { id, mode });
+            expect(await send("first prompt")).toEqual(["first prompt"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("after a rewind to the first prompt, a switch before resending takes back what the rewind queued: it starts afresh", async () => {
+        const { engine, c, id, rt, send } = await freshSession();
+        try {
+            await send("first prompt");
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
+            const plan = (await engine.handle(c, "session.rewindPlan", { id, index: 0 })) as { planId: string };
+            await engine.handle(c, "session.rewind", { id, index: 0, planId: plan.planId, code: false, conversation: true });
+            expect(rt.session.messages).toEqual([]);
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-sonnet", persist: false });
+            await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
+            expect(await send("again")).toEqual(["again"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+});
+
+describe("a sub-agent's own sub-agents", () => {
+    test("a rewind that keeps a sub-agent keeps its own sub-agent with it", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({});
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        try {
+            const snap = (await engine.handle(c, "session.create", { cwd: project() })) as SessionSnapshot;
+            const id = snap.state.id;
+            const rt = engine.runtimes.get(id)!;
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+            const idle = async () => {
+                for (let i = 0; i < 200 && !(rt.idle && !rt.busy); i++) await Bun.sleep(50);
+                expect(rt.idle).toBe(true);
+            };
+            await engine.handle(c, "session.send", { id, text: "Use agents to review the auth module and its tests" });
+            for (let i = 0; i < 200 && rt.snapshot().agents.length < 2; i++) await Bun.sleep(50);
+            await idle();
+            const auth = rt.snapshot().agents.find((a) => a.description === "Map the auth module")!;
+            // As a sub-agent on Codex shows its own: a Task in its activity, then what that one does.
+            const emit = (e: AgentEvent) => rt.agent!.options.host.emit({ type: "subagent", parentId: auth.id, label: "Map the auth module", event: e });
+            emit({ type: "tool_start", call: { type: "tool_call", id: "inner-1", name: "Task", input: { description: "Check the tests", prompt: "" } }, title: "Task(Check the tests)" });
+            const inner = (e: AgentEvent) => emit({ type: "subagent", parentId: "inner-1", label: "Check the tests", event: e });
+            inner({ type: "text", text: "Two tests." });
+            inner({ type: "turn_end", reason: "done" });
+            expect(rt.snapshot().agents.map((a) => [a.description, a.parentId])).toContainEqual(["Check the tests", auth.id]);
+            await engine.handle(c, "session.send", { id, text: "and now?" });
+            for (let i = 0; i < 200 && rt.snapshot().turns.filter((t) => t.prompt).length < 2; i++) await Bun.sleep(50);
+            await idle();
+            const targets = (await engine.handle(c, "session.rewindTargets", { id })) as { index: number; text: string }[];
+            expect(targets[0]!.text).toBe("and now?");
+            const plan = (await engine.handle(c, "session.rewindPlan", { id, index: targets[0]!.index })) as { planId: string };
+            await engine.handle(c, "session.rewind", { id, index: targets[0]!.index, planId: plan.planId, code: false, conversation: true });
+            const v = rt.snapshot();
+            const kept = v.agents.find((a) => a.id === auth.id)!;
+            const sub = v.agents.find((a) => a.id === "inner-1");
+            // Still under it, in its turn (with that turn's new id), with what it did.
+            expect([sub?.parentId, sub?.turnId, sub?.status, sub?.report]).toEqual([auth.id, kept.turnId, "done", "Two tests."]);
+            expect(v.turns.some((t) => t.id === kept.turnId)).toBe(true);
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
+});
+
+describe("a project's MCP servers (.mcp.json approval)", () => {
+    const FIXTURE = join(import.meta.dir, "fixtures", "mcp-stdio-server.ts");
+    /** The fixture MCP server; it leaves its pid in `marker` the moment it starts. */
+    const fx = (marker: string, env: Record<string, string> = {}) => ({ command: process.execPath, args: ["--no-env-file", FIXTURE], env: { MCP_FIXTURE_ERA: "legacy", MCP_FIXTURE_MARKER: marker, ...env } });
+    const writeMcp = (dir: string, servers: Record<string, unknown>) => writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: servers }));
+    const srvOf = (v: { state: SessionState }, name = "srv"): McpStatus | undefined => v.state.mcp.find((m) => m.name === name);
+    const starts = (marker: string) => (existsSync(marker) ? readFileSync(marker, "utf-8").trim().split("\n").length : 0);
+    const alive = (pid: number) => {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    const until = async (cond: () => boolean, ms = 5000) => {
+        for (const end = Date.now() + ms; Date.now() < end && !cond(); ) await Bun.sleep(25);
+        return cond();
+    };
+
+    async function mcpProject(servers: (dir: string) => Record<string, unknown>, trust = true) {
+        const dir = project();
+        writeMcp(dir, servers(dir));
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust });
+        const id = await c.open("session.create", { cwd: dir });
+        return { dir, c, id, marker: join(dir, "started") };
+    }
+
+    test("the card shows what will run; approving it connects live, in every session of the folder", async () => {
+        const { dir, c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const c2 = await client();
+        const id2 = await c2.open("session.create", { cwd: dir });
+
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(true);
+        expect(list.savedIn).toBe(join(dir, ".harness", "settings.local.json"));
+        expect(list.meaning).toContain("Harness's own models");
+        const card = list.servers.find((s) => s.name === "srv")!;
+        expect(card).toMatchObject({ source: "project", status: "needs-approval", transport: "stdio", command: process.execPath, args: ["--no-env-file", FIXTURE], cwd: realpathSync(dir), envNames: ["MCP_FIXTURE_ERA", "MCP_FIXTURE_MARKER"], declaredIn: join(dir, ".mcp.json"), approval: { state: "needs-approval", reason: "new" } });
+
+        // A fingerprint that isn't what the card showed approves nothing, and says what would run now.
+        const stale = await c.call<{ approved: boolean; list: McpListInfo }>("session.mcpApprove", { id, name: "srv", fingerprint: "v1:" + "0".repeat(64) });
+        expect(stale.approved).toBe(false);
+        expect(stale.list.servers[0]!.fingerprint).toBe(card.fingerprint);
+        await expect(c.call("session.mcpApprove", { id, name: "nope", fingerprint: card.fingerprint })).rejects.toMatchObject({ code: "unknown" });
+        await Bun.sleep(300);
+        expect(existsSync(marker)).toBe(false);
+
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && srvOf(v)!.tools > 0);
+        await c2.until(id2, (v) => srvOf(v)?.status === "connected");
+        expect(srvOf(c.view(id))!.approval).toEqual({ state: "approved" });
+        expect(JSON.parse(readFileSync(join(dir, ".harness", "settings.local.json"), "utf-8")).approvedMcpjsonServers.srv).toBe(card.fingerprint);
+        c.close();
+        c2.close();
+    }, 20_000);
+
+    test("reject keeps it off; it can be approved later through the same card", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const after = await c.call<McpListInfo>("session.mcpReject", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "disabled", approval: { state: "rejected" } });
+        await c.until(id, (v) => srvOf(v)?.approval?.state === "rejected");
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: after.servers[0]!.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        c.close();
+    }, 20_000);
+
+    test("revoke stops it (the process goes) and it asks again", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        const card = (await c.call<McpListInfo>("session.mcp", { id, name: "srv" })).servers[0]!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        const pid = Number(readFileSync(marker, "utf-8").trim());
+        expect(alive(pid)).toBe(true);
+        const after = await c.call<McpListInfo>("session.mcpRevoke", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "needs-approval" });
+        expect(await until(() => !alive(pid))).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        await expect(c.call("session.mcpRevoke", { id, name: "srv" })).rejects.toMatchObject({ code: "not_needed" });
+        c.close();
+    }, 20_000);
+
+    test("reconnect brings a failed server back; after its command changes, reconnecting asks again instead", async () => {
+        const { dir, c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_FAIL_IF: join(d, "fail") }) }));
+        writeFileSync(join(dir, "fail"), "");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        const failedError = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!.error!;
+        expect(failedError).toContain("fixture told to fail");
+        // Line breaks stay line breaks in an error (commands and args show them as ⟨U+000A⟩).
+        expect(failedError).toContain("\n");
+        expect(failedError).not.toContain("⟨U+000A⟩");
+
+        rmSync(join(dir, "fail"));
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        const pid = Number(readFileSync(marker, "utf-8").trim().split("\n").pop());
+
+        const ran = starts(marker);
+        const changed = fx(marker, { MCP_FIXTURE_FAIL_IF: join(dir, "fail") });
+        writeMcp(dir, { srv: { ...changed, args: [...changed.args, "--changed"] } });
+        const after = await c.call<McpListInfo>("session.mcpReconnect", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "needs-approval", approval: { state: "needs-approval", reason: "changed" } });
+        expect(after.servers[0]!.why).toContain("changed since you approved it");
+        await c.until(id, (v) => srvOf(v)?.approval?.reason === "changed");
+        expect(await until(() => !alive(pid))).toBe(true);
+        await Bun.sleep(300);
+        expect(starts(marker)).toBe(ran);
+
+        // A new session in the folder sees the same.
+        const c2 = await client();
+        const id2 = await c2.open("session.create", { cwd: dir });
+        expect(srvOf(c2.view(id2))?.status).toBe("needs-approval");
+        c.close();
+        c2.close();
+    }, 20_000);
+
+    test("a folder trusted only for having had nothing to protect: approving asks for the user's trust first", async () => {
+        // Nothing to protect when the session opens, so it's trusted for this run only.
+        const dir = project();
+        const c = await client();
+        const id = await c.open("session.create", { cwd: dir });
+        expect(c.view(id).state.trusted).toBe(true);
+        const marker = join(dir, "started");
+        writeMcp(dir, { srv: fx(marker) });
+
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(true);
+        expect(list.userTrusted).toBe(false);
+        const card = list.servers.find((s) => s.name === "srv")!;
+        expect(card.status).toBe("needs-approval");
+        await expect(c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint })).rejects.toMatchObject({ code: "needs_trust" });
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+        expect(existsSync(join(dir, ".harness", "settings.local.json"))).toBe(false);
+
+        // The existing trust flow works for a workspace already trusted in that weaker sense.
+        await c.call("projects.trust", { path: dir, trust: true });
+        const after = await c.call<McpListInfo>("session.mcp", { id });
+        expect(after.userTrusted).toBe(true);
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: after.servers.find((s) => s.name === "srv")!.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        c.close();
+    }, 20_000);
+
+    test("an untrusted folder: nothing from .mcp.json is read, starts, or can be approved", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }), false);
+        expect(c.view(id).state.trusted).toBe(false);
+        expect(srvOf(c.view(id))).toBeUndefined();
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(false);
+        expect(list.servers.find((s) => s.name === "srv")).toBeUndefined();
+        const fp = "v1:" + "0".repeat(64);
+        await expect(c.call("session.mcpApprove", { id, name: "srv", fingerprint: fp })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpReject", { id, name: "srv" })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpRevoke", { id, name: "srv" })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpReconnect", { id, name: "srv" })).rejects.toMatchObject({ code: "unknown" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+        c.close();
+    }, 20_000);
+
+    test("an env value never reaches the client: not in results, events or state, nor anything saved", async () => {
+        const SENTINEL = "sentinel-env-value-" + Math.random().toString(36).slice(2);
+        const { dir, c, id } = await mcpProject((d) => {
+            const base = fx(join(d, "started"), { SENTINEL_TOKEN: SENTINEL, MCP_FIXTURE_STDERR_ENV: "SENTINEL_TOKEN", MCP_FIXTURE_FAIL_IF: join(d, ".mcp.json") });
+            return { srv: { ...base, args: [...base.args, `--token=${SENTINEL}`] } };
+        });
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.servers[0]!.masked).toBe(true);
+        expect(list.servers[0]!.envNames).toContain("SENTINEL_TOKEN");
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: list.servers[0]!.fingerprint });
+        // It prints the value to stderr and exits: the error shown is masked.
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        const failed = (await c.call<McpListInfo>("session.mcp", { id, name: "srv" })).servers[0]!;
+        expect(failed.error).toContain("[REDACTED env SENTINEL_TOKEN]");
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        await c.call("session.send", { id, text: "explain the layout" });
+        await c.until(id, done);
+        await c.call("session.mcpRevoke", { id, name: "srv" });
+        await c.call("session.mcpReject", { id, name: "srv" });
+
+        expect(c.raw.length).toBeGreaterThan(5);
+        for (const m of c.raw) expect(m).not.toContain(SENTINEL);
+        // Nor the local settings (only a keyed hash), the session's transcript, or anything else in the harness home.
+        const files = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? files(join(d, f)) : [join(d, f)]));
+        for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
+        c.close();
+    }, 30_000);
 });

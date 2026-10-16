@@ -121,7 +121,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     await Promise.race([mcp.startAll(), sleep(15_000)]);
     for (const s of mcp.servers.values()) {
         if (s.status === "failed") stderr(`warning: MCP server ${s.name} failed: ${(s.error ?? "").split("\n")[0]}`);
-        if (s.status === "needs-approval") stderr(`warning: MCP server ${s.name} from .mcp.json is not approved; run harness interactively and use /mcp to approve it.`);
+        if (s.status === "needs-approval") stderr(`warning: MCP server ${s.name} from .mcp.json is not approved${s.approval?.reason === "changed" ? " (what it runs changed since it was approved)" : ""}; run harness interactively and use /mcp to approve it.`);
     }
 
     const def = getProvider(model.provider)!;

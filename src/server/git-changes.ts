@@ -648,7 +648,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const root = trimNl(top.out);
     const [head, branch, format, config, refs] = await Promise.all([
         git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], { deadline }),
-        git(root, ["symbolic-ref", "-q", "--short", "HEAD"], { deadline }),
+        git(root, ["symbolic-ref", "-q", "HEAD"], { deadline }),
         git(root, ["rev-parse", "--show-object-format"], { deadline }),
         git(root, ["config", "-z", "--get-regexp", "^(core\\.(filemode|autocrlf|trustctime|checkstat)|filter\\..+\\.(clean|process))$"], { deadline }),
         listRefs(root, deadline),
@@ -667,7 +667,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     const filemode = boolConfig(settings.get("core.filemode"), true);
     const autocrlf = settings.has("core.autocrlf") && /^(true|input|yes|on|1)$/i.test(settings.get("core.autocrlf")!.trim());
     const statRules = { trustCtime: boolConfig(settings.get("core.trustctime"), true), minimal: settings.get("core.checkstat")?.trim().toLowerCase() === "minimal" };
-    const branchName = branch.code === 0 ? trimNl(branch.out) : undefined;
+    const branchName = branch.code === 0 ? trimNl(branch.out).replace(/^refs\/heads\//, "") : undefined;
 
     let baseSha = headSha;
     let base: GitChangesInfo["base"];

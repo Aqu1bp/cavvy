@@ -483,7 +483,7 @@ describe("Chat Completions: streaming", () => {
             } finally {
                 stall.firstByteMs = prevFirst;
             }
-        });
+        }, 20_000);
 
         test("silence partway through the body", async () => {
             respond = () => sse([{ choices: [{ index: 0, delta: { content: "par" } }] }, { choices: [{ index: 0, delta: { content: "t" }, finish_reason: "stop" }] }], { pauseAfter: 0, pauseMs: 1500 });

@@ -24,7 +24,7 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
-import type { Settings } from "../config/settings";
+import type { Effort, Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
@@ -35,12 +35,12 @@ import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
-import { isReadOnlyCommand } from "../permissions/bash-safety";
+import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
 import { fireHooks, runHooks } from "./hooks";
-import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, transcriptText } from "./compact";
+import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
@@ -60,6 +60,7 @@ import {
     Delegations,
     catalog,
     delegationAvailable,
+    inheritedEffort,
     orchestrationInstructions,
     orchestratorTitle,
     orchestratorTools,
@@ -252,11 +253,15 @@ function isContextOverflow(e: unknown): boolean {
     return (err?.status === 400 || err?.status === 413 || err?.status === undefined) && /prompt is too long|context.{0,20}(length|window|limit)|maximum context|too many (input )?tokens|input (is )?too long|exceeds the context|exceeds the maximum number of tokens/i.test(msg);
 }
 
-/** What a read-only agent hears when it tries to change something: for a command, which ones do run. */
-function readOnlyRefusal(toolName: string): string {
-    return toolName === "Bash"
-        ? "This is a read-only agent: only read-only commands run (plain commands such as cat, rg, wc or git log, and pipes of them; no loops, subshells, $(…) or > redirects). Report what should be changed instead."
-        : "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+/**
+ * What a read-only agent hears when it tries to change something. For a
+ * command: what in it isn't read-only (so it doesn't send the same command
+ * again), and which ones do run.
+ */
+function readOnlyRefusal(toolName: string, command?: string, why?: string): string {
+    if (toolName !== "Bash") return "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+    const what = why ?? (command !== undefined ? notReadOnly(command) : undefined);
+    return `This is a read-only agent, and ${what ?? "this command isn't read-only"}. Only read-only commands run: plain commands such as cat, rg, wc or git log, and pipes of them, with no loops, subshells, $(…) or > redirects. Tests, builds and scripts don't run either. Leave out or replace just that part, or report what should be run or changed instead.`;
 }
 
 /** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
@@ -365,6 +370,11 @@ export class Agent {
         this.model = model;
         this.client = client;
         this.session.setModel(modelRef(model));
+    }
+
+    /** Take back a note of where the mode or model is that hasn't been sent. */
+    dropStateNote(kind: StateKind) {
+        this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== kind);
     }
 
     /** Queue a note for the model, delivered with the next user message. */
@@ -844,7 +854,7 @@ export class Agent {
             const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
             // ~2.5 characters per token leaves room for code and JSON.
             const maxChars = window ? Math.max(2_000, Math.min(400_000, Math.floor((window - maxOut - 2_000) * 2.5))) : 100_000;
-            const transcript = transcriptText(history, maxChars);
+            const transcript = compactTranscriptText(history, maxChars);
             if (!transcript.trim()) throw new Error("Nothing in the conversation to summarize");
             const req = this.request([transcriptCompactRequest(transcript, opts.instructions)], opts.signal, {
                 system: "You summarize conversations between a user and an AI coding assistant so the work can continue in a fresh context.",
@@ -1000,14 +1010,14 @@ export class Agent {
     }
 
     /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
-    private async checkModel(ref: string): Promise<string | { ok: true }> {
+    private async checkModel(ref: string): Promise<string | { effortLevels?: Effort[]; effort?: Effort }> {
         const p = parseModelRef(ref);
         if (!p) return `"${ref}" isn't a model reference (provider:model).`;
         const r = await this.o.helpers?.resolveModel?.(ref);
         if (!r) return `${getProvider(p.provider)?.name ?? p.provider} isn't set up in ${APP_TITLE}, so ${ref} can't run here. Call models to see what can.`;
         const listed = this.listings().find((l) => l.provider.id === p.provider)?.models;
         if (listed?.length && !listed.some((m) => m.id === p.id)) return `${p.provider} has no model "${p.id}". Call models (with provider "${p.provider}") to see its models.`;
-        return { ok: true };
+        return { effortLevels: r.model.effortLevels, effort: inheritedEffort(r.model, this.o.settings().effort) };
     }
 
     /**
@@ -1040,12 +1050,13 @@ export class Agent {
         const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
         // Only that its last turn was stopped, which it never heard (Harness stopped or died part way): said plainly.
         if (resume && missed.length && missed.every((m) => m.role === "user" && m.meta?.kind === "interrupt")) return `${reminder(BACKEND_CUT_OFF).text}\n\n${text}`;
-        const transcript = missed.length ? transcriptText(missed, 60_000) : "";
-        if (!transcript) return text;
+        const { text: transcript, shortenedChars } = handoffTranscript(missed, 60_000);
+        if (!transcript && !shortenedChars) return text;
         const intro = resume
             ? "While another model answered in this session, the conversation went on. Here is what happened since your last turn:"
             : "This conversation started before you joined it (with another model, or before the history was compacted or rewound). Here it is so far:";
-        return `<conversation-so-far>\n${intro}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
+        const shortened = shortenedChars ? ` Parts of it were shortened or left out (${shortenedChars} characters); the user's messages are given whole where they fit.` : "";
+        return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
     }
 
     private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
@@ -1362,7 +1373,7 @@ export class Agent {
         // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
         if (this.o.readOnly) {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
-            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name), stop: false };
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
@@ -1559,7 +1570,7 @@ export class Agent {
         // Read-only agents (explore) never change anything.
         if (this.o.readOnly) {
             const writes = tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || tool.category === "mcp" && !isReadOnly(tool, input);
-            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name)) };
+            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
         }
 
         const settings = this.o.settings();
@@ -1751,6 +1762,7 @@ export class Agent {
             // An agent type's model that isn't set up falls back to this one; one asked for by name doesn't.
             else if (req.model) return fail(`Can't run a sub-agent on ${req.model}: ${parseModelRef(req.model) ? "that provider isn't set up here, or the model isn't known" : "it isn't a provider:model reference"}. Call ListModels to see the models that can run.`);
         }
+        const effort = req.effort ?? inheritedEffort(model, this.o.settings().effort);
         const backend = isAgentBackend(client);
         const other = modelRef(model) !== modelRef(this.model);
 
@@ -1786,6 +1798,7 @@ export class Agent {
             client,
             tools,
             isSubagent: true,
+            settings: () => ({ ...this.o.settings(), effort }),
             parentRequests: () => this.requestContext(),
             delegatedTask: req.prompt,
             // At the speed the parent runs at (not fast where the parent's model has none and shows standard),
@@ -1812,10 +1825,12 @@ export class Agent {
             host: {
                 emit: (e) => {
                     if (e.type === "notice" && e.level === "error") lastError = e.message;
-                    parentHost.emit({ type: "subagent", parentId: callId, label, event: e });
+                    // What its own sub-agents do (Codex's, say) is named as theirs, under this one, as they ask.
+                    parentHost.emit({ type: "subagent", parentId: callId, label, event: e.type === "subagent" ? { ...e, label: nestedAgentLabel(label, e.label) } : e });
                 },
                 // A stopped sub-agent's prompt is withdrawn (declined), so it can stop rather than wait for an answer.
-                askPermission: parentHost.askPermission ? (p) => untilAborted(parentHost.askPermission!({ ...p, agentLabel: label, signal }), signal, { allow: false }) : undefined,
+                // A backend's own sub-agent (one of Codex's) asks as itself, under this one.
+                askPermission: parentHost.askPermission ? (p) => untilAborted(parentHost.askPermission!({ ...p, agentLabel: backend && p.agentLabel ? nestedAgentLabel(label, p.agentLabel) : label, signal }), signal, { allow: false }) : undefined,
                 saveRules: parentHost.saveRules,
                 ui: {},
             },
@@ -1884,7 +1899,7 @@ export function backendActionsNote(name: string, actions: string[], maxChars = A
 }
 
 const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: another agent gave you one self-contained task. Complete it, then reply with a final report. The other agent sees only your last message, so make it complete: findings, file paths with line numbers, what you changed (if anything), and anything left unresolved. Don't commit, push or make changes outside the task's scope.`;
-const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files; changes will be refused. Report what should be changed instead.";
+const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files, and don't run tests, builds or scripts; those will be refused. Report what should be changed or run instead.";
 
 /** Stands in for a backend tool the harness has no tool of its own for (rules still match its name). */
 function backendTool(name: string, title?: string): Tool<any> {
@@ -1916,4 +1931,9 @@ function redactBackendEvent(e: AgentEvent): AgentEvent {
     if (e.type === "tool_end") return { ...e, result: redactResult(e.result) };
     if (e.type === "subagent") return { ...e, event: e.event.type === "text" ? { ...e.event, text: redact(e.event.text) } : redactBackendEvent(e.event) };
     return e;
+}
+
+/** How a sub-agent's own sub-agent is named (in its permission prompts, and in the GUI): under the one whose it is. */
+function nestedAgentLabel(parent: string, label: string): string {
+    return `${parent} › ${label}`;
 }
