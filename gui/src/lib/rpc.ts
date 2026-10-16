@@ -45,7 +45,8 @@ export class Rpc {
     private generation = 0;
     state: ConnectionState = "connecting";
 
-    constructor(private credentials: () => Promise<Credentials | undefined>) {}
+    /** `windowKey`: this window's, presented on every connection; the server's terminals belong to it. */
+    constructor(private credentials: () => Promise<Credentials | undefined>, private windowKey?: () => string) {}
 
     onEvent(fn: (e: ServerEvent) => void): () => void {
         this.listeners.add(fn);
@@ -103,7 +104,8 @@ export class Rpc {
             this.setState("unauthorized");
             return;
         }
-        const ws = new WebSocket(creds.url, ["harness.v1", `auth.${creds.token}`]);
+        const key = this.windowKey?.();
+        const ws = new WebSocket(creds.url, ["harness.v1", `auth.${creds.token}`, ...(key ? [`window.${key}`] : [])]);
         this.ws = ws;
         let opened = false;
         ws.onopen = () => {
