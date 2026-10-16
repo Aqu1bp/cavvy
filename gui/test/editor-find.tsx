@@ -32,6 +32,7 @@ export async function checkEditorFind(root: HTMLElement) {
         ] },
         blocks: [read, edit, { t: "text", id: "reply", text: "Inspect src/quokka.ts:12 near `src/quokka.ts:20` and [**quokka label**](src/quokka.ts:30)." }, { t: "compact", id: "compact", summary: "**Important** summary", auto: false },
             { t: "shell", id: "shell", command: `echo ${"x".repeat(2000)}needle`, output: "done", exitCode: 0, running: false },
+            { t: "shell", id: "shell-ansi", command: "printf colors", output: "foo\x1b[31mbar\x1b[0m foobar", exitCode: 0, running: false },
             { t: "shell", id: "shell-exit", command: "printf 'e%sit' x", output: "exit", exitCode: 0, running: false },
         ],
     };
@@ -174,6 +175,19 @@ export async function checkEditorFind(root: HTMLElement) {
         key(input, "Enter");
         await settle();
         check(count() === "1 of 1" && current().startContainer.parentElement === output, "stepping wraps to shell output, never the status badge");
+
+        setFindQuery("foobar");
+        await settle(350);
+        const ansiOutput = scope("shell-ansi").querySelector(".term")!;
+        const ansiMatches = findMatches([turn], "foobar");
+        const ansiRanges = textRanges(scope("shell-ansi"), "foobar");
+        check(ansiMatches.length === 2 && ansiMatches.every((m, i) => m.part === "shell-ansi" && m.n === i), "ANSI escapes do not split displayed matches");
+        check(findMatches([turn], "31").length === 0 && textRanges(scope("shell-ansi"), "31").length === 0, "invisible ANSI parameters are not searched");
+        check(ansiRanges.length === 2 && ansiRanges.every((r, i) => r.toString() === "foobar" && r.startContainer.parentElement === ansiOutput && r.startOffset === i * 7 && r.endOffset === i * 7 + 6), "shell highlights use displayed text offsets");
+        check(count() === "1 of 2" && current().toString() === "foobar" && current().startOffset === 0, "find selects the first colored output match");
+        key(input, "Enter");
+        await settle();
+        check(count() === "2 of 2" && current().startOffset === 7, "find advances to the next displayed output match");
 
         const beforeKeys = opened.length;
         check(key(input, "Escape").defaultPrevented && !findOpen(), "Escape closes find");

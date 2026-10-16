@@ -41,6 +41,24 @@ async function cleanup(browser: Browser | undefined, server: { stop(force: boole
     }
 }
 
+test("shell find searches displayed text without ANSI escapes", () => {
+    // Isolate the unused tool renderer so shell matching can run without a browser.
+    const result = Bun.spawnSync([process.execPath, "--no-env-file", "-e", String.raw`
+        import { expect, mock } from "bun:test";
+        mock.module("./src/components/blocks/Activity", () => ({ toolLabel: () => { throw new Error("unexpected tool"); } }));
+        const { findParts, findMatches } = await import("./src/lib/find");
+        const turn = { id: "turn", status: "done", blocks: [
+            { t: "shell", id: "shell", command: "printf colors", output: "foo\x1b[31mbar\x1b[0m foobar", running: false, exitCode: 0 },
+        ] };
+        expect(findParts(turn)).toEqual([{ part: "shell", text: "printf colors\nfoobar foobar" }]);
+        expect(findMatches([turn], "foobar")).toEqual([
+            { turnId: "turn", part: "shell", n: 0 }, { turnId: "turn", part: "shell", n: 1 },
+        ]);
+        expect(findMatches([turn], "31")).toEqual([]);
+    `], { cwd: resolve(import.meta.dir, "../gui"), stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+});
+
 test("Chrome disables its sandbox only when running as root", () => {
     expect(sandboxArgs(0)).toEqual(["--no-sandbox"]);
     expect(sandboxArgs(1000)).toEqual([]);

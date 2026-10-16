@@ -228,6 +228,11 @@ function startsTurn(m: Message): boolean {
     return kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING));
 }
 
+/** Redact both the stored form and the whole whitespace-folded display form before cutting either. */
+function displayText(text: string): string {
+    return redact(redact(text).replace(/\s+/g, " "));
+}
+
 /** A message's text up to MAX_TEXT, redacted before it's cut (a key cut in two isn't recognized), and cut between words. */
 function clip(text: string): string {
     if (text.length <= MAX_TEXT) return text;
@@ -290,7 +295,7 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
                     const found = messageText(l.m);
                     // Match the original text, but redact display text before
                     // replay's trimming/reminder removal or our size cap.
-                    const text = found && clip(messageText(l.m, redact)!.text);
+                    const text = found && clip(displayText(messageText(l.m, redact)!.text));
                     if (found && text) {
                         doc.entries.push({ seg, index: count, role: found.role, text, folded: foldCase(clip(found.text)) });
                         if (found.role === "user" && first === undefined && seg === 0) first = text;
@@ -384,6 +389,11 @@ async function turnTimes(sessionFile: string, id: string, ctl: Control): Promise
 // ---------------------------------------------------------------------------
 // Matching
 
+/** Position after folding the whitespace before the original match. */
+function foldedAt(text: string, at: number): number {
+    return text.slice(0, at).replace(/\s+/g, " ").length;
+}
+
 /**
  * The part of `text` around the match at `at`, whitespace folded, redacted
  * (the transcript was redacted when written; a key registered since, or one
@@ -391,7 +401,8 @@ async function turnTimes(sessionFile: string, id: string, ctl: Control): Promise
  */
 export function snippetAround(text: string, at: number, query: string): { snippet: string; match?: [number, number] } {
     // The whole message, before any of it is cut: a secret of any length is only recognized whole.
-    const red = redact(redact(text).replace(/\s+/g, " "));
+    const red = displayText(text);
+    at = foldedAt(text, at);
     // Redaction and whitespace folding may move the match (or swallow it): take the nearest one.
     query = query.replace(/\s+/g, " ");
     const fr = foldCase(red);
@@ -529,12 +540,12 @@ export async function searchSessions(query: string, o: SearchOptions = {}): Prom
                 file: f.file,
                 cwd: doc.cwd,
                 // Redacted whole, before it's cut: a key cut short isn't recognized.
-                title: redact(doc.title ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim().slice(0, 120) || basename(doc.cwd),
+                title: displayText(redact(doc.title ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")).trim().slice(0, 120) || basename(doc.cwd),
                 updatedAt: f.mtimeMs,
                 seg: e.seg,
                 index: e.index,
                 role: e.role,
-                ...snippetAround(e.text, at, query),
+                ...snippetAround(e.text, foldedAt(e.folded, at), query),
                 at: when ?? f.mtimeMs,
             });
         }

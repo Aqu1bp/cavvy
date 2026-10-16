@@ -390,6 +390,27 @@ describe("searching session files", () => {
         }
     });
 
+    test("folded secrets are redacted before titles and previews are truncated", async () => {
+        registerSecret("harbor willow", "test-secret");
+        try {
+            const title = "x".repeat(110) + "harbor  willow";
+            const stored = write([{ t: "title", title }, prompt("folded-title-query")]);
+            const fallback = write([prompt(title), reply("folded-preview-query")]);
+            for (const [session, query] of [[stored, "folded-title-query"], [fallback, "folded-preview-query"]] as const) {
+                const hit = (await searchSessions(query)).hits.find((h) => h.id === session.id)!;
+                expect(hit.title).toBe(("x".repeat(110) + "[REDACTED test-secret]").slice(0, 120));
+                expect(hit.title).not.toContain("harbor");
+            }
+            // The cached message cap must not split a secret before snippet redaction either.
+            const head = "x".repeat(256 * 1024 - 10);
+            const long = write([reply(head + "harbor  willow")]);
+            const hit = (await searchSessions("harbor")).hits.find((h) => h.id === long.id)!;
+            expect(hit.snippet).not.toContain("harbor");
+        } finally {
+            unregisterSecret("harbor willow");
+        }
+    });
+
     test("requested secrets redact cached search snippets and titles in every supported encoding", async () => {
         const value = "search p@ss/!'()*~>?>~-9284";
         const uri = encodeURIComponent(value);
@@ -617,6 +638,21 @@ describe("searching session files", () => {
         const s = snippetAround("before harbor  willow after", 7, "harbor  willow");
         expect(s.snippet).toBe("before harbor willow after");
         expect(s.snippet.slice(...s.match!)).toBe("harbor willow");
+    });
+
+    test("snippet positions follow whitespace removed before repeated matches", async () => {
+        const text = "before" + " ".repeat(200) + "first needle " + "gap ".repeat(40) + "second needle end";
+        const first = snippetAround(text, text.indexOf("needle"), "needle");
+        expect(first.snippet).toStartWith("before first needle ");
+        expect(first.snippet).not.toContain("second");
+        expect(first.snippet.slice(...first.match!)).toBe("needle");
+        const second = snippetAround(text, text.lastIndexOf("needle"), "needle");
+        expect(second.snippet).toContain("second needle end");
+        expect(second.snippet.slice(...second.match!)).toBe("needle");
+        const session = write([reply(text)]);
+        const hit = (await searchSessions("needle")).hits.find((h) => h.id === session.id)!;
+        expect(hit.snippet).toBe(first.snippet);
+        expect(hit.match).toEqual(first.match);
     });
 
     test("the snippet is a short stretch around the match", () => {

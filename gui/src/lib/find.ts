@@ -4,6 +4,7 @@
 
 import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { toolLabel } from "../components/blocks/Activity";
+import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
 
 /** More than this and the count says "N+". */
@@ -52,7 +53,7 @@ function blockText(b: Block): string | undefined {
         case "compact":
             return plain(b.summary);
         case "shell":
-            return `${b.command}\n${b.output}`;
+            return `${b.command}\n${stripAnsi(b.output)}`;
         default:
             return undefined;
     }
