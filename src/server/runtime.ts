@@ -6,14 +6,14 @@
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { canonical, FileHistory, resetToolState, rewindTargets, type RestoreItem } from "../agent/checkpoints";
+import { backendsIn, canonical, FileHistory, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, type Effort, type Settings } from "../config/settings";
-import type { PermissionMode } from "../permissions/modes";
+import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -33,7 +33,7 @@ import { gitSnapshot } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
-import { agentFromCall, agentsFromTurns, runsAgent, promptText, readSegments, replay, resultPatch, toolBlockFromCall, UiLog, withoutActionsNote, type ToolMeta } from "./history";
+import { agentFromCall, agentsFromTurns, keptAgent, runsAgent, promptText, readSegments, replay, resultPatch, shownBlocks, toolBlockFromCall, UiLog, withoutActionsNote, type ToolMeta } from "./history";
 import type {
     AgentRun,
     Block,
@@ -190,6 +190,10 @@ export class Runtime {
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
     private agentLabels = new Map<string, string>();
     private agentText = new Map<string, string>();
+    /** Turns Claude Code or Codex answered: the log keeps their steps and sub-agents (the transcript only their text). */
+    private backendTurns = new Set<string>();
+    /** Each such sub-agent as last written to the log. */
+    private agentsLogged = new Map<string, string>();
 
     constructor(
         private engine: Engine,
@@ -204,19 +208,21 @@ export class Runtime {
             if (opts.resumed) session.fastMode = Boolean(ws.settings.fastMode);
             else session.setFastMode(Boolean(ws.settings.fastMode));
         }
-        this.mode = opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
+        this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
+        // A reopened session keeps the mode it was left in; bypass only when chosen again.
+        const left = opts.resumed ? this.ui.state.mode : undefined;
+        this.mode = (left && left !== "bypassPermissions" && PERMISSION_MODES.includes(left) ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
         if (this.mode === "bypassPermissions" && !this.bypassAllowed()) this.mode = "default";
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map() };
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
-        this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
         if (opts.resumed) resetToolState(this.toolState, session.messages);
 
         const segments = opts.resumed ? readSegments(session.path) : [{ messages: [] }];
         this.segment = segments.length - 1;
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
-        this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model) };
+        this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
         this.ready = this.track(this.initModel());
         void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
     }
@@ -268,7 +274,7 @@ export class Runtime {
             fastMode: this.fastModeEnabled(),
             status: "idle",
             busy: false,
-            contextTokens: 0,
+            contextTokens: this.lastContext(),
             cost: this.session.cost,
             costUnknown: this.session.costUnknown,
             ...this.tokenTotals(),
@@ -280,6 +286,47 @@ export class Runtime {
             filesChanged: this.filesChanged(),
             shells: [],
         };
+    }
+
+    /** Claude Code or Codex: an agent backend runs this session's turns. */
+    private backendModel(): boolean {
+        return getProvider(this.model?.provider ?? "")?.kind === "agent";
+    }
+
+    /** How full the context was when the session was left, if nothing has happened to it since (in a terminal, say). */
+    private lastContext(): number {
+        const s = this.ui.state;
+        return s.contextTokens !== undefined && s.messages === this.session.messages.length ? s.contextTokens : 0;
+    }
+
+    /** The log's note of the mode and context, for opening the session again. Not before the session is on disk: a new one may never be. */
+    private recordState(opts: { force?: boolean } = {}) {
+        if (this.closed || (!opts.force && !existsSync(this.session.path))) return;
+        const s = this.ui.state;
+        const state = { mode: this.mode, contextTokens: this.view.state.contextTokens, messages: this.session.messages.length };
+        if (s.mode === state.mode && s.contextTokens === state.contextTokens && s.messages === state.messages) return;
+        this.ui.write({ t: "state", ...state });
+    }
+
+    /** A sub-agent of a backend's turn, as it is now, in the log (when it changed). */
+    private recordAgent(id: string) {
+        const a = this.view.agents.find((x) => x.id === id);
+        // Once closed, the session may be open elsewhere: what's still ending here isn't written.
+        if (!a || this.closed || !this.backendTurns.has(a.turnId)) return;
+        const kept = keptAgent(a);
+        const json = JSON.stringify(kept);
+        if (this.agentsLogged.get(id) === json) return;
+        this.agentsLogged.set(id, json);
+        this.ui.write({ t: "agent", agent: kept });
+    }
+
+    /** A backend's turn, as it was shown, in the log: the transcript keeps only its text. */
+    private recordTurn(turnId: string) {
+        if (!this.backendTurns.has(turnId)) return;
+        const turn = findTurn(this.view, turnId);
+        const index = turn?.prompt?.index;
+        if (turn && index !== undefined) this.ui.write({ t: "blocks", seg: this.segment, index, blocks: shownBlocks(turn.blocks) });
+        for (const a of this.view.agents) if (a.turnId === turnId) this.recordAgent(a.id);
     }
 
     private tokenTotals() {
@@ -593,6 +640,7 @@ export class Runtime {
         this.mode = m;
         if (!opts.fromAgent && this.agent) this.agent.noteModeChange(from, m);
         this.setState({ mode: m, bypassAllowed: this.bypassAllowed() });
+        this.recordState();
         return true;
     }
 
@@ -852,15 +900,18 @@ export class Runtime {
     }
 
     private compacted(summary: string) {
-        this.segment++;
         const current = this.turnId;
-        // Everything before is out of the model's context now (and out of /rewind's reach).
-        for (const t of this.view.turns) {
-            if (t.id === current) {
-                if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
-                continue;
+        // Claude Code or Codex compacting its own context leaves this session's history as it is.
+        if (!this.backendModel()) {
+            this.segment++;
+            // Everything before is out of the model's context now (and out of /rewind's reach).
+            for (const t of this.view.turns) {
+                if (t.id === current) {
+                    if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
+                    continue;
+                }
+                if (!t.archived) this.op({ op: "turn.patch", turnId: t.id, patch: { archived: true, prompt: t.prompt ? { ...t.prompt, index: undefined } : undefined } });
             }
-            if (!t.archived) this.op({ op: "turn.patch", turnId: t.id, patch: { archived: true, prompt: t.prompt ? { ...t.prompt, index: undefined } : undefined } });
         }
         if (current) this.addBlock({ t: "compact", id: this.newId(), summary: redact(summary), auto: true });
         else {
@@ -868,6 +919,7 @@ export class Runtime {
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });
+        this.recordState();
     }
 
     private subagentEvent(parentId: string, label: string, e: AgentEvent) {
@@ -994,12 +1046,14 @@ export class Runtime {
         // Its last word is its report; one ending again (Claude Code saying so twice) takes the later.
         const report = (a.report === undefined || a.endedAt !== undefined) && said?.t === "text" ? said.text : undefined;
         this.agentPatch(id, { status, endedAt: Date.now(), activity: undefined, ...(report !== undefined ? { report } : {}) });
+        this.recordAgent(id);
         // A delegated task's result (its report, and why it ended) comes once it settles.
         const task = a.taskId ? this.agent?.delegatedTasks.find((t) => t.id === a.taskId) : undefined;
         if (task)
             void task.settled.then(() => {
                 if (!task.result) return;
                 this.agentPatch(id, { report: redact(withoutActionsNote(task.result.report)), status: task.status === "cancelled" ? "stopped" : task.status === "failed" ? "failed" : "done" });
+                this.recordAgent(id);
             });
     }
 
@@ -1037,6 +1091,8 @@ export class Runtime {
         this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end } });
         const index = turn?.prompt?.index;
         if (index !== undefined) this.ui.write({ t: "turn", seg: this.segment, index, at: turn!.startedAt ?? end, end, status });
+        this.recordTurn(turnId);
+        this.recordState();
     }
 
     // -----------------------------------------------------------------------
@@ -1204,9 +1260,13 @@ export class Runtime {
         const steering = last?.role === "assistant" && toolCallsOf(last).length > 0;
         this.closeOpen();
         const prev = this.turnId;
-        if (prev) this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: Date.now() } });
+        if (prev) {
+            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: Date.now() } });
+            this.recordTurn(prev);
+        }
         const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now() };
         this.op({ op: "turn", turn });
+        if (prev && this.backendTurns.has(prev)) this.backendTurns.add(turn.id);
         this.turnId = turn.id;
         if (!steering) this.ui.write({ t: "turn", seg: this.segment, index: this.session.messages.length, at: turn.startedAt! });
         return texts;
@@ -1269,8 +1329,11 @@ export class Runtime {
         };
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
+        if (this.backendModel()) this.backendTurns.add(turn.id);
         this.responseBlocks = [];
         this.ui.write({ t: "turn", seg: this.segment, index, at: this.turnStartedAt });
+        // The mode it's sent in, once the session is going to be on disk.
+        if (this.ui.state.mode !== this.mode) this.recordState({ force: true });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
@@ -1491,7 +1554,7 @@ export class Runtime {
         const history = FileHistory.for(this.session);
         return rewindTargets(this.session.messages)
             .reverse()
-            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0 }));
+            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0, ...(t.backends.length ? { backends: t.backends } : {}) }));
     }
 
     private target(index: number) {
@@ -1508,9 +1571,11 @@ export class Runtime {
         const rel = (p: string) => displayPath(p, root);
         const planId = this.newId();
         this.rewindShown = { id: planId, index, message: this.session.messages[index]!, count: this.session.messages.length, plan };
+        const backends = backendsIn(this.session.messages, index);
         return {
             index,
             planId,
+            ...(backends.length ? { backends } : {}),
             tracked: Boolean(plan),
             restore: (plan ?? []).filter((i) => i.action !== "skip").map((i) => ({ path: rel(i.path), action: i.action as "write" | "delete", outside: Boolean(i.outside) })),
             skipped: (plan ?? []).filter((i) => i.action === "skip").map((i) => ({ path: rel(i.path), reason: i.reason ?? "" })),
@@ -1533,6 +1598,7 @@ export class Runtime {
         this.rewindShown = undefined;
         const history = FileHistory.for(this.session);
         const plan = shown.plan;
+        const backends = backendsIn(this.session.messages, index);
         const restore = plan?.filter((i) => i.action !== "skip") ?? [];
         const skipped = plan?.filter((i) => i.action === "skip") ?? [];
         const root = canonical(this.ws.cwd);
@@ -1558,9 +1624,12 @@ export class Runtime {
             }
             const kept = [...(code ? [] : restore), ...skipped];
             if (kept.length) this.agent?.addReminder(`The user rewound the conversation to an earlier point (/rewind), but these files weren't restored and still have changes made after that point:\n${kept.map((it) => `- ${rel(it.path)}`).join("\n")}`);
+            // What a backend changed was never tracked: all of it is still there.
+            if (backends.length) this.agent?.addReminder(untrackedChangesNote(backends));
             this.rebuild();
         }
         this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
+        this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
         return { restored, failed, text: t.text };
@@ -1571,8 +1640,10 @@ export class Runtime {
         const segments = readSegments(this.session.path);
         const turns = replay({ segments: segments.length ? segments : [{ messages: [] }], current: this.session.messages, currentNotices: this.session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() });
         // Sub-agents whose calls are still there keep what was seen of them (their turns have new ids).
-        const agents = agentsFromTurns(turns, this.model && modelRef(this.model)).map((r) => {
+        const agents = agentsFromTurns(turns, this.model && modelRef(this.model), this.ui.agents).map((r) => {
             const live = this.view.agents.find((a) => a.id === r.id && !a.replayed);
+            // One still working goes on being logged under its turn's new id.
+            if (live && this.backendTurns.has(live.turnId)) this.backendTurns.add(r.turnId);
             return live ? { ...live, turnId: r.turnId } : r;
         });
         this.op({ op: "reset", turns, agents });

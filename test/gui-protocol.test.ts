@@ -9,13 +9,13 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
-const { agentsFromTurns, replay, runsAgent, UiLog, withoutActionsNote } = await import("../src/server/history");
+const { agentsFromTurns, keptAgent, replay, runsAgent, shownBlocks, UiLog, withoutActionsNote } = await import("../src/server/history");
 const { DELEGATE_TOOL } = await import("../src/agent/delegation");
 const { mergePath } = await import("../src/server/login-env");
 const { Session, listAllSessions, findSessionAnywhere } = await import("../src/agent/session");
 const { Engine } = await import("../src/server/engine");
 const { getProvider } = await import("../src/providers/registry");
-import type { AgentRun, SessionState, SessionSummary, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, SessionState, SessionSummary, ToolBlock, Turn } from "../src/server/protocol";
 import type { Message } from "../src/providers/types";
 
 afterAll(() => iso.cleanup());
@@ -260,6 +260,86 @@ describe("replay", () => {
         expect(withoutActionsNote("It was stopped. Its last message:\nHalf done.\n\n[Codex used: Bash(ls)]\n\n(It stopped at its limit of 200 model turns.)")).toBe("It was stopped. Its last message:\nHalf done.\n\n(It stopped at its limit of 200 model turns.)");
         expect(withoutActionsNote("[Claude Code used: Bash(ls)]")).toBe("");
         for (const kept of ["See [Codex used: x] in the log.", "[Gemini used: Read(a.ts)]", "Done.\n[Codex used: Bash(ls)]"]) expect(withoutActionsNote(kept)).toBe(kept);
+    });
+
+    test("a backend's turn comes back as it was shown: its steps in order, their timings and diffs, and its sub-agents", () => {
+        const file = join(tempDir(), "s.jsonl");
+        const log = new UiLog(file, "s", false);
+        const diff = fileDiff("a.ts", "x\n", "y\n");
+        const blocks: Block[] = [
+            { t: "text", id: "b2", text: "Looking first." },
+            { t: "tool", id: "tu1", name: "Bash", title: "Bash(ls)", category: "execute", status: "ok", input: { command: "ls" }, output: "a.ts", startedAt: 10, durationMs: 5, progress: "a.ts", approval: "sandboxed" },
+            { t: "thinking", id: "b3", text: "Hmm.", startedAt: 20, durationMs: 3 },
+            { t: "tool", id: "tu2", name: "Edit", title: "Edit(a.ts)", category: "edit", status: "ok", summary: "+1 −1", diff, startedAt: 30, durationMs: 2 },
+            { t: "tool", id: "tu3", name: "Task", title: "Task(Map auth)", category: "meta", status: "ok", agent: true, input: { description: "Map auth", prompt: "Read it" }, output: "One list.", sub: { label: "Map auth", tools: [{ t: "tool", id: "s0", name: "Glob", title: "Glob", status: "running" }], toolCount: 1, tokens: 9, startedAt: 31 } },
+            { t: "tool", id: "tu4", name: "Task", title: "Task(Background)", category: "meta", status: "ok", agent: true, input: { description: "Background" } },
+            { t: "notice", id: "b4", level: "info", text: "Attached a.ts" },
+            { t: "text", id: "b5", text: "Done." },
+        ];
+        log.write({ t: "turn", seg: 0, index: 0, at: 1 });
+        log.write({ t: "tool", id: "tu2", summary: "+1 −1", diff, durationMs: 2 });
+        log.write({ t: "blocks", seg: 0, index: 0, blocks: shownBlocks(blocks) });
+        const subRead: Block = { t: "tool", id: "s1", name: "Read", title: "Read(a.ts)", status: "ok", output: "x".repeat(5000), diff, progress: "x" };
+        log.write({ t: "agent", agent: keptAgent({ ...agent("tu3"), turnId: "b1", status: "done", endedAt: 40, toolCount: 1, tokens: 9, blocks: [{ t: "text", id: "b9", text: "Reading." }, subRead], report: "One list.", taskId: "task-1" }) });
+        log.write({ t: "agent", agent: keptAgent({ ...agent("tu4"), turnId: "b1", activity: "Thinking", blocks: [{ t: "tool", id: "s2", name: "Grep", title: "Grep", status: "running" }] }) });
+        log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 100, status: "done" });
+        const messages = [
+            user("fix it"),
+            { role: "assistant", provider: "claude-code", model: "opus", content: [{ type: "text", text: "Looking first.Done." }, { type: "text", text: "[Claude Code used: Bash(ls), Edit(a.ts), Task(Map auth), Task(Background)]" }] },
+        ] as Message[];
+        const ui = new UiLog(file, "s");
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui, meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+        expect(turns).toHaveLength(1);
+        const t = turns[0]!;
+        expect([t.startedAt, t.endedAt, t.status, t.prompt?.index]).toEqual([1, 100, "done", 0]);
+        // Each step where it was, without the transcript's text again; notices aren't kept.
+        expect(t.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" || b.t === "thinking" ? b.text : b.t))).toEqual(["Looking first.", "Bash:ok", "Hmm.", "Edit:ok", "Task:ok", "Task:ok", "Done."]);
+        // Text and thinking get ids of this run; calls keep theirs.
+        expect(t.blocks.map((b) => b.id)).toEqual(["i2", "tu1", "i3", "tu2", "tu3", "tu4", "i4"]);
+        const [, bash, thinking, edit, task] = t.blocks as [Block, ToolBlock, Extract<Block, { t: "thinking" }>, ToolBlock, ToolBlock];
+        expect([bash.title, bash.input, bash.output, bash.startedAt, bash.durationMs, bash.approval, bash.progress]).toEqual(["Bash(ls)", { command: "ls" }, "a.ts", 10, 5, "sandboxed", undefined]);
+        expect(thinking.durationMs).toBe(3);
+        // The diff is the log's (written once, with the call's result).
+        expect(edit.diff).toEqual(diff);
+        // Nothing is left running after a reopen.
+        expect([task.agent, task.sub?.toolCount, task.sub?.tools[0]?.status]).toEqual([true, 1, "error"]);
+
+        const agents = agentsFromTurns(turns, "claude-code:opus", ui.agents);
+        expect(agents.map((a) => [a.id, a.turnId, a.status, a.replayed, a.taskId, a.activity, a.report, a.endedAt])).toEqual([
+            ["tu3", t.id, "done", true, undefined, undefined, "One list.", 40],
+            // One the log last saw running was stopped with the session.
+            ["tu4", t.id, "stopped", true, undefined, undefined, undefined, 100],
+        ]);
+        const [text, read] = agents[0]!.blocks as [Block, ToolBlock];
+        expect(text.t === "text" && text.text).toBe("Reading.");
+        // What it did is kept short: outputs cut, no diffs or live output.
+        expect([read.name, read.status, read.outputTruncated, read.diff, read.progress]).toEqual(["Read", "ok", true, undefined, undefined]);
+        expect(read.output!.length).toBeLessThan(1200);
+        expect(agents[1]!.blocks.map((b) => b.t === "tool" && b.status)).toEqual(["error"]);
+    });
+
+    test("a turn started again where an earlier one was (after a rewind) doesn't get that one's steps", () => {
+        const file = join(tempDir(), "r.jsonl");
+        const log = new UiLog(file, "r", false);
+        log.write({ t: "turn", seg: 0, index: 0, at: 1 });
+        log.write({ t: "blocks", seg: 0, index: 0, blocks: [{ t: "text", id: "b1", text: "The old reply." }] });
+        log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 5, status: "done" });
+        // Rewound, and asked again of another model.
+        log.write({ t: "turn", seg: 0, index: 0, at: 9 });
+        const messages = [user("again"), { role: "assistant", provider: "p", model: "m", content: [{ type: "text", text: "The new reply." }] }] as Message[];
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui: new UiLog(file, "r"), meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+        expect(turns.map((x) => [x.startedAt, x.endedAt, x.blocks.map((b) => (b.t === "text" ? b.text : b.t))])).toEqual([[9, undefined, ["The new reply."]]]);
+    });
+
+    test("the log keeps the session's last mode and context", () => {
+        const file = join(tempDir(), "m.jsonl");
+        const log = new UiLog(file, "m", false);
+        log.write({ t: "state", mode: "auto" });
+        log.write({ t: "state", contextTokens: 1234, messages: 2 });
+        log.write({ t: "state", mode: "plan" });
+        expect(new UiLog(file, "m").state).toEqual({ mode: "plan", contextTokens: 1234, messages: 2 });
     });
 
     test("turns from before a compaction are kept, marked archived and not rewindable", () => {

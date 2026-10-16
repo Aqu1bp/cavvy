@@ -1367,6 +1367,140 @@ describe("sub-agents", () => {
     }, 45_000);
 });
 
+describe("reopening a Claude Code session", () => {
+    /** A session on the fake Claude Code: one turn in `scenario`, in `mode`. */
+    async function claudeCodeSession(scenario: string, mode: string) {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = scenario;
+        const c = await client();
+        await c.call("models.list", { refresh: true });
+        const dir = project();
+        const id = await c.open("session.create", { cwd: dir });
+        await c.call("session.setModel", { id, ref: "claude-code:default" });
+        await c.call("session.setMode", { id, mode });
+        await c.call("session.send", { id, text: "map the auth module" });
+        await c.until(id, done, 30_000);
+        return { c, id, dir };
+    }
+    async function cleanup() {
+        const { removeAgentConfig } = await import("../src/providers/registry");
+        delete process.env.FAKE_SCENARIO;
+        removeAgentConfig("claude-code");
+    }
+    /** The session as a fresh server opens it (after a restart, or once it was unloaded). */
+    async function reopened(id: string, opts: { allowBypass?: boolean } = {}) {
+        const restarted = await startServer({ token: TOKEN, ...opts });
+        try {
+            const c2 = new Client(TOKEN, {}, restarted.port);
+            await c2.opened();
+            const snap = await c2.call<SessionSnapshot>("session.open", { id });
+            c2.close();
+            return snap;
+        } finally {
+            await restarted.stop();
+        }
+    }
+    const step = (b: Block) => (b.t === "tool" ? [b.id, b.name, b.title, b.status, b.summary, b.output, b.agent, b.startedAt, b.durationMs, b.input] : b.t === "text" || b.t === "thinking" ? [b.t, b.text] : [b.t]);
+
+    test("its turns come back as they were shown: the steps, the sub-agents and what they did, the mode, model and context", async () => {
+        try {
+            const { c, id } = await claudeCodeSession("agent", "auto");
+            const live = structuredClone(c.view(id));
+            expect(live.state.mode).toBe("auto");
+            expect(live.state.contextTokens).toBeGreaterThan(0);
+            expect(live.agents).toHaveLength(1);
+            const snap = await reopened(id);
+            // Each step where it was, with its title, result and timing (notices aren't kept).
+            expect(snap.turns.map((t) => t.blocks.filter((b) => b.t !== "notice").map(step))).toEqual(live.turns.map((t) => t.blocks.filter((b) => b.t !== "notice").map(step)));
+            expect(snap.turns.map((t) => [t.status, t.startedAt, t.endedAt])).toEqual(live.turns.map((t) => [t.status, t.startedAt, t.endedAt]));
+            // The sub-agent with what it said and did, not only its report.
+            const [was, now] = [live.agents[0]!, snap.agents[0]!];
+            expect(snap.agents).toHaveLength(1);
+            expect([now.id, now.turnId, now.description, now.status, now.report, now.startedAt, now.endedAt, now.toolCount, now.replayed]).toEqual([was.id, snap.turns[0]!.id, was.description, was.status, was.report, was.startedAt, was.endedAt, was.toolCount, true]);
+            expect(now.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(was.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t)));
+            // The session as it was left: its mode, its model (in the snapshot itself), and how full its context was.
+            expect([snap.state.mode, snap.state.model?.ref, snap.state.contextTokens]).toEqual(["auto", "claude-code:default", live.state.contextTokens]);
+            // What other models are given of the turn is as before: the reply, and a note of what was done.
+            const { findSessionAnywhere } = await import("../src/agent/session");
+            const lines = readFileSync(findSessionAnywhere(id)!, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+            const reply = lines.filter((l) => l.t === "msg" && l.m.role === "assistant").map((l) => l.m.content.map((p: { type: string; text: string }) => [p.type, p.text]));
+            expect(reply).toEqual([[["text", "Working on it.\n\nAll done."], ["text", "[Claude Code used: Task(Map auth)]"]]]);
+            c.close();
+        } finally {
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("after Claude Code compacts its own context, later turns still come back (the transcript itself wasn't compacted)", async () => {
+        try {
+            const { c, id } = await claudeCodeSession("write", "acceptEdits");
+            await c.call("session.compact", { id });
+            // (Calls of their own: the fake's ids are the same each turn.)
+            process.env.FAKE_SCENARIO = "agent";
+            await c.call("session.send", { id, text: "and the tests?" });
+            await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
+            const live = structuredClone(c.view(id));
+            // Its history is all still there: nothing is out of reach of rewind.
+            expect(live.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.prompt!.index, Boolean(t.archived)])).toEqual([
+                ["map the auth module", 0, false],
+                ["and the tests?", 2, false],
+            ]);
+            expect((await c.call<any[]>("session.rewindTargets", { id })).map((t) => t.index)).toEqual([2, 0]);
+            const snap = await reopened(id);
+            const prompted = (v: { turns: Turn[] }) => v.turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.endedAt, t.blocks.filter((b) => b.t !== "notice").map(step)]);
+            expect(prompted(snap)).toEqual(prompted(live));
+            expect(tools(snap.turns.find((t) => t.prompt?.text === "and the tests?")!).map((b) => `${b.name}:${b.status}`)).toEqual(["Task:ok"]);
+            expect(snap.agents.map((a) => [a.description, a.status, a.blocks.length > 0])).toEqual([["Map auth", "done", true]]);
+            c.close();
+        } finally {
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("the mode it was left in, changed after its turns too; but bypass isn't taken up again without being chosen", async () => {
+        try {
+            const { c, id } = await claudeCodeSession("write", "acceptEdits");
+            expect((await reopened(id)).state.mode).toBe("acceptEdits");
+            await c.call("session.setMode", { id, mode: "plan" });
+            c.close();
+            expect((await reopened(id)).state.mode).toBe("plan");
+            const { findSessionAnywhere } = await import("../src/agent/session");
+            const file = findSessionAnywhere(id)!;
+            const log = join(dirname(file), "ui", `${id}.jsonl`);
+            writeFileSync(log, readFileSync(log, "utf-8") + JSON.stringify({ t: "state", mode: "bypassPermissions" }) + "\n");
+            // Not even where it's allowed.
+            expect((await reopened(id, { allowBypass: true })).state.mode).toBe("default");
+        } finally {
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("rewind says what Claude Code changed isn't tracked, rather than that nothing changed", async () => {
+        try {
+            const { c, id, dir } = await claudeCodeSession("write", "acceptEdits");
+            expect(existsSync(join(dir, "out.txt"))).toBe(true);
+            const targets = await c.call<any[]>("session.rewindTargets", { id });
+            expect(targets.map((t) => [t.index, t.tracked, t.files, t.backends])).toEqual([[0, true, 0, ["Claude Code"]]]);
+            const plan = await c.call("session.rewindPlan", { id, index: 0 });
+            expect([plan.restore, plan.backends]).toEqual([[], ["Claude Code"]]);
+            await c.call("session.rewind", { id, index: 0, planId: plan.planId, code: false, conversation: true });
+            // Its change is still there; the next turn is told so.
+            expect(existsSync(join(dir, "out.txt"))).toBe(true);
+            const log = join(tempDir("harness-gui-log-"), "claude.log");
+            process.env.FAKE_LOG = log;
+            await c.call("session.send", { id, text: "and now?" });
+            await c.until(id, (v) => done(v) && v.turns.length === 1 && v.turns[0]!.prompt?.text === "and now?", 30_000);
+            const sent = readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.received?.type === "user").map((l) => JSON.stringify(l.received.message.content));
+            expect(sent.at(-1)).toContain("changes Claude Code made to files after that point weren't undone");
+            c.close();
+        } finally {
+            delete process.env.FAKE_LOG;
+            await cleanup();
+        }
+    }, 60_000);
+});
+
 describe("terminal WebSocket transport", () => {
     // A plain shell with an empty home: none of the user's own startup files run.
     const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };

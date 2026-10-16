@@ -1,7 +1,8 @@
 // Rebuilding a session's timeline from disk, so an opened session looks the
 // way it did live: the saved transcript (all of it, including what came
 // before a compaction) plus the GUI's own log of what the transcript doesn't
-// keep (diffs, summaries, timings), in ui/<session>.jsonl next to it.
+// keep (diffs, summaries, timings, and the steps of turns Claude Code or Codex
+// answered, which the transcript keeps as text), in ui/<session>.jsonl next to it.
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
@@ -9,7 +10,7 @@ import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../prov
 import { textOf } from "../providers/types";
 import { redactedJson } from "../util/redact";
 import { fileDiff, trimInput, truncateText } from "./diffs";
-import type { AgentRun, Block, FileDiff, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
+import type { AgentRun, Block, FileDiff, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
 import { allProviders, getProvider } from "../providers/registry";
@@ -75,14 +76,34 @@ export function readSegments(file: string): Segment[] {
 // ---------------------------------------------------------------------------
 // The GUI's log
 
+/** The session as the GUI last left it: its permission mode, and its context after `messages` messages. */
+export interface UiState {
+    mode?: PermissionModeId;
+    contextTokens?: number;
+    messages?: number;
+}
+
 export type UiRecord =
     | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; at?: number }
+    /** A turn's start (no `end`) begins its record afresh; its end adds to it. */
     | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus }
-    | { t: "pending-turn"; text: string; at: number };
+    | { t: "pending-turn"; text: string; at: number }
+    /**
+     * A turn Claude Code or Codex answered, as it was shown (shownBlocks). The
+     * transcript keeps only its text and a note of what was done, which is
+     * what other models are given; this is what the GUI shows again.
+     */
+    | { t: "blocks"; seg: number; index: number; blocks: Block[] }
+    /** A sub-agent of such a turn, the last time it changed (keptAgent). */
+    | { t: "agent"; agent: AgentRun }
+    | ({ t: "state" } & UiState);
 
 export class UiLog {
     tools = new Map<string, Extract<UiRecord, { t: "tool" }>>();
     turns = new Map<string, Extract<UiRecord, { t: "turn" }>>();
+    blocks = new Map<string, Block[]>();
+    agents = new Map<string, AgentRun>();
+    state: UiState = {};
     private file: string;
     private created = false;
 
@@ -113,12 +134,25 @@ export class UiLog {
         if (r.t === "tool") this.tools.set(r.id, { ...this.tools.get(r.id), ...r });
         else if (r.t === "turn") {
             const k = `${r.seg}:${r.index}`;
-            this.turns.set(k, { ...this.turns.get(k), ...r });
+            // A turn starting where another was (that one was rewound) owes it nothing.
+            const start = r.end === undefined && r.status === undefined;
+            if (start) this.blocks.delete(k);
+            this.turns.set(k, start ? r : { ...this.turns.get(k), ...r });
+        } else if (r.t === "blocks" && Array.isArray(r.blocks)) this.blocks.set(`${r.seg}:${r.index}`, r.blocks);
+        else if (r.t === "agent" && typeof r.agent?.id === "string") this.agents.set(r.agent.id, r.agent);
+        else if (r.t === "state") {
+            const { t: _, ...state } = r;
+            this.state = { ...this.state, ...state };
         }
     }
 
     turn(seg: number, index: number) {
         return this.turns.get(`${seg}:${index}`);
+    }
+
+    /** The steps of the turn at that prompt, when a backend answered it. */
+    shown(seg: number, index: number): Block[] | undefined {
+        return this.blocks.get(`${seg}:${index}`);
     }
 
     /** Best effort, like the transcript itself; redacted like everything written to disk. */
@@ -229,17 +263,60 @@ export function actionsInNote(text: string): string[] {
     return [...text.matchAll(actionsNoteRe())].map((m) => m[2]!.trim()).filter(Boolean);
 }
 
-/** A reopened session's sub-agents: their calls and results (what they did along the way isn't kept). */
-export function agentsFromTurns(turns: Turn[], ownModel?: string): AgentRun[] {
+/**
+ * A reopened session's sub-agents. One of a backend's turn comes back as the
+ * log last saw it (`recorded`); any other from its call and result (what it
+ * did along the way isn't kept).
+ */
+export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map<string, AgentRun>): AgentRun[] {
     const out: AgentRun[] = [];
     for (const t of turns) {
         for (const b of t.blocks) {
-            if (b.t !== "tool" || !b.agent) continue;
+            if (b.t !== "tool") continue;
+            const rec = recorded?.get(b.id);
+            if (rec) {
+                // Nothing of it runs any more, and there's no task to stop.
+                const live = rec.status === "running" || rec.status === "waiting";
+                out.push({ ...rec, turnId: t.id, taskId: undefined, activity: undefined, replayed: true, blocks: rec.blocks.map(ended), ...(live ? { status: "stopped", endedAt: rec.endedAt ?? t.endedAt } : {}) });
+                continue;
+            }
+            if (!b.agent) continue;
             const status = b.status === "ok" ? "done" : b.status === "error" || b.status === "denied" ? "failed" : "stopped";
             out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt: b.startedAt ?? t.startedAt ?? 0, report: b.output && withoutActionsNote(b.output), replayed: true });
         }
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// What the log keeps of a backend's turn
+
+/** A sub-agent's steps kept in the log, and how much of each one's output. */
+const AGENT_KEPT = 100;
+const AGENT_OUTPUT = 1000;
+
+/** A step as it's kept: live-only fields go, and so does a diff (a call's own record has it); output is cut to `output`, if given. */
+function keptBlock(b: Block, output?: number): Block {
+    if (b.t !== "tool") return { ...b };
+    const { progress: _p, receiving: _r, diff: _d, ...rest } = b;
+    if (output === undefined || rest.output === undefined || rest.output.length <= output) return rest;
+    return { ...rest, output: truncateText(rest.output, output).text, outputTruncated: true };
+}
+
+/**
+ * The steps of a turn a backend answered, as they're written to the log:
+ * text, thinking and tool calls (notices, compactions and shell commands
+ * have records of their own, or none). Outputs are as shown, already cut
+ * to INLINE_OUTPUT.
+ */
+export function shownBlocks(blocks: Block[]): Block[] {
+    return blocks.filter((b) => b.t === "text" || b.t === "thinking" || b.t === "tool").map((b) => keptBlock(b));
+}
+
+/** A sub-agent as it's written to the log: its latest steps, outputs cut, without diffs. */
+export function keptAgent(a: AgentRun): AgentRun {
+    const dropped = Math.max(0, a.blocks.length - AGENT_KEPT);
+    return { ...a, activity: undefined, blocks: a.blocks.slice(dropped).map((b) => keptBlock(b, AGENT_OUTPUT)), ...(dropped ? { dropped: (a.dropped ?? 0) + dropped } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +369,8 @@ export function replay(o: ReplayInput): Turn[] {
                 if (n.level === "error" && t.status === "done") t.status = "error";
             }
         };
+        // Turns whose steps came from the log: the transcript's text of them isn't shown again.
+        const shown = new Set<Turn>();
         seg.messages.forEach((m, index) => {
             noticesBefore(index);
             if (m.role === "user") {
@@ -320,10 +399,16 @@ export function replay(o: ReplayInput): Turn[] {
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;
+                const steps = o.ui.shown(si, index);
+                if (steps) {
+                    t.blocks.push(...steps.map((b) => restoredBlock(b, o)));
+                    shown.add(t);
+                }
                 return;
             }
             const t = ensure();
             const backend = getProvider(m.provider ?? "")?.kind === "agent";
+            if (backend && shown.has(t)) return;
             for (const p of m.content) {
                 if (p.type === "thinking") {
                     if (p.text.trim()) t.blocks.push({ t: "thinking", id: o.newId(), text: p.text });
@@ -345,6 +430,18 @@ export function replay(o: ReplayInput): Turn[] {
     });
     // A tool call never answered (only the very end of a live session).
     return turns;
+}
+
+/** A step from the log, in this run: its own ids for text, the diff from the call's record, nothing left running. */
+function restoredBlock(b: Block, o: ReplayInput): Block {
+    if (b.t !== "tool") return { ...b, id: o.newId() } as Block;
+    const diff = o.ui.tools.get(b.id)?.diff;
+    return { ...ended(b), ...(diff ? { diff } : {}), ...(b.sub ? { sub: { ...b.sub, tools: b.sub.tools.map(ended) } } : {}) };
+}
+
+/** A call that was still open when the log last saw it: nothing runs after a reopen. */
+function ended<B extends Block>(b: B): B {
+    return b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "awaiting") ? { ...b, status: "error" } : b;
 }
 
 function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
