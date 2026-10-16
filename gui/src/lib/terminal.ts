@@ -1,3 +1,4 @@
+import type { TerminalInfo, TerminalLogin } from "@shared/protocol";
 import type { Rpc } from "./rpc";
 
 /** RPC-sized pieces without splitting a Unicode surrogate pair during UTF-8 encoding. */
@@ -46,6 +47,7 @@ export interface SavedTab {
     cwd: string;
     number: number;
     script?: { id: string; name: string };
+    login?: TerminalLogin;
     terminal: string;
 }
 
@@ -89,6 +91,7 @@ export function parseTabs(raw: string | null): SavedTabs {
         return EMPTY;
     }
     if (!v || !Array.isArray(v.tabs)) return EMPTY;
+    // Login metadata is recovered from terminal.list, never trusted from storage.
     const tabs: SavedTab[] = v.tabs.filter((t: any) => t && isId(t.id) && isId(t.terminal) && typeof t.cwd === "string" && Number.isSafeInteger(t.number)
         && (t.script === undefined || (t.script && typeof t.script.id === "string" && typeof t.script.name === "string")))
         .map((t: any) => ({ id: t.id, cwd: t.cwd, number: t.number, terminal: t.terminal, ...(t.script ? { script: { id: t.script.id, name: t.script.name } } : {}) }));
@@ -103,13 +106,16 @@ export function parseTabs(raw: string | null): SavedTabs {
  * server restarted) is dropped, and a terminal no tab knows (opened for the
  * window by the server) gets a tab, named after its script if it has one.
  */
-export function restoreTabs(saved: SavedTabs, listed: { id: string; cwd: string; script?: { id: string; name: string } }[]): SavedTabs {
+export function restoreTabs(saved: SavedTabs, listed: TerminalInfo[]): SavedTabs {
     listed = listed.filter((t) => !saved.closed?.includes(t.id));
-    const live = new Set(listed.map((t) => t.id));
-    const tabs = saved.tabs.filter((t) => live.has(t.terminal));
+    const live = new Map(listed.map((t) => [t.id, t]));
+    const tabs = saved.tabs.filter((t) => live.has(t.terminal)).map(({ login: _, ...t }) => {
+        const server = live.get(t.terminal)!;
+        return { ...t, cwd: server.cwd, ...(server.login ? { login: { ...server.login } } : {}) };
+    });
     let next = saved.next;
     const known = new Set(tabs.map((t) => t.terminal));
-    for (const t of listed) if (!known.has(t.id)) tabs.push({ id: t.id, cwd: t.cwd, number: next++, terminal: t.id, ...(t.script ? { script: t.script } : {}) });
+    for (const t of listed) if (!known.has(t.id)) tabs.push({ id: t.id, cwd: t.cwd, number: next++, terminal: t.id, ...(t.script ? { script: t.script } : {}), ...(t.login ? { login: { ...t.login } } : {}) });
     return { ...saved, tabs, next };
 }
 

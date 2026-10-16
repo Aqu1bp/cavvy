@@ -8,6 +8,7 @@
 // (test/fixtures/limits); anything missing is left out, not guessed.
 
 import type { LimitWindow, PlanLimits } from "../server/protocol";
+import { listAccounts } from "../providers/accounts";
 import { redact } from "../util/redact";
 
 /** A CLI's string shown to the user: bounded and redacted. */
@@ -50,7 +51,7 @@ function claudeLabel(key: string): string {
  * `unifiedWindows` with each window's `utilization` (0-1) and `resetsAt`.
  * `partial`: it didn't list the windows, so earlier ones still stand.
  */
-export function parseClaudeRateLimit(info: unknown, at = Date.now()): { limits: PlanLimits; partial: boolean } | undefined {
+export function parseClaudeRateLimit(info: unknown, at = Date.now(), accountId = "default"): { limits: PlanLimits; partial: boolean } | undefined {
     if (!info || typeof info !== "object") return undefined;
     const i = info as Record<string, unknown>;
     const status = typeof i.status === "string" ? i.status : undefined;
@@ -76,7 +77,7 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now()): { limits: 
     const blocking = windows.filter((w) => w.reached && (w.resetsAt === undefined || w.resetsAt > at));
     const blockingResets = [resetsAt, latestReset(blocking)].filter((t): t is number => t !== undefined);
     const lifts = reached && !blocking.some((w) => w.resetsAt === undefined) && blockingResets.length ? Math.max(...blockingResets) : undefined;
-    return { limits: { provider: "claude-code", windows, reached, resetsAt: lifts, at }, partial: !listed };
+    return { limits: { provider: "claude-code", accountId, windows, reached, resetsAt: lifts, at }, partial: !listed };
 }
 
 function codexWindowLabel(mins: unknown, slot: string): string {
@@ -114,7 +115,7 @@ export function codexReachedType(s: unknown): string | undefined {
  * `rateLimits`), or an account/rateLimits/updated's `rateLimits` (sparse: a
  * window it leaves out, or a null rateLimitReachedType, doesn't clear what was known).
  */
-export function parseCodexRateLimits(r: unknown, opts: { update?: boolean; at?: number } = {}): { limits: PlanLimits; partial: boolean } | undefined {
+export function parseCodexRateLimits(r: unknown, opts: { update?: boolean; at?: number; accountId?: string } = {}): { limits: PlanLimits; partial: boolean } | undefined {
     if (!r || typeof r !== "object") return undefined;
     const o = r as Record<string, any>;
     const snapshots: Record<string, any>[] = [];
@@ -130,7 +131,7 @@ export function parseCodexRateLimits(r: unknown, opts: { update?: boolean; at?: 
     const flagged = snapshots.some((s) => codexReachedType(s)) || o.ordinaryUsageAllowed === false;
     // A full read says it isn't reached; an update's null only means it didn't say.
     const reached = flagged || windows.some((w) => w.reached) ? true : opts.update ? undefined : false;
-    return { limits: { provider: "codex", windows, reached, resetsAt: reached ? limitResetsAt(windows) : undefined, at: opts.at ?? Date.now() }, partial: Boolean(opts.update) };
+    return { limits: { provider: "codex", accountId: opts.accountId ?? "default", windows, reached, resetsAt: reached ? limitResetsAt(windows) : undefined, at: opts.at ?? Date.now() }, partial: Boolean(opts.update) };
 }
 
 function latestReset(windows: LimitWindow[]): number | undefined {
@@ -155,7 +156,7 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
  * full window (or, with none to show for it, its reset time) says so.
  */
 export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean): PlanLimits {
-    if (!prev || !partial) return next;
+    if (!prev || !partial || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) return next;
     const windows = prev.windows.map((w) => {
         const n = next.windows.find((n) => n.id === w.id);
         if (!n) return w;
@@ -174,7 +175,7 @@ export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, part
     // It lifts when the last of what's blocking it does: the full windows, and the new report's own reset.
     const blockers = [...exhausted.map((w) => w.resetsAt), next.reached ? next.resetsAt : undefined].filter((t): t is number => t !== undefined);
     const resetsAt = reached && !exhausted.some((w) => w.resetsAt === undefined) ? (blockers.length ? Math.max(...blockers) : live(prev.resetsAt) ? prev.resetsAt : undefined) : undefined;
-    return { provider: next.provider, windows, reached, resetsAt, at: next.at };
+    return { provider: next.provider, accountId: next.accountId, windows, reached, resetsAt, at: next.at };
 }
 
 /** "4:40 PM" today, else "Mon 20 Oct, 9:00 AM" (local time). */
@@ -227,4 +228,10 @@ export function limitNews(seen: Map<string, string>, window: string, status: str
     seen.set(window, now);
     if (seen.size > 50) seen.delete(seen.keys().next().value!);
     return was !== now;
+}
+
+/** A local display name is safe in notices; signed-in email and plan stay out. */
+export function limitAccountLabel(provider: string, accountId = "default"): string {
+    const name = listAccounts(provider).find((a) => a.id === accountId)?.name ?? accountId;
+    return `${provider === "codex" ? "Codex" : "Claude Code"} · ${name}`;
 }

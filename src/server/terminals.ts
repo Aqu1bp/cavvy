@@ -9,7 +9,7 @@ import { childEnv } from "../util/env";
 import { RpcError } from "./rpc-error";
 import { isTerminalReply } from "./terminal-reply";
 export { isTerminalReply } from "./terminal-reply";
-import type { ServerEvent, TerminalInfo, TerminalScript } from "./protocol";
+import type { ServerEvent, TerminalInfo, TerminalLogin, TerminalScript } from "./protocol";
 
 /** A window's connection: where output goes while it's attached. */
 export interface Owner {
@@ -30,6 +30,9 @@ interface Shell {
     cwd: string;
     /** The project script it was opened to run: the tab is named after it. */
     script?: TerminalScript;
+    login?: TerminalLogin;
+    /** Login output is live-only: discard decoder fragments across attachments too. */
+    forgetOutput?: () => void;
     process: ReturnType<typeof Bun.spawn>;
     terminal: Bun.Terminal;
     guard: ReturnType<typeof parentGuard>;
@@ -266,9 +269,10 @@ export class Terminals {
     /**
      * `owner` is the window's live connection (callers check), which drop()s it when it goes.
      * `input` is typed into the new shell, as if by hand, once it's armed and reading a command (see Typist).
-     * `script` names the tab, for a window that comes back to it.
+     * `script` / `login` name the tab for a window that comes back to it.
+     * `command` is server-built login argv/env, used only at spawn; its output is live-only.
      */
-    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string; script?: TerminalScript } = {}) {
+    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string; script?: TerminalScript; login?: TerminalLogin; command?: { argv: string[]; env: Record<string, string> }; onExit?: () => void } = {}) {
         const size = terminalSize(cols, rows);
         if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.shells.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
         // Detached ones, and ones that exited, count until they're closed or expire.
@@ -281,7 +285,7 @@ export class Terminals {
         if (process.platform === "win32") throw new RpcError("The embedded terminal requires macOS or Linux with this Bun version", "unsupported");
         let shell = process.env.SHELL;
         if (!shell || !isAbsolute(shell)) shell = userInfo().shell || "/bin/sh";
-        const decoder = new TextDecoder();
+        let decoder = new TextDecoder();
         let pending = "";
         let entry: Shell | undefined;
         // Not into a shell that has since closed or exited.
@@ -300,6 +304,16 @@ export class Terminals {
         };
         const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
             const text = decoder.decode(bytes, { stream: true });
+            // Login URLs, codes and echoed input must never enter replay/flow-control history.
+            // Slow or absent viewers lose output; attaching never reruns the login command.
+            if (opts.command) {
+                if (entry) {
+                    entry.total += text.length;
+                    if (entry.sink && entry.unacked < MAX_UNACKED) this.send(id, entry, text);
+                    else entry.sent = entry.total;
+                }
+                return;
+            }
             pending += text;
             typist?.output(text);
             if (pending.length >= 32_768) flush();
@@ -307,7 +321,7 @@ export class Terminals {
         } });
         let proc: ReturnType<typeof Bun.spawn>;
         try {
-            proc = Bun.spawn([shell, "-il"], { cwd, env: terminalEnv(), terminal, detached: true });
+            proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(), ...opts.command.env } : terminalEnv(), terminal, detached: true });
         } catch (e) {
             terminal.close();
             throw e;
@@ -315,12 +329,13 @@ export class Terminals {
         let guard: ReturnType<typeof parentGuard>;
         try { guard = parentGuard(proc.pid); }
         catch (e) { terminal.close(); proc.kill("SIGKILL"); throw e; }
-        const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, process: proc, terminal, guard, size, out: "", outState: "ground", discard: false, total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
+        const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, login: opts.login ? { ...opts.login } : undefined, forgetOutput: opts.command ? () => { decoder = new TextDecoder(); } : undefined, process: proc, terminal, guard, size, out: "", outState: "ground", discard: false, total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
         void proc.exited.then((exitCode) => {
+            opts.onExit?.();
             if (this.shells.get(id) !== shellEntry) return;
-            pending += decoder.decode();
+            if (!opts.command) pending += decoder.decode();
             flush();
             typist?.cancel();
             terminal.close();
@@ -439,6 +454,12 @@ export class Terminals {
         s.sink = owner;
         s.unacked = 0;
         s.holding = false;
+        if (s.forgetOutput) {
+            s.forgetOutput();
+            // Clear the client screen even on reconnect with a valid position. No old login output is replayed.
+            this.send(id, s, "", true);
+            return this.info(id, s);
+        }
         const start = s.total - s.out.length;
         // A prior reset may have discarded an unfinished control string: that
         // offset describes a ground-state screen, not the original parser state.
@@ -456,7 +477,7 @@ export class Terminals {
     }
 
     private info(id: string, s: Shell): TerminalInfo {
-        return { id, cwd: s.cwd, ...(s.script ? { script: { ...s.script } } : {}), ...(s.exitCode !== undefined ? { exitCode: s.exitCode } : {}) };
+        return { id, cwd: s.cwd, ...(s.script ? { script: { ...s.script } } : {}), ...(s.login ? { login: { ...s.login } } : {}), ...(s.exitCode !== undefined ? { exitCode: s.exitCode } : {}) };
     }
 
     /** Stops it; the connection attached to it, or its window's when none is (its tab closed while away). */
@@ -519,6 +540,7 @@ export class Terminals {
                 continue;
             }
             s.sink = undefined;
+            s.forgetOutput?.();
             s.unacked = 0;
             s.holding = false;
             s.typist?.cancel();

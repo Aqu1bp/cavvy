@@ -4,10 +4,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles/terminal.css";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, refreshProviders, reportError, rpc, toast } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab } from "../state/ui";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, loadTabs, restoreTabs, saveTabs, TerminalClosures, terminalInputChunks, type SavedTab } from "../lib/terminal";
 import { isTerminalReply } from "@shared/terminal-reply";
@@ -30,9 +30,9 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     const saved = loadTabs();
     const [tabs, setTabs] = createSignal<Tab[]>([]);
     const [selected, setSelected] = createSignal<string | undefined>(saved.selected);
-    const currentTabs = () => tabs().filter((t) => t.cwd === p.cwd);
+    const currentTabs = () => tabs().filter((t) => t.login || t.cwd === p.cwd);
     const active = () => currentTabs().find((t) => t.id === selected()) ?? currentTabs().at(-1);
-    const visible = () => terminalOpen() && !p.hidden && !!p.cwd;
+    const visible = () => terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
     let next = saved.next;
     // Not saved until the saved tabs are back, which would lose them to a reload meanwhile.
     const [restored, setRestored] = createSignal(false);
@@ -94,6 +94,18 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setSelected(tab.id);
         setTerminalOpen(true);
     };
+    const loginAccount = (provider: string, accountId: string, name: string) => {
+        if (!restored()) return toast("Terminal tabs are reconnecting. Try again in a moment.");
+        if (app.conn !== "open" || full()) return toast("Connect and close a terminal before signing in", "warn");
+        const id = crypto.randomUUID();
+        const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name } };
+        setTabs((all) => [...all, tab]);
+        setSelected(tab.id);
+        setSettingsTab(undefined);
+        setTerminalOpen(true);
+    };
+    terminalActions.loginAccount = loginAccount;
+    onCleanup(() => { if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount; });
     terminalActions.runScript = runScript;
     onCleanup(() => { if (terminalActions.runScript === runScript) delete terminalActions.runScript; });
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
@@ -125,7 +137,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                 <SquareTerminal size={14} /><span class="terminal-label">Terminal</span>
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
                         <button class="hb sm" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
@@ -199,9 +211,16 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         epoch++;
     };
     const [ended, setEnded] = createSignal<string>();
+    const exited = (code: number) => {
+        opened = false;
+        attach = true;
+        setEnded(`${p.tab.login ? "Login" : "Shell"} exited (${code})`);
+        if (p.tab.login) void rpc.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError);
+    };
     /** Disconnected from a shell that's still running: it comes back with the connection. */
     const [away, setAway] = createSignal(false);
     const [restarting, setRestarting] = createSignal(false);
+    const [loginOutputLost, setLoginOutputLost] = createSignal(!!p.tab.login && !!p.tab.attach);
     const restart = async () => {
         if (restarting()) return;
         forgetDrawn();
@@ -219,6 +238,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         catch (e) { setRestarting(false); setEnded((e as Error).message); return; }
         if (disposed) { p.onClose(next); return; }
         id = next;
+        setLoginOutputLost(false);
         moved = false;
         attach = false;
         opened = false;
@@ -238,6 +258,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         if (app.conn !== "open") return void setAway(true);
         setAway(false);
         setEnded(undefined);
+        if (p.tab.login) setLoginOutputLost(true);
         // Typed while attaching: sent once it's attached. (Nothing else is: the replay is output only, and the script isn't armed.)
         early.begin();
         attaching = true;
@@ -248,8 +269,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             if (disposed || at !== epoch || attempt !== attachment) return;
             const typed = early.take();
             if (info.exitCode !== undefined) {
-                attach = true;
-                return void setEnded(`Shell exited (${info.exitCode})`);
+                return exited(info.exitCode);
             }
             opened = true;
             if (typed) send(typed);
@@ -282,7 +302,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         try {
             const shell = { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) };
             if (run) await rpc.call("scripts.run", { ...shell, script: run.id });
-            else await rpc.call("terminal.open", shell);
+            else await rpc.call("terminal.open", { ...shell, login: p.tab.login });
             opened = true;
             attach = true;
             const typed = early.take();
@@ -350,9 +370,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
                 });
             }
             if (e.type === "terminal.exit" && e.id === id) {
-                opened = false;
-                attach = true;
-                setEnded(`Shell exited (${e.exitCode})`);
+                exited(e.exitCode);
             }
             if (e.type === "terminal.moved" && e.id === id) {
                 opened = false;
@@ -361,7 +379,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
                 setAway(false);
                 early.take();
                 forgetDrawn();
-                setEnded("This terminal is now shown in another window (a copy of this one). Restart for a new shell here.");
+                setEnded("This terminal is now shown in another window (a copy of this one). Use the restart button to start a new process here.");
             }
         });
         const stateOff = rpc.onState((state) => {
@@ -392,9 +410,13 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
     createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); term.focus(); } }); });
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
         <div class="terminal-emulator" ref={container} />
+        <Show when={loginOutputLost()}><div class="terminal-message">
+            <span>Login output is not saved or replayed. Restart login if you need a new sign-in prompt.</span>
+            <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>
+        </div></Show>
         <Show when={away() || ended()}><div class="terminal-message">
-            <span>{away() ? "Disconnected. The shell keeps running, and comes back here with the connection." : ended()}</span>
-            <Show when={!away()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart shell</button></Show>
+            <span>{away() ? "Disconnected. The process stays on the server and reconnects here." : ended()}</span>
+            <Show when={!away()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
         </div></Show>
     </div>;
 }

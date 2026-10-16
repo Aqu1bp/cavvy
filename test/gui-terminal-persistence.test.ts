@@ -118,7 +118,7 @@ import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
 import { RpcError } from "../gui/src/lib/rpc";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: { id: string; name: string }; fresh?: boolean } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: { id: string; name: string }; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
     const [panelOpen, setPanelOpen] = solid.createSignal(false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
@@ -166,7 +166,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs() {},
-        basename: (v: string) => v, tildify: (v: string) => v, terminalShortcut: "Ctrl+`", toast() {}, reportError() {},
+        basename: (v: string) => v, tildify: (v: string) => v, terminalShortcut: "Ctrl+`", toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {},
         Play: noop, Plus: noop, RotateCw: noop, SquareTerminal: noop, X: noop, Terminal: Emulator, FitAddon: class { fit() {} },
         ResizeObserver: class { observe() {} disconnect() {} }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
@@ -176,8 +176,8 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     let dispose!: () => void;
     solid.createRoot((d: () => void) => {
         dispose = d;
-        component(name === "TerminalPanel" ? { cwd: "/p" } : {
-            tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script }, visible: false,
+        component(name === "TerminalPanel" ? { cwd: opts.cwd ?? "/p" } : {
+            tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script, login: opts.login }, visible: false,
             onClose: (id: string) => closed.push(id),
             onRestart: async (_next: string, previous?: string) => { if (previous) await rpc.call("terminal.close", { id: previous }); },
         });
@@ -244,4 +244,50 @@ test("real screen preserves close intent when an opening reply is lost after tab
     m.connection("reconnecting");
     m.calls[0]!.reject(new RpcError("lost", "disconnected")); await tick();
     expect(m.closed).toEqual(["shell", "shell"]);
+});
+
+
+test("restored login tab uses server metadata, is visible without a project, and attaches as exited without opening a new login", async () => {
+    const login = { provider: "claude-code", accountId: "work", name: "Work" };
+    const saved = parseTabs(JSON.stringify({ tabs: [{ id: "tab", terminal: "login", cwd: "/old", number: 1,
+        login: { ...login, accountId: "tampered", env: { SECRET: "never-save" } } }], next: 2, open: true }));
+    expect(JSON.stringify(saved)).not.toContain("never-save");
+    const m = mounted("TerminalPanel", { saved, cwd: "" });
+    try {
+        await tick();
+        m.calls[0]!.resolve([{ id: "login", cwd: "/server-home", login, exitCode: 7 }]); await tick();
+        expect(m.calls.map((c) => c.method)).toEqual(["terminal.list", "terminal.attach"]);
+        expect(m.calls[1]!.params).toEqual({ id: "login" });
+        expect(m.saved.at(-1)?.tabs[0]).toMatchObject({ cwd: "/server-home", login });
+        const panel = m.nodes.find((n) => n.tag === "section");
+        expect(panel.props.style.display).toBe("flex");
+        m.terminals[0]!.input("sensitive-early-input");
+        m.calls[1]!.resolve({ id: "login", cwd: "/server-home", login, exitCode: 7 }); await tick();
+        expect(m.calls.some((c) => c.method === "terminal.open" || c.method === "terminal.arm" || c.method === "terminal.write")).toBe(false);
+        expect(m.calls.find((c) => c.method === "accounts.list")?.params).toEqual({ provider: "claude-code", refresh: true });
+    } finally { m.dispose(); }
+    expect(restoreTabs({ tabs: [], open: false, next: 1 }, [{ id: "login", cwd: "/home", login }]).tabs[0]?.login).toEqual(login);
+});
+
+
+test("a running login can explicitly restart for a new prompt after reconnect, closing the original first", async () => {
+    const login = { provider: "claude-code", accountId: "work", name: "Work" };
+    const m = mounted("TerminalScreen", { login, fresh: true });
+    try {
+        m.calls[0]!.resolve({ id: "shell", cwd: "/p" }); await tick();
+        m.connection("reconnecting"); m.connection("open");
+        const attaching = m.calls.find((c) => c.method === "terminal.attach")!;
+        expect(attaching.params).toEqual({ id: "shell" });
+        attaching.resolve({ id: "shell", cwd: "/p", login }); await tick();
+        const restart = m.nodes.find((n) => n.tag === "button" && n.props.class === "btn secondary sm");
+        expect(restart).toBeDefined();
+        restart.props.onClick(); await tick();
+        expect(m.calls.filter((c) => c.method === "terminal.open")).toHaveLength(1);
+        m.calls.find((c) => c.method === "terminal.close")!.resolve(null); await tick();
+        m.terminals[0]!.drain(); await tick();
+        const opens = m.calls.filter((c) => c.method === "terminal.open");
+        expect(opens).toHaveLength(2);
+        expect(opens[1]!.params.login).toEqual(login);
+        expect(opens[1]!.params.id).not.toBe("shell");
+    } finally { m.dispose(); }
 });
