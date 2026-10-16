@@ -14,6 +14,8 @@ import { existsSync, lstatSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { commandsWithDirs, gitSubcommand, readSmallFile } from "./bash-safety";
+import { accountFolders } from "../providers/accounts";
+import { canonical } from "../util/files";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -125,10 +127,12 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHom
     const git = [...new Set([...ws.map((w) => join(w, ".git")), ...ws.flatMap(gitDirs)])];
     const temp = [...new Set([process.platform === "darwin" ? "/private/tmp" : "/tmp", real(tmpdir())])];
     const harness = real(opts.harnessHome);
+    // Resolve afresh for each command: adding an account also protects a running session.
+    const accounts = [...new Set(accountFolders().map(canonical))];
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
-        readOnly: [...ws.flatMap((w) => [join(w, ".harness"), join(w, ".mcp.json")]), harness],
-        unreadable: [...UNREADABLE_IN_HOME.map((p) => join(home, p)), harness],
+        readOnly: [...ws.flatMap((w) => [join(w, ".harness"), join(w, ".mcp.json")]), harness, ...accounts.filter((a) => !isWithin(a, harness))],
+        unreadable: [...UNREADABLE_IN_HOME.map((p) => join(home, p)), harness, ...accounts.filter((a) => !isWithin(a, harness))],
         gitDirs: git,
     };
 }

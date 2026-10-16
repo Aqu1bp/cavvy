@@ -5,7 +5,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const outside = tempDir("harness-account-folders-");
 const { addAccount, account, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } = await import("../src/providers/accounts");
-const { readAgentConfig, saveAgentConfig } = await import("../src/providers/registry");
+const { readAgentConfig, saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 afterAll(() => { iso.cleanup(); rmSync(outside, { recursive: true, force: true }); });
 
 test("metadata remains compatible, private, and independent of CLI credentials", () => {
@@ -31,6 +31,7 @@ test("pointed folders are forgotten only and may never overlap any account", () 
     const folder = join(outside, "external");
     const a = addAccount("claude-code", { id: "work", name: "Work", folder });
     expect(a.managed).toBe(false);
+    expect(() => removeAgentConfig("claude-code")).toThrow(/remain protected/);
     writeFileSync(join(folder, "sentinel"), "untouched");
     expect(() => addAccount("codex", { id: "duplicate", name: "Duplicate", folder })).toThrow(/separate/);
     expect(() => addAccount("codex", { id: "nested", name: "Nested", folder: join(folder, "nested") })).toThrow(/separate/);

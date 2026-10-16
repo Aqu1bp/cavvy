@@ -4,7 +4,8 @@
 import { closeSync, existsSync, lstatSync, openSync, readlinkSync, readSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
-import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
+import { canonical, CASE_INSENSITIVE_FS, expandPath, isInside, spellings } from "../util/files";
+import { accountFolders } from "../providers/accounts";
 
 export interface SimpleCommand {
     text: string;
@@ -977,6 +978,41 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
 
 /** What sensitiveTarget() calls a project's .env file. */
 export const ENV_FILE = "a .env file";
+
+/** Account directories are private even when a command has an explicit allow rule. */
+export function accountTarget(cmd: string, cwd: string): boolean {
+    const folders = [...new Set(accountFolders().flatMap((p) => [p, canonical(p)]).flatMap(spellings))];
+    if (!folders.length) return false;
+    const analysis = analyzeCommand(cmd);
+    const forms = (p: string, dir: string) => {
+        const abs = expandPath(p.replace(/^\$\{?HOME\}?(?=\/|$)/, homedir()), dir);
+        return [abs, canonical(abs)].flatMap(spellings);
+    };
+    const touches = (word: string, dir: string, search = false) => {
+        if (!word || word.startsWith("-")) return false;
+        // A static prefix suffices to reject globs without enumerating private files.
+        const at = word.search(/[*?\[]/);
+        const p = at < 0 ? word : word.slice(0, at).replace(/[^/]*$/, "") || ".";
+        return forms(p, dir).some((f) => folders.some((a) => isInside(f, a) || ((search || at >= 0) && isInside(a, f))));
+    };
+    let dirs = [cwd];
+    for (const c of analysis.commands) {
+        const argv = effectiveArgv(c.argv);
+        // Inspect embedded paths too (python -c 'open("/private/account/auth.json")').
+        const texts = [c.text, ...argv].flatMap(spellings);
+        if (folders.some((f) => texts.some((t) => t.includes(f)))) return true;
+        const search = /^(rg|grep|egrep|fgrep|ag|ack|find|fd|ls|tree)$/.test(argv[0]?.split("/").at(-1) ?? "");
+        if (dirs.some((d) => touches(d, d))) return true;
+        if (search && dirs.some((d) => touches(d, d, true))) return true;
+        for (const word of [...argv.slice(1), ...analysis.redirects]) {
+            if (dirs.some((d) => touches(word, d, search))) return true;
+        }
+        if ((argv[0] === "cd" || argv[0] === "pushd") && argv[1] && settledCd(argv, c.text)) {
+            dirs = [...new Set([...dirs, ...dirs.map((d) => expandPath(argv[1]!, d))])].slice(0, 32);
+        }
+    }
+    return analysis.redirects.some((p) => dirs.some((d) => touches(p, d)));
+}
 
 const SENSITIVE = ([
     // Any suffix (.env.prodüction too); a template only when that's the whole name, as for Read.

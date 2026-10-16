@@ -386,6 +386,7 @@ export function saveAgentConfig(id: string, cfg: AgentCliConfig = {}) {
 export function removeAgentConfig(id: string): boolean {
     const pf = readProvidersFileForUpdate();
     if (!pf.agents?.[id]) return false;
+    if (pf.agents[id]?.accounts?.length) throw new Error("Remove named accounts before turning off this CLI; their folders must remain protected");
     delete pf.agents[id];
     writeProvidersFile(pf);
     return true;

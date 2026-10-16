@@ -27,11 +27,12 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import type { Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { analyzeCommand, configTarget, dangerousReason, effectiveArgv, ENV_FILE, isReadOnlyCommand, pushesDefaultBranch, sensitiveTarget, suggestBashRules } from "./bash-safety";
+import { accountTarget, analyzeCommand, configTarget, dangerousReason, effectiveArgv, ENV_FILE, isReadOnlyCommand, pushesDefaultBranch, sensitiveTarget, suggestBashRules } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, type SandboxKind } from "./sandbox";
 import { isReadOnly } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
+import { accountFolders } from "../providers/accounts";
 
 export type Behavior = "allow" | "ask" | "deny";
 
@@ -135,6 +136,9 @@ export class PermissionChecker {
 
         if (t.path && this.isProtected(t.path, tool.name)) {
             return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
+        }
+        if (tool.name === "Bash" && accountTarget(t.command ?? "", cwd)) {
+            return { behavior: "deny", reason: "Access to CLI account folders is blocked." };
         }
 
         let dangerous: string | undefined;
@@ -306,11 +310,15 @@ export class PermissionChecker {
     isProtectedArea(dir: string): boolean {
         const forms = pathForms(dir);
         const store = [paths.credentialsFile(), paths.providers()].flatMap(pathForms);
-        return store.some((f) => forms.some((d) => isInside(f, d)));
+        const accounts = accountFolders().flatMap(pathForms);
+        return store.some((f) => forms.some((d) => isInside(f, d))) || accounts.some((f) => forms.some((d) => isInside(f, d) || isInside(d, f)));
     }
 
     private isProtected(p: string, toolName: string): boolean {
         const forms = pathForms(p);
+        const accounts = accountFolders().flatMap(pathForms);
+        const search = toolName === "Grep" || toolName === "Glob" || toolName === "LS";
+        if (forms.some((f) => accounts.some((a) => isInside(f, a) || (search && isInside(a, f))))) return true;
         const store = [paths.credentialsFile(), paths.providers()].flatMap(pathForms);
         if (forms.some((f) => store.includes(f))) return true;
         // Searching the store's directory reads the store.
@@ -325,6 +333,7 @@ export class PermissionChecker {
         const forms = pathForms(p);
         const home = pathForms(harnessHome());
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
+        if (accountFolders().flatMap(pathForms).some((a) => forms.some((f) => isInside(f, a)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
         // .claude/ and .codex/ configure the agent CLIs the harness can run (hooks, skills, rules).
         const judged = new Set([p, canonical(p)].map(withoutWorktrees).flatMap(spellings));
