@@ -7,6 +7,7 @@ const iso = isolate();
 const { createWorktree, listWorktrees, parseWorktrees, removeWorktree } = await import("../src/server/worktrees");
 const { Engine } = await import("../src/server/engine");
 const { gitArgv, gitEnv } = await import("../src/util/git");
+const { trustFolder } = await import("../src/config/trust");
 afterAll(() => iso.cleanup());
 
 function git(cwd: string, ...args: string[]): string {
@@ -219,6 +220,69 @@ describe("creating a worktree", () => {
         expect(logged).toHaveLength(1);
         expect(logged[0]).toContain("git worktree add failed: ");
         expect(logged[0]).toContain("locked-ref.lock");
+    });
+});
+
+describe("a repository's own config in a project that isn't trusted", () => {
+    /** A repository whose *.txt files go through `filter`, and a smudge command that leaves a mark. */
+    function filtered(name: string) {
+        const main = repo(name);
+        writeFileSync(join(main, ".gitattributes"), "*.txt filter=evil\n");
+        writeFileSync(join(main, "a.txt"), "hi\n");
+        git(main, "add", ".");
+        git(main, "commit", "-m", "files");
+        const mark = join(main, "..", `${name} smudged`);
+        const script = join(main, "..", `${name} smudge.sh`);
+        writeFileSync(script, `#!/bin/sh\ntouch '${mark}'\ncat\n`, { mode: 0o755 });
+        const config = `[filter "evil"]\n\tsmudge = '${script}'\n`;
+        return { main, mark, config };
+    }
+
+    test("a filter driver in .git/config needs trust: nothing is checked out or made", async () => {
+        const { main, mark, config } = filtered("filter-local");
+        writeFileSync(join(main, ".git", "config"), config, { flag: "a" });
+        const failed = createWorktree({ path: main, branch: "smudged" });
+        await expect(failed).rejects.toMatchObject({ code: "needs_trust" });
+        await expect(createWorktree({ path: main, branch: "smudged" })).rejects.toThrow("(filter)");
+        expect(existsSync(mark)).toBe(false);
+        expect(existsSync(join(main, ".claude"))).toBe(false);
+        expect(() => git(main, "rev-parse", "--verify", "refs/heads/smudged")).toThrow();
+    });
+
+    test("an include that could bring one in needs trust too", async () => {
+        const { main, mark, config } = filtered("filter-include");
+        const included = join(main, "..", "filter-include.cfg");
+        writeFileSync(included, config);
+        git(main, "config", "include.path", included);
+        await expect(createWorktree({ path: main, branch: "smudged" })).rejects.toMatchObject({ code: "needs_trust" });
+        expect(existsSync(mark)).toBe(false);
+    });
+
+    test("so does one in per-worktree config", async () => {
+        const { main, mark, config } = filtered("filter-worktree");
+        git(main, "worktree", "add", "-b", "second", join(main, "..", "filter-worktree second"));
+        git(main, "config", "extensions.worktreeConfig", "true");
+        writeFileSync(join(main, ".git", "config.worktree"), config);
+        await expect(createWorktree({ path: main, branch: "smudged" })).rejects.toMatchObject({ code: "needs_trust" });
+        expect(existsSync(mark)).toBe(false);
+    });
+
+    test("ordinary clone bookkeeping doesn't", async () => {
+        const main = repo("config-inert");
+        git(main, "remote", "add", "origin", "https://example.invalid/repo.git");
+        git(main, "config", "branch.main.remote", "origin");
+        git(main, "config", "branch.main.merge", "refs/heads/main");
+        git(main, "config", "branch.main.vscode-merge-base", "origin/main");
+        expect((await createWorktree({ path: main, branch: "plain" })).branch).toBe("plain");
+    });
+
+    test("in a trusted project the filters run, as Git LFS needs", async () => {
+        const { main, mark, config } = filtered("filter-trusted");
+        writeFileSync(join(main, ".git", "config"), config, { flag: "a" });
+        trustFolder(main);
+        const made = await createWorktree({ path: main, branch: "smudged" });
+        expect(existsSync(join(made.path, "a.txt"))).toBe(true);
+        expect(existsSync(mark)).toBe(true);
     });
 });
 

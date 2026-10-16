@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { gitArgv, gitEnv } from "../util/git";
 import { isInside } from "../util/files";
+import { trustedByUser } from "../config/trust";
 import { redact } from "../util/redact";
 import { RpcError } from "./rpc-error";
 import type { CreateWorktreeParams, WorktreeInfo } from "./protocol";
@@ -226,6 +227,52 @@ function logFailure(log: Log | undefined, what: string, stderr: string) {
     log?.(`${what}: ${redact(stderr.trim()).slice(0, 2000)}`);
 }
 
+/**
+ * Repository config keys that can't make a checkout run anything: what git
+ * init and clone write, and branch and remote bookkeeping. Anything else in
+ * the repository's own config (a filter driver, an include that could bring
+ * one in, core.sshCommand, credential helpers, a partial clone's promisor
+ * fetch, ...) needs the user's trust before files are checked out with it.
+ */
+const INERT_CONFIG = [
+    /^core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|autocrlf|eol|safecrlf|checkstat|trustctime|longpaths|untrackedcache|fsmonitor|hookspath)$/,
+    /^remote\..+\.(url|pushurl|fetch|push|tagopt|prune|prunetags|mirror|skipdefaultupdate|skipfetchall)$/,
+    /^branch\..+\.[a-z0-9-]+$/,
+    /^extensions\.(worktreeconfig|objectformat|refstorage)$/,
+    /^(user\.(name|email|signingkey)|commit\.gpgsign|tag\.gpgsign|init\.defaultbranch|pull\.(rebase|ff)|push\.(default|autosetupremote)|fetch\.prune|status\.showuntrackedfiles|rerere\.enabled|lfs\.repositoryformatversion)$/,
+];
+
+/** The repository's own config (local, and the worktree's) that isn't known to be inert; undefined when it can't be read. */
+function riskyConfig(main: string): string[] | undefined {
+    const keys: string[] = [];
+    // Per-worktree config exists only with this extension (without it git refuses --worktree once there are several).
+    const perWorktree = runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() === "true";
+    // --local and --worktree don't follow includes: an include directive shows up as itself.
+    for (const scope of perWorktree ? ["--local", "--worktree"] : ["--local"]) {
+        const out = runGit(main, ["config", scope, "--list", "--name-only", "-z"]);
+        if (out === undefined) return undefined;
+        keys.push(...out.split("\0").filter(Boolean));
+    }
+    return [...new Set(keys.filter((k) => !INERT_CONFIG.some((re) => re.test(k))))];
+}
+
+/**
+ * Hooks are off, but checking files out still runs whatever the repository's
+ * own config sets up (filter drivers above all). In a project the user hasn't
+ * trusted, only a config with nothing like that is used.
+ */
+function checkConfigTrust(main: string, cwd: string) {
+    if (trustedByUser(main) || trustedByUser(cwd)) return;
+    const risky = riskyConfig(main);
+    if (risky && !risky.length) return;
+    // Only section names: a key's middle part can be a URL with credentials in it.
+    const sections = risky ? [...new Set(risky.map((k) => k.split(".")[0]))].slice(0, 6).join(", ") : "";
+    throw new RpcError(
+        `This repository's Git configuration ${sections ? `has settings (${sections}) that can` : "couldn't be checked, and could"} run commands while files are checked out. Trust the project to create worktrees in it.`,
+        "needs_trust",
+    );
+}
+
 /** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
 export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
     const cwd = resolve(o.path);
@@ -234,6 +281,7 @@ export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promis
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
     const commit = resolveBase(cwd, o.base);
     const target = o.location ? chosenTarget(o.location) : managedTarget(repo.main, o.folder || defaultFolder(branch));
+    checkConfigTrust(repo.main, cwd);
     target.prepare();
     const r = await runGitAsync(repo.main, [...NO_HOOKS, "worktree", "add", "-b", branch, target.path, commit], CREATE_TIMEOUT_MS);
     if (r.timedOut) {

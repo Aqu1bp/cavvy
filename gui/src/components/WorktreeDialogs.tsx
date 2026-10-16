@@ -26,7 +26,12 @@ const FIELD_OF: Record<string, Field> = {
     path_outside: "location",
 };
 
-const errorOf = (e: unknown) => ({ field: (e instanceof RpcError && e.code && FIELD_OF[e.code]) || "general", message: e instanceof Error ? e.message : String(e) }) as { field: Field; message: string };
+type FormError = { field: Field; message: string; code?: string };
+
+const errorOf = (e: unknown): FormError => {
+    const code = e instanceof RpcError ? e.code : undefined;
+    return { field: (code && FIELD_OF[code]) || "general", message: e instanceof Error ? e.message : String(e), code };
+};
 
 export interface NewWorktreeRequest {
     /** The folder the picker was opened in. */
@@ -46,7 +51,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     /** A folder elsewhere the user chose to create it in. */
     const [parent, setParent] = createSignal<string>();
     const [busy, setBusy] = createSignal(false);
-    const [error, setError] = createSignal<{ field: Field; message: string }>();
+    const [error, setError] = createSignal<FormError>();
     const name = () => folder() ?? branch().trim().replaceAll("/", "-");
     const dir = () => parent() ?? `${r.main}/.claude/worktrees`;
     const target = () => `${dir().replace(/\/+$/, "")}/${name()}`;
@@ -56,6 +61,19 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const choose = async () => {
         const chosen = await chooseFolder({ title: "Choose where to create the worktree", action: "Create it here", start: r.main });
         if (chosen) setParent(chosen);
+    };
+
+    /** The repository's own Git config can run commands on checkout: the user decides, then it's created. */
+    const trustAndCreate = async () => {
+        setBusy(true);
+        try {
+            await rpc.call("projects.trust", { path: r.cwd, trust: true });
+        } catch (e) {
+            setBusy(false);
+            return setError(errorOf(e));
+        }
+        setBusy(false);
+        await create();
     };
 
     const create = async () => {
@@ -133,6 +151,11 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                         <div class="rw-confirm">
                             <AlertTriangle size={14} />
                             <span>{m()}</span>
+                            <Show when={error()?.code === "needs_trust"}>
+                                <button type="button" class="btn secondary sm" disabled={busy()} onClick={() => void trustAndCreate()}>
+                                    Trust and create
+                                </button>
+                            </Show>
                         </div>
                     )}
                 </Show>
