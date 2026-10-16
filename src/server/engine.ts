@@ -20,6 +20,7 @@ import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, write
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError } from "../agent/session";
+import { forkSession } from "../agent/fork";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
@@ -39,6 +40,7 @@ import { childEnv } from "../util/env";
 import { expandPath, isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
+import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
@@ -676,6 +678,39 @@ export class Engine {
         };
     }
 
+    /**
+     * Fork an open session at the end of the turn of its prompt `index`
+     * (src/agent/fork.ts), and open the fork with the original's model,
+     * speed, mode and effort.
+     */
+    async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
+        const cut = original.forkPoint(index, text, turnId);
+        // As they are now: the original may go on while the fork's model is set up.
+        const notes = original.notesAt(cut);
+        const effort = original.effort;
+        let session: Session;
+        try {
+            session = forkSession(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy });
+        } catch (e) {
+            throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
+        }
+        forkUiLog({ file: original.session.path, id: original.id }, { file: session.path, id: session.meta.id });
+        // The original's folder, already trusted to open it; bypass mode still needs allowing (the constructor checks).
+        let rt: Runtime;
+        try {
+            rt = new Runtime(this, original.ws, session, { mode: original.mode, resumed: true });
+        } catch (e) {
+            session.release();
+            throw e;
+        }
+        this.runtimes.set(rt.id, rt);
+        await rt.ready.catch(() => undefined);
+        if (effort) rt.setEffort(effort);
+        rt.forkedFrom(notes);
+        this.sessionChanged(rt);
+        return rt;
+    }
+
     /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Harness. */
     cliSessionsList(cwd: string): CliSessionsList {
         const p = resolve(expandHome(cwd));
@@ -1214,6 +1249,7 @@ export class Engine {
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
+            { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
             { name: "tasks", description: "Sub-agents and tasks delegated to other models (/tasks stop stops them)", args: "[stop [task-id]]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
@@ -1427,6 +1463,11 @@ export class Engine {
                 return this.runtime(p.id).rewindPlan(num(p.index, -1));
             case "session.rewind":
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
+            case "session.fork": {
+                const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
+                this.watch(client, rt.id);
+                return rt.snapshot();
+            }
             case "session.changes":
                 return this.runtime(p.id).changes();
             case "session.gitChanges": {

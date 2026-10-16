@@ -512,14 +512,16 @@ class CodexTurn {
             };
             if (t.resumeId) {
                 try {
-                    const r = await thread("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
-                    this.threadId = r?.thread?.id ?? t.resumeId;
+                    // Shared with a forked session: a copy of it goes on (a new thread), never the thread itself.
+                    const r = await thread(t.forkSession ? "thread/fork" : "thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
+                    this.threadId = r?.thread?.id ?? (t.forkSession ? undefined : t.resumeId);
+                    if (!this.threadId || (t.forkSession && this.threadId === t.resumeId)) throw new ProviderError("Codex didn't fork the thread");
                     if (typeof r?.model === "string") this.threadModels.set(this.threadId!, r.model);
                     tierNow = r?.serviceTier;
                 } catch (e) {
                     // Stopped by esc: the thread is fine and is resumed next time.
                     if (this.aborted) throw e;
-                    return { reason: "error", text: "", actions: [], error: `Couldn't resume the Codex thread: ${(e as Error).message}`, resumeFailed: true };
+                    return { reason: "error", text: "", actions: [], error: `Couldn't ${t.forkSession ? "fork" : "resume"} the Codex thread: ${(e as Error).message}`, resumeFailed: true };
                 }
             } else {
                 const r = await thread("thread/start", threadParams);

@@ -606,10 +606,11 @@ export class App {
         this.sessionSwitched(prev, "clear");
     }
 
-    resume(file: string) {
+    /** Switch to a saved session (/resume), or to one just opened (a fork). */
+    resume(from: string | Session) {
         const prev = this.session;
         try {
-            this.session = Session.load(file);
+            this.session = typeof from === "string" ? Session.load(from) : from;
         } catch (e) {
             this.notice(`Could not resume: ${(e as Error).message}`, "error");
             // Stay in the current conversation; at startup there's none yet.

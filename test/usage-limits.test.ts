@@ -837,6 +837,9 @@ describe("slash commands", () => {
         expect(clientAction("/cost")).toEqual({ action: "usage", args: "" });
         expect(clientAction("/context")?.action).toBe("context");
         expect(clientAction("/model")?.action).toBe("model");
+        expect(clientAction("/fork")).toEqual({ action: "fork", args: "" });
+        expect(clientAction("  /FoRk  ")).toEqual({ action: "fork", args: "" });
+        expect(clientAction("//fork")).toBeUndefined();
         expect(clientAction("/rename My title")).toEqual({ action: "rename", args: "My title" });
         expect(clientAction("/tasks stop task-1")).toEqual({ action: "tasks", args: "stop task-1" });
         expect(clientAction("/clear")?.action).toBe("new");
