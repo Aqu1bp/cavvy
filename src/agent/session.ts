@@ -166,6 +166,8 @@ export class Session {
     private started = false;
     /** Lines held back until the first message, so idle launches leave no file. */
     private pending: Line[] = [];
+    /** An append failed, maybe half way: the next one starts on a line of its own (blank lines are skipped on load). */
+    private torn = false;
 
     /** Whether it's on disk now. */
     private write(line: Line): boolean {
@@ -185,10 +187,13 @@ export class Session {
                 }
             }
             const lines = [...this.pending.splice(0), line];
-            appendFileSync(this.file, lines.map((l) => redactedJson(l) + "\n").join(""));
+            // Not joined to what a failed one left, or both would be unreadable (and this one said to be saved).
+            appendFileSync(this.file, (this.torn ? "\n" : "") + lines.map((l) => redactedJson(l) + "\n").join(""));
+            this.torn = false;
             return true;
         } catch {
             // Persistence is best effort; the session keeps working in memory.
+            this.torn = true;
             return false;
         }
     }

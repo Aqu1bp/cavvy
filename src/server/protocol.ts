@@ -584,8 +584,8 @@ export interface Methods {
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string } };
-    /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index), whose text the window showed as `text`. */
-    "session.fork": { params: { id: string; index: number; text: string }; result: SessionSnapshot };
+    /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index), which the window showed as turn `turn` with `text`. */
+    "session.fork": { params: { id: string; index: number; text: string; turn: string }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };

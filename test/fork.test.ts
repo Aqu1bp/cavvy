@@ -3,7 +3,7 @@
 // along, and /fork in the terminal.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "fs";
+import { appendFileSync, chmodSync, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -196,6 +196,26 @@ describe("the fork's file", () => {
         expect(cp).toBeGreaterThanOrEqual(ahead + 1);
         expect(beforeFork(f.meta, prompt("new", cp), 2)).toBe(false);
         expect(beforeFork(f.meta, f.messages[0], 0)).toBe(true);
+    });
+
+    test("a marker saved after a failed append reads back: it doesn't join the torn line that append left", () => {
+        const s = original();
+        // An append that failed half way (a full disk): part of a line, and no newline.
+        appendFileSync(s.path, '{"t":"title","title":"Half wri');
+        chmodSync(s.path, 0o400);
+        try {
+            s.setTitle("not saved");
+        } finally {
+            chmodSync(s.path, 0o600);
+        }
+        const f = forkSession(s, { cut: 6 });
+        f.release();
+        expect(f.backends.get("claude-code")).toEqual({ id: "sess-1", synced: 6, fork: true });
+        s.release();
+        const again = Session.load(s.path);
+        again.release();
+        expect(again.backends.get("claude-code")).toEqual({ id: "sess-1", synced: 6, fork: true });
+        expect(again.messages).toEqual(s.messages);
     });
 
     test("one that can't be made leaves nothing behind", () => {

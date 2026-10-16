@@ -458,8 +458,8 @@ export class Engine {
      * (src/agent/fork.ts), and open the fork with the original's model,
      * speed, mode and effort.
      */
-    async forkSession(original: Runtime, index: unknown, text: string): Promise<Runtime> {
-        const cut = original.forkPoint(index, text);
+    async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
+        const cut = original.forkPoint(index, text, turnId);
         // As they are now: the original may go on while the fork's model is set up.
         const notes = original.notesAt(cut);
         const effort = original.effort;
@@ -889,7 +889,7 @@ export class Engine {
             case "session.rewind":
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.fork": {
-                const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"));
+                const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
                 this.watch(client, rt.id);
                 return rt.snapshot();
             }

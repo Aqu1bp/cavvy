@@ -782,7 +782,7 @@ describe("forking", () => {
         const orig = c.view(id);
         const demo = prompted(orig)[1]!;
 
-        const forkId = await c.open("session.fork", { id, index: demo.prompt!.index, text: "demo" });
+        const forkId = await c.open("session.fork", { id, index: demo.prompt!.index, text: "demo", turn: demo.id });
         const fork = c.view(forkId);
         expect(forkId).not.toBe(id);
         expect(fork.state.title).toBe(`Fork of ${orig.state.title}`);
@@ -826,7 +826,7 @@ describe("forking", () => {
         const c = await client();
         const { id, dir } = await threeTurns(c);
         const [first, demo] = prompted(c.view(id));
-        const fork = (p: Record<string, unknown>) => c.call("session.fork", { id, text: "demo", index: demo!.prompt!.index, ...p });
+        const fork = (p: Record<string, unknown>) => c.call("session.fork", { id, text: "demo", index: demo!.prompt!.index, turn: demo!.id, ...p });
         await expect(fork({ id: "20200101-000000-abcdef" })).rejects.toThrow(/isn't open/);
         await expect(fork({ index: "3" })).rejects.toThrow(/must be an integer/);
         await expect(fork({ index: 1.5 })).rejects.toThrow(/must be an integer/);
@@ -835,8 +835,10 @@ describe("forking", () => {
         // A reply, not a prompt.
         await expect(fork({ index: first!.prompt!.index! + 1 })).rejects.toThrow(/isn't one of this conversation's prompts/);
         await expect(fork({ text: undefined })).rejects.toThrow(/text must be a string/);
+        await expect(fork({ turn: undefined })).rejects.toThrow(/turn must be a string/);
         // Drawn before something changed it (a rewind in another window, say).
         await expect(fork({ text: "something else" })).rejects.toThrow(/changed since this was shown/);
+        await expect(fork({ turn: first!.id })).rejects.toThrow(/changed since this was shown/);
         // From before a compaction.
         await c.call("session.compact", { id });
         await c.until(id, done);
@@ -854,13 +856,81 @@ describe("forking", () => {
         await c.call("session.send", { id, text: "ask me a question" });
         await c.until(id, (v) => v.state.interactions.length > 0);
         const [first, running] = prompted(c.view(id));
-        await expect(c.call("session.fork", { id, index: running!.prompt!.index, text: running!.prompt!.text })).rejects.toThrow(/still running/);
+        await expect(c.call("session.fork", { id, index: running!.prompt!.index, text: running!.prompt!.text, turn: running!.id })).rejects.toThrow(/still running/);
         expect(sessionFiles(dir)).toEqual([id]);
-        const forkId = await c.open("session.fork", { id, index: first!.prompt!.index, text: "first prompt" });
+        const forkId = await c.open("session.fork", { id, index: first!.prompt!.index, text: "first prompt", turn: first!.id });
         expect(prompted(c.view(forkId)).map((t) => t.prompt!.text)).toEqual(["first prompt"]);
         expect(c.view(forkId).state.busy).toBe(false);
         await c.answer(id, { kind: "question", answers: ["OpenID Connect"] });
         await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("a turn rewound in another window and sent again isn't forked from the window that showed the old one", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        await c.call("session.send", { id, text: "retry" });
+        await c.until(id, (v) => done(v) && prompted(v).length === 2);
+        const shown = prompted(c.view(id))[1]!;
+        // Another window: rewound to before it, and the same prompt sent again (a new answer at the same place).
+        const plan = await c.call("session.rewindPlan", { id, index: shown.prompt!.index });
+        await c.call("session.rewind", { id, index: shown.prompt!.index, planId: plan.planId, code: false, conversation: true });
+        await c.call("session.send", { id, text: "retry" });
+        await c.until(id, (v) => done(v) && prompted(v).length === 2 && prompted(v)[1]!.id !== shown.id);
+        const again = prompted(c.view(id))[1]!;
+        expect(again.prompt).toEqual(shown.prompt);
+        await expect(c.call("session.fork", { id, index: shown.prompt!.index, text: "retry", turn: shown.id })).rejects.toThrow(/changed since this was shown/);
+        const forkId = await c.open("session.fork", { id, index: again.prompt!.index, text: "retry", turn: again.id });
+        expect(prompted(c.view(forkId)).map((t) => t.prompt!.text)).toEqual(["first prompt", "retry"]);
+        c.close();
+    }, 30_000);
+
+    /** A turn that finished while the message queued during it runs (waiting on a question): `first` and `queued`. */
+    async function finishedWhileQueuedRuns(c: Client) {
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "pause first" });
+        expect((await c.call("session.send", { id, text: "ask me a question" })).queued).toBe(true);
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        const [first, queued] = prompted(c.view(id));
+        expect(first!.status).toBe("done");
+        expect(queued!.status).toBe("running");
+        return { id, first: first!, queued: queued! };
+    }
+
+    test("a turn that finished while a message queued during it runs can be forked, up to that message", async () => {
+        const c = await client();
+        const { id, first, queued } = await finishedWhileQueuedRuns(c);
+        const forkId = await c.open("session.fork", { id, index: first.prompt!.index, text: "pause first", turn: first.id });
+        expect(prompted(c.view(forkId)).map((t) => t.prompt!.text)).toEqual(["pause first"]);
+        expect(texts(prompted(c.view(forkId))[0]!)).toBe("Done waiting.");
+        const rt = srv.engine.runtimes.get(forkId)!;
+        expect(rt.session.messages.length).toBe(queued.prompt!.index);
+        await expect(c.call("session.fork", { id, index: queued.prompt!.index, text: queued.prompt!.text, turn: queued.id })).rejects.toThrow(/still running/);
+        await c.answer(id, { kind: "question", answers: ["OpenID Connect"] });
+        await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("while the original is working, none of its backend sessions are shared; once it's done, they are", async () => {
+        const c = await client();
+        const { id, first } = await finishedWhileQueuedRuns(c);
+        const original = srv.engine.runtimes.get(id)!;
+        // A Claude Code session that saw only the first turn, as if that turn had run on it.
+        original.session.setBackendSession("claude-code", "sess-shared", first.prompt!.index + 2);
+        const file = findSessionAnywhere(id)!;
+        const before = readFileSync(file, "utf-8");
+        const busy = await c.open("session.fork", { id, index: first.prompt!.index, text: "pause first", turn: first.id });
+        expect(srv.engine.runtimes.get(busy)!.session.backends.size).toBe(0);
+        expect(original.session.backends.get("claude-code")?.fork).toBeUndefined();
+        expect(readFileSync(file, "utf-8")).toBe(before);
+
+        await c.answer(id, { kind: "question", answers: ["OpenID Connect"] });
+        await c.until(id, done);
+        const idle = await c.open("session.fork", { id, index: first.prompt!.index, text: "pause first", turn: first.id });
+        expect(srv.engine.runtimes.get(idle)!.session.backends.get("claude-code")).toEqual({ id: "sess-shared", synced: first.prompt!.index + 2, fork: true });
+        expect(original.session.backends.get("claude-code")?.fork).toBe(true);
         c.close();
     }, 30_000);
 
@@ -873,7 +943,7 @@ describe("forking", () => {
         await c.answer(id, { kind: "permission", choice: "yes" });
         await c.until(id, done, 15_000);
         const demo = prompted(c.view(id))[0]!;
-        const forkId = await c.open("session.fork", { id, index: demo.prompt!.index, text: "demo" });
+        const forkId = await c.open("session.fork", { id, index: demo.prompt!.index, text: "demo", turn: demo.id });
         await c.call("session.send", { id: forkId, text: "a prompt in the fork" });
         await c.until(forkId, (v) => done(v) && prompted(v).length === 2);
 

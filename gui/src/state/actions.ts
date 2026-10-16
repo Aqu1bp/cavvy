@@ -99,24 +99,24 @@ function clientCommand(id: string | undefined, text: string): boolean {
  * while the model worked, the prompt that started that work (the fork has
  * everything up to the next prompt either way).
  */
-export function forkAnchor(turns: Turn[], i: number): { index: number; text: string } | undefined {
+export function forkAnchor(turns: Turn[], i: number): { index: number; text: string; turn: string } | undefined {
     for (let k = i; k >= 0; k--) {
         const t = turns[k]!;
         if (t.archived) return undefined;
-        if (t.prompt?.index !== undefined) return { index: t.prompt.index, text: t.prompt.text };
+        if (t.prompt?.index !== undefined) return { index: t.prompt.index, text: t.prompt.text, turn: t.id };
     }
     return undefined;
 }
 
 /** A new session with the conversation up to a turn (by default the latest finished one); the original stays as it is. */
-export async function fork(id: string, at?: { index: number; text: string }) {
+export async function fork(id: string, at?: { index: number; text: string; turn: string }) {
     const turns = handleFor(id)?.view.turns ?? [];
     if (!at) {
         for (let i = turns.length - 1; i >= 0 && !at; i--) if (turns[i]!.status !== "running" && turns[i]!.prompt) at = forkAnchor(turns, i);
     }
     if (!at) return toast("Nothing to fork yet: send a prompt first.", "warn");
     try {
-        const h = await forkSession(id, at.index, at.text);
+        const h = await forkSession(id, at);
         toast(`Forked into “${h.view.state.title ?? "a new session"}”`, "success");
     } catch (e) {
         reportError(e);

@@ -1154,6 +1154,9 @@ export class Runtime {
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
         if (!steering) this.ui.write({ t: "turn", seg: this.segment, index: this.session.messages.length, at: turn.startedAt! });
+        // After a finished answer they start a turn of their own: the one before can be forked now. (Claude
+        // Code and Codex take them in the middle of theirs, before its answer is recorded: it's still running.)
+        if (!steering && last?.role === "assistant") this.runStart = this.session.messages.length;
         return texts;
     }
 
@@ -1424,14 +1427,15 @@ export class Runtime {
 
     /**
      * Where a fork from the turn of the prompt at `index` ends (session.fork),
-     * checked against what the window showed: the prompt's text there.
+     * checked against what the window showed: that turn (by id, which is new
+     * once a rewind rebuilds the timeline) with this prompt and its text.
      */
-    forkPoint(index: unknown, text: string): number {
+    forkPoint(index: unknown, text: string, turnId: string): number {
         if (typeof index !== "number" || !Number.isInteger(index)) throw new RpcError("index must be an integer");
         if (!rewindTargets(this.session.messages).some((t) => t.index === index)) throw new RpcError("That isn't one of this conversation's prompts (one from before a compaction can't be forked from).");
         if (this.runStart !== undefined && index >= this.runStart) throw new RpcError("That turn is still running. Fork from it once it's done, or interrupt it first.", "busy");
-        const shown = this.view.turns.find((t) => !t.archived && t.prompt?.index === index);
-        if (shown?.prompt?.text !== text) throw new RpcError("The conversation changed since this was shown; nothing was forked.", "stale");
+        const shown = this.view.turns.find((t) => t.id === turnId);
+        if (!shown || shown.archived || shown.prompt?.index !== index || shown.prompt.text !== text) throw new RpcError("The conversation changed since this was shown; nothing was forked.", "stale");
         return Math.min(forkCut(this.session.messages, index), this.runStart ?? Infinity);
     }
 

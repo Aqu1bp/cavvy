@@ -10,6 +10,7 @@
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
 //   "first message"  says what the user's first message was, and how many they've sent
+//   "pause"          a short answer after a moment's wait (time to queue a message meanwhile)
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -185,7 +186,6 @@ function titleFor(prompt: string): string {
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
-/** Split text into small chunks the way a model streams it. */
 /** What a model would answer from the conversation it was sent: the user's first message, and every one of theirs. */
 function recall(messages: Json[]): string {
     const said = messages
@@ -195,6 +195,7 @@ function recall(messages: Json[]): string {
     return `Your first message was "${said[0] ?? ""}". You've said: ${said.map((s) => `"${s}"`).join(", ")}.`;
 }
 
+/** Split text into small chunks the way a model streams it. */
 function chunks(text: string): string[] {
     return text.match(/\S+\s*|\s+/g) ?? [];
 }
@@ -239,6 +240,10 @@ export function startMockLlm(o: MockOptions = {}) {
             if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
             else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
+            else if (/\bpause\b/i.test(prompt)) {
+                await Bun.sleep(400);
+                step = { text: "Done waiting." };
+            }
             else step = scenario(prompt, toolRounds, lastResult) ?? { text: "Done." };
 
             const enc = new TextEncoder();
