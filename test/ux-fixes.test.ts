@@ -31,6 +31,7 @@ const { GrepTool } = await import("../src/tools/search-tools");
 const { App } = await import("../src/ui/app");
 const { stripAnsi } = await import("../src/ui/ansi");
 import type { Message } from "../src/providers/types";
+import type { AgentEvent } from "../src/agent/agent";
 
 afterAll(cleanup);
 
@@ -684,6 +685,35 @@ describe("live region layout", () => {
         // The spinner and everything after it stay on the bottom rows; the rest follows the output.
         expect(flow).toBe(at("esc to interrupt") - 1);
         expect(lines.slice(0, flow).some((l) => l.includes("git status"))).toBe(true);
+    });
+
+    test("a sub-agent still working after the call that started it returned (Codex's spawn) shows until its turn ends", () => {
+        const { app: a, printed } = testApp();
+        const app = a as any;
+        app.busy = true;
+        app.turnStart = Date.now();
+        const call = { type: "tool_call", id: "spawn-1", name: "Task", input: { description: "Count the files" } };
+        app.onAgentEvent({ type: "tool_start", call, title: "Task(Count the files)" });
+        app.onAgentEvent({ type: "tool_end", call, result: { content: "The sub-agent started; what it does shows under it.", isError: false }, durationMs: 5 });
+        const sub = (event: AgentEvent) => app.onAgentEvent({ type: "subagent", parentId: "spawn-1", label: "Count the files", event });
+        sub({ type: "request_start" });
+        sub({ type: "tool_start", call: { type: "tool_call", id: "c1", name: "Bash", input: { command: "touch y" } }, title: "touch y" });
+        sub({ type: "usage", usage: { inputTokens: 1000, outputTokens: 200 } });
+        const live = () => liveOf(app).lines.join("\n");
+        expect(live()).toContain("Task(Count the files)");
+        expect(live()).toContain("⎿  touch y");
+        printed.length = 0;
+        sub({ type: "tool_end", call: { type: "tool_call", id: "c1", name: "Bash", input: { command: "touch y" } }, result: { content: "ok", isError: false }, durationMs: 5 });
+        sub({ type: "text", text: "CHILD_REPORT: 2 files." });
+        sub({ type: "turn_end", reason: "done" });
+        expect(live()).not.toContain("Count the files");
+        expect(printed.map(stripAnsi).join("\n")).toMatch(/Task\(Count the files\)\n\s+⎿  Done \(1 tool use · 1\.2k tokens · /);
+        // A late word from one that's over (Claude Code saying again it ended) shows nothing more.
+        printed.length = 0;
+        sub({ type: "usage", usage: { inputTokens: 1, outputTokens: 1 } });
+        sub({ type: "turn_end", reason: "done" });
+        expect(printed).toEqual([]);
+        expect(live()).not.toContain("Count the files");
     });
 
     test("a reply that's partly printed already continues it without a blank line", () => {

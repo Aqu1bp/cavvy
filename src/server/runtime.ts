@@ -704,7 +704,7 @@ export class Runtime {
                 this.patchBlock(e.id, { approval: e.reason, sandboxed: e.sandboxed });
                 break;
             case "tool_end":
-                this.toolEnded(e.call, e.result, e.durationMs);
+                this.toolEnded(e.call, e.result, e.durationMs, e.title);
                 break;
             case "notice":
                 this.notice(e.message, e.level);
@@ -758,7 +758,7 @@ export class Runtime {
         this.responseBlocks = [];
     }
 
-    private toolEnded(call: ToolCallPart, result: ToolResult, durationMs: number) {
+    private toolEnded(call: ToolCallPart, result: ToolResult, durationMs: number, title?: string) {
         const turnId = this.toolTurn.get(call.id);
         if (!turnId || !this.blockIn(turnId, call.id)) {
             const b = toolBlockFromCall(call, this.toolMeta(call));
@@ -767,6 +767,8 @@ export class Runtime {
         const d = result.display;
         const shown = d?.body !== undefined ? d.body : result.content;
         const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (result.isError ? result.content : "")), result.isError), durationMs, progress: undefined };
+        // What it did was only known at its end (a backend's web search): its title and input say so now.
+        if (title) Object.assign(patch, { title, input: trimInput(call.input) });
         if (/^The user declined/.test(result.content)) patch.status = "denied";
         if (d?.summary) patch.summary = d.summary;
         if (result.images?.length) patch.images = result.images.length;
@@ -818,6 +820,7 @@ export class Runtime {
         } else if (e.type === "tool_end") {
             const t = sub.tools.find((x) => x.id === e.call.id);
             if (t) {
+                if (e.title) t.title = e.title;
                 t.status = /^The user declined/.test(e.result.content) ? "denied" : e.result.isError ? "error" : "ok";
                 t.summary = e.result.display?.summary;
                 t.durationMs = e.durationMs;
@@ -850,6 +853,11 @@ export class Runtime {
         if (!a.taskId) {
             const task = this.agent?.delegatedTasks.find((t) => t.callId === id);
             if (task) this.agentPatch(id, { taskId: task.id, ...(a.model || !this.model || task.model === modelRef(this.model) ? {} : { model: task.model }) });
+        }
+        // A new turn of one that had ended (Codex's, messaged after it answered): it's running again, and its next answer is its report.
+        if (e.type === "request_start" && a.endedAt !== undefined && a.status !== "running" && a.status !== "waiting") {
+            this.agentText.delete(id);
+            this.agentPatch(id, { status: "running", endedAt: undefined, report: undefined, turnAfter: a.blocks.at(-1)?.id ?? a.turnAfter });
         }
         switch (e.type) {
             case "request_start":
@@ -888,6 +896,7 @@ export class Runtime {
                 const d = e.result.display;
                 const shown = d?.body !== undefined ? d.body : e.result.content;
                 const patch: Partial<ToolBlock> = { ...resultPatch(redact(shown || (e.result.isError ? e.result.content : "")), e.result.isError), durationMs: e.durationMs, progress: undefined };
+                if (e.title) Object.assign(patch, { title: e.title, input: trimInput(e.call.input) });
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
@@ -913,7 +922,9 @@ export class Runtime {
         this.agentText.delete(id);
         const a = this.view.agents.find((x) => x.id === id);
         if (!a) return;
-        const said = [...a.blocks].reverse().find((b) => b.t === "text" && b.text.trim());
+        // Said in its latest turn (not an answer of an earlier one, when this one gave none). Gone from the list: all of it is.
+        const from = a.turnAfter ? a.blocks.findIndex((b) => b.id === a.turnAfter) + 1 : 0;
+        const said = a.blocks.slice(from).reverse().find((b) => b.t === "text" && b.text.trim());
         const status: AgentRun["status"] = reason === "aborted" ? "stopped" : reason === "done" || reason === "max_turns" ? "done" : "failed";
         // Its last word is its report; one ending again (Claude Code saying so twice) takes the later.
         const report = (a.report === undefined || a.endedAt !== undefined) && said?.t === "text" ? said.text : undefined;

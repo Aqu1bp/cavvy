@@ -116,13 +116,14 @@ class Client {
 
     private answered = new Set<string>();
 
-    /** Answer the next request the session makes (ops arrive a moment after replies, so skip ones already answered). */
-    async answer(id: string, response: InteractionResponse) {
+    /** Answer the next request the session makes (ops arrive a moment after replies, so skip ones already answered); `before` looks at the view as it asks. */
+    async answer(id: string, response: InteractionResponse, before?: () => void) {
         const fresh = (v: { state: SessionState }) => v.state.interactions.find((i) => !this.answered.has(i.id));
         await this.until(id, (v) => Boolean(fresh(v)));
         const it = fresh(this.view(id))!;
         this.answered.add(it.id);
         expect(it.kind).toBe(response.kind);
+        before?.();
         await this.call("session.respond", { id, interactionId: it.id, response });
         return it;
     }
@@ -139,6 +140,15 @@ function fakeClaude(): string {
     writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
     chmodSync(join(bin, "claude"), 0o755);
     return join(bin, "claude");
+}
+
+/** A fake `codex` (test/fixtures) in a folder of its own, with none of other test files' FAKE_* settings. */
+function fakeCodex(): string {
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+    const bin = tempDir("harness-gui-cli-");
+    writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-codex.ts")}" "$@"\n`);
+    chmodSync(join(bin, "codex"), 0o755);
+    return join(bin, "codex");
 }
 
 async function client(): Promise<Client> {
@@ -958,6 +968,83 @@ describe("sub-agents", () => {
     test("Claude Code saying again how its sub-agent ended replaces what it said: failed after all", async () => {
         const v = await claudeCodeTurn("agent-fails-later");
         expect(v.agents.map((a) => [a.status, a.report])).toEqual([["failed", undefined]]);
+    }, 45_000);
+
+    for (const early of [undefined, "all"])
+    test(`Codex's own sub-agent${early ? " that did everything before the spawn said whose it was" : ""}: a chip with its tools and its answer as the report, asking as itself; the reply and context are the main thread's`, async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("codex", { path: fakeCodex() });
+        process.env.FAKE_SCENARIO = "subagent";
+        if (early) process.env.FAKE_CHILD_EARLY = early;
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.send", { id, text: "count the files with a sub-agent" });
+            // Its command asks (Manual mode), naming it.
+            const ask = await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            // Asked before Codex said whose thread it is, it's a sub-agent of Codex's, not yet that chip.
+            expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(early ? ["Bash", "Codex sub-agent", undefined] : ["Bash", "Count the files", v.agents[0]?.id]);
+            expect(v.agents).toHaveLength(1);
+            const a = v.agents[0]!;
+            expect([a.description, a.status, a.report]).toEqual(["Count the files", "done", "CHILD_REPORT: 2 files."]);
+            // Its tokens, even those Codex reported before the spawn said whose they were.
+            expect(a.tokens).toBe(5050);
+            // Its warning and error show on its chip, not as the session's.
+            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            const turn = lastTurn(v);
+            expect(turn.blocks.filter((b) => b.t === "notice")).toEqual([]);
+            expect(tools(turn).map((b) => [b.name, b.agent ?? false])).toEqual([["Task", true], ["wait", false]]);
+            const said = turn.blocks.flatMap((b) => (b.t === "text" ? [b.text] : [])).join("\n");
+            expect(said).toContain("Finished.");
+            for (const not of ["Looking around.", "CHILD_REPORT"]) expect(said).not.toContain(not);
+            expect(v.state.contextTokens).toBe(150);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CHILD_EARLY;
+            removeAgentConfig("codex");
+        }
+    }, 45_000);
+
+    for (const twice of ["1", "silent"])
+    test(`Codex's own sub-agent messaged after it answered: running again, asking as itself, and ${twice === "1" ? "its new answer is its report" : "stopped before answering, its earlier answer isn't its report"}`, async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("codex", { path: fakeCodex() });
+        process.env.FAKE_SCENARIO = "subagent";
+        process.env.FAKE_CHILD_TWICE = twice;
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.send", { id, text: "count the files, then the tests" });
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            // Its second turn's command: the chip it asks from is working again.
+            let during: unknown;
+            const ask = await c.answer(id, { kind: "permission", choice: "yes" }, () => {
+                const a = c.view(id).agents[0];
+                during = a && [a.status, a.endedAt, a.report];
+            });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            expect(v.agents).toHaveLength(1);
+            const a = v.agents[0]!;
+            expect(ask.kind === "permission" && [ask.agentLabel, ask.agentId]).toEqual(["Count the files", a.id]);
+            expect(during).toEqual(["waiting", undefined, undefined]);
+            expect([a.status, a.report]).toEqual(twice === "1" ? ["done", "CHILD_REPORT: 3 tests."] : ["stopped", undefined]);
+            expect(a.blocks.flatMap((b) => (b.t === "tool" ? [`${b.name}:${b.status}`] : []))).toEqual(["Bash:ok", "Bash:ok"]);
+            // Where its latest turn starts: what the chip takes its last words from (the first answer is before it).
+            const from = a.blocks.findIndex((b) => b.id === a.turnAfter);
+            expect(a.blocks.slice(0, from + 1).some((b) => b.t === "text" && b.text === "CHILD_REPORT: 2 files.")).toBe(true);
+            expect(a.blocks.slice(from + 1).some((b) => b.t === "text" && b.text === "CHILD_REPORT: 2 files.")).toBe(false);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CHILD_TWICE;
+            removeAgentConfig("codex");
+        }
     }, 45_000);
 
     test("a delegated agent working past the turn keeps asking; stopping it withdraws the request", async () => {

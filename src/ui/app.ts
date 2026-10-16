@@ -121,6 +121,8 @@ export class App {
     private thinking = "";
     private receiving = new Map<string, { name: string; chars: number }>();
     private active = new Map<string, ActiveTool>();
+    /** Sub-agents still working after the call that started them returned (Codex's own): shown until their turn ends. */
+    private detached = new Map<string, ActiveTool>();
     private turnStart = 0;
     private turnTokens = 0;
     private streamChars = 0;
@@ -783,10 +785,14 @@ export class App {
                 }
                 break;
             }
-            case "tool_end":
+            case "tool_end": {
+                const a = this.active.get(e.call.id);
+                // Retitled at its end (a backend's web search, whose query comes then).
+                if (a && e.title) a.title = e.title;
                 this.printToolResult(e.call, e.result, e.durationMs);
                 this.active.delete(e.call.id);
                 break;
+            }
             case "notice":
                 this.flushStream();
                 this.notice(e.message, e.level);
@@ -835,7 +841,12 @@ export class App {
     }
 
     private onSubagentEvent(parentId: string, label: string, e: AgentEvent) {
-        const a = this.active.get(parentId);
+        let a = this.active.get(parentId) ?? this.detached.get(parentId);
+        // One working after its call returned (Codex's spawn does at once): shown on its own while it works.
+        if (!a && (e.type === "request_start" || e.type === "tool_start")) {
+            a = { call: { type: "tool_call", id: parentId, name: "Task", input: { description: label } }, title: `Task(${label})`, startedAt: Date.now(), progress: "" };
+            this.detached.set(parentId, a);
+        }
         if (!a) return;
         a.sub ??= { label, tools: [], count: 0, tokens: 0, startedAt: Date.now() };
         if (e.type === "tool_start") {
@@ -844,6 +855,12 @@ export class App {
             if (a.sub.tools.length > 3) a.sub.tools.shift();
         } else if (e.type === "usage") a.sub.tokens += e.usage.outputTokens + e.usage.inputTokens + (e.usage.cacheReadTokens ?? 0);
         else if (e.type === "notice" && e.level === "error") a.progress = e.message;
+        else if (e.type === "turn_end" && this.detached.get(parentId) === a) {
+            this.detached.delete(parentId);
+            const { count, tokens, startedAt } = a.sub;
+            const ok = e.reason === "done" || e.reason === "max_turns";
+            this.screen.print(["", toolLine(a.title, ok ? "ok" : "error"), theme.muted(`  ⎿  ${ok ? "Done" : e.reason === "aborted" ? "Stopped" : "Failed"} (${count} tool use${count === 1 ? "" : "s"} · ${formatTokens(tokens)} tokens · ${formatDuration(Date.now() - startedAt)})`)]);
+        }
     }
 
     private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: { summary?: string; body?: string; diff?: { path: string; before: string; after: string } } }, durationMs: number) {
@@ -1344,6 +1361,7 @@ export class App {
             this.abort = undefined;
             this.stopTicker();
             this.active.clear();
+            this.detached.clear();
             this.status = undefined;
             this.renderLive();
         }
@@ -1381,6 +1399,7 @@ export class App {
             this.abort = undefined;
             this.stopTicker();
             this.active.clear();
+            this.detached.clear();
             this.renderLive();
             this.afterTask(ac.signal.aborted);
         }
@@ -1522,7 +1541,7 @@ export class App {
             block([`${theme.muted(BULLET)} ${bold(r.name)} ${theme.muted(r.chars ? `writing… ${formatTokens(r.chars)} chars` : "preparing…")}`]);
         }
         const progressLines = rows >= 36 ? 8 : 4;
-        for (const a of this.active.values()) {
+        for (const a of [...this.active.values(), ...this.detached.values()]) {
             const lines = [toolLine(displayTitle(a.title, a.tool), "running", this.frame % 6 < 3)];
             if (a.sub) {
                 for (const t of a.sub.tools) lines.push(theme.muted(`  ⎿  ${truncate(t, cols - 8)}`));

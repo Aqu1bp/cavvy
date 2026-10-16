@@ -73,6 +73,8 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const lastText = () => {
         for (let i = a().blocks.length - 1; i >= 0; i--) {
             const b = a().blocks[i]!;
+            // Its earlier turns' words aren't what its latest turn ended on.
+            if (b.id === a().turnAfter) return undefined;
             if (b.t === "text") return b;
             if (b.t === "tool") return undefined;
         }
