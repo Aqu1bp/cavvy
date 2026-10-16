@@ -654,9 +654,12 @@ export interface CliTranscript {
 const CUT = "\n\n[…cut short on import]";
 /** Tool titles kept per turn (Harness lists as many after a backend's turn). */
 const MAX_ACTIONS = 50;
+const MAX_ACTION_CHARS = 200;
 
-function clip(text: string): string {
-    return text.length > MAX_MESSAGE_CHARS ? text.slice(0, MAX_MESSAGE_CHARS) + CUT : text;
+function clip(text: string, max = MAX_MESSAGE_CHARS, suffix = CUT): string {
+    if (text.length <= max) return text;
+    const mark = suffix.slice(0, max);
+    return text.slice(0, max - mark.length) + mark;
 }
 
 /** A turn's replies within one message's budget, all of them together: the rest is cut. */
@@ -664,12 +667,13 @@ function clipReplies(replies: string[]): string[] {
     const out: string[] = [];
     let left = MAX_MESSAGE_CHARS;
     for (const r of replies) {
+        if (left <= 0) break;
         if (r.length <= left) {
             out.push(r);
             left -= r.length + 2;
             continue;
         }
-        out.push(r.slice(0, Math.max(0, left)) + CUT);
+        out.push(clip(r, left));
         break;
     }
     return out;
@@ -690,9 +694,25 @@ function bound(t: CliTranscript, limits: CliLimits): CliTranscript {
         ...x,
         prompt: clip(redact(x.prompt)),
         replies: clipReplies(x.replies.map((r) => redact(r))),
-        actions: x.actions.slice(0, MAX_ACTIONS).map((a) => redact(a)),
+        actions: x.actions.slice(0, MAX_ACTIONS).map((a) => clip(redact(a), MAX_ACTION_CHARS, "…")),
         ...(x.actions.length > MAX_ACTIONS ? { moreActions: x.actions.length - MAX_ACTIONS } : {}),
     }));
+    // Keep even the newest turn, but not at the cost of an unbounded import.
+    // Clipping markers count toward the budget too.
+    const newest = turns.at(-1);
+    if (newest) {
+        let left = Math.max(0, limits.chars);
+        const take = (text: string, suffix = CUT) => {
+            const kept = clip(text, left, suffix);
+            left -= kept.length;
+            return kept;
+        };
+        newest.prompt = take(newest.prompt);
+        newest.replies = newest.replies.map((r) => take(r)).filter(Boolean);
+        const actions = newest.actions.map((a) => take(a, "…")).filter(Boolean);
+        newest.moreActions = (newest.moreActions ?? 0) + newest.actions.length - actions.length;
+        newest.actions = actions;
+    }
     let messages = 0;
     let chars = 0;
     let from = turns.length;

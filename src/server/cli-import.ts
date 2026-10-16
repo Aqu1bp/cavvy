@@ -108,28 +108,32 @@ export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; t
     const { entry, transcript } = o;
     const name = getProvider(entry.source)?.name ?? entry.source;
     const modelId = parseModelRef(o.model)?.id ?? "default";
-    const session = Session.create(o.cwd);
+    const session = Session.create(o.cwd, { strictWrites: true });
     const messages = transcript.turns.reduce((n, t) => n + 1 + (t.replies.length || t.actions.length ? 1 : 0), 0);
-    session.setImported({ source: entry.source, id: entry.id, startedAt: entry.startedAt, importedAt: Date.now(), messages, omitted: transcript.omitted });
-    session.setTitle(o.title);
-    session.setModel(o.model);
-    const ui = new UiLog(session.path, session.meta.id, false);
-    for (const t of transcript.turns) {
-        const index = session.messages.length;
-        session.push({ role: "user", content: [{ type: "text", text: t.prompt }], meta: { kind: t.command ? "command" : "prompt", imported: true } });
-        if (t.at) ui.write({ t: "turn", seg: 0, index, at: t.at, ...(t.end ? { end: t.end } : {}), status: "done" });
-        // Laid out as Agent.recordBackendTurn stores a backend's turn: the reply, then what it did.
-        const content: AssistantMessage["content"] = [];
-        const reply = t.replies.join("\n\n");
-        if (reply.trim()) content.push({ type: "text", text: reply });
-        if (t.actions.length) {
-            const more = (t.moreActions ?? 0) + Math.max(0, t.actions.length - 50);
-            content.push({ type: "text", text: `[${name} used: ${t.actions.slice(0, 50).join(", ")}${more ? `, and ${more} more` : ""}]` });
+    try {
+        session.setTitle(o.title);
+        session.setModel(o.model);
+        const ui = new UiLog(session.path, session.meta.id, false);
+        for (const t of transcript.turns) {
+            const index = session.messages.length;
+            session.push({ role: "user", content: [{ type: "text", text: t.prompt }], meta: { kind: t.command ? "command" : "prompt", imported: true } });
+            if (t.at) ui.write({ t: "turn", seg: 0, index, at: t.at, ...(t.end ? { end: t.end } : {}), status: "done" });
+            // Laid out as Agent.recordBackendTurn stores a backend's turn: the reply, then what it did.
+            const content: AssistantMessage["content"] = [];
+            const reply = t.replies.join("\n\n");
+            if (reply.trim()) content.push({ type: "text", text: reply });
+            if (t.actions.length) {
+                const more = (t.moreActions ?? 0) + Math.max(0, t.actions.length - 50);
+                content.push({ type: "text", text: `[${name} used: ${t.actions.slice(0, 50).join(", ")}${more ? `, and ${more} more` : ""}]` });
+            }
+            if (content.length) session.push({ role: "assistant", content, provider: entry.source, model: modelId, stopReason: "end_turn" });
         }
-        if (content.length) session.push({ role: "assistant", content, provider: entry.source, model: modelId, stopReason: "end_turn" });
+        // The CLI has seen all of it: the next turn resumes its session with just the new prompt.
+        session.setBackendSession(entry.source, entry.id, session.messages.length);
+        // Dedup must only see the import once all messages and the resume id are saved.
+        session.setImported({ source: entry.source, id: entry.id, startedAt: entry.startedAt, importedAt: Date.now(), messages, omitted: transcript.omitted });
+    } finally {
+        session.release();
     }
-    // The CLI has seen all of it: the next turn resumes its session with just the new prompt.
-    session.setBackendSession(entry.source, entry.id, session.messages.length);
-    session.release();
     return session.meta.id;
 }

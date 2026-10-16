@@ -2,7 +2,8 @@
 // CLI sessions, importing one, and carrying on with it natively. Every store
 // here is a synthetic fixture in a temp folder (isolate() points
 // CLAUDE_CONFIG_DIR and CODEX_HOME at empty ones too).
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "fs";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
@@ -12,8 +13,8 @@ import { claudeFolder, claudeSession, codexSession, snapshotTree, type FixtureTu
 const iso = isolate();
 const { listCliSessions, readCliTranscript, findCliSession } = await import("../src/server/cli-sessions");
 const { Engine, RpcError } = await import("../src/server/engine");
-const { Session, findSessionAnywhere, listSessions } = await import("../src/agent/session");
-const { importModel } = await import("../src/server/cli-import");
+const { Session, cliLinks, findSessionAnywhere, listSessions } = await import("../src/agent/session");
+const { harnessLinks, importModel, writeImportedSession } = await import("../src/server/cli-import");
 const { rewindTargets } = await import("../src/agent/checkpoints");
 const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 const { forgetClient } = await import("../src/providers/models");
@@ -246,9 +247,76 @@ describe("reading the stores", () => {
         expect(t.turns.map((x) => x.prompt)).toEqual(["prompt 7", "prompt 8", "prompt 9"]);
         expect(t.omitted).toBe(14);
     });
+
+    test("large action titles and even the newest turn stay within the import budget", () => {
+        const huge = "x".repeat(1_000_000);
+        const { id, file } = codexSession(CODEX, { cwd: real, turns: [
+            { prompt: "older prompt", reply: "older reply" },
+            { prompt: "newest " + "p".repeat(500), reply: "r".repeat(500), tools: [[huge, {}]] },
+        ] });
+        fs.appendFileSync(file, JSON.stringify({ type: "response_item", payload: { type: "web_search_call", action: { query: huge } } }) + "\n");
+        const entry = findCliSession("codex", cwd, id)!;
+        const full = readCliTranscript(entry);
+        const actions = full.turns.at(-1)!.actions;
+        expect(actions).toHaveLength(2);
+        expect(actions.every((a) => a.length <= 200 && a.endsWith("…"))).toBe(true);
+        expect(actions[1]).toStartWith("WebSearch(");
+
+        for (const chars of [0, 8, 64, 700, 1100]) {
+            const t = readCliTranscript(entry, { limits: { chars } });
+            expect(t.turns).toHaveLength(1);
+            expect(t.omitted).toBe(2);
+            const newest = t.turns[0]!;
+            const size = newest.prompt.length + [...newest.replies, ...newest.actions].reduce((n, s) => n + s.length, 0);
+            expect(size).toBeLessThanOrEqual(chars);
+            expect(newest.at).toBe(full.turns.at(-1)!.at);
+            if (chars >= 64) expect(newest.prompt).toStartWith("newest ");
+        }
+    });
 });
 
 describe("importing", () => {
+    test.each(["msg", "backend"])("a failed %s write leaves no completed import and a retry imports the whole conversation", async (failAt) => {
+        turnOn();
+        const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
+        const entry = findCliSession("claude-code", cwd, id)!;
+        const transcript = readCliTranscript(entry);
+        const append = fs.appendFileSync;
+        let file = "";
+        let messages = 0;
+        const fault = spyOn(fs, "appendFileSync").mockImplementation((path, data, options) => {
+            const text = String(data);
+            if (text.includes('"t":"msg"')) messages++;
+            if (!file && (failAt === "msg" ? messages === 2 : text.includes('"t":"backend"'))) {
+                file = String(path);
+                // A disk write can leave a torn line before reporting failure.
+                append(path, text.slice(0, Math.floor(text.length / 2)), options);
+                throw new Error("simulated disk write failure");
+            }
+            return append(path, data, options);
+        });
+        try {
+            expect(() => writeImportedSession({ cwd, entry, transcript, model: "claude-code:default", title: "Login bug" })).toThrow("simulated disk write failure");
+        } finally {
+            fault.mockRestore();
+        }
+        expect(file).not.toBe("");
+        expect(cliLinks(file)).toEqual([]);
+        expect(harnessLinks([cwd]).held.size).toBe(0);
+        expect(readFileSync(file, "utf-8")).not.toContain('"t":"import"');
+
+        const { e, c } = await engine();
+        try {
+            const snap = (await e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id })) as SessionSnapshot;
+            expect(findSessionAnywhere(snap.state.id)).not.toBe(file);
+            expect(snap.turns[0]!.blocks[0]).toMatchObject({ t: "imported", source: "Claude Code" });
+            expect(prompts(snap.turns)).toHaveLength(2);
+            expect(e.runtimes.get(snap.state.id)!.session.backends.get("claude-code")).toEqual({ id, synced: 4 });
+        } finally {
+            await e.stop();
+        }
+    });
+
     test("opens a session on the matching backend, with the conversation shown read-only", async () => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS, title: "Login bug" });
@@ -271,7 +339,7 @@ describe("importing", () => {
             const text = readFileSync(file, "utf-8");
             expect(text).not.toContain(FAKE.anthropic);
             const lines = text.trim().split("\n").map((l) => JSON.parse(l));
-            expect(lines.find((l) => l.t === "import")).toMatchObject({ source: "claude-code", id, messages: 4, omitted: 0 });
+            expect(lines.at(-1)).toMatchObject({ t: "import", source: "claude-code", id, messages: 4, omitted: 0 });
             expect(lines.filter((l) => l.t === "backend").at(-1)).toMatchObject({ provider: "claude-code", id, synced: 4 });
         } finally {
             await e.stop();

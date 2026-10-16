@@ -154,14 +154,16 @@ export class Session {
     private subagentRuns = new Set<string>();
     private file: string;
     private persist: boolean;
+    private strictWrites: boolean;
 
-    constructor(meta: SessionMeta, opts: { persist?: boolean; file?: string } = {}) {
+    constructor(meta: SessionMeta, opts: { persist?: boolean; file?: string; strictWrites?: boolean } = {}) {
         this.meta = meta;
         this.persist = opts.persist ?? true;
+        this.strictWrites = opts.strictWrites ?? false;
         this.file = opts.file ?? join(projectStateDir(meta.cwd), `${meta.id}.jsonl`);
     }
 
-    static create(cwd: string, opts: { persist?: boolean; system?: string } = {}): Session {
+    static create(cwd: string, opts: { persist?: boolean; system?: string; strictWrites?: boolean } = {}): Session {
         const id = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${randomBytes(3).toString("hex")}`;
         const s = new Session({ id, cwd, createdAt: Date.now(), version: APP_VERSION, system: opts.system }, opts);
         return s;
@@ -218,7 +220,9 @@ export class Session {
             }
             const lines = [...this.pending.splice(0), line];
             appendFileSync(this.file, lines.map((l) => redactedJson(l) + "\n").join(""));
-        } catch {
+        } catch (error) {
+            // Imports must stop on a failed write before recording completion.
+            if (this.strictWrites) throw error;
             // Persistence is best effort; the session keeps working in memory.
         }
     }
@@ -276,7 +280,7 @@ export class Session {
         this.usageByModel.set(model, cur);
     }
 
-    /** Record where an imported session came from: before its first message. */
+    /** Record a completed import, after its messages and native backend session. */
     setImported(rec: ImportRecord) {
         this.imported = rec;
         this.write({ t: "import", ...rec });
