@@ -86,9 +86,7 @@ async function drain(stream: ReadableStream<Uint8Array>, max: number, skim = fal
 const tooLong = () => new RpcError("Looking for changes took too long in this folder.", "timeout");
 
 /** One git call: argv only, a timeout (no later than the request's deadline), and no more than `maxBytes` of output. */
-export async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string>; privateEnv?: Record<string, string>; deadline?: number } = {}): Promise<GitOut> {
-    const left = Math.min(GIT_TIMEOUT_MS, (o.deadline ?? Infinity) - Date.now());
-    if (left <= 0) throw tooLong();
+export function gitEnvironment(o: { env?: Record<string, string>; privateEnv?: Record<string, string> } = {}): Record<string, string> {
     const env: Record<string, string> = { ...gitEnv(), ...o.env };
     // Where the repository is comes from cwd alone, not from a variable the server happened to inherit.
     for (const k of REPO_VARS) delete env[k];
@@ -105,6 +103,13 @@ export async function git(cwd: string, args: string[], o: { input?: string; maxB
     // protocols allows only those, and this one doesn't exist.
     env.GIT_NO_LAZY_FETCH = "1";
     env.GIT_ALLOW_PROTOCOL = "harness-none";
+    return env;
+}
+
+export async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string>; privateEnv?: Record<string, string>; deadline?: number } = {}): Promise<GitOut> {
+    const left = Math.min(GIT_TIMEOUT_MS, (o.deadline ?? Infinity) - Date.now());
+    if (left <= 0) throw tooLong();
+    const env = gitEnvironment(o);
     const proc = Bun.spawn(gitArgv(args), {
         cwd,
         env,
