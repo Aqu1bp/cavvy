@@ -5,6 +5,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { usageSummary, usageBounds, clearUsageCache } = await import("../src/server/usage");
+const { costText } = await import("../gui/src/lib/limits");
 const { Session } = await import("../src/agent/session");
 const { Agent } = await import("../src/agent/agent");
 const { clientFor, forgetClient } = await import("../src/providers/models");
@@ -65,6 +66,19 @@ test("PR 11's undated top-level unknown flag remains unpriced in Usage", async (
     expect(summary.rows[0]).toMatchObject({ inputTokens: 1_000_000, outputTokens: 100, cost: 0, unknown: true });
     expect(summary.totals).toMatchObject({ cost: 0, unknown: true });
     expect(summary.approxDated).toBe(1);
+});
+
+test("PR 11's partially priced child record retains its known subtotal without estimating the rest", async () => {
+    const file = join(dir, "pr11-partial.jsonl");
+    // PR 11 folds a child's known cost and unpriced tokens into this exact shape.
+    writeFileSync(file, JSON.stringify({ t: "usage", usage: { inputTokens: 1_000_000, outputTokens: 100 }, cost: 1, model: "anthropic:claude-opus-5-5", unknown: true }) + "\n");
+    utimesSync(file, now / 1000, now / 1000);
+    const summary = await usageSummary(1, now);
+    expect(summary.rows).toHaveLength(1);
+    expect(summary.rows[0]).toMatchObject({ cost: 1, unknown: true, planEquivalent: 0 });
+    expect(summary.totals).toMatchObject({ cost: 1, unknown: true, planEquivalent: 0 });
+    expect(costText(summary.rows[0]!)).toBe("$1.00 + unknown");
+    expect(costText(summary.totals)).toBe("$1.00 + unknown");
 });
 
 test("new usage lines retain time and resolved model alongside unknown pricing through reload", async () => {

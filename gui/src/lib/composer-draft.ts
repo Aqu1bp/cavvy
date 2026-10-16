@@ -7,7 +7,30 @@ interface Draft {
 }
 
 /** Unsent text and images survive replacing the composer when switching sessions. */
-export const composerDrafts = new Map<string, Draft & { owner: symbol }>();
+type Clear = () => void;
+type Receive = (draft: Draft) => Clear;
+export const composerDrafts = new Map<string, Draft & { owner: symbol; submitted?: Draft; restored?: (clear: Clear) => void }>();
+const mounted = new Map<string, Receive>();
+
+function prepend(draft: Draft, existing?: Draft): Draft {
+    return {
+        text: existing?.text.trim() ? `${draft.text}\n${existing.text}` : draft.text,
+        attachments: existing?.attachments.length ? [...draft.attachments, ...existing.attachments] : draft.attachments,
+    };
+}
+
+function restore(key: string, draft: Draft): Clear {
+    const receive = mounted.get(key);
+    if (receive) return receive(draft);
+    // The user may have left the new session while its first send was pending.
+    // Hand cleanup to its first composer when it eventually mounts.
+    const saved = { ...prepend(draft, drafts.get(key)), submitted: draft, owner: Symbol("transferred draft"), restored: (next: Clear) => { clear = next; } };
+    let clear = () => {
+        if (drafts.get(key) === saved && saved.text === draft.text && saved.attachments === draft.attachments) drafts.delete(key);
+    };
+    drafts.set(key, saved);
+    return () => clear();
+}
 
 const drafts = composerDrafts;
 
@@ -16,6 +39,7 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
     const [text, setText] = createSignal("");
     const [attachments, setAttachments] = createSignal<Attachment[]>([]);
     let disposed = false;
+    let registered: string | undefined;
     const keep = (key: string) => {
         if (!wasDeleted(key) && (text().trim() || attachments().length)) drafts.set(key, { text: text(), attachments: attachments(), owner });
         else drafts.delete(key);
@@ -25,10 +49,20 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         const draft = drafts.get(key);
         setText(draft?.text ?? "");
         setAttachments(draft?.attachments ?? []);
+        if (registered !== undefined && mounted.get(registered) === receive) mounted.delete(registered);
+        registered = key;
+        mounted.set(key, receive);
+        if (draft?.restored) {
+            const submitted = { ...draft.submitted!, key };
+            draft.restored(() => sent(submitted));
+            delete draft.restored;
+            delete draft.submitted;
+        }
     }));
     onCleanup(() => {
         keep(key());
         disposed = true;
+        if (registered !== undefined && mounted.get(registered) === receive) mounted.delete(registered);
     });
 
     const capture = () => ({ key: key(), text: text(), attachments: attachments() });
@@ -43,5 +77,20 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
             setAttachments([]);
         }
     };
-    return { text, setText, attachments, setAttachments, capture, sent };
+    const receive: Receive = (draft) => {
+        const submitted = { ...draft, key: key() };
+        // Preserve anything typed while the refused send was in flight.
+        const next = prepend(draft, { text: text(), attachments: attachments() });
+        setText(next.text);
+        setAttachments(next.attachments);
+        return () => sent(submitted);
+    };
+    const move = (submitted: ReturnType<typeof capture>, to: string) => {
+        // A deletion may arrive before the refusal of a session's first message.
+        if (wasDeleted(to)) return () => {};
+        const clear = restore(to, submitted);
+        sent(submitted);
+        return clear;
+    };
+    return { text, setText, attachments, setAttachments, capture, sent, move };
 }

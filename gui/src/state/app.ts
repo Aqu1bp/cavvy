@@ -1,4 +1,3 @@
-import { composerDrafts } from "../lib/composer-draft";
 // The GUI's state: the connection, the sidebar's sessions, models, providers
 // and projects, and every open session's timeline (kept current from the
 // server's ops, applied once per frame).
@@ -15,7 +14,7 @@ import { mayCreateFiles } from "../lib/pathcache";
 import { paths } from "./filelinks";
 import { toastMs } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
-import type { Attachment } from "./actions";
+import { composerDrafts } from "../lib/composer-draft";
 
 export const rpc = new Rpc(credentials);
 rpc.retriesCredentials = isTauri;

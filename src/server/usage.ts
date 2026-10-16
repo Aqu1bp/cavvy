@@ -227,7 +227,9 @@ class Prices {
 
     /** A record's cost: `plan` is the API-equivalent part, undefined when no price is known. */
     of(r: UsageRecord, provider: string, id: string): { cost: number; plan: number } | undefined {
-        if (r.unknown) return undefined;
+        // Folded child records can contain a known subtotal plus unpriced usage. Keep the subtotal
+        // without estimating the missing part from the combined tokens.
+        if (r.unknown) return { cost: r.cost, plan: 0 };
         const reported = r.usage.cost;
         if (this.provider(provider).agent) {
             // An agent CLI on an API key reports what it was billed (Claude Code); on a plan, 0. A
@@ -309,6 +311,7 @@ export async function usageSummary(days: UsageDays, now = Date.now()): Promise<U
             row.cacheReadTokens += r.usage.cacheReadTokens ?? 0;
             row.cacheWriteTokens += r.usage.cacheWriteTokens ?? 0;
             const c = prices.of(r, provider, id);
+            row.unknown ||= r.unknown;
             if (!c) row.unknown = true;
             else {
                 row.cost += c.cost;

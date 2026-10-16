@@ -122,7 +122,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
     };
 
-    createEffect(on(draftKey, () => requestAnimationFrame(resize)));
+    createEffect(on([draftKey, text], () => requestAnimationFrame(resize)));
     // What the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();
@@ -230,7 +230,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             setMenu([]);
             requestAnimationFrame(resize);
         });
-        const ok = await send(t, atts, { sent });
+        const ok = await send(t, atts, { sent, refused: (id) => draft.move(submitted, id) });
         if (ok === true) {
             draft.sent(submitted);
             if (t.trim()) {

@@ -124,6 +124,33 @@ describe("Claude Code's rate_limit_event", () => {
         expect(merged.windows[0]!.resetsAt).toBe(1792160400_000);
     });
 
+    test("a sparse rejection keeps the same window's unexpired reset", () => {
+        const reset = at + 3_600_000;
+        const detailed = parseClaudeRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: reset / 1000 }, at)!.limits;
+        const sparse = parseClaudeRateLimit({ status: "rejected", rateLimitType: "five_hour" }, at + 1)!;
+        const merged = mergeLimits(detailed, sparse.limits, sparse.partial);
+        expect(merged.windows[0]!.resetsAt).toBe(reset);
+        expect(merged.resetsAt).toBe(reset);
+        expect(meterOf(merged, at + 1)!.resets).toBe(resetLabel(reset, at + 1, true));
+
+        const weekly = parseClaudeRateLimit({ status: "rejected", rateLimitType: "seven_day" }, at + 2)!;
+        const blocked = mergeLimits(merged, weekly.limits, weekly.partial);
+        expect(blocked.windows[0]!.resetsAt).toBe(reset);
+        expect(blocked.windows[1]!.resetsAt).toBeUndefined();
+        expect(blocked.resetsAt).toBeUndefined();
+        expect(meterOf(blocked, at + 2)!.resets).toBeUndefined();
+    });
+
+    test("a sparse rejection does not carry a reset into the next window", () => {
+        const reset = at + 3_600_000;
+        const detailed = parseClaudeRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: reset / 1000 }, at)!.limits;
+        const sparse = parseClaudeRateLimit({ status: "rejected", rateLimitType: "five_hour" }, reset)!;
+        const merged = mergeLimits(detailed, sparse.limits, sparse.partial);
+        expect(merged.reached).toBe(true);
+        expect(merged.windows[0]!.resetsAt).toBeUndefined();
+        expect(merged.resetsAt).toBeUndefined();
+    });
+
     test("99.6% used is 99%, not a reached limit", () => {
         const r = parseClaudeRateLimit({ status: "allowed_warning", rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.996, resetsAt: 1792156200 } } }, at)!;
         expect(r.limits.windows[0]).toMatchObject({ usedPercent: 99, reached: undefined });
@@ -340,6 +367,24 @@ const received = () =>
 const soon = () => Date.now() + 125 * 60_000 + 20_000;
 
 describe("a turn that hits the plan's limit says when it resets", () => {
+    test("Claude Code: a sparse named rejection retains the same window's reset in the turn error", async () => {
+        const reset = Math.round(soon() / 1000);
+        const known = join(bin, "claude-named-reset.json");
+        const sparse = join(bin, "claude-named-sparse.json");
+        writeFileSync(known, JSON.stringify({ status: "rejected", rateLimitType: "five_hour", resetsAt: reset }));
+        writeFileSync(sparse, JSON.stringify({ status: "rejected", rateLimitType: "five_hour" }));
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = known;
+        process.env.FAKE_RATE_LIMIT_FOLLOWUP = sparse;
+        for (const late of ["0", "1"]) {
+            process.env.FAKE_RATE_LIMIT_LATE = late;
+            const r = await runTurn("claude-code");
+            expect(r.reason).toBe("error");
+            expect(r.limits).toHaveLength(2);
+            expect(r.notices.find((n) => n.startsWith("error:"))).toContain(resetSentence(reset * 1000, "Claude Code"));
+        }
+    });
+
     test("Claude Code: a new blocker without a reset clears a previously known overall time", async () => {
         const short = Math.round(soon() / 1000);
         const known = join(bin, "claude-known-reset.json");

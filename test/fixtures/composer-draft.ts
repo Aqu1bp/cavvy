@@ -1,10 +1,10 @@
 // Browser-condition Solid runs the same effects and cleanup as Composer, without needing a DOM.
 import { strict as assert } from "node:assert";
 import { createRoot } from "../../gui/node_modules/solid-js/dist/solid.js";
-import { createComposerDraft } from "../../gui/src/lib/composer-draft";
+import { composerDrafts, createComposerDraft } from "../../gui/src/lib/composer-draft";
 
-function mount(key: string) {
-    return createRoot((dispose) => ({ ...createComposerDraft(() => key), dispose }));
+function mount(key: string, wasDeleted?: (key: string) => boolean) {
+    return createRoot((dispose) => ({ ...createComposerDraft(() => key, wasDeleted), dispose }));
 }
 const image = { name: "image", mediaType: "image/png", data: "image-data", preview: "preview" };
 
@@ -92,3 +92,87 @@ const afterRetry = mount("toast-home");
 assert.equal(afterRetry.text(), "");
 assert.deepEqual(afterRetry.attachments(), []);
 afterRetry.dispose();
+
+// A refusal can arrive after the user has left the newly created session.
+// Restore it on the next mount and hand the toast's cleanup to that composer.
+for (const remount of [false, true]) {
+    const key = `late-refusal-${remount}`;
+    const home = mount(`${key}-home`);
+    home.setText("/oops");
+    home.setAttachments([image]);
+    const submitted = home.capture();
+    home.dispose();
+    const clear = home.move(submitted, key);
+    const destination = remount ? mount(key) : undefined;
+    if (destination) {
+        assert.equal(destination.text(), "/oops");
+        assert.deepEqual(destination.attachments(), [image]);
+    }
+    clear();
+    if (destination) {
+        assert.equal(destination.text(), "");
+        assert.deepEqual(destination.attachments(), []);
+        destination.dispose();
+    }
+    const again = mount(key);
+    assert.equal(again.text(), "");
+    assert.deepEqual(again.attachments(), []);
+    again.dispose();
+}
+
+// Text typed in the new session before the refusal arrives survives the transfer and retry.
+for (const mounted of [false, true]) {
+    const key = `edited-before-refusal-${mounted}`;
+    const destination = mount(key);
+    destination.setText("newer text");
+    if (!mounted) destination.dispose();
+    const home = mount(`${key}-home`);
+    home.setText("/oops");
+    home.setAttachments([image]);
+    const submitted = home.capture();
+    home.dispose();
+    const clear = home.move(submitted, key);
+    const current = mounted ? destination : mount(key);
+    clear();
+    assert.equal(current.text(), "/oops\nnewer text");
+    assert.deepEqual(current.attachments(), [image]);
+    current.dispose();
+}
+
+// Session deletion clears the same store used by the lifecycle controller;
+// cleanup after the deletion event must not save its text or images again.
+const deleted = new Set<string>();
+const wasDeleted = (key: string) => deleted.has(key);
+const toDelete = mount("deleted-session", wasDeleted);
+toDelete.setText("unsent draft");
+toDelete.setAttachments([image]);
+toDelete.dispose();
+assert.equal(composerDrafts.get("deleted-session")?.text, "unsent draft");
+const deleting = mount("deleted-session", wasDeleted);
+deleted.add("deleted-session");
+composerDrafts.delete("deleted-session");
+deleting.dispose();
+assert.equal(composerDrafts.has("deleted-session"), false);
+
+// A first-message refusal can arrive after its new session was deleted.
+// Keep the Home draft recoverable, without recreating the deleted draft.
+const lateHome = mount("deleted-home", wasDeleted);
+lateHome.setText("/oops");
+lateHome.setAttachments([image]);
+const lateSubmission = lateHome.capture();
+lateHome.dispose();
+lateHome.move(lateSubmission, "deleted-session")();
+assert.equal(composerDrafts.has("deleted-session"), false);
+const keptHome = mount("deleted-home", wasDeleted);
+assert.equal(keptHome.text(), "/oops");
+assert.deepEqual(keptHome.attachments(), [image]);
+keptHome.dispose();
+
+// Undo allows future drafts again, without reviving the deleted one.
+deleted.delete("deleted-session");
+const undone = mount("deleted-session", wasDeleted);
+assert.equal(undone.text(), "");
+assert.deepEqual(undone.attachments(), []);
+undone.setText("after undo");
+undone.dispose();
+assert.equal(composerDrafts.get("deleted-session")?.text, "after undo");

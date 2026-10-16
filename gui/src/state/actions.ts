@@ -153,14 +153,16 @@ export async function exportSession(id: string) {
  * screen's project. A /word that names no command isn't sent (false keeps it
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; to?: { id?: string; cwd?: string } } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; refused?: (id: string) => (() => void); to?: { id?: string; cwd?: string } } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
+    let created = false;
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
         const to = { id, cwd };
-        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => ok && opts.sent?.()) });
+        const sent = created && id ? opts.refused?.(id) ?? opts.sent : opts.sent;
+        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => ok && sent?.()) });
         return false;
     };
     try {
@@ -173,6 +175,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             const h = await startIn(cwd);
             if (!h) return false;
             id = h.id;
+            created = true;
         }
         await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
         return true;

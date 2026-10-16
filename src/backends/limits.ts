@@ -150,13 +150,17 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
 
 /**
  * What's known now, given an earlier report and a new one (`partial`: the
- * new one may leave things out). A window it reports replaces the earlier
- * one; a limit reached earlier still stands while a full window (or, with
- * none to show for it, its reset time) says so.
+ * new one may leave things out). A reported window keeps an omitted reset
+ * while that reset is still ahead; a limit reached earlier stands while a
+ * full window (or, with none to show for it, its reset time) says so.
  */
 export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean): PlanLimits {
     if (!prev || !partial) return next;
-    const windows = prev.windows.map((w) => next.windows.find((n) => n.id === w.id) ?? w);
+    const windows = prev.windows.map((w) => {
+        const n = next.windows.find((n) => n.id === w.id);
+        if (!n) return w;
+        return n.resetsAt === undefined && w.resetsAt !== undefined && w.resetsAt > next.at ? { ...n, resetsAt: w.resetsAt } : n;
+    });
     for (const n of next.windows) if (!windows.some((w) => w.id === n.id)) windows.push(n);
     const live = (t: number | undefined) => t === undefined || t > next.at;
     const exhausted = windows.filter((w) => w.reached && live(w.resetsAt));
