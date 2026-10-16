@@ -4,7 +4,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { convertsEol, findRenames, gitChanges, gitSeesBinary, GitTextStats, removeWhere, render } = await import("../src/server/git-changes");
+const { convertsEol, findRenames, gitChanges, gitSeesBinary, GitTextStats, indexHasCrlf, removeWhere, render } = await import("../src/server/git-changes");
 const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
@@ -491,10 +491,38 @@ describe("git changes", () => {
         }
         // The index's copy: text with CRLFs keeps auto from converting; binary with CRLFs doesn't.
         const text = Buffer.from("a\r\n");
-        expect(convertsEol("auto", { binary: false }, Buffer.from("x\r\ny\r\n"))).toBe(false);
-        expect(convertsEol("auto", { binary: false }, Buffer.from("x\0\r\n"))).toBe(true);
+        const blobs = new Map([["text", Buffer.from("x\r\ny\r\n")], ["binary", Buffer.from("x\0\r\n")]]);
+        const cache = new Map<string, boolean>();
+        expect(convertsEol("auto", { binary: false }, indexHasCrlf("text", blobs, cache))).toBe(false);
+        expect(convertsEol("auto", { binary: false }, indexHasCrlf("binary", blobs, cache))).toBe(true);
         expect(convertsEol("auto", { binary: false }, undefined)).toBe(false);
         expect(convertsEol("always", { binary: gitSeesBinary(text) }, undefined)).toBe(true);
+    });
+
+    test("whole-buffer binary checks stop at the first NUL or lone CR", () => {
+        for (const prefix of [[0], [13, 120]]) {
+            // An array-like byte buffer whose unread tail fails deterministically, without timing a large allocation.
+            const bytes = [...prefix, 0];
+            Object.defineProperty(bytes, prefix.length, { get() { throw new Error("read past decisive binary byte"); } });
+            expect(gitSeesBinary(bytes as unknown as Uint8Array)).toBe(true);
+        }
+        expect(gitSeesBinary(Uint8Array.from([13]))).toBe(true);
+    });
+
+    test("500 paths sharing an index blob classify it once, including a binary result", () => {
+        const blobs = new Map([["binary", Buffer.from("\0\r\nbody")], ["text", Buffer.from("body\r\n")]]);
+        const cache = new Map<string, boolean>();
+        let reads = 0;
+        const get = blobs.get.bind(blobs);
+        blobs.get = (oid) => { reads++; return get(oid); };
+        for (let i = 0; i < 500; i++) {
+            expect(indexHasCrlf("binary", blobs, cache)).toBe(false);
+            expect(indexHasCrlf("text", blobs, cache)).toBe(true);
+        }
+        expect(reads).toBe(2);
+        expect(indexHasCrlf("missing", blobs, cache)).toBeUndefined();
+        blobs.set("missing", Buffer.from("available now\r\n"));
+        expect(indexHasCrlf("missing", blobs, cache)).toBe(true);
     });
 
     test("a conflicted file gets its line endings normalized too", async () => {

@@ -315,23 +315,47 @@ export class GitTextStats {
 }
 
 export function gitSeesBinary(buf: Uint8Array): boolean {
-    const stats = new GitTextStats();
-    stats.add(buf);
-    return stats.binary;
+    let printable = 0;
+    let nonprintable = 0;
+    for (let i = 0; i < buf.length; i++) {
+        const c = buf[i]!;
+        // Unlike streaming, the next byte and EOF are known: stop as soon as binary is certain.
+        if (c === 0) return true;
+        if (c === 13) {
+            if (buf[i + 1] !== 10) return true;
+            i++;
+        } else if (c === 10) continue;
+        else if (c === 127 || (c < 32 && c !== 8 && c !== 9 && c !== 27 && c !== 12)) nonprintable++;
+        else printable++;
+    }
+    if (buf.length && buf[buf.length - 1] === 26) nonprintable--;
+    return Math.floor(printable / 128) < nonprintable;
+}
+
+/** Whether an index blob is text with CRLFs, once per oid across collecting and rendering. */
+export function indexHasCrlf(oid: string, blobs: Map<string, Buffer>, cache: Map<string, boolean>): boolean | undefined {
+    const hit = cache.get(oid);
+    if (hit !== undefined) return hit;
+    const buf = blobs.get(oid);
+    // A missing blob may become available in rendering; don't cache absence.
+    if (!buf) return undefined;
+    const result = !gitSeesBinary(buf) && buf.includes("\r\n");
+    cache.set(oid, result);
+    return result;
 }
 
 /**
  * Whether git's check-in turns this file's CRLFs into LFs (convert.c
  * crlf_to_git): always under `text`/`eol`; under auto, only for content it
  * doesn't see as binary, and not when the index's copy is text with CRLFs
- * (has_crlf_in_index). `index`: that copy; null when there is none (or it's
- * known to have no CRLF); undefined when it couldn't be read, so no conversion
+ * (has_crlf_in_index). `index`: whether that copy is text with CRLF; null when
+ * there is none (or it's known to have no CRLF); undefined when it couldn't be read, so no conversion
  * is assumed and a change is never hidden.
  */
-export function convertsEol(mode: EolMode, working: { binary: boolean }, index: Uint8Array | null | undefined): boolean {
+export function convertsEol(mode: EolMode, working: { binary: boolean }, index: boolean | null | undefined): boolean {
     if (mode === "always") return true;
     if (mode !== "auto" || working.binary || index === undefined) return false;
-    return index === null || !(Buffer.from(index).includes("\r\n") && !gitSeesBinary(index));
+    return !index;
 }
 
 async function fileId(abs: string, st: Stats, algo: Algo, inTime: () => void): Promise<ContentId> {
@@ -646,6 +670,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     inTime();
 
     const wt = new WorkTree(root, algo, filemode, inTime, deadline);
+    const indexEols = new Map<string, boolean>();
     /**
      * Why git would still list a file that's back as it was: a conflict left unresolved, or a
      * staged version (content or mode) that differs, so committing now would commit it.
@@ -737,9 +762,10 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         const wanted = [...crlfOnly, ...rawEqual].filter((c) => eolOf(c.path) === "auto" && c.now!.autoBinary === false && ixFor(c)).map((c) => ixFor(c)!);
         const ixBlobs = wanted.length ? await blobs(root, [...new Set(wanted)], deadline) : new Map<string, Buffer>();
         for (const c of crlfOnly) {
+            inTime();
             // Only paths whose endings git would convert are unchanged; others really did gain CRLFs.
             const ix = ixFor(c);
-            if (!convertsEol(eolOf(c.path), { binary: !!c.now!.autoBinary }, ix ? ixBlobs.get(ix) : null)) changes.push(c);
+            if (!convertsEol(eolOf(c.path), { binary: !!c.now!.autoBinary }, ix ? indexHasCrlf(ix, ixBlobs, indexEols) : null)) changes.push(c);
             else {
                 const note = stillListed(c.old!, staged.get(c.path));
                 if (note) changes.push({ ...c, change: "modified", note });
@@ -747,16 +773,17 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         }
         const normalize = new Set<Change>();
         for (const c of rawEqual) {
+            inTime();
             // Auto preserves a raw-equal CRLF index; a different staged copy needs its
             // own check. Forced text/eol converts either, unless git trusts the stat.
             const ix = staged.get(c.path);
-            const indexBlob = !ix ? null : ix.oid === c.old!.oid ? undefined : ixBlobs.get(ix.oid);
-            if (convertsEol(eolOf(c.path), { binary: c.now!.autoBinary !== false }, indexBlob)) {
+            const indexCrlf = !ix ? null : ix.oid === c.old!.oid ? undefined : indexHasCrlf(ix.oid, ixBlobs, indexEols);
+            if (convertsEol(eolOf(c.path), { binary: c.now!.autoBinary !== false }, indexCrlf)) {
                 c.note ??= eolOf(c.path) === "auto" && (c.now!.size ?? 0) > MAX_DIFF_INPUT ? "Too large to show" : "Line endings would be normalized on commit.";
                 changes.push(c);
                 normalize.add(c);
                 if (tracked(c)) candidates.push(c);
-            } else if (eolOf(c.path) === "auto" && c.now!.autoBinary === false && ix && ix.oid !== c.old!.oid && indexBlob === undefined) {
+            } else if (eolOf(c.path) === "auto" && c.now!.autoBinary === false && ix && ix.oid !== c.old!.oid && indexCrlf === undefined) {
                 // Known text may normalize against a different index blob that is missing
                 // or beyond the read budget. Keep it; known binary bytes never enter here.
                 changes.push(c);
@@ -776,6 +803,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
             const index = await indexStats(root, deadline);
             const drop = new Set<Change>();
             await eachLimit(settle, 32, async ({ c, filter }) => {
+                inTime();
                 const ix = staged.get(c.path)!;
                 const st = await wt.bigStat(c.path);
                 if (index && st && ix.mode === c.now!.mode && statClean(st, index.entries.get(c.path), index.mtime, statRules)) {
@@ -822,7 +850,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     // Every diff read from disk needs its line-ending rule, conflicted files and all.
     const unseen = listed.filter((c) => c.change !== "deleted" && !c.indexed && !c.kind && !attrs.has(c.path)).map((c) => c.path);
     if (unseen.length) for (const [path, a] of await attributes(root, unseen, deadline)) attrs.set(path, a);
-    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid });
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols });
     let added = 0;
     let removed = 0;
     for (const f of files) {
@@ -962,9 +990,10 @@ export interface RenderContext {
     eolOf: (path: string) => EolMode;
     /** The index's blob for a path: auto conversion leaves a file git has with CRLFs alone. */
     indexOid: (path: string) => string | undefined;
+    indexEols?: Map<string, boolean>;
 }
 
-export async function render(listed: Change[], { root, wt, shown, single, deadline, eolOf, indexOid }: RenderContext): Promise<GitFileDiff[]> {
+export async function render(listed: Change[], { root, wt, shown, single, deadline, eolOf, indexOid, indexEols = new Map<string, boolean>() }: RenderContext): Promise<GitFileDiff[]> {
     const wanted = new Map<string, number>();
     const readable = (e?: Entry): e is Entry => !!e && (isFileMode(e.mode) || e.mode === SYMLINK) && (e.size ?? 0) <= MAX_DIFF_INPUT;
     for (const c of listed) {
@@ -1034,7 +1063,8 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         // edit in a CRLF checkout is one line, not every line, by the same rule as above.
         const ix = indexOid(c.path);
         const raw = after && "raw" in after ? after.raw : undefined;
-        const converted = raw && !c.indexed && convertsEol(eolOf(c.path), { binary: gitSeesBinary(raw) }, ix === undefined ? null : olds.get(ix));
+        const mode = eolOf(c.path);
+        const converted = raw && !c.indexed && convertsEol(mode, { binary: mode === "auto" && gitSeesBinary(raw) }, ix === undefined ? null : mode === "auto" ? indexHasCrlf(ix, olds, indexEols) : undefined);
         const a = after ? redact(converted ? after.text.replace(/\r\n/g, "\n") : after.text) : null;
         const d = fileDiff(path, b, a);
         const out: GitFileDiff = { ...base, ...d, status: base.status };
