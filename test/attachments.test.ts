@@ -355,6 +355,42 @@ describe("nothing gets lost", () => {
         }
     });
 
+    test("a rewind hands the prompt's files back to the box with its text, a pasted text included", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            const pasted = "PASTED " + "line\n".repeat(120);
+            const files = [{ name: "notes.md", data: b64("# todo\n") }, { name: "Pasted text", data: b64(pasted), pasted: true }];
+            const images = [{ mediaType: "image/png", data: PNG }];
+            await engine.handle(c, "session.send", { id, text: "first", files, images });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 1);
+            await engine.handle(c, "session.send", { id, text: "second" });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 2);
+
+            const targets = (await engine.handle(c, "session.rewindTargets", { id })) as { index: number; text: string }[];
+            const first = targets.find((t) => t.text === "first")!;
+            const plan = (await engine.handle(c, "session.rewindPlan", { id, index: first.index })) as { planId: string };
+            const r = (await engine.handle(c, "session.rewind", { id, index: first.index, planId: plan.planId, code: false, conversation: true })) as { text: string; images?: unknown; files?: unknown };
+            expect(r.text).toBe("first");
+            expect(r.files).toEqual(files);
+            expect(r.images).toEqual(images);
+            expect(userPrompts(rt.session.messages)).toEqual([]);
+            // Into the box: the paste is a "Pasted text" chip again, to open or put back as text.
+            const back = gui.fromWire(r.images as never, r.files as never);
+            expect(back.map((a) => a.kind)).toEqual(["image", "text", "text"]);
+            expect(back[2]).toMatchObject({ name: "Pasted text", pasted: true, text: pasted, lines: 120 });
+
+            // A prompt without attachments brings back only its text.
+            await engine.handle(c, "session.send", { id, text: "plain" });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 1);
+            const t2 = ((await engine.handle(c, "session.rewindTargets", { id })) as { index: number; text: string }[]).find((t) => t.text === "plain")!;
+            const p2 = (await engine.handle(c, "session.rewindPlan", { id, index: t2.index })) as { planId: string };
+            const r2 = await engine.handle(c, "session.rewind", { id, index: t2.index, planId: p2.planId, code: false, conversation: true });
+            expect(r2).toEqual({ restored: [], failed: [], text: "plain" });
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("reopened, the session shows the chips without the contents; export names the files", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         await engine.handle(c, "session.send", { id, text: "two files", files: [{ name: "a.csv", data: b64("x,y\n1,2\n") }, { name: "Pasted text", data: b64("PASTED-BODY\n"), pasted: true }], images: [{ mediaType: "image/png", data: PNG }] });

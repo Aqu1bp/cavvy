@@ -32,7 +32,7 @@ import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitSnapshot } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
-import { attachedLabel, attachedPrompt } from "./attachments";
+import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
@@ -58,6 +58,7 @@ import type {
     ToolCategoryId,
     Turn,
     TurnStatus,
+    WireFile,
 } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import type { Engine, Workspace } from "./engine";
@@ -1780,7 +1781,7 @@ export class Runtime {
      * a file changed since then is left alone (it fails, with the reason), and
      * nothing happens if the conversation moved on.
      */
-    rewind(index: number, planId: string, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string } {
+    rewind(index: number, planId: string, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } {
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         const t = this.target(index);
         const shown = this.rewindShown;
@@ -1789,6 +1790,8 @@ export class Runtime {
             throw new Error("The conversation changed since this was shown; nothing was rewound. Open Rewind again.");
         }
         this.rewindShown = undefined;
+        // What the prompt carried goes back to the box with its text: a pasted text exists nowhere else.
+        const attached = shown.message.role === "user" ? shown.message.content.filter((p): p is AttachedPart => p.type === "image" || p.type === "file") : [];
         const history = FileHistory.for(this.session);
         const plan = shown.plan;
         const backends = backendsIn(this.session.messages, index);
@@ -1825,7 +1828,7 @@ export class Runtime {
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
-        return { restored, failed, text: t.text };
+        return { restored, failed, text: t.text, ...toWire(attached) };
     }
 
     /** The timeline again from the transcript (after a rewind). */

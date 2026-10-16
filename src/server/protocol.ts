@@ -721,7 +721,8 @@ export interface Methods {
     "session.compact": { params: { id: string; instructions?: string }; result: null };
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
-    "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string } };
+    /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
+    "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string }; result: GitChangesInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
