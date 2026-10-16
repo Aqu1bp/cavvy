@@ -170,7 +170,7 @@ function Shell(p: { block: ShellBlock }) {
             <div class="shell-head">
                 <SquareTerminal size={13} />
                 <code class="truncate">{p.block.command}</code>
-                <Show when={p.block.running} fallback={<span class={`chip tiny ${p.block.exitCode ? "err" : "ok"}`}>exit {p.block.exitCode ?? "?"}</span>}>
+                <Show when={p.block.running} fallback={<span class={`chip tiny ${p.block.exitCode ? "err" : "ok"}`} data-find-skip>exit {p.block.exitCode ?? "?"}</span>}>
                     <Spinner size={12} />
                 </Show>
             </div>

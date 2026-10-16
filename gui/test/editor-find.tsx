@@ -32,6 +32,7 @@ export async function checkEditorFind(root: HTMLElement) {
         ] },
         blocks: [read, edit, { t: "text", id: "reply", text: "Inspect src/quokka.ts:12 near `src/quokka.ts:20` and [**quokka label**](src/quokka.ts:30)." }, { t: "compact", id: "compact", summary: "**Important** summary", auto: false },
             { t: "shell", id: "shell", command: `echo ${"x".repeat(2000)}needle`, output: "done", exitCode: 0, running: false },
+            { t: "shell", id: "shell-exit", command: "printf 'e%sit' x", output: "exit", exitCode: 0, running: false },
         ],
     };
     const state = { id: sessionId, cwd: "/fixture", interactions: [] } as unknown as SessionState;
@@ -164,6 +165,15 @@ export async function checkEditorFind(root: HTMLElement) {
         key(input, "Enter", true);
         await settle();
         check(count() === "1 of 2" && !shell.classList.contains("found") && command.scrollWidth > command.clientWidth, "stepping away restores shell truncation");
+
+        setFindQuery("exit");
+        await settle(350);
+        const output = scope("shell-exit").querySelector(".term")!;
+        check(findMatches([turn], "exit").length === 1 && textRanges(col, "exit").length === 1, "shell status badges do not add output matches");
+        check(count() === "1 of 1" && current().toString() === "exit" && current().startContainer.parentElement === output, "find selects shell output instead of its exit-status badge");
+        key(input, "Enter");
+        await settle();
+        check(count() === "1 of 1" && current().startContainer.parentElement === output, "stepping wraps to shell output, never the status badge");
 
         const beforeKeys = opened.length;
         check(key(input, "Escape").defaultPrevented && !findOpen(), "Escape closes find");
