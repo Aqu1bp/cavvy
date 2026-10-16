@@ -63,8 +63,12 @@ export function Transcript(p: { handle: SessionHandle }) {
             ? turn.querySelectorAll<HTMLElement>(".worklog")[Number(reading.part.slice(8))]
             : reading.part ? turn.querySelector<HTMLElement>(`[data-find="${CSS.escape(reading.part)}"]`) : undefined;
         const el = part ?? turn;
-        const next = anchoredTop(scroller.scrollTop, el.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
-            part && reading.partOffset !== undefined ? reading.partOffset : reading.offset);
+        const box = el.getBoundingClientRect();
+        const savedOffset = part && reading.partOffset !== undefined ? reading.partOffset : reading.offset;
+        // A remounted prompt may be clamped again. If the saved reading point
+        // no longer fits, show this anchor's top instead of skipping past it.
+        const offset = savedOffset <= -box.height ? 0 : savedOffset;
+        const next = anchoredTop(scroller.scrollTop, box.top - scroller.getBoundingClientRect().top, offset);
         // A no-op write would cancel an in-flight smooth Jump to latest.
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
     };

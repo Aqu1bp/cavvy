@@ -21,8 +21,10 @@ let root = node("root");
 let top = 0;
 let scrollWrites = 0;
 let partShift = 30;
+const turnHeights = new Map<string, number>();
+let omitPromptPart = false;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? 500 : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-turn"] ? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? 500 : n.children.reduce((sum, child) => sum + height(child), 0);
 const absolute = (n: Node): number => {
     if (!n.parent || has(n, "transcript-col")) return 0;
     return absolute(n.parent) + n.parent.children.slice(0, n.parent.children.indexOf(n)).reduce((sum, child) => sum + height(child), 0);
@@ -33,7 +35,7 @@ const matches = (n: Node, selector: string) => selector.split(", ").some((s) => 
     return !!match && n.props[match[1]!] !== undefined && (match[2] === undefined || n.props[match[1]!] === match[2]);
 });
 const decorate = (n: Node): any => Object.assign(n, {
-    getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top, bottom: absolute(n) - top + height(n) }),
+    getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top, bottom: absolute(n) - top + height(n), height: height(n) }),
     querySelectorAll: (selector: string) => all(n).slice(1).filter((child) => matches(child, selector)),
     querySelector: (selector: string) => all(n).slice(1).find((child) => matches(child, selector)),
     scrollTo: (options: any) => { scrollBehavior = options.behavior; (n as any).scrollTop = options.top; },
@@ -63,8 +65,9 @@ const scope = {
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
         const n = create("article"); n.props["data-turn"] = p.turn.id;
-        const part = create("div"); part.props["data-find"] = "body";
-        part.getBoundingClientRect = () => ({ top: absolute(n) - top + partShift, bottom: absolute(n) - top + 200 });
+        if (omitPromptPart && p.turn.id === "turn-5") return n;
+        const part = create("div"); part.props["data-find"] = "prompt";
+        part.getBoundingClientRect = () => ({ top: absolute(n) - top + partShift, bottom: absolute(n) - top + height(n), height: height(n) - partShift });
         renderer.insert(n, part);
         return n;
     },
@@ -138,4 +141,25 @@ try {
     running.view.turns.forEach((t) => { t.status = "done"; });
     restoredOpen = false; dispose = mount(running);
     assert.ok(restoredOpen, "work that completed while unmounted restores open for an off-bottom reader");
+    for (const missingPart of [false, true]) {
+        dispose();
+        const promptSession = { id: `long-prompt-${missingPart}`, view: { turns: turns(45) } };
+        turnHeights.set("turn-5", 2000); // An expanded long prompt.
+        dispose = mount(promptSession);
+        scroll(1250); // Read deep inside turn 5, beyond its eventual clamped height.
+        const firstVisible = () => all(root).find((n) => n.props["data-turn"] && (n as any).getBoundingClientRect().bottom > 0)?.props["data-turn"];
+        assert.equal(firstVisible(), "turn-5");
+        dispose(); dispose = mount(b);
+        assert.equal(cache.get(promptSession.id)?.anchor?.part, "prompt");
+        turnHeights.set("turn-5", 200); // UserPrompt reclamps on remount.
+        omitPromptPart = missingPart; // Also cover fallback to a shortened turn.
+        dispose(); dispose = mount(promptSession);
+        assert.equal(firstVisible(), "turn-5", "a shortened anchor must not restore several turns past the prompt");
+        resize(); scroller().props.onScroll();
+        assert.equal(firstVisible(), "turn-5", "resize and scroll must not re-anchor on a later turn");
+        dispose(); dispose = mount(b);
+        assert.equal(cache.get(promptSession.id)?.anchor?.turnId, "turn-5", "the corrected anchor survives another switch");
+        omitPromptPart = false;
+        turnHeights.clear();
+    }
 } finally { dispose(); }
