@@ -19,9 +19,9 @@ process.env.HARNESS_HOME = H;
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { BashTool, killAllShells } = await import("../src/tools/bash");
-const { isReadOnlyCommand, notReadOnly, dangerousReason, sensitiveTarget, runLevels, pushesDefaultBranch, analyzeCommand } = await import("../src/permissions/bash-safety");
+const { isReadOnlyCommand, notReadOnly, dangerousReason, sensitiveTarget, configTarget, runLevels, pushesDefaultBranch, analyzeCommand } = await import("../src/permissions/bash-safety");
 const { bashRuleMatches } = await import("../src/permissions/rules");
-const { looksDestructive, accessNeeded, sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxKind } = await import("../src/permissions/sandbox");
+const { looksDestructive, accessNeeded, sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxKind, blockedBySandbox } = await import("../src/permissions/sandbox");
 const { CASE_INSENSITIVE_FS } = await import("../src/util/files");
 
 const W = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-ws-")));
@@ -421,7 +421,13 @@ describe("review round 1", () => {
 
     test("a commit message isn't a deletion", () => {
         for (const cmd of [`git commit -m "Fix RM handling"`, `git commit -am "remove the rm calls"`, `git commit -m"truncate titles"`, `git tag -a v1 -m "unlink"`, `git -C . commit --message="Shred old code"`]) expect([cmd, looksDestructive(cmd)]).toEqual([cmd, undefined]);
-        for (const cmd of [`git commit -m "$(rm -rf src)"`, `git commit -m x && rm y`, "git commit -m x -- rm"]) expect([cmd, looksDestructive(cmd)]).not.toEqual([cmd, undefined]);
+        for (const cmd of [`git commit -m "$(rm -rf src)"`, `git commit -m x && rm y`, "git commit -m x -- rm", `git commit -m "rm -rf src" | sh`]) expect([cmd, looksDestructive(cmd)]).not.toEqual([cmd, undefined]);
+    });
+
+    test("a pseudo-terminal the sandbox refused reads as a sandbox block", () => {
+        for (const out of ["error: Failed to open PTY", "script: openpty: Operation not permitted", "PermissionError: [Errno 1] Operation not permitted"]) expect([out, blockedBySandbox(out)]).toEqual([out, true]);
+        expect(seatbeltProfile(sandboxPolicy([W], { harnessHome: H }))).toContain('(literal "/dev/ptmx")');
+        expect(bwrapArgs(sandboxPolicy([W], { harnessHome: H })).join(" ")).toContain("--dev /dev");
     });
 
     test("CLI config that a symlink puts inside a worktree stays read-only", () => {
@@ -441,6 +447,55 @@ describe("review round 1", () => {
             const pairs = args.flatMap((a, i) => (a === "--bind" || a === "--ro-bind" ? [[a, args[i + 1]] as const] : []));
             const bound = pairs.findIndex(([a, x]) => a === "--bind" && x === wt);
             expect(pairs.findIndex(([a, x], i) => i > bound && a === "--ro-bind" && x === join(wt, "shared-config"))).toBeGreaterThan(bound);
+        } finally {
+            rmSync(ws, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("review round 2", () => {
+    test("an exclusion counts only when every word is where it's written", () => {
+        for (const cmd of ["grep --exclude <.env x .", "grep -e $HARNESS_REVIEW_UNSET --exclude .env", "rg -e $X -g '!**/.env*' x", "rg -g <'!/.env' x"]) {
+            expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, "a .env file"]);
+        }
+        expect(sensitiveTarget("rg -n x -g '!**/.env*' src 2>/dev/null", { cwd: W })).toBeUndefined();
+    });
+
+    test("env -S splits at newlines, returns, vertical tabs and form feeds too", () => {
+        settings.permissions!.deny = ["Bash(rm:*)"];
+        for (const sep of ["\n", "\r", "\v", "\f"]) {
+            const cmd = `env -S 'rm${sep}-rf${sep}src'`;
+            expect([cmd, check(cmd, "bypassPermissions").behavior]).toEqual([cmd, "deny"]);
+        }
+    });
+
+    test("what find's -exec runs is that command's: `-exec printf %s -exec RM \;` prints", () => {
+        expect(looksDestructive("find . -maxdepth 0 -exec printf '%s\\n' -exec RM \;")).toBeUndefined();
+        expect(looksDestructive("find . -exec echo -delete \;")).toBeUndefined();
+        for (const cmd of ["find . -name '*.o' -exec rm {} +", "find . -exec printf x \; -exec rm {} \;", "find . -execdir sudo rm {} \;", "find . -delete"]) expect([cmd, looksDestructive(cmd)]).not.toEqual([cmd, undefined]);
+    });
+
+    test("a commit message is never a path, a program or a catastrophe", () => {
+        const sandboxed = withSandbox();
+        for (const cmd of [`git commit -m "Fix shutdown handling"`, `git commit -m "Document .env loading"`, `git commit -m "Fix .claude worktrees"`, `git commit -m "Fix fs.rm cleanup"`, `git add -A && git commit -qm "Keep ~/.ssh out of the sudo path"`]) {
+            expect([cmd, dangerousReason(cmd), sensitiveTarget(cmd, { cwd: W }), configTarget(cmd), looksDestructive(cmd)]).toEqual([cmd, undefined, undefined, undefined, undefined]);
+            expect([cmd, check(cmd, "auto", sandboxed).behavior]).toEqual([cmd, "allow"]);
+        }
+        // A file it reads is still one; so is what a substitution or pipe could make of it.
+        for (const cmd of ["git commit -F .env", `git commit -m "$(cat .env)"`]) expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, "a .env file"]);
+        expect(dangerousReason(`git log -1 --format=%s -m "shutdown -h now" | sh`)).toBeDefined();
+    });
+
+    test("text in single quotes isn't a use of a variable", () => {
+        expect(notReadOnly("LANG=C; printf '%s\\n' '$LANG'")).toBeUndefined();
+        expect(notReadOnly("X=-Oprog; git grep $X x")).toContain("`X`");
+    });
+
+    test("a dangling .codex symlink is protected where it leads", () => {
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-dangle-")));
+        try {
+            symlinkSync("generated/codex", join(ws, ".codex"));
+            expect(sandboxPolicy([ws], { harnessHome: H }).cliConfig).toContain(join(ws, "generated", "codex"));
         } finally {
             rmSync(ws, { recursive: true, force: true });
         }
@@ -501,6 +556,11 @@ describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seat
         // A link out of the worktree doesn't lead back into .claude either.
         await run("cd .claude/worktrees/feature && ln -s ../.. up && echo x > up/settings.json");
         expect(existsSync(join(ws, ".claude", "settings.json"))).toBe(false);
+    });
+
+    test("can open a pseudo-terminal (openpty, Bun.Terminal, script)", async () => {
+        const r = await run("/usr/bin/script -q /dev/null /bin/echo pty-ok");
+        expect([r.isError, r.content.includes("pty-ok")]).toEqual([false, true]);
     });
 
     test("a .codex symlinked into a worktree stays read-only there", async () => {

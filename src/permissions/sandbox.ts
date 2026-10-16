@@ -14,8 +14,8 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { analyzeCommand, commandsWithDirs, effectiveArgv, gitSubcommand, programNames, readSmallFile, runs, SHELLS } from "./bash-safety";
-import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
+import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runLevels, runs, SHELLS, withoutMessages } from "./bash-safety";
+import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -134,7 +134,8 @@ const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.jso
 
 /** A path as written and, if a symlink leads elsewhere, where it leads: a rule on one alone can be sidestepped through the other. */
 function bothForms(p: string): string[] {
-    return [...new Set([p, real(p)])];
+    // canonical: a symlink that leads nowhere yet counts where it leads (writing through it makes that).
+    return [...new Set([p, canonical(p)])];
 }
 
 /**
@@ -236,9 +237,11 @@ export function seatbeltProfile(p: SandboxPolicy): string {
         '(allow network-outbound (remote ip "localhost:*"))',
         '(allow network-bind (local ip "localhost:*"))',
         '(allow network-inbound (local ip "localhost:*"))',
-        // Writes: the workspace and temp dirs, and the null/terminal devices.
+        // Writes: the workspace and temp dirs, and the null/terminal devices. /dev/ptmx makes new
+        // pseudo-terminals (openpty, Bun.Terminal, `script`); without it they fail with EPERM.
+        // (bubblewrap's --dev /dev mounts a devpts of its own, with ptmx, so it has them.)
         '(deny file-write* (subpath "/"))',
-        `(allow file-write* ${subpaths(p.writable)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
+        `(allow file-write* ${subpaths(p.writable)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/ptmx") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
         // The agent CLIs' config, except the worktrees in it (the rule below protects their own config).
         ...(cli.length ? [`(deny file-write* ${subpaths(cli)})`] : []),
         ...(worktrees.length ? [`(allow file-write* ${subpaths(worktrees)})`] : []),
@@ -488,29 +491,21 @@ const DELETE_WORD = new RegExp(`(^|[\\s;|&(\`'"/])(${DELETERS.join("|")})(?=\\s|
 const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rmdir|removedirs)|fs\.(rm|unlink|rmdir)|fs\.promises\.(rm|unlink)|FileUtils\.(rm|rm_r|rm_rf|remove)|Remove-Item)\b/;
 
 /**
- * The command line with the messages of git commit, tag and the like blanked
- * out: git doesn't run them, and "Remove the rm calls" isn't a deletion.
- * Not when it has a substitution, whose command a message can hold.
+ * find's -delete, and the commands its -exec, -execdir, -ok and -okdir run,
+ * each up to its `;` or `{} +` (what's in one is that command's, not find's).
  */
-function withoutMessages(cmd: string): string {
-    const a = analyzeCommand(cmd);
-    if (a.unparsable || a.hasSubstitution) return cmd;
-    const blank: [number, number][] = [];
-    for (const c of a.commands) {
-        const off = c.argv.length - effectiveArgv(c.argv).length;
-        const argv = c.argv.slice(off);
-        if (!runs(argv[0], "git")) continue;
-        const { index } = gitSubcommand(argv);
-        if (!["commit", "tag", "notes", "merge", "revert", "stash"].includes(argv[index] ?? "")) continue;
-        for (let i = index + 1; i < argv.length && argv[i] !== "--"; i++) {
-            const w = argv[i]!;
-            if (w === "--message" || /^-[a-zA-Z]*m$/.test(w)) blank.push(c.spans[off + ++i]!);
-            else if (w.startsWith("--message=") || /^-[a-zA-Z]*m./.test(w)) blank.push(c.spans[off + i]!);
-        }
+function findActions(args: string[]): { deletes: boolean; commands: string[][] } {
+    const commands: string[][] = [];
+    let deletes = false;
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === "-delete") deletes = true;
+        if (!/^-(exec|execdir|ok|okdir)$/.test(args[i]!)) continue;
+        let j = i + 1;
+        while (j < args.length && args[j] !== ";" && !(args[j] === "+" && args[j - 1] === "{}")) j++;
+        commands.push(args.slice(i + 1, j));
+        i = j;
     }
-    let t = cmd;
-    for (const [from, to] of blank.filter(Boolean).sort((x, y) => y[0] - x[0])) t = t.slice(0, from) + " ".repeat(to - from) + t.slice(to);
-    return t;
+    return { deletes, commands };
 }
 
 /**
@@ -522,16 +517,19 @@ function withoutMessages(cmd: string): string {
 export function looksDestructive(cmd: string, cwd?: string, depth = 0): string | undefined {
     const text = withoutMessages(cmd);
     if (DELETE_WORD.test(text)) return text.match(DELETE_WORD)![2];
-    if (DELETE_CALL.test(cmd)) return "deletes files";
+    if (DELETE_CALL.test(text)) return "deletes files";
     for (const { programs, dir } of commandsWithDirs(cmd, cwd)) for (const argv of programs) {
         const prog = argv[0];
         const args = argv.slice(1);
         const deleter = DELETERS.find((d) => runs(prog, d));
         if (deleter) return deleter;
         if (runs(prog, "find")) {
-            if (args.some((a) => a === "-delete")) return "find -delete";
-            const run = DELETERS.find((d) => args.some((a, i) => /^-(exec|execdir|ok|okdir)$/.test(a) && runs(args[i + 1], d)));
-            if (run) return run;
+            const f = findActions(args);
+            if (f.deletes) return "find -delete";
+            for (const c of f.commands) for (const level of runLevels(c)) {
+                const d = DELETERS.find((d) => runs(level.argv[0], d));
+                if (d) return d;
+            }
         }
         // `sh -c 'RM -rf src'`, `eval RM …`
         if (depth < 4) {
@@ -598,7 +596,7 @@ export function looksDestructive(cmd: string, cwd?: string, depth = 0): string |
 
 /** Output that suggests the sandbox got in the way. */
 export function blockedBySandbox(output: string): boolean {
-    return /Operation not permitted|Read-only file system|EPERM|EROFS|Could not resolve|nodename nor servname|Name or service not known|Temporary failure in name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|Network is unreachable|Failed to connect|fetch failed|Connection refused|sandbox-exec|bwrap:/i.test(output);
+    return /Operation not permitted|Read-only file system|EPERM|EROFS|Failed to open PTY|openpty|posix_openpt|forkpty|Could not resolve|nodename nor servname|Name or service not known|Temporary failure in name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|Network is unreachable|Failed to connect|fetch failed|Connection refused|sandbox-exec|bwrap:/i.test(output);
 }
 
 export const SANDBOX_HINT =
