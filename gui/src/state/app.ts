@@ -2,13 +2,16 @@
 // and projects, and every open session's timeline (kept current from the
 // server's ops, applied once per frame).
 
-import { batch, createRoot, createSignal } from "solid-js";
+import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri } from "../lib/platform";
 import { prefs } from "./prefs";
+import { mayCreateFiles } from "../lib/pathcache";
+// filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
+import { paths } from "./filelinks";
 
 export const rpc = new Rpc(credentials);
 rpc.retriesCredentials = isTauri;
@@ -141,6 +144,8 @@ export function handleFor(id: string | undefined): SessionHandle | undefined {
 
 function adopt(snap: SessionSnapshot): SessionHandle {
     const id = snap.state.id;
+    // Ops missed while it wasn't open (or the connection was down) may have created files.
+    paths.sawSnapshot(id);
     const existing = handles.get(id);
     if (existing) {
         existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
@@ -274,8 +279,16 @@ export async function refreshProjects() {
     }
 }
 
+let watchingEditor = false;
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
+    // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
+    if (!watchingEditor) {
+        watchingEditor = true;
+        // Editor changes here or seen from another window on refresh need fresh answers about which paths are links.
+        createRoot(() => createEffect(() => paths.editorIs(app.settings.editor)));
+    }
 }
 
 function upsertSession(s: SessionSummary) {
@@ -303,6 +316,8 @@ function onEvent(ev: ServerEvent) {
             h.seq = ev.seq;
             h.queue.push(...ev.ops);
             schedule(h);
+            // A file named before it existed becomes a link once it may (an edit landed, or the turn ended).
+            if (mayCreateFiles(ev.ops)) paths.forgetMissing(ev.sessionId);
             return;
         }
         case "sessions.upsert":
@@ -346,6 +361,8 @@ export function start() {
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, () => handles.delete(h.id));
                 connectedOnce = true;
+                // Path lookups that failed while it was down are asked again.
+                paths.retryFailed();
             } catch (e) {
                 reportError(e);
             }

@@ -2,11 +2,11 @@
 // setting is one row: what it is, what it does, its control, and a reset
 // when it's been changed.
 
-import { createEffect, createSignal, For, Match, on, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
 import { ArrowLeft, ArrowUp, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
-import { connectCli } from "../state/actions";
+import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { mod, openExternal } from "../lib/platform";
@@ -120,6 +120,9 @@ const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium
 
 function General() {
     const s = () => app.settings;
+    onMount(() => void refreshEditors());
+    // The chosen editor stays listed when it's gone, so the choice isn't silently lost.
+    const editorChoices = () => editors().filter((e) => e.installed || e.id === s().editor);
     return (
         <>
             <Group>Defaults for new sessions</Group>
@@ -169,6 +172,23 @@ function General() {
                     <option value="tavily">Tavily</option>
                     <option value="duckduckgo">DuckDuckGo</option>
                     <option value="off">Off</option>
+                </select>
+            </Row>
+            <Row title="Open files with" desc="For file links in replies, changed files and tool rows. It opens on the computer running Harness.">
+                {/* Each option says whether it's the one chosen: the list arrives after the
+                    saved choice, and a select's value set before its options matches nothing. */}
+                <select class="select" aria-label="Open files with" onChange={(e) => void update({ editor: e.currentTarget.value })}>
+                    <option value="" disabled={!s().editor} selected={!s().editor}>
+                        {s().editor ? "None" : "Choose an editor"}
+                    </option>
+                    <For each={editorChoices()}>
+                        {(e) => (
+                            <option value={e.id} selected={e.id === s().editor}>
+                                {e.name}
+                                {!e.installed ? " (not found)" : e.lines || e.id === "finder" ? "" : " (without line numbers)"}
+                            </option>
+                        )}
+                    </For>
                 </select>
             </Row>
             <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">

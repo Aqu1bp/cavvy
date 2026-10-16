@@ -2,10 +2,10 @@
 // the session's menu on its title, and the panel toggle.
 
 import { createSignal, For, Show, type JSX } from "solid-js";
-import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareTerminal } from "lucide-solid";
+import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { archive, exportSession, newSession, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, editorName, exportSession, newSession, openInEditor, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, setRewindOpen } from "../state/ui";
 import { copyText, isTauri, mod, os, terminalShortcut } from "../lib/platform";
@@ -109,7 +109,7 @@ export function Header(p: { handle?: SessionHandle }) {
                                 />
                             }
                         >
-                            <button ref={titleBtn} class={`bct ${menuOpen() ? "open" : ""}`} aria-haspopup="menu" aria-expanded={menuOpen()} title="Session actions" onClick={() => setMenuOpen(!menuOpen())} onDblClick={() => (close(), setEditing(true))}>
+                            <button ref={titleBtn} class={`bct ${menuOpen() ? "open" : ""}`} aria-haspopup="menu" aria-expanded={menuOpen()} title="Session actions" onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())} onDblClick={() => (close(), setEditing(true))}>
                                 <span class="truncate">{sessionTitle(p.handle)}</span>
                                 <ChevronDown size={14} class="chv" />
                             </button>
@@ -147,6 +147,9 @@ export function Header(p: { handle?: SessionHandle }) {
                             </button>
                             <button class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
                                 <FolderOpen size={14} /> Copy folder path
+                            </button>
+                            <button class="menu-item compact" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
+                                <SquareArrowOutUpRight size={14} /> Open project in {editorName() ?? "editor"}
                             </button>
                             <div class="menu-sep" />
                             <button class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
