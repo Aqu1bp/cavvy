@@ -2,7 +2,7 @@ import { createEffect, createMemo, For, Match, onCleanup, Switch } from "solid-j
 import { MarkdownRenderer } from "../../lib/markdown";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
-import { linksVersion, pathLookup, resolvePaths } from "../../state/filelinks";
+import { linksVersion, paths } from "../../state/filelinks";
 import { CodeBlock } from "./CodeBlock";
 
 function openFile(a: HTMLElement) {
@@ -32,7 +32,7 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
     // Same objects for unchanged blocks, so <For> keeps their DOM. Only a reply
     // with paths still unlinked looks again when answers arrive.
     const segments = createMemo(() => {
-        const segs = r.segments(p.text, Boolean(p.streaming), p.sessionId ? pathLookup(p.sessionId) : undefined);
+        const segs = r.segments(p.text, Boolean(p.streaming), p.sessionId ? paths.lookup(p.sessionId) : undefined);
         if (r.watching) linksVersion();
         return segs;
     });
@@ -41,11 +41,14 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
     createEffect(() => {
         segments();
         const id = p.sessionId;
-        if (!id || !r.pending.size || timer) return;
+        if (!id) return;
+        // What's on screen stays known (see lib/pathcache.ts), until the next render or unmount.
+        onCleanup(paths.hold(id, r.paths));
+        if (!r.pending.size || timer) return;
         timer = setTimeout(
             () => {
                 timer = undefined;
-                void resolvePaths(id, r.pending);
+                void paths.resolve(id, r.pending);
             },
             p.streaming ? 400 : 0,
         );

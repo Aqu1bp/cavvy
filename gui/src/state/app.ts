@@ -9,6 +9,9 @@ import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri } from "../lib/platform";
 import { prefs } from "./prefs";
+import { mayCreateFiles } from "../lib/pathcache";
+// filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
+import { paths } from "./filelinks";
 
 export const rpc = new Rpc(credentials);
 rpc.retriesCredentials = isTauri;
@@ -303,6 +306,8 @@ function onEvent(ev: ServerEvent) {
             h.seq = ev.seq;
             h.queue.push(...ev.ops);
             schedule(h);
+            // A file named before it existed becomes a link once it may (an edit landed, or the turn ended).
+            if (mayCreateFiles(ev.ops)) paths.forgetMissing(ev.sessionId);
             return;
         }
         case "sessions.upsert":

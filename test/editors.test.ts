@@ -8,7 +8,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { EDITORS, checkPathInput, confinePath, detectEditor, detectEditors, editorArgv, editorById, position } = await import("../src/server/editors");
+const { EDITORS, checkPathInput, confinePath, detectEditor, detectEditors, editorArgv, editorById, opensAsProject, position } = await import("../src/server/editors");
 import type { FoundEditor } from "../src/server/editors";
 
 afterAll(() => iso.cleanup());
@@ -69,9 +69,39 @@ describe("argv per editor", () => {
     });
 
     test("workspace and project files aren't opened as files: they'd open as projects", () => {
-        for (const [id, f] of [["vscode", "/p/evil.code-workspace"], ["cursor", "/p/x.CODE-WORKSPACE"], ["sublime", "/p/x.sublime-project"], ["sublime", "/p/x.sublime-workspace"], ["idea", "/p/x.ipr"], ["zed", "/p/x.code-workspace"]] as const) {
-            expect(() => editorArgv(ed(id), { path: f, line: 2, folder: false })).toThrow(/workspace/);
-        }
+        const refused = [
+            ["vscode", "/p/evil.code-workspace"],
+            ["cursor", "/p/x.CODE-WORKSPACE"],
+            ["sublime", "/p/x.sublime-project"],
+            ["sublime", "/p/x.sublime-workspace"],
+            ["idea", "/p/x.ipr"],
+            ["idea", "/p/pom.xml"],
+            ["goland", "/p/build.gradle"],
+            ["webstorm", "/p/build.gradle.kts"],
+            ["pycharm", "/p/settings.gradle.kts"],
+            ["rider", "/w/a.sln"],
+            ["rider", "/w/a.slnx"],
+            ["rider", "/w/a.slnf"],
+            ["rider", "/w/App/App.csproj"],
+            ["rider", "/w/Lib/Lib.fsproj"],
+            ["rider", "/w/Old/Old.vbproj"],
+            ["rider", "/w/pom.xml"],
+        ] as const;
+        for (const [id, f] of refused) expect(() => editorArgv(ed(id), { path: f, line: 2, folder: false })).toThrow(/as a project/);
+        // Also when only the app is there (`open -na … --args`, `open -a`).
+        expect(() => editorArgv(ed("rider", { launcher: undefined, app: "/Applications/Rider.app" }), { path: "/w/a.sln", folder: false })).toThrow(/as a project/);
+        expect(() => editorArgv(ed("vscode", { launcher: undefined, app: "/Applications/Visual Studio Code.app" }), { path: "/p/x.code-workspace", folder: false })).toThrow(/as a project/);
+        // An editor that opens it as text gets it: Zed has no project files, VS Code reads a .sln or pom.xml as text.
+        expect(editorArgv(ed("zed"), { path: "/p/x.code-workspace", folder: false })).toEqual(["/bin/zed", "/p/x.code-workspace"]);
+        expect(editorArgv(ed("vscode"), { path: "/w/a.sln", line: 3, folder: false })).toEqual(["/bin/vscode", "--goto", "--", "/w/a.sln:3"]);
+        expect(editorArgv(ed("vscode"), { path: "/p/pom.xml", folder: false })).toEqual(["/bin/vscode", "--", "/p/pom.xml"]);
+        // A name that only looks like one isn't: my-pom.xml, a.sln.txt.
+        expect(editorArgv(ed("rider"), { path: "/w/my-pom.xml", folder: false })).toEqual(["/bin/rider", "/w/my-pom.xml"]);
+        expect(editorArgv(ed("rider"), { path: "/w/a.sln.txt", folder: false })).toEqual(["/bin/rider", "/w/a.sln.txt"]);
+        // With no editor chosen: anything any editor would open as a project.
+        expect(opensAsProject(undefined, "/w/a.sln")).toBe(true);
+        expect(opensAsProject(undefined, "/p/x.sublime-project")).toBe(true);
+        expect(opensAsProject(undefined, "/p/a.ts")).toBe(false);
         // Finder only shows where it is.
         expect(editorArgv(ed("finder", { launcher: undefined }), { path: "/p/evil.code-workspace", folder: false })).toEqual(["open", "-R", "/p/evil.code-workspace"]);
     });

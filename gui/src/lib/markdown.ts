@@ -43,8 +43,10 @@ export interface PathRef {
 export type PathLookup = (path: string) => string | null | undefined;
 
 // A path: optional ~/ ./ ../ or /, then name/name/...; then :line[:col] or
-// #Lline[Ccol], and an ignored range end (:10-20, #L10-L20).
-const POS = String.raw`(?::(\d{1,8})(?::(\d{1,6}))?|#L(\d{1,8})(?:C(\d{1,6}))?)?(?:-L?\d{1,8})?$`;
+// #Lline[Ccol], and an ignored range end after the line (:10-20, #L10-L20).
+// The range end belongs to the line: without one, "-123" is part of the name
+// (src/file-123), even where the path itself matches anything (link targets).
+const POS = String.raw`(?::(\d{1,8})(?::(\d{1,6}))?(?:-\d{1,8})?|#L(\d{1,8})(?:C(\d{1,6}))?(?:-L?\d{1,8}(?:C\d{1,6})?)?)?$`;
 const NAME = String.raw`[\p{L}\p{N}_@+.\-]`;
 const NAME_SPACED = String.raw`[\p{L}\p{N}_@+.\- ]`;
 const PATH_REF = new RegExp(String.raw`^((?:~\/|\.{1,2}\/|\/)?(?:${NAME}+\/)*${NAME}+)` + POS, "u");
@@ -88,6 +90,8 @@ interface LinkContext {
     pending: Set<string>;
     /** Every path looked up and not linked (not asked yet, or not a file then). */
     unlinked: Set<string>;
+    /** Every path looked up. */
+    seen: Set<string>;
     refs: number;
     inLink: boolean;
 }
@@ -97,6 +101,7 @@ let ctx: LinkContext | undefined;
 function fileLink(ref: PathRef, inner: string): string | undefined {
     if (!ctx || ctx.inLink || ctx.refs >= MAX_REFS) return undefined;
     ctx.refs++;
+    ctx.seen.add(ref.path);
     const abs = ctx.lookup(ref.path);
     if (abs === undefined) ctx.pending.add(ref.path);
     if (!abs) return ctx.unlinked.add(ref.path), undefined;
@@ -194,7 +199,7 @@ md.use({
  * didn't link; it's rendered again when what's known about one changes (asked,
  * or a missing file's answer expired).
  */
-export type Segment = { kind: "html"; key: string; html: string; pending?: boolean; unlinked?: string[] } | { kind: "code"; key: string; lang: string; code: string; open: boolean };
+export type Segment = { kind: "html"; key: string; html: string; pending?: boolean; unlinked?: string[]; paths?: string[] } | { kind: "code"; key: string; lang: string; code: string; open: boolean };
 
 /** Renders one reply; keeps finished blocks between calls. */
 export class MarkdownRenderer {
@@ -204,11 +209,14 @@ export class MarkdownRenderer {
     pending = new Set<string>();
     /** The last render left paths unlinked, so new answers may change it. */
     watching = false;
+    /** Every path the last render looked up: what this reply has on screen. */
+    paths = new Set<string>();
 
     /** With `lookup`, paths to known files become links (see the top of this file). */
     segments(text: string, streaming: boolean, lookup?: PathLookup): Segment[] {
         this.pending = new Set();
         this.watching = false;
+        this.paths = new Set();
         let tokens: Token[] & { links?: unknown };
         try {
             // Rendered again with the same text when answers arrive: lex it once.
@@ -236,6 +244,7 @@ export class MarkdownRenderer {
             const stale = lookup && cached?.kind === "html" && cached.unlinked?.some((p) => lookup(p) !== null);
             if (cached && !stale) {
                 if (cached.kind === "html" && cached.unlinked?.length) this.watching = true;
+                if (cached.kind === "html") for (const p of cached.paths ?? []) this.paths.add(p);
                 next.set(t.raw, cached);
                 out.push(cached);
                 return;
@@ -243,7 +252,8 @@ export class MarkdownRenderer {
             let html: string;
             const pending = new Set<string>();
             const unlinked = new Set<string>();
-            ctx = lookup && { lookup, pending, unlinked, refs: 0, inLink: false };
+            const seen = new Set<string>();
+            ctx = lookup && { lookup, pending, unlinked, seen, refs: 0, inLink: false };
             try {
                 html = md.parser(Object.assign([t], { links: tokens.links ?? {} }) as unknown as Token[]);
             } catch {
@@ -252,16 +262,18 @@ export class MarkdownRenderer {
                 ctx = undefined;
             }
             for (const p of pending) this.pending.add(p);
+            for (const p of seen) this.paths.add(p);
             if (unlinked.size) this.watching = true;
             // Same HTML as before (nothing new known yet): same object, so the DOM stays.
             if (cached?.kind === "html" && cached.html === html) {
                 cached.pending = pending.size > 0;
                 cached.unlinked = [...unlinked];
+                cached.paths = [...seen];
                 next.set(t.raw, cached);
                 out.push(cached);
                 return;
             }
-            const seg: Segment = { kind: "html", key: `h${i}:${t.raw.length}`, html, pending: pending.size > 0, unlinked: [...unlinked] };
+            const seg: Segment = { kind: "html", key: `h${i}:${t.raw.length}`, html, pending: pending.size > 0, unlinked: [...unlinked], paths: [...seen] };
             next.set(t.raw, seg);
             out.push(seg);
         });

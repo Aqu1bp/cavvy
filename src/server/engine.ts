@@ -27,7 +27,7 @@ import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitSnapshot } from "../util/git";
 import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
-import { checkPathInput, confinePath, defaultDetectEnv, projectFile, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
+import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
 import { expandPath, isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
@@ -753,10 +753,13 @@ export class Engine {
         if (!Array.isArray(p.paths)) throw new RpcError("paths must be a list", "invalid");
         if (p.paths.length > 200) throw new RpcError("At most 200 paths at a time", "limit");
         const { cwd, roots } = this.openScope(p);
+        // Not linked: what the chosen editor (any, before one is chosen) would open as a project.
+        const chosen = this.guiSettings().editor;
+        const def = chosen ? editorById(chosen) : undefined;
         return p.paths.map((raw: unknown) => {
             try {
                 const t = confinePath(checkPathInput(raw), cwd, roots);
-                return t.dir || projectFile(t.path) ? null : t.path;
+                return t.dir || opensAsProject(def, t.path) ? null : t.path;
             } catch {
                 return null;
             }

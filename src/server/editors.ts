@@ -29,6 +29,14 @@ export interface EditorDef {
     style: LineStyle;
     /** The launcher reads `--` as the end of its options. */
     dashdash?: boolean;
+    /** Files it opens as a project or workspace rather than as text (see "Files each editor opens as a project" above EDITORS). */
+    projects?: ProjectFiles;
+}
+
+/** File extensions (lowercase, with the dot) and exact names (lowercase). */
+interface ProjectFiles {
+    ext?: string[];
+    names?: string[];
 }
 
 // Flags, from each launcher's docs:
@@ -43,6 +51,25 @@ export interface EditorDef {
 //     argument to the IDE, not as a document for Launch Services to open.
 // Zed and the JetBrains launchers don't document `--`, so they get none: every
 // path reaching them is absolute (starts with "/"), never an option.
+// Files each editor opens as a project or workspace rather than as text. One
+// can name folders outside the session's (a workspace's folders, a solution's
+// projects, a build's modules), so "open this file" mustn't open one: only
+// folders open as projects. From the docs where they say so, and otherwise
+// erring towards refusing:
+//   VS Code, Cursor: .code-workspace (multi-root workspace files).
+//   Sublime Text: .sublime-project and .sublime-workspace.
+//   JetBrains: a file opens in LightEdit "unless ... there is special logic to
+//     automatically open or create a project (for example, in case of Maven or
+//     Gradle files)" (jetbrains.com/help/idea/opening-files-from-command-line);
+//     .ipr is the old project file. Rider also opens solutions (.sln, .slnx,
+//     .slnf) and MSBuild projects (.csproj, .fsproj, .vbproj, .proj); its docs
+//     only say "the path to a file or directory" opens it, so those are refused
+//     on the side of caution.
+//   Zed: nothing; its docs describe folders as its only projects.
+const VSCODE_PROJECTS: ProjectFiles = { ext: [".code-workspace"] };
+const JETBRAINS_PROJECTS: ProjectFiles = { ext: [".ipr"], names: ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"] };
+const RIDER_PROJECTS: ProjectFiles = { ext: [...JETBRAINS_PROJECTS.ext!, ".sln", ".slnx", ".slnf", ".csproj", ".fsproj", ".vbproj", ".proj"], names: JETBRAINS_PROJECTS.names };
+
 const JETBRAINS: [string, string, string[]][] = [
     ["idea", "IntelliJ IDEA", ["IntelliJ IDEA.app", "IntelliJ IDEA Ultimate.app", "IntelliJ IDEA CE.app", "IntelliJ IDEA Community Edition.app"]],
     ["webstorm", "WebStorm", ["WebStorm.app"]],
@@ -55,11 +82,11 @@ const JETBRAINS: [string, string, string[]][] = [
 ];
 
 export const EDITORS: EditorDef[] = [
-    { id: "vscode", name: "VS Code", launchers: ["code"], apps: ["Visual Studio Code.app"], bundleCli: "Contents/Resources/app/bin/code", style: "goto", dashdash: true },
-    { id: "cursor", name: "Cursor", launchers: ["cursor"], apps: ["Cursor.app"], bundleCli: "Contents/Resources/app/bin/cursor", style: "goto", dashdash: true },
+    { id: "vscode", name: "VS Code", launchers: ["code"], apps: ["Visual Studio Code.app"], bundleCli: "Contents/Resources/app/bin/code", style: "goto", dashdash: true, projects: VSCODE_PROJECTS },
+    { id: "cursor", name: "Cursor", launchers: ["cursor"], apps: ["Cursor.app"], bundleCli: "Contents/Resources/app/bin/cursor", style: "goto", dashdash: true, projects: VSCODE_PROJECTS },
     { id: "zed", name: "Zed", launchers: ["zed"], apps: ["Zed.app"], bundleCli: "Contents/MacOS/cli", style: "suffix" },
-    { id: "sublime", name: "Sublime Text", launchers: ["subl"], apps: ["Sublime Text.app"], bundleCli: "Contents/SharedSupport/bin/subl", style: "suffix", dashdash: true },
-    ...JETBRAINS.map(([id, name, apps]): EditorDef => ({ id, name, launchers: [id], apps, style: "jetbrains" })),
+    { id: "sublime", name: "Sublime Text", launchers: ["subl"], apps: ["Sublime Text.app"], bundleCli: "Contents/SharedSupport/bin/subl", style: "suffix", dashdash: true, projects: { ext: [".sublime-project", ".sublime-workspace"] } },
+    ...JETBRAINS.map(([id, name, apps]): EditorDef => ({ id, name, launchers: [id], apps, style: "jetbrains", projects: id === "rider" ? RIDER_PROJECTS : JETBRAINS_PROJECTS })),
     { id: "finder", name: "Finder (reveal)", launchers: [], apps: [], style: "reveal" },
 ];
 
@@ -154,12 +181,15 @@ function launchable(path: string): boolean {
     return LAUNCHABLE.has(extname(path).toLowerCase());
 }
 
-// Files an editor opens as a project or workspace rather than as text: one
-// can name folders outside the session's, so a "file" link mustn't open one.
-const PROJECT_FILES = new Set([".code-workspace", ".sublime-project", ".sublime-workspace", ".ipr"]);
-
-export function projectFile(path: string): boolean {
-    return PROJECT_FILES.has(extname(path).toLowerCase());
+/**
+ * Whether `def` would open this file as a project (see "Files each editor opens as a project").
+ * With no editor, whether any of them would: what isn't linked before one is chosen.
+ */
+export function opensAsProject(def: EditorDef | undefined, path: string): boolean {
+    if (!def) return EDITORS.some((d) => opensAsProject(d, path));
+    const ext = extname(path).toLowerCase();
+    const name = basename(path).toLowerCase();
+    return Boolean(def.projects?.ext?.includes(ext) || def.projects?.names?.includes(name));
 }
 
 /** The argv that opens `t` in `f`. Throws RpcError for what that editor must not be handed. */
@@ -167,7 +197,7 @@ export function editorArgv(f: FoundEditor, t: OpenTarget): string[] {
     const { def } = f;
     if (!t.path.startsWith("/")) throw new RpcError("The path must be absolute", "invalid");
     if (t.folder && launchable(t.path)) throw new RpcError(`${basename(t.path)} is an app or bundle, not a project folder`, "refused");
-    if (!t.folder && def.style !== "reveal" && projectFile(t.path)) throw new RpcError(`${basename(t.path)} would open as a workspace, which can reach outside this session's folders`, "refused");
+    if (!t.folder && opensAsProject(def, t.path)) throw new RpcError(`${def.name} would open ${basename(t.path)} as a project, which can reach outside this session's folders`, "refused");
     const line = t.folder ? undefined : t.line;
     const col = line === undefined ? undefined : t.col;
     // A name already ending in ":12" would be read as a line by launchers that take file:line.

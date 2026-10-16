@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 const { MarkdownRenderer, parsePathRef } = await import("../gui/src/lib/markdown");
 
 const ROOT = "/Users/me/proj";
-const FILES = new Set(["src/server/engine.ts", "README.md", "/Users/me/proj/src/a.ts", "src/My File.ts", "./src/a.ts", "_config.ts", "config.ts", "src/café.ts", "Makefile"]);
+const FILES = new Set(["src/server/engine.ts", "README.md", "/Users/me/proj/src/a.ts", "src/My File.ts", "./src/a.ts", "_config.ts", "config.ts", "src/café.ts", "Makefile", "src/file", "src/file-123", "src/file-L123", "/Users/me/proj/logs/run-42"]);
 /** Known files resolve; "missing/..." is known missing; anything else isn't asked yet. */
 const lookup = (p: string) => (FILES.has(p) ? (p.startsWith("/") ? p : `${ROOT}/${p.replace(/^\.\//, "")}`) : p.startsWith("missing/") ? null : undefined);
 
@@ -117,6 +117,22 @@ describe("markdown links to files", () => {
         expect(render("run Makefile").pending).toEqual([]);
     });
 
+    test("a name ending in -123 or -L123 keeps it: a range end needs a line before it", () => {
+        expect(parsePathRef("src/file-123", "target")).toEqual({ path: "src/file-123", line: undefined, col: undefined });
+        expect(parsePathRef("src/file-L123", "target")).toEqual({ path: "src/file-L123", line: undefined, col: undefined });
+        expect(parsePathRef("src/file-123:7", "target")).toEqual({ path: "src/file-123", line: 7, col: undefined });
+        expect(parsePathRef("src/file-L123#L7-L9", "target")).toEqual({ path: "src/file-L123", line: 7, col: undefined });
+        expect(parsePathRef("src/a.ts:10-20", "target")).toEqual({ path: "src/a.ts", line: 10, col: undefined });
+        expect(parsePathRef("src/a.ts#L3C2-L9C1", "target")).toEqual({ path: "src/a.ts", line: 3, col: 2 });
+        // src/file exists too: the link must not open it.
+        expect(render("[log](src/file-123)").html).toContain(`data-file="${ROOT}/src/file-123" title="${ROOT}/src/file-123"`);
+        expect(render("[log](src/file-L123)").html).toContain(`data-file="${ROOT}/src/file-L123" title="${ROOT}/src/file-L123"`);
+        expect(render("[log](src/file-123:5)").html).toContain(`data-file="${ROOT}/src/file-123" data-line="5"`);
+        expect(render("[log](file:///Users/me/proj/logs/run-42)").html).toContain(`data-file="/Users/me/proj/logs/run-42" title="/Users/me/proj/logs/run-42"`);
+        expect(render("[log](file:///Users/me/proj/logs/run-42#L8)").html).toContain(`data-file="/Users/me/proj/logs/run-42" data-line="8"`);
+        for (const t of ["[log](src/file-123)", "[log](src/file-L123)"]) expect(render(t).html).not.toContain(`data-file="${ROOT}/src/file"`);
+    });
+
     test("other schemes stay plain; http(s) stays external", () => {
         for (const href of ["javascript:alert(1)", "data:text/html,x", "vscode://file/x", "file://evil.example.com/etc/passwd"]) {
             const { html } = render(`[x](${href})`);
@@ -154,7 +170,7 @@ describe("re-rendering as answers arrive", () => {
         expect(r.watching).toBe(false);
     });
 
-    test("a path found missing is looked at again once that answer expires", () => {
+    test("a path found missing is looked at again once that answer is forgotten", () => {
         const known = new Map<string, string | null | undefined>([["lib/new.ts", null]]);
         const l = (p: string) => known.get(p);
         const r = new MarkdownRenderer();
@@ -163,7 +179,7 @@ describe("re-rendering as answers arrive", () => {
         expect([...r.pending]).toEqual([]);
         expect(r.watching).toBe(true);
         expect(r.segments(text, false, l)[0]).toBe(a[0]!);
-        known.set("lib/new.ts", undefined); // expired
+        known.set("lib/new.ts", undefined); // forgotten: files may have been created
         r.segments(text, false, l);
         expect([...r.pending]).toEqual(["lib/new.ts"]);
         known.set("lib/new.ts", "/p/lib/new.ts");

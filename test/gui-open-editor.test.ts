@@ -50,6 +50,9 @@ beforeAll(async () => {
     writeFileSync(join(cwd, "dir with space/a b.ts"), "x");
     writeFileSync(join(cwd, "run.command"), "#!/bin/sh\n");
     writeFileSync(join(cwd, "evil.code-workspace"), JSON.stringify({ folders: [{ path: outside }] }));
+    writeFileSync(join(cwd, "App.sln"), `Project("{FAE04EC0}") = "Out", "${outside}/Out.csproj", "{1}"\nEndProject\n`);
+    writeFileSync(join(cwd, "App.csproj"), "<Project />");
+    writeFileSync(join(cwd, "pom.xml"), "<project />");
     symlinkSync(join(outside, "secret.txt"), join(cwd, "leak.txt"));
     const snap = (await call("session.create", { cwd })) as SessionSnapshot;
     id = snap.state.id;
@@ -126,7 +129,7 @@ describe("fs.open", () => {
         await rejects(call("fs.open", { sessionId: id, path: "package.json", editor: "sh -c id" }), "invalid", /Unknown editor/);
         await rejects(call("fs.open", { sessionId: id, path: "package.json", editor: "cursor" }), "not_installed");
         await rejects(call("fs.open", { sessionId: id, path: "nope.ts" }), "not_found");
-        await rejects(call("fs.open", { sessionId: id, path: "evil.code-workspace" }), "refused", /workspace/);
+        await rejects(call("fs.open", { sessionId: id, path: "evil.code-workspace" }), "refused", /as a project/);
         expect(launched).toEqual([]);
     });
 
@@ -151,6 +154,52 @@ test("on Windows it says it isn't supported, rather than that nothing is install
     win.clients.add(c);
     await rejects(win.handle(c, "fs.open" as never, { cwd, path: "package.json", editor: "vscode" } as never), "unsupported");
     await win.stop();
+});
+
+describe("project files", () => {
+    // Rider found as a launcher on its own PATH.
+    const riderBin = tempDir("harness-ed-rider-");
+    writeFileSync(join(riderBin, "rider"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(riderBin, "rider"), 0o755);
+    const withRider = () => new Engine({ editorEnv: () => ({ platform: "linux", path: `${bin}:${riderBin}`, appDirs: [] }), launchEditor: async (argv) => void launched.push(argv) });
+
+    test("Rider doesn't get solutions, MSBuild projects or build files through fs.open; plain files it does", async () => {
+        const e = withRider();
+        e.clients.add(c);
+        const snap = (await e.handle(c, "session.create" as never, { cwd } as never)) as SessionSnapshot;
+        launched.length = 0;
+        for (const f of ["App.sln", "App.csproj", "pom.xml"]) await rejects(e.handle(c, "fs.open" as never, { sessionId: snap.state.id, path: f, editor: "rider" } as never), "refused", /Rider would open .* as a project/);
+        expect(launched).toEqual([]);
+        await e.handle(c, "fs.open" as never, { sessionId: snap.state.id, path: "package.json", line: 2, editor: "rider" } as never);
+        expect(launched).toEqual([[join(riderBin, "rider"), "--line", "2", join(cwd, "package.json")]]);
+        await e.stop();
+    });
+
+    test("VS Code, which reads them as text, opens a .sln and a pom.xml", async () => {
+        launched.length = 0;
+        await call("fs.open", { sessionId: id, path: "App.sln" });
+        await call("fs.open", { sessionId: id, path: "pom.xml", line: 1 });
+        expect(launched).toEqual([
+            [join(bin, "code"), "--", join(cwd, "App.sln")],
+            [join(bin, "code"), "--goto", "--", `${join(cwd, "pom.xml")}:1`],
+        ]);
+    });
+
+    test("not linked when the chosen editor would open them as projects", async () => {
+        const e = withRider();
+        e.clients.add(c);
+        const snap = (await e.handle(c, "session.create" as never, { cwd } as never)) as SessionSnapshot;
+        const ask = (sessionId: string) => e.handle(c, "fs.exists" as never, { sessionId, paths: ["App.sln", "App.csproj", "pom.xml", "evil.code-workspace", "package.json"] } as never);
+        // VS Code chosen: only its own workspace file is held back.
+        expect(await ask(snap.state.id)).toEqual([join(cwd, "App.sln"), join(cwd, "App.csproj"), join(cwd, "pom.xml"), null, join(cwd, "package.json")]);
+        await e.handle(c, "settings.update" as never, { patch: { editor: "rider" } } as never);
+        expect(await ask(snap.state.id)).toEqual([null, null, null, join(cwd, "evil.code-workspace"), join(cwd, "package.json")]);
+        await e.handle(c, "settings.update" as never, { patch: { editor: "" } } as never);
+        // None chosen: nothing any editor would open as a project.
+        expect(await ask(snap.state.id)).toEqual([null, null, null, null, join(cwd, "package.json")]);
+        await e.handle(c, "settings.update" as never, { patch: { editor: "vscode" } } as never);
+        await e.stop();
+    });
 });
 
 describe("fs.exists", () => {
