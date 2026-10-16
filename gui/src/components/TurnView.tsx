@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
@@ -347,7 +347,7 @@ function segments(items: Item[]): Seg[] {
     return out;
 }
 
-export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void }) {
+export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; agents?: AgentRun[]; onRewind?: (index: number) => void; onFork?: () => void }) {
     const items = createMemo(() => groupBlocks(p.turn.blocks));
     const segs = createMemo(() => segments(items()));
     const running = () => p.turn.status === "running";
@@ -456,6 +456,11 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                             </Show>
                             <Show when={reply().trim()}>
                                 <CopyButton text={reply} label="Copy response" class="foot-btn" />
+                            </Show>
+                            <Show when={p.onFork && !p.turn.archived}>
+                                <button class="icon-btn foot-btn" title="Fork from here" aria-label="Fork from here" onClick={() => p.onFork?.()}>
+                                    <GitFork size={14} />
+                                </button>
                             </Show>
                         </div>
                     </Show>

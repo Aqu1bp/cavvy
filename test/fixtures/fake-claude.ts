@@ -1,7 +1,7 @@
 // A stand-in for the `claude` CLI, speaking the parts of its stream-json
 // protocol the harness uses: `auth status --json`, and `-p` with stream-json
 // in and out (initialize, a turn with one tool call, interrupt,
-// set_permission_mode, --resume). It makes no network requests.
+// set_permission_mode, --resume, --fork-session). It makes no network requests.
 //
 // It decides like the real CLI (checked against Claude Code 2.1.300) what it
 // does without asking: deny rules from --settings or the project's
@@ -145,7 +145,8 @@ function selfApproved(tool: string, input: any): boolean {
     return false;
 }
 
-const sessionId = resume ?? `sess-${Math.random().toString(36).slice(2, 10)}`;
+// --fork-session (with --resume): a copy of the session goes on, under a new id.
+const sessionId = resume && !argv.includes("--fork-session") ? resume : `${resume ? "fork" : "sess"}-${Math.random().toString(36).slice(2, 10)}`;
 /** Servers added with mcp_set_servers, and the tools each lets run without asking. */
 const mcpServers = new Map<string, McpServerRef & { allowed: Set<string> }>();
 const pending = new Map<string, (r: any) => void>();

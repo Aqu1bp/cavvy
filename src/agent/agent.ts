@@ -1180,7 +1180,7 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
@@ -1269,7 +1269,8 @@ export class Agent {
     /** The backend session has now seen everything up to here (minus `pending` messages it hasn't been sent yet). */
     private syncBackend(provider: string, pending = 0) {
         const b = this.session.backends.get(provider);
-        if (b) this.session.setBackendSession(provider, b.id, this.session.messages.length - pending);
+        // Until the native fork answers with its own id, the shared source has seen no new messages.
+        if (b && !b.fork) this.session.setBackendSession(provider, b.id, this.session.messages.length - pending);
     }
 
     private endBackendTurn(provider: string, reason: TurnEndReason): TurnEndReason {
@@ -1304,7 +1305,7 @@ export class Agent {
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
             drainQueued: () => [],
         };
-        const r = await backend.compact({ ...this.backendTurn(opts.signal, host), resumeId: resume.id, instructions: opts.instructions });
+        const r = await backend.compact({ ...this.backendTurn(opts.signal, host), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
         this.contextTokens = 0;

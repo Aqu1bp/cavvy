@@ -5,7 +5,7 @@
 // answered, which the transcript keeps as text), in ui/<session>.jsonl next to it.
 
 import { createHash } from "crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
@@ -252,6 +252,55 @@ export class UiLog {
             appendFileSync(this.file, redactedJson(r) + "\n");
         } catch {
             // the session keeps working without it
+        }
+    }
+}
+
+/**
+ * A fork's log, from the original's: what its copied turns need (tool rows'
+ * summaries and diffs, turn times). The fork's segments are the original's up
+ * to the cut, so records keep their keys. Written in one go, before the fork
+ * is opened.
+ */
+export function forkUiLog(from: { file: string; id: string }, to: { file: string; id: string }) {
+    const source = new UiLog(from.file, from.id);
+    const segments = readSegments(to.file);
+    const calls = new Set<string>();
+    const records: UiRecord[] = [];
+    for (const [si, seg] of segments.entries()) {
+        for (const [index, m] of seg.messages.entries()) {
+            if (m.role === "assistant") for (const p of m.content) if (p.type === "tool_call") calls.add(p.id);
+            const turn = source.turn(si, index);
+            // The same index can belong to a different prompt after a rewind.
+            if (turn && (turn.prompt === undefined || (m.role === "user" && turn.prompt === promptKey(m)))) records.push(turn);
+            if (m.role !== "user") continue;
+            const blocks = source.shown(si, index, m);
+            if (!blocks) continue;
+            records.push({ t: "blocks", seg: si, index, prompt: promptKey(m), blocks });
+            for (const b of blocks) if (b.t === "tool") calls.add(b.id);
+        }
+    }
+    for (const id of calls) {
+        const tool = source.tools.get(id);
+        if (tool) records.push(tool);
+    }
+    // State, pending turns and delegated runs belong to the original. Only
+    // its completed timeline is inherited; the fork gets its own live state.
+    const out = records.map((r) => redactedJson(r));
+    if (!out.length) return;
+    const file = join(dirname(to.file), "ui", `${to.id}.jsonl`);
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+        writeFileSync(tmp, out.join("\n") + "\n", { mode: 0o600 });
+        chmodSync(tmp, 0o600);
+        renameSync(tmp, file);
+    } catch {
+        // The timeline is rebuilt without it (derived summaries, no timings).
+        try {
+            unlinkSync(tmp);
+        } catch {
+            // never made
         }
     }
 }
