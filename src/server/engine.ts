@@ -1036,7 +1036,7 @@ export class Engine {
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
                     const command = loginCommand(provider, accountId);
-                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, onExit: () => { void this.accountsList(provider, true).then(() => this.broadcast({ type: "models.changed" })); } });
+                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, onExit: () => { void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
                 }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
@@ -1274,6 +1274,7 @@ export class Engine {
                 if ([...this.runtimes.values()].some((rt) => rt.busy)) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
                 const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
                 forgetClient(provider);
+                await this.refreshListings(true);
                 this.broadcast({ type: "models.changed" });
                 return added;
             }
@@ -1283,6 +1284,7 @@ export class Engine {
                 return null;
             case "accounts.setDefault":
                 setDefaultAccount(str(p.provider, "provider"), str(p.id, "id"));
+                await this.refreshListings(true);
                 this.broadcast({ type: "models.changed" });
                 return null;
             case "accounts.remove": {
