@@ -387,12 +387,23 @@ describe("replay", () => {
         }
         // Running again (Codex's, messaged after it answered): it hasn't ended, and has no report yet.
         log.write({ t: "agent", id: "tu1", head: { status: "running", endedAt: null, report: null } });
-        // A step of one never seen isn't anyone's.
+        // A step of one never seen isn't anyone's; one no longer kept changing (a long call ending) doesn't come back.
         log.write({ t: "agent", id: "tu9", block: { t: "text", id: "y", text: "?" }, after: null });
+        log.write({ t: "agent", id: "tu1", block: { t: "text", id: "x10", text: "step 10, ended" }, after: "x9" });
         const a = new UiLog(file, "a").agents;
         expect([...a.keys()]).toEqual(["tu1"]);
         const run = a.get("tu1")!;
         expect([run.status, "endedAt" in run, "report" in run, run.description, run.blocks.length, run.dropped, run.blocks[0]!.t === "text" && run.blocks[0]!.text]).toEqual(["running", false, false, "Review auth", 100, 30, "step 30"]);
+    });
+
+    test("steps and sub-agents written by this change's first versions (all at once, at the turn's end) are still read", () => {
+        const file = join(tempDir(), "o.jsonl");
+        const log = new UiLog(file, "o", false);
+        log.write({ t: "blocks", seg: 0, index: 0, blocks: [{ t: "text", id: "b1", text: "Old." }] });
+        log.write({ t: "agent", agent: { ...agent("tu1"), status: "done", blocks: [{ t: "text", id: "b2", text: "Did it." }] } });
+        const ui = new UiLog(file, "o");
+        expect(ui.shown(0, 0, user("q") as UserMessage)?.map((b) => b.t === "text" && b.text)).toEqual(["Old."]);
+        expect([ui.agents.get("tu1")?.status, ui.agents.get("tu1")?.blocks.length]).toEqual(["done", 1]);
     });
 
     test("a turn the log saw start and never end, with nothing after its prompt that says how it ended, was cut off", () => {
@@ -422,6 +433,14 @@ describe("replay", () => {
         // The one that ended isn't.
         log.write({ t: "turn", seg: 0, index: 2, at: 3, end: 4, status: "error" });
         expect(cutOffPrompt(new UiLog(file, "c"), 0, [...before, user("second")])).toBeUndefined();
+        // A message sent while tools ran starts a turn where it rides along with their results: that one can be cut off, or end.
+        const steering = { ...results, content: [...results.content, { type: "text", text: "The user sent this message while you were working:\nand the docs" }] } as Message;
+        const went = [...before, user("second"), calling, steering];
+        log.write({ t: "turn", seg: 0, index: 4, at: 5 });
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...went, calling])).toBe(4);
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...went, calling, steering])).toBeUndefined();
+        log.write({ t: "turn", seg: 0, index: 4, at: 5, end: 6, status: "denied" });
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, went)).toBeUndefined();
     });
 
     test("turns from before a compaction are kept, marked archived and not rewindable", () => {

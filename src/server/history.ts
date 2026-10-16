@@ -110,7 +110,10 @@ export type UiRecord =
     | { t: "step"; seg: number; index: number; /** promptKey of the prompt it answers. */ prompt?: string; block?: Block; after?: string | null; drop?: string }
     /** A sub-agent of such a turn, likewise: what changed of it (`head`), or one of its steps (agentStep), new or changed. */
     | { t: "agent"; id: string; head?: AgentHead; block?: Block; after?: string | null }
-    | ({ t: "state" } & UiState);
+    | ({ t: "state" } & UiState)
+    /** Earlier forms of these (a turn's steps all at once; a sub-agent whole), still read. */
+    | { t: "blocks"; seg: number; index: number; blocks: Block[]; prompt?: string }
+    | { t: "agent"; agent: AgentRun; id?: undefined };
 
 /** A step put where it goes: in place of itself, else after the one it follows (at the end if that one isn't there). */
 function place(blocks: Block[], b: Block, after: string | null | undefined) {
@@ -129,6 +132,8 @@ export class UiLog {
     /** Steps of backends' turns, by where their prompt is ("seg:index"). */
     steps = new Map<string, { blocks: Block[]; prompt?: string }>();
     agents = new Map<string, AgentRun>();
+    /** Steps the log no longer keeps of each sub-agent (beyond its latest AGENT_KEPT): a late change to one doesn't bring it back. */
+    private evicted = new Map<string, Set<string>>();
     state: UiState = {};
     /** The turn that started last ("seg:index"): it may never have ended. */
     lastStarted?: string;
@@ -178,6 +183,8 @@ export class UiLog {
             if (!s || s.prompt !== r.prompt) this.steps.set(k, (s = { blocks: [], prompt: r.prompt }));
             if (typeof r.drop === "string") s.blocks = s.blocks.filter((b) => b.id !== r.drop);
             else if (typeof r.block?.id === "string") place(s.blocks, r.block, r.after);
+        } else if (r.t === "agent" && r.id === undefined) {
+            if (typeof r.agent?.id === "string") this.agents.set(r.agent.id, r.agent);
         } else if (r.t === "agent" && typeof r.id === "string") {
             let a = this.agents.get(r.id);
             if (r.head) {
@@ -189,14 +196,19 @@ export class UiLog {
                 a = { ...(next as unknown as AgentRun), id: r.id, blocks: a?.blocks ?? [] };
                 this.agents.set(r.id, a);
             }
-            if (a && typeof r.block?.id === "string") {
+            if (a && typeof r.block?.id === "string" && !this.evicted.get(r.id)?.has(r.block.id)) {
                 place(a.blocks, r.block, r.after);
                 if (a.blocks.length > AGENT_KEPT) {
-                    const n = a.blocks.length - AGENT_KEPT;
-                    a.blocks.splice(0, n);
-                    a.dropped = (a.dropped ?? 0) + n;
+                    const gone = a.blocks.splice(0, a.blocks.length - AGENT_KEPT);
+                    a.dropped = (a.dropped ?? 0) + gone.length;
+                    let ids = this.evicted.get(r.id);
+                    if (!ids) this.evicted.set(r.id, (ids = new Set()));
+                    for (const b of gone) ids.add(b.id);
                 }
             }
+        } else if (r.t === "blocks" && Array.isArray(r.blocks)) {
+            // Written by this change's first versions: a turn's steps all at once, at its end.
+            this.steps.set(`${r.seg}:${r.index}`, { blocks: r.blocks, prompt: r.prompt });
         } else if (r.t === "state") {
             const { t: _, ...state } = r;
             this.state = { ...this.state, ...state };
@@ -363,6 +375,8 @@ export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map
 export const INTERRUPTED = "[Request interrupted by user]";
 
 const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command");
+/** Where a turn starts: a prompt, or tool results a message sent meanwhile rides along with. */
+const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING)));
 
 /**
  * The prompt of the session's last turn (its index), if that turn was cut
@@ -375,7 +389,7 @@ export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[]): numbe
     const rec = ui.lastStarted ? ui.turns.get(ui.lastStarted) : undefined;
     if (!rec || rec.seg !== seg || rec.end !== undefined || rec.status !== undefined) return undefined;
     const prompt = messages[rec.index];
-    if (!prompt || !isPrompt(prompt) || messages.slice(rec.index + 1).some(isPrompt)) return undefined;
+    if (!prompt || !startsTurn(prompt) || messages.slice(rec.index + 1).some(startsTurn)) return undefined;
     const last = messages[messages.length - 1]!;
     if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;
     // Interrupted already (as a stop writes it, for tools too).
@@ -387,7 +401,7 @@ export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[]): numbe
 // What the log keeps of a backend's turn
 
 /** A sub-agent's steps kept in the log, and how much of each one's output. */
-const AGENT_KEPT = 100;
+export const AGENT_KEPT = 100;
 const AGENT_OUTPUT = 1000;
 
 /** A step as it's kept: live-only fields go, and so does a diff (a call's own record has it); output is cut to `output`, if given. */
@@ -487,7 +501,9 @@ export function replay(o: ReplayInput): Turn[] {
                         if (p.type === "tool_result") applyResult(tools.get(p.toolCallId), p, o.ui);
                         else if (p.type === "text" && p.text.startsWith(STEERING)) {
                             const rec = o.ui.turn(si, index);
-                            start({ text: p.text.slice(STEERING.length).trim() }, rec?.at);
+                            const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at);
+                            if (rec?.end) t.endedAt = rec.end;
+                            if (rec?.status && rec.status !== "running") t.status = rec.status;
                         }
                     }
                     return;

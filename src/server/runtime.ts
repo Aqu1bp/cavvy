@@ -33,7 +33,7 @@ import { gitSnapshot } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
-import { agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import type {
     AgentRun,
     Block,
@@ -200,6 +200,8 @@ export class Runtime {
     /** Their sub-agents, likewise ("" for the sub-agent itself), and what was written of each field and step. */
     private agentsDirty = new Map<string, Set<string>>();
     private agentsLogged = new Map<string, { head: Map<string, string>; blocks: Map<string, string> }>();
+    /** The log's record of the turn running now (where it started): its end goes there, a steering message's turn's too. */
+    private uiTurn?: { seg: number; index: number; at: number };
     /** The mode it was left in, when that isn't the one it reopened in (bypass, not chosen again): the model is told. */
     private leftIn?: PermissionMode;
 
@@ -430,7 +432,11 @@ export class Runtime {
         const ids = this.agentsDirty.get(id);
         if (!ids) return;
         const a = this.view.agents.find((x) => x.id === id);
-        if (!a) return void this.agentsDirty.delete(id);
+        if (!a) {
+            this.agentsDirty.delete(id);
+            this.agentsLogged.delete(id);
+            return;
+        }
         let logged = this.agentsLogged.get(id);
         if (!logged) this.agentsLogged.set(id, (logged = { head: new Map(), blocks: new Map() }));
         if (ids.delete("")) {
@@ -451,17 +457,24 @@ export class Runtime {
             }
             if (Object.keys(patch).length) this.ui.write({ t: "agent", id, head: patch });
         }
+        // The log keeps its latest AGENT_KEPT steps: an older one changing (a long call ending) isn't written.
+        const kept = a.blocks.length - AGENT_KEPT;
         for (const bid of [...ids]) {
             const i = a.blocks.findIndex((b) => b.id === bid);
             const b = a.blocks[i];
             if (b && !all && (this.agentText.get(id) === bid || (b.t === "tool" && b.status === "streaming"))) continue;
             ids.delete(bid);
-            if (!b) continue;
+            if (!b || i < kept) continue;
             const step = agentStep(b);
             const json = JSON.stringify(step);
             if (logged.blocks.get(bid) === json) continue;
             logged.blocks.set(bid, json);
             this.ui.write({ t: "agent", id, block: step, after: a.blocks[i - 1]?.id ?? null });
+        }
+        // What was written of steps the log no longer keeps needn't be remembered.
+        if (logged.blocks.size > AGENT_KEPT) {
+            const tail = new Set(a.blocks.slice(-AGENT_KEPT).map((b) => b.id));
+            for (const bid of [...logged.blocks.keys()]) if (!tail.has(bid)) logged.blocks.delete(bid);
         }
         if (!ids.size) this.agentsDirty.delete(id);
     }
@@ -1246,8 +1259,8 @@ export class Runtime {
         // What it did, then that it ended.
         this.syncTurnAll(turnId);
         this.stepsLogged.delete(turnId);
-        const index = turn?.prompt?.index;
-        if (index !== undefined) this.ui.write({ t: "turn", seg: this.segment, index, at: turn!.startedAt ?? end, end, status });
+        if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status });
+        this.uiTurn = undefined;
         this.recordState();
     }
 
@@ -1417,7 +1430,9 @@ export class Runtime {
         this.closeOpen();
         const prev = this.turnId;
         if (prev) {
-            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: Date.now() } });
+            const end = Date.now();
+            this.op({ op: "turn.patch", turnId: prev, patch: { status: "done", endedAt: end } });
+            if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status: "done" });
             this.syncTurnAll(prev);
             this.stepsLogged.delete(prev);
         }
@@ -1425,7 +1440,9 @@ export class Runtime {
         this.op({ op: "turn", turn });
         if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
         this.turnId = turn.id;
-        if (!steering) this.ui.write({ t: "turn", seg: this.segment, index: this.session.messages.length, at: turn.startedAt! });
+        // Where it starts: its own prompt, or the tool results it rides along with.
+        this.uiTurn = { seg: this.segment, index: this.session.messages.length, at: turn.startedAt! };
+        this.ui.write({ t: "turn", ...this.uiTurn });
         return texts;
     }
 
@@ -1488,7 +1505,8 @@ export class Runtime {
         this.turnId = turn.id;
         if (this.backendModel()) this.backendTurns.set(turn.id, this.segment);
         this.responseBlocks = [];
-        this.ui.write({ t: "turn", seg: this.segment, index, at: this.turnStartedAt });
+        this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
+        this.ui.write({ t: "turn", ...this.uiTurn });
         // The mode and effort it's sent with, once the session is going to be on disk.
         if (this.ui.state.mode !== this.mode || this.ui.state.effort !== this.effort) this.recordState({ force: true });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });

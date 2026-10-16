@@ -1659,6 +1659,23 @@ describe("reopening a Claude Code session", () => {
         }
     }, 60_000);
 
+    test("a turn that ended after a message sent while its tools ran isn't taken for one cut off", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.setModel", { id, ref: "mock:mock-opus", persist: false });
+        await c.call("session.send", { id, text: "demo" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        expect(await c.call("session.send", { id, text: "and the docs" })).toEqual({ queued: true });
+        // Declined: it ends there, with the message riding along with the results.
+        await c.answer(id, { kind: "permission", choice: "no" });
+        await c.until(id, done);
+        const live = structuredClone(c.view(id));
+        c.close();
+        const snap = await reopened(id);
+        expect((await history(id)).some((m) => m.meta?.kind === "interrupt")).toBe(false);
+        expect(snap.turns.map((t) => [t.prompt?.text, t.status])).toEqual(live.turns.map((t) => [t.prompt?.text, t.status]));
+    }, 60_000);
+
     test("one cut off by the server being killed comes back the same, and Claude Code is told when it goes on", async () => {
         const { saveAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });
