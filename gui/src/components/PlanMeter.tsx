@@ -1,20 +1,55 @@
 // The plan meter beside the context ring: where the user's Claude or ChatGPT
 // plan stands, as the session's agent CLI last reported it. Limits are the
-// account's, so every session on that CLI shows the same numbers.
+// account's, so sessions using that account share the same numbers.
 
-import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
-import { app } from "../state/app";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { planLimitKey, type AccountInfo } from "@shared/protocol";
+import { app, handleFor, reportError, rpc, toast } from "../state/app";
 import { setSettingsTab } from "../state/ui";
 import { now } from "../lib/clock";
-import { meterOf, windowLine } from "../lib/limits";
+import { limitAlternatives, meterOf, windowLine } from "../lib/limits";
 import { Popover } from "./ui/Popover";
 
-export function PlanMeter(p: { provider?: string }) {
+export function PlanMeter(p: { provider?: string; sessionId?: string }) {
     let btn: HTMLButtonElement | undefined;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
     const [open, setOpen] = createSignal(false);
-    const meter = createMemo(() => meterOf(p.provider ? app.limits[p.provider] : undefined, now()));
-    const name = () => app.providers.find((x) => x.id === p.provider)?.agentCli?.plan ?? "Plan";
+    const [accounts, setAccounts] = createSignal<AccountInfo[]>([]);
+    const [checking, setChecking] = createSignal(false);
+    const [switching, setSwitching] = createSignal(false);
+    const state = () => p.sessionId ? handleFor(p.sessionId)?.view.state : undefined;
+    const provider = () => state()?.model?.provider ?? p.provider;
+    const providerInfo = () => app.providers.find((x) => x.id === provider());
+    const accountId = () => state()?.accounts?.[provider() ?? ""] ?? providerInfo()?.agentCli?.defaultAccount ?? "default";
+    const limits = () => app.limits[planLimitKey(provider() ?? "", accountId())];
+    const meter = createMemo(() => meterOf(limits(), now()));
+    const name = () => `${providerInfo()?.agentCli?.plan ?? providerInfo()?.name ?? "Plan"} · ${providerInfo()?.agentCli?.accounts?.find((a) => a.id === accountId())?.name ?? (accountId() === "default" ? "Default" : accountId())}`;
+    const alternatives = () => limitAlternatives(accounts(), accountId());
+    // A limit can arrive before Settings has ever checked account status.
+    const refreshKey = createMemo(() => meter()?.reached ? `${provider()}:${accountId()}:${limits()?.at}` : undefined);
+    createEffect(() => {
+        const key = refreshKey();
+        setAccounts([]);
+        setChecking(false);
+        if (!key || !providerInfo()?.agentCli?.accounts?.length) return;
+        let active = true;
+        setChecking(true);
+        void rpc.call("accounts.list", { provider: provider()!, refresh: true }).then((items) => {
+            if (active) setAccounts(items);
+        }).catch((error) => { if (active) reportError(error); }).finally(() => { if (active) setChecking(false); });
+        onCleanup(() => { active = false; });
+    });
+    async function switchTo(id: string) {
+        const selectedProvider = provider();
+        if (!selectedProvider || !p.sessionId) return;
+        setSwitching(true);
+        try {
+            await rpc.call("session.setAccount", { id: p.sessionId, provider: selectedProvider, accountId: id });
+            setOpen(false);
+            toast("Account switched. Send your message again to continue.", "info");
+        } catch (error) { reportError(error); }
+        finally { setSwitching(false); }
+    }
     const show = () => (clearTimeout(closeTimer), setOpen(true));
     const hide = () => (closeTimer = setTimeout(() => setOpen(false), 160));
     onCleanup(() => clearTimeout(closeTimer));
@@ -26,21 +61,27 @@ export function PlanMeter(p: { provider?: string }) {
     };
     return (
         <Show when={meter()}>
-            <button
-                ref={btn}
-                class={`hb plan-meter ${tone()}`}
-                aria-haspopup="dialog"
-                aria-expanded={open()}
-                aria-label={`${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}`}
-                onMouseEnter={show}
-                onMouseLeave={hide}
-                onClick={() => setOpen(!open())}
-            >
-                <span class="plan-gauge" aria-hidden="true">
-                    <span style={{ width: `${Math.min(100, meter()!.reached ? 100 : (meter()!.top ?? 0))}%` }} />
-                </span>
-                <span class="num">{chip()}</span>
-            </button>
+            <span class="account-plan-meter">
+                <button
+                    ref={btn}
+                    class={`hb plan-meter ${tone()}`}
+                    aria-haspopup="dialog"
+                    aria-expanded={open()}
+                    aria-label={`${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}`}
+                    onMouseEnter={show}
+                    onMouseLeave={hide}
+                    onClick={() => setOpen(!open())}
+                >
+                    <span class="plan-gauge" aria-hidden="true">
+                        <span style={{ width: `${Math.min(100, meter()!.reached ? 100 : (meter()!.top ?? 0))}%` }} />
+                    </span>
+                    <span class="num">{chip()}</span>
+                </button>
+                <Show when={p.sessionId && meter()?.reached}>
+                    <Show when={checking()}><span class="plan-account-hint">Checking accounts…</span></Show>
+                    <For each={alternatives()}>{(a) => <button class="hb" disabled={state()?.busy || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
+                </Show>
+            </span>
             <Popover open={open()} anchor={() => btn} onClose={() => setOpen(false)} placement="top" align="end" width={280} class="ctx-card">
                 <div onMouseEnter={show} onMouseLeave={hide}>
                     <div class="ctx-label">
@@ -71,7 +112,7 @@ export function PlanMeter(p: { provider?: string }) {
                         )}
                     </For>
                     <div class="ctx-foot">
-                        <span>From the CLI's own reports.</span>
+                        <span>From this account's CLI reports.</span>
                         <button
                             class="ghost-btn outlined"
                             onClick={() => {

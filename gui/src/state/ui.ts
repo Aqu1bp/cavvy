@@ -42,7 +42,7 @@ export const [archiveRequest, setArchiveRequest] = createSignal<{ id: string; ti
 export const [terminalOpen, setTerminalOpen] = createSignal(false);
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there. */
-export const terminalActions: { runScript?: (cwd: string, script: { id: string; name: string }) => void } = {};
+export const terminalActions: { loginAccount?: (provider: string, accountId: string, name: string) => void; runScript?: (cwd: string, script: { id: string; name: string }) => void } = {};
 
 /** The find bar over the conversation (⌘F), what it looks for, and a bump to take focus again. */
 export const [findOpen, setFindOpen] = createSignal(false);

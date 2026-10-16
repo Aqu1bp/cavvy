@@ -16,6 +16,7 @@ import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, shellWord, SHELLS, withoutMessages } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
+import { accountProtectedPaths } from "../providers/accounts";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -164,14 +165,16 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHom
     const git = [...new Set([...ws.map((w) => join(w, ".git")), ...ws.flatMap(gitDirs)])];
     const temp = [...new Set([process.platform === "darwin" ? "/private/tmp" : "/tmp", real(tmpdir())])];
     const harness = real(opts.harnessHome);
+    // Resolve afresh so newly added accounts are protected in running sessions.
+    const accounts = [...new Set(accountProtectedPaths().map(canonical))].filter((a) => !isWithin(a, harness));
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
         // A worktree's own config and its .git pointer stay read-only, as in the project around it.
-        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), harness])],
+        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), harness, ...accounts])],
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
-        unreadable: [...UNREADABLE_IN_HOME.map((p) => join(home, p)), harness],
+        unreadable: [...UNREADABLE_IN_HOME.map((p) => join(home, p)), harness, ...accounts],
         gitDirs: git,
     };
 }
@@ -227,7 +230,7 @@ export function seatbeltProfile(p: SandboxPolicy): string {
     const subpaths = (list: string[]) => list.map((x) => `(subpath ${sb(x)})`).join(" ");
     const cli = p.cliConfig ?? [];
     const worktrees = (p.worktrees ?? []).filter((t) => cli.some((c) => isWithin(t, c)));
-    const fixed = [...new Set([...p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors), ...worktrees])].filter((f) => p.writable.some((w) => isWithin(f, w)));
+    const fixed = [...new Set([...p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors), ...accountProtectedPaths().flatMap((a) => withAncestors(canonical(a))), ...worktrees])].filter((f) => p.writable.some((w) => isWithin(f, w)));
     return [
         "(version 1)",
         "(allow default)",
@@ -250,7 +253,8 @@ export function seatbeltProfile(p: SandboxPolicy): string {
         `(deny file-write* ${subpaths([...p.readOnly, ...cliInWorktrees(p), ...p.gitDirs.flatMap(gitProtectedPaths), ...p.unreadable])})`,
         // Paths that can't be moved, replaced or repointed, only written inside:
         // the git dirs and `.git` pointer files, the writable directories
-        // above them (the workspace roots, say), and the worktrees. Moved away,
+        // above them (the workspace roots, say), the worktrees, and unreadable
+        // account paths and their writable ancestors. Moved away,
         // edited and moved back, they'd get round the rules above.
         ...(fixed.length ? [`(deny file-write* ${fixed.map((f) => `(literal ${sb(f)})`).join(" ")})`] : []),
         // Submodules (.git/modules/<name>/…) and other worktrees (.git/worktrees/<name>/…)

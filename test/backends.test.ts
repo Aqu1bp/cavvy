@@ -1007,6 +1007,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(usageOf(session).inputTokens).toBe(200 + 400);
     });
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP tool call Codex asks about goes to the harness's rules and the user, not declined unasked", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         const yes = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
@@ -1052,6 +1053,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
     }, 20_000);
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP server's form goes to the question dialog, its answers typed as the form asks; with nobody to ask it's declined", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         process.env.FAKE_ELICIT = "form";
