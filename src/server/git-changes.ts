@@ -742,6 +742,11 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
                 changes.push(c);
                 normalize.add(c);
                 if (tracked(c)) candidates.push(c);
+            } else if (eolOf(c.path) === "auto" && c.now!.autoBinary === undefined && ix && ix.oid !== c.old!.oid) {
+                // Streaming hashes don't classify auto-text. A different index may hold
+                // normalized content, so keep the change and let stat settling use it.
+                changes.push(c);
+                if (tracked(c)) candidates.push(c);
             } else if (c.note) changes.push(c);
         }
         const settle = candidates

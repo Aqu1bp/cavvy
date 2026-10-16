@@ -387,6 +387,40 @@ describe("git changes", () => {
         expect(indexState(dir)).toEqual(before);
     });
 
+    test("branch scope keeps large normalization changes whose raw working bytes match the base", async () => {
+        const body = "one\r\ntwo\r\n".repeat(250_000);
+        const dir = repo({ "large.txt": body });
+        git(dir, "switch", "-q", "-c", "feat");
+        write(dir, "large.txt", body.replace(/\r\n/g, "\n"));
+        git(dir, "commit", "-q", "-am", "Normalize line endings");
+        git(dir, "config", "core.autocrlf", "true");
+        rmSync(join(dir, "large.txt"));
+        git(dir, "checkout", "--", "large.txt");
+        expect(readFileSync(join(dir, "large.txt"), "utf-8")).toBe(body);
+        expect(git(dir, "rev-parse", "main:large.txt")).not.toBe(git(dir, "rev-parse", "HEAD:large.txt"));
+        // Exercise both a trusted index stat and the fallback when it no longer matches.
+        const past = new Date("2000-01-01T00:00:00Z");
+        utimesSync(join(dir, "large.txt"), past, past);
+        git(dir, "update-index", "--refresh");
+        expect(git(dir, "status", "--porcelain")).toBe("");
+        expect(git(dir, "diff", "--name-only", "main")).toBe("large.txt\n");
+        for (const dirty of [false, true]) {
+            if (dirty) {
+                const later = new Date("2001-01-01T00:00:00Z");
+                utimesSync(join(dir, "large.txt"), later, later);
+                expect(statSync(join(dir, "large.txt")).mtimeMs).toBe(later.getTime());
+            }
+            const before = indexState(dir);
+            const r = await gitChanges(dir, { scope: "branch", base: "main" });
+            expect(r.files.map((f) => [f.path, f.change, f.note])).toEqual([["large.txt", "modified", "Too large to show"]]);
+            expect(indexState(dir)).toEqual(before);
+        }
+        // Without conversion, the working tree really is identical to the base.
+        git(dir, "config", "core.autocrlf", "false");
+        expect(git(dir, "diff", "--name-only", "main")).toBe("");
+        expect((await gitChanges(dir, { scope: "branch", base: "main" })).files).toEqual([]);
+    });
+
     test("auto conversion leaves content git sees as binary alone", async () => {
         const dir = repo({ "a.txt": "one\rtwo\n" });
         git(dir, "config", "core.autocrlf", "true");
