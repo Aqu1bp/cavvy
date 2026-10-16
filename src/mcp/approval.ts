@@ -197,13 +197,17 @@ export function visible(s: string, o: { lineBreaks?: boolean } = {}): { text: st
 }
 
 /**
- * Configured secrets, longest first, labelled by source. Ordinary env/header values
- * shorter than four characters aren't masked: "1" or "on" would garble the text.
- * Explicit credential flags and URL fields are masked regardless of length.
+ * Credential-named env/header values count at any length. Otherwise only values
+ * of at least 20 characters count: ordinary modes and log levels aren't secrets.
+ * Explicit credential flags and URL fields always count too.
  */
+function credentialName(name: string): boolean {
+    return /token|key|secret|password|passwd|auth|credential|cookie|session|(?:^|[_-])pin(?:$|[_-])/i.test(name);
+}
+
 function configSecrets(config: McpServerConfig): [string, string][] {
     const out: [string, string][] = [];
-    const add = (v: unknown, label: string, minLength = 4) => {
+    const add = (v: unknown, label: string, minLength = 20) => {
         if (typeof v === "string" && v.length >= minLength) out.push([v, label]);
     };
     // As written, and decoded (an error may echo either).
@@ -227,11 +231,18 @@ function configSecrets(config: McpServerConfig): [string, string][] {
         }
     }
     for (const [flag, v] of secretFlags(config.args)) add(v, `argument ${flag}`, 1);
-    for (const [k, v] of Object.entries(record(config.env))) add(v, `env ${k}`);
+    for (const [k, v] of Object.entries(record(config.env))) add(v, `env ${k}`, credentialName(k) ? 1 : 20);
     for (const [k, v] of Object.entries(record(config.headers))) {
-        add(v, `header ${k}`);
-        // "Bearer <token>": the token on its own, too.
-        if (typeof v === "string" && /\s/.test(v.trim())) add(v.trim().split(/\s+/).pop(), `header ${k}`);
+        const minLength = credentialName(k) ? 1 : 20;
+        add(v, `header ${k}`, minLength);
+        // Authorization schemes and cookies can be echoed without their wrapper.
+        if (typeof v === "string" && /\s/.test(v.trim())) add(v.trim().split(/\s+/).pop(), `header ${k}`, minLength);
+        if (/cookie/i.test(k) && typeof v === "string") {
+            for (const part of v.split(";")) {
+                const eq = part.indexOf("=");
+                if (eq >= 0) add(part.slice(eq + 1).trim(), `header ${k}`, 1);
+            }
+        }
     }
     return out.sort((a, b) => b[0].length - a[0].length);
 }
@@ -249,11 +260,7 @@ export function maskConfigValues(text: string, config: McpServerConfig): string 
     return redact(maskWith(text, configSecrets(config)));
 }
 
-/**
- * Every string in `v` (a tool result, a schema) with this server's config
- * values masked, before anything serializes or cuts it (either could split
- * or escape a value). Nested past 64 levels is dropped.
- */
+/** Payload data only: mask before serialization can escape or split a value. Never pass protocol objects or schemas here. */
 export function maskConfigDeep<T>(v: T, config: McpServerConfig): T {
     const secrets = configSecrets(config);
     if (!secrets.length) return v;

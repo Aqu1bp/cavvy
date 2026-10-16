@@ -150,7 +150,7 @@ export function McpDialog() {
         if (cwd && request) {
             requestTrust(cwd, () => {
                 if (request.current()) void load();
-            }, "Harness trusted this folder for this session only, because it had nothing to protect when it was opened. Its .mcp.json servers can be approved once you trust it yourself.");
+            }, "mcp-approval");
         }
     };
 

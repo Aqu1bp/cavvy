@@ -297,3 +297,130 @@ test("structured keys are masked and tools with secret-bearing names are hidden,
         expect(st.error).toContain("1 tool was hidden");
     } finally { await m.closeAll(); f.server.stop(true); }
 });
+
+for (const stage of ["server/discover", "tools/list"] as const) {
+    test(`a disk revoke during ${stage} stops the in-flight client before it becomes connected`, async () => {
+        const dir = folder();
+        const received = deferred<void>();
+        const release = deferred<void>();
+        const requests: string[] = [];
+        const server = Bun.serve({
+            hostname: "127.0.0.1", port: 0,
+            async fetch(req) {
+                const body = await req.json() as { method: string; id: number };
+                requests.push(body.method);
+                if (body.method === stage) {
+                    received.resolve();
+                    await release.promise;
+                }
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: body.method === "server/discover"
+                    ? { supportedVersions: [MODERN_VERSION] }
+                    : { tools: [{ name: "echo", inputSchema: { type: "object" } }] } });
+            },
+        });
+        const m = await approved(dir, { url: server.url.href });
+        let connecting: Promise<void> | undefined;
+        try {
+            connecting = m.startAll();
+            await received.promise;
+            const client = m.servers.get("srv")!.client!;
+            expect(client.closed).toBe(false);
+            // Write exactly what the other app persists, without calling refresh/revoke on this manager.
+            const { removeApproval } = await import("../src/mcp/approval");
+            removeApproval(dir, "srv");
+            release.resolve();
+            await connecting;
+            expect(client.closed).toBe(true);
+            expect(m.servers.get("srv")!.status).toBe("needs-approval");
+            expect(m.tools()).toEqual([]);
+            expect(requests).toEqual(stage === "server/discover" ? [stage] : ["server/discover", stage]);
+        } finally {
+            release.resolve();
+            await connecting;
+            await m.closeAll();
+            server.stop(true);
+        }
+    });
+}
+
+test("ordinary env values preserve text, images and schemas; credential values are still masked", async () => {
+    const env = { MODE: "text", SECTION: "content", FIELD: "properties", LOG_LEVEL: "info", FORMAT: "json", TOKEN: "s3cr3t" };
+    const schema = { type: "object", properties: { text: { type: "string", description: "text content properties info json" } }, required: ["text"] };
+    const image = { type: "image" as const, mimeType: "image/png", data: "cGl4ZWw=" };
+    const server = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        async fetch(req) {
+            const body = await req.json() as { method: string; id: number };
+            return Response.json({ jsonrpc: "2.0", id: body.id, result: body.method === "server/discover"
+                ? { supportedVersions: [MODERN_VERSION] }
+                : body.method === "tools/list" ? { tools: [{ name: "echo", inputSchema: schema }] }
+                : { content: [{ type: "text", text: "text content properties info json s3cr3t" }, image] } });
+        },
+    });
+    const m = await approved(folder(), { url: server.url.href, env });
+    try {
+        await m.startAll();
+        const tool = m.tools()[0]!;
+        expect(tool.parameters).toEqual(schema);
+        const result = await tool.run({}, ctx);
+        expect(result.isError).toBe(false);
+        expect(result.content).toBe("text content properties info json [REDACTED env TOKEN]");
+        expect(result.images).toEqual([{ type: "image", mediaType: image.mimeType, data: image.data }]);
+    } finally {
+        await m.closeAll();
+        server.stop(true);
+    }
+});
+
+test("a tool with a secret in a nested schema property is hidden without renaming its contract", async () => {
+    const secret = "property-secret";
+    const server = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        async fetch(req) {
+            const body = await req.json() as { method: string; id: number };
+            return Response.json({ jsonrpc: "2.0", id: body.id, result: body.method === "server/discover"
+                ? { supportedVersions: [MODERN_VERSION] }
+                : { tools: [
+                    { name: "unsafe", inputSchema: { type: "object", properties: { values: { type: "array", items: { anyOf: [{ type: "object", properties: { [secret]: { type: "string" } } }] } } } } },
+                    { name: "safe", inputSchema: { type: "object", description: secret, properties: { value: { type: "string", title: secret } } } },
+                ] } });
+        },
+    });
+    const m = await approved(folder(), { url: server.url.href, env: { SECRET: secret } });
+    try {
+        await m.startAll();
+        expect(m.tools().map((t) => t.name)).toEqual(["mcp__srv__safe"]);
+        expect(m.tools()[0]!.parameters).toEqual({ type: "object", description: "[REDACTED env SECRET]", properties: { value: { type: "string", title: "[REDACTED env SECRET]" } } });
+        expect(m.describe("srv")!.error).toContain("input schema");
+        expect(JSON.stringify(m.tools())).not.toContain(secret);
+    } finally {
+        await m.closeAll();
+        server.stop(true);
+    }
+});
+
+test("payload masking leaves protocol keys, discriminators, URIs and binary data untouched", async () => {
+    const { maskMcpResult, maskMcpSchema } = await import("../src/mcp/payload");
+    const config = { env: { TOKEN: "text", SECRET: "content", KEY: "image/png", AUTH: "object", COOKIE: "cGl4ZWw=" } };
+    const result = maskMcpResult({ content: [
+        { type: "text", text: "text content" },
+        { type: "image", mimeType: "image/png", data: "cGl4ZWw=" },
+        { type: "resource", resource: { uri: "text://content", mimeType: "text/plain", text: "text content" } },
+    ], structuredContent: { content: "text" } }, config);
+    expect(result.content).toEqual([
+        { type: "text", text: "[REDACTED env TOKEN] [REDACTED env SECRET]" },
+        { type: "image", mimeType: "image/png", data: "cGl4ZWw=" },
+        { type: "resource", resource: { uri: "text://content", mimeType: "text/plain", text: "[REDACTED env TOKEN] [REDACTED env SECRET]" } },
+    ]);
+    expect(result.structuredContent).toEqual({ "[REDACTED env SECRET]": "[REDACTED env TOKEN]" });
+    expect(maskMcpSchema({ type: "object", properties: { value: { type: "string" } } }, config)).toEqual({ type: "object", properties: { value: { type: "string" } } });
+});
+
+test("only credential-named or long env/header values count as secrets", async () => {
+    const { maskConfigValues } = await import("../src/mcp/approval");
+    const long = "v".repeat(20);
+    const ordinary = "n".repeat(19);
+    const config = { env: { MODE: "text", LOG_LEVEL: "info", FORMAT: "json", FIELD: "properties", SETTING: ordinary, OTHER: long, TOKEN: "abc" }, headers: { "X-Mode": "content", Authorization: "Bearer xy", Cookie: "id=zw" } };
+    const masked = maskConfigValues(`text info json properties content ${ordinary} ${long} abc xy zw`, config);
+    expect(masked).toBe(`text info json properties content ${ordinary} [REDACTED env OTHER] [REDACTED env TOKEN] [REDACTED header Authorization] [REDACTED header Cookie]`);
+});

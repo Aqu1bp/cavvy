@@ -13,12 +13,13 @@ import { paths } from "../config/paths";
 import type { Tool, ToolResult } from "../tools/types";
 import type { ImagePart } from "../providers/types";
 import { McpClient, type McpCallResult, type McpTool } from "./client";
+import { maskMcpResult, maskMcpSchema } from "./payload";
 import { redact } from "../util/redact";
 import { truncateMiddle } from "../util/files";
 import { createHash } from "crypto";
 import type { McpServerInfo } from "./info";
 import { trustedByUser } from "../config/trust";
-import { approvalOf, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
+import { approvalOf, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
 
 export interface ServerState {
     name: string;
@@ -252,12 +253,12 @@ export class McpManager {
             };
             await client.connect(signal);
             // Revoked (or restarted) while connecting: no more requests with its configuration.
-            if (superseded()) {
+            if (superseded() || !this.stillApproved(st, runCwd)) {
                 await client.close();
                 return;
             }
             const tools = await client.listTools(signal);
-            if (superseded()) {
+            if (superseded() || !this.stillApproved(st, runCwd)) {
                 await client.close();
                 return;
             }
@@ -303,9 +304,9 @@ export class McpManager {
     }
 
     private setTools(st: ServerState, tools: McpTool[]): void {
-        st.tools = tools.filter((t) => !hasConfigValue(t.name, st.config));
+        st.tools = tools.filter((t) => !hasConfigValue(t.name, st.config) && maskMcpSchema(t.inputSchema, st.config) !== undefined);
         const skipped = tools.length - st.tools.length;
-        st.error = skipped ? `${skipped} tool${skipped === 1 ? " was" : "s were"} hidden because its name contains a configured secret.` : undefined;
+        st.error = skipped ? `${skipped} tool${skipped === 1 ? " was" : "s were"} hidden because its name or input schema contains a configured secret.` : undefined;
     }
 
     async restart(name: string) {
@@ -418,7 +419,7 @@ export class McpManager {
                     category: "mcp",
                     readOnly,
                     description: `${(t.description === undefined ? label : maskConfigValues(t.description, st.config)).slice(0, 4000)}\n\n(MCP tool "${maskConfigValues(t.name, st.config)}" from server "${st.name}")`,
-                    parameters: sanitizeSchema(maskConfigDeep(t.inputSchema, st.config)),
+                    parameters: sanitizeSchema(maskMcpSchema(t.inputSchema, st.config)),
                     title: (input: Record<string, unknown>) => {
                         const arg = Object.values(input ?? {}).find((v) => typeof v === "string") as string | undefined;
                         return `${st.name} - ${label}${arg ? `(${arg.slice(0, 60)})` : ""}`;
@@ -428,7 +429,7 @@ export class McpManager {
                         if (st.client !== client || self.servers.get(st.name) !== st || !mayStart(st) || !self.stillApproved(st)) return { content: `MCP server ${st.name} isn't running any more.`, isError: true };
                         try {
                             // The server knows its own env and headers: it doesn't get to echo them into the transcript.
-                            const r = maskConfigDeep(await client.callTool(t.name, input ?? {}, ctx.signal), st.config);
+                            const r = maskMcpResult(await client.callTool(t.name, input ?? {}, ctx.signal), st.config);
                             const f = formatMcpResult(r);
                             return {
                                 content: f.content || "(no output)",
