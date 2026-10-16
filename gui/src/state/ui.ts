@@ -18,3 +18,6 @@ export const [review, setReview] = createSignal<{ path?: string } | undefined>()
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
+
+/** Bottom panel; hiding it keeps its shells running. */
+export const [terminalOpen, setTerminalOpen] = createSignal(false);

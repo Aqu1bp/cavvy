@@ -210,6 +210,16 @@ export async function setMode(mode: PermissionModeId) {
     });
 }
 
+export async function setFastMode(enabled: boolean) {
+    try {
+        if (app.activeId) await rpc.call("session.setFastMode", { id: app.activeId, enabled });
+        else {
+            const settings = await rpc.call("settings.update", { patch: { fastMode: enabled } });
+            setApp("settings", settings);
+        }
+    } catch (e) { reportError(e); }
+}
+
 export async function setEffort(effort: EffortLevel) {
     const id = app.activeId;
     if (id) await rpc.call("session.setEffort", { id, effort }).catch(reportError);

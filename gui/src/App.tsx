@@ -4,7 +4,7 @@ import { app, attentionCount, dismissToast, handleFor, toasts, type SessionHandl
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
-import { isMod, isTauri, os } from "./lib/platform";
+import { isMod, isTauri, isTerminalToggle, os } from "./lib/platform";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -13,6 +13,8 @@ import { Composer } from "./components/Composer";
 import { AgentView } from "./components/Agents";
 import { RightPanel } from "./components/RightPanel";
 import { ReviewPane } from "./components/ReviewPane";
+import { TerminalPanel } from "./components/TerminalPanel";
+import { terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsNav, SettingsPage } from "./components/Settings";
@@ -150,8 +152,10 @@ export function App() {
     // Global shortcuts.
     onMount(() => {
         const onKey = (e: KeyboardEvent) => {
+            if (isTerminalToggle(e) && !document.querySelector(".dialog-backdrop")) return e.preventDefault(), setTerminalOpen(!terminalOpen());
             if (isMod(e) && !e.altKey) {
                 const k = e.key.toLowerCase();
+                if ((e.target as HTMLElement)?.closest(".terminal-emulator")) return;
                 if (k === "k") return e.preventDefault(), setPaletteOpen(!paletteOpen());
                 if (k === ",") return e.preventDefault(), setSettingsTab(settingsTab() ? undefined : "general");
                 // Nothing behind an open dialog changes (it may be about the session in view).
@@ -164,6 +168,7 @@ export function App() {
                 if (k === "[" || (e.altKey && k === "arrowup")) return e.preventDefault(), cycleSession(-1);
                 if (k === "]" || (e.altKey && k === "arrowdown")) return e.preventDefault(), cycleSession(1);
             }
+            if ((e.target as HTMLElement)?.closest(".terminal-emulator")) return;
             if (e.key !== "Escape" || e.defaultPrevented || blocked()) return;
             const typing = (document.activeElement as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable]");
             // Esc leaves Settings, a sub-agent's view and the review, and otherwise interrupts a working session.
@@ -213,6 +218,7 @@ export function App() {
                             {(h) => <SessionView handle={h} />}
                         </Match>
                     </Switch>
+                    <TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} />
                 </main>
                 <Show when={review() && active() && !settingsTab()}>
                     <ReviewPane handle={active()!} />

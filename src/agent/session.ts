@@ -59,6 +59,7 @@ type Line =
     | ({ t: "meta" } & SessionMeta)
     | { t: "msg"; m: Message }
     | { t: "model"; model: string }
+    | { t: "fastMode"; enabled: boolean }
     | { t: "title"; title: string }
     | { t: "compact"; summary: string }
     | { t: "rewind"; count: number }
@@ -90,6 +91,7 @@ export interface SessionSummary {
 export class Session {
     readonly meta: SessionMeta;
     messages: Message[] = [];
+    fastMode?: boolean;
     model?: string;
     title?: string;
     /** The latest compaction summary (/summary). */
@@ -180,6 +182,11 @@ export class Session {
         this.messages.push(m);
         this.write({ t: "msg", m });
         return m;
+    }
+
+    setFastMode(enabled: boolean) {
+        this.fastMode = enabled;
+        this.write({ t: "fastMode", enabled });
     }
 
     setModel(ref: string) {
@@ -304,6 +311,7 @@ export class Session {
                 else s.backends.delete(l.provider);
             }
             else if (l.t === "model") s.model = l.model;
+            else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost);
         }

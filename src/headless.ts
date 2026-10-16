@@ -42,6 +42,7 @@ export interface HeadlessOptions {
     addDirs: string[];
     startupNotes: string[];
     effort?: Effort;
+    fastMode?: boolean;
     fallbackModel?: string;
 }
 
@@ -110,7 +111,9 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     if (!model) return fail(`Unknown model "${ref}".`);
 
     // ---- session and tools
+    if (o.fastMode && !model.supportsFastMode) return fail("Fast mode is not available for this model/backend. Refresh the model list or choose a supported model.");
     const session: Session = resumed ?? Session.create(o.cwd);
+    if (o.fastMode !== undefined) session.setFastMode(o.fastMode);
     const toolState: ToolState = { cwd: o.cwd, projectRoot: o.cwd, fileState: new Map(), todos: [], shells: new Map() };
     const checker = new PermissionChecker(() => settings, o.cwd);
     const mcp = new McpManager(o.cwd, () => settings, o.trusted);

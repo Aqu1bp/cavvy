@@ -7,7 +7,7 @@ import { prefs } from "../state/prefs";
 import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
 import { tokens, usd } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
-import { EffortMenu, ModelPicker } from "./ModelPicker";
+import { EffortMenu, FastModeToggle, ModelPicker } from "./ModelPicker";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { Popover } from "./ui/Popover";
@@ -465,6 +465,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <div class="composer-bar">
                     <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(e) => e.currentTarget.files && void addFiles(e.currentTarget.files)} />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} />
+                    <FastModeToggle current={st()?.model} currentRef={app.settings.model} enabled={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy} />
                     <EffortMenu current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
                     <span class="spacer" />

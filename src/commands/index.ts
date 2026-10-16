@@ -997,6 +997,7 @@ async function statusCommand(app: App) {
             ? kv("Credentials", `gcloud token for ${vertex.account} ${theme.muted(`· billed to project ${vertex.project}`)}`)
             : kv("API key", key ? `${maskKey(key.value)} ${theme.muted(`from ${key.source === "env" ? `$${key.envVar}` : key.source}`)}` : def?.requiresKey === false ? theme.muted("not needed") : "—"),
         kv("Context window", m?.contextWindow ? formatTokens(m.contextWindow) : theme.muted("unknown")),
+        kv("Fast mode", m?.supportsFastMode ? ((app.session.fastMode ?? app.settings.fastMode) ? "on (higher usage/cost)" : "off") : "not supported"),
         kv("Effort", app.settings.effort ?? theme.muted("model default")),
         kv("Thinking text", app.settings.showThinking ? "shown" : theme.muted("hidden (summaries only)")),
         kv("Permission mode", MODE_INFO[app.mode].color(MODE_INFO[app.mode].label)),
@@ -1068,6 +1069,20 @@ async function exportCommand(app: App, args: string) {
 
 // ---------------------------------------------------------------------------
 // Settings-ish commands
+
+async function fastCommand(app: App, args: string) {
+    const arg = args.trim().toLowerCase();
+    if (arg && !["on", "off", "status"].includes(arg)) { app.notice("Usage: /fast [on|off|status]", "error"); return; }
+    if (!app.model?.supportsFastMode && arg !== "off") { app.notice("Fast mode is not available for this model/backend. Refresh /model to check for updates.", "error"); return; }
+    const current = Boolean(app.model?.supportsFastMode && (app.session.fastMode ?? app.settings.fastMode));
+    if (arg === "status") { app.notice(`Fast mode ${current ? "on" : "off"}`); return; }
+    if (app.busy) { app.notice("Change speed once this response is done, or interrupt it first.", "error"); return; }
+    const enabled = arg === "on" ? true : arg === "off" ? false : !current;
+    updateSettings("user", app.cwd, (s) => { s.fastMode = enabled; });
+    app.settings.fastMode = enabled;
+    app.session.setFastMode(enabled);
+    app.notice(enabled ? "Fast mode on — faster service at higher usage/cost; reasoning effort unchanged." : "Fast mode off");
+}
 
 async function effortCommand(app: App, args: string) {
     const set = (e: Effort | undefined) => {
@@ -1450,6 +1465,7 @@ const BUILTIN: Command[] = [
     { name: "login", description: "Add an API key (any provider, auto-detected)", args: "[provider|custom]", run: loginCommand },
     { name: "logout", description: "Remove a stored API key", run: logoutCommand },
     { name: "providers", description: "Providers, key status and endpoints", whileBusy: true, run: (app) => providersCommand(app) },
+    { name: "fast", description: "Toggle fast service on supported models (higher usage/cost)", args: "[on|off|status]", run: fastCommand },
     { name: "effort", description: "Set reasoning effort (low … max)", args: "[level]", run: effortCommand },
     { name: "permissions", aliases: ["allowed-tools"], description: "View and edit allow / ask / deny rules", run: permissionsCommand },
     { name: "mode", description: "Switch permission mode (manual, accept edits, plan, auto, bypass)", args: "[mode]", whileBusy: true, run: modeCommand },

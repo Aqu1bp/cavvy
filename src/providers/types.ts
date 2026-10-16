@@ -75,8 +75,12 @@ export interface Usage {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
     reasoningTokens?: number;
+    /** The provider actually served this response at fast speed. */
+    fastMode?: boolean;
     /** Provider-reported cost in USD, when available (OpenRouter). */
     cost?: number;
+    /** Backend total includes both paid and plan-covered requests; billed share is estimated. */
+    costEstimated?: boolean;
 }
 
 export interface ToolSchema {
@@ -92,6 +96,7 @@ export interface ChatRequest {
     tools: ToolSchema[];
     maxTokens?: number;
     effort?: Effort;
+    fastMode?: boolean;
     showThinking?: boolean;
     signal?: AbortSignal;
     /** Small one-off requests (classifier, titles) skip caching/fallback extras. */
@@ -129,6 +134,13 @@ export interface ModelInfo {
     supportsTools?: boolean;
     supportsImages?: boolean;
     supportsReasoning?: boolean;
+    /** Explicit provider/catalog capability; never inferred from reasoning effort. */
+    supportsFastMode?: boolean;
+    /** Provider service tier to request for fast mode (Codex catalog). */
+    fastModeTier?: string;
+    fastPricing?: ModelInfo["pricing"];
+    /** OpenAI fast-service prices above 272k input tokens. */
+    fastPricingLong?: ModelInfo["pricing"];
     /** Anthropic: effort levels this model accepts. */
     effortLevels?: Effort[];
     /** Anthropic: adaptive thinking supported. */

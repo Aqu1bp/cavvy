@@ -176,6 +176,8 @@ export interface AgentOptions {
     parentRequests?: () => Pick<ReviewContext, "requests" | "summary">;
     /** Sub-agents: the task the parent gave it. */
     delegatedTask?: string;
+    /** Sub-agents: the parent session's speed choice, read each request (a background task follows a later change). */
+    parentFastMode?: () => boolean | undefined;
     /** The model catalog as the host last listed it (local servers aren't cached); the cache by default. */
     listings?: () => ProviderListing[];
 }
@@ -334,6 +336,16 @@ export class Agent {
         return this.tools.map(toSchema);
     }
 
+    /** Fast mode as chosen for this session (a sub-agent's is the speed its parent runs at). */
+    private fastModeChoice(): boolean | undefined {
+        return this.o.parentFastMode ? this.o.parentFastMode() : (this.session.fastMode ?? this.o.settings().fastMode);
+    }
+
+    /** The speed this agent runs at: as chosen, where its model has fast mode. */
+    private fastMode(): boolean {
+        return Boolean(this.fastModeChoice() && this.model.supportsFastMode);
+    }
+
     private request(messages: Message[], signal: AbortSignal, extra: Partial<ChatRequest> = {}): ChatRequest {
         const s = this.o.settings();
         return {
@@ -343,6 +355,7 @@ export class Agent {
             tools: this.toolSchemas(),
             maxTokens: s.maxOutputTokens,
             effort: s.effort,
+            fastMode: this.fastMode(),
             showThinking: s.showThinking,
             signal,
             webSearch: this.o.nativeWebSearch,
@@ -695,6 +708,7 @@ export class Agent {
             model: this.model,
             mode: this.o.mode.get(),
             effort: s.effort,
+            fastMode: this.fastMode(),
             appendSystemPrompt: this.o.appendSystemPrompt,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.
@@ -862,6 +876,7 @@ export class Agent {
         const host: BackendHost = {
             emit: (e) => this.emitFromBackend(e),
             mode: () => this.o.mode.get(),
+            fastMode: () => this.fastMode(),
             permission: async (req) => {
                 const a = await this.backendPermission(req, signal);
                 if (!a.allow && a.stop) declined = true;
@@ -904,12 +919,13 @@ export class Agent {
             this.emit({ type: "request_start" });
             let result: BackendResult;
             try {
-                result = await backend.runTurn({ ...base, prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, resumeId: resume?.id });
+                // A sub-agent kept going (a Stop hook) takes up a speed change since.
+                result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, resumeId: resume?.id });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
@@ -1482,6 +1498,9 @@ export class Agent {
             isSubagent: true,
             parentRequests: () => this.requestContext(),
             delegatedTask: req.prompt,
+            // At the speed the parent runs at (not fast where the parent's model has none and shows standard),
+            // on its own model if that one has fast mode.
+            parentFastMode: () => this.fastMode(),
             subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
             // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and the harness refuses).

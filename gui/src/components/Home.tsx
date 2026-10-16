@@ -3,7 +3,7 @@
 // strip under the composer.
 
 import { createResource, createSignal, For, Show } from "solid-js";
-import { ChevronDown, Folder, FolderGit2, FolderOpen, GitBranch, KeyRound, ShieldAlert } from "lucide-solid";
+import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, ShieldAlert } from "lucide-solid";
 import { app, refreshProjects, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { requestComposerFocus, setSettingsTab } from "../state/ui";
@@ -11,6 +11,7 @@ import { ago, basename, tildify } from "../lib/format";
 import { now } from "../lib/clock";
 import { Composer } from "./Composer";
 import { Popover } from "./ui/Popover";
+import { WorktreePicker } from "./WorktreePicker";
 
 export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
@@ -138,11 +139,8 @@ export function Home() {
                                     <ChevronDown size={12} class="chv" />
                                 </button>
                                 <span class="grow" />
-                                <Show when={info()?.branch}>
-                                    <span class="strip-ctl static" title="The branch it starts on">
-                                        <GitBranch size={13} />
-                                        <span class="truncate">{info()!.branch}</span>
-                                    </span>
+                                <Show when={info()?.git}>
+                                    <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
                                 </Show>
                             </>
                         ) : undefined

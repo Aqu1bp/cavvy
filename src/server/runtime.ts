@@ -89,6 +89,7 @@ export function modelSummary(m: ModelInfo): ModelSummary {
         supportsImages: m.supportsImages,
         supportsReasoning: m.supportsReasoning,
         effortLevels: m.effortLevels,
+        supportsFastMode: m.supportsFastMode,
         deprecated: m.deprecated,
     };
 }
@@ -151,6 +152,12 @@ export class Runtime {
         opts: { mode?: PermissionMode; resumed: boolean },
     ) {
         this.session = session;
+        // Capture new-session defaults so changing Home settings cannot change an open chat’s speed.
+        // A chat from before speeds were saved keeps it in memory: opening one doesn't write to it.
+        if (session.fastMode === undefined) {
+            if (opts.resumed) session.fastMode = Boolean(ws.settings.fastMode);
+            else session.setFastMode(Boolean(ws.settings.fastMode));
+        }
         this.mode = opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
         if (this.mode === "bypassPermissions" && !this.bypassAllowed()) this.mode = "default";
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map() };
@@ -212,6 +219,7 @@ export class Runtime {
             mode: this.mode,
             bypassAllowed: this.bypassAllowed(),
             effort: this.settings().effort,
+            fastMode: this.fastModeEnabled(),
             status: "idle",
             busy: false,
             contextTokens: 0,
@@ -360,7 +368,7 @@ export class Runtime {
                 this.notice(`Switched for this session only. ${redact((e as Error).message)}`, "warn");
             }
         }
-        this.setState({ model: modelSummary(info), effort: this.settings().effort });
+        this.setState({ model: modelSummary(info), effort: this.settings().effort, fastMode: this.fastModeEnabled() });
         return true;
     }
 
@@ -371,7 +379,7 @@ export class Runtime {
         if (!m) return;
         this.model = m;
         if (this.agent) this.agent.model = m;
-        this.setState({ model: modelSummary(m) });
+        this.setState({ model: modelSummary(m), fastMode: this.fastModeEnabled() });
     }
 
     /** A provider's key changed: rebuild the client, or deselect the model when the key is gone. */
@@ -525,6 +533,17 @@ export class Runtime {
         if (!opts.fromAgent && this.agent) this.agent.noteModeChange(from, m);
         this.setState({ mode: m, bypassAllowed: this.bypassAllowed() });
         return true;
+    }
+
+    fastModeEnabled(): boolean {
+        return Boolean(this.model?.supportsFastMode && (this.session.fastMode ?? this.settings().fastMode));
+    }
+
+    setFastMode(enabled: boolean) {
+        if (enabled && !this.model?.supportsFastMode) throw new Error("Fast mode is not available for this model/backend. Refresh the model list to check for updates.");
+        if (this.busy) throw new Error("Change speed once this response is done, or interrupt it first.");
+        this.session.setFastMode(enabled);
+        this.setState({ fastMode: this.fastModeEnabled() });
     }
 
     setEffort(e: EffortLevel) {

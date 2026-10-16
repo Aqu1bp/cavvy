@@ -3,6 +3,9 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { Terminals } from "./terminals";
+import { RpcError } from "./rpc-error";
+export { RpcError };
 import { readdirSync, statSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir, hostname, userInfo } from "os";
@@ -14,7 +17,7 @@ import { findSessionAnywhere, listAllSessions, Session, SessionInUseError } from
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
-import { cachedListings, defaultModelFrom, forgetClient, listAllModels, type ProviderListing } from "../providers/models";
+import { cachedListings, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentCli, vendorOf } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
@@ -22,6 +25,7 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitSnapshot } from "../util/git";
+import { listWorktrees } from "./worktrees";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
 import type {
@@ -66,15 +70,6 @@ export interface EngineClient {
     subs: Set<string>;
 }
 
-/** A request the GUI got wrong, or one that needs the user first. */
-export class RpcError extends Error {
-    constructor(
-        message: string,
-        readonly code?: string,
-    ) {
-        super(message);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The GUI's own state: recent projects, pinned, settled and archived sessions.
@@ -155,6 +150,7 @@ export class Workspace {
 // ---------------------------------------------------------------------------
 
 export class Engine {
+    private terminals = new Terminals();
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
@@ -179,6 +175,7 @@ export class Engine {
 
     async stop() {
         this.stopping = true;
+        this.terminals.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
@@ -474,6 +471,7 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        this.terminals.drop(client);
         for (const id of client.subs) this.unloadLater(id);
     }
 
@@ -603,6 +601,7 @@ export class Engine {
             smallModel: s.smallModel,
             reviewModel: s.reviewModel,
             effort: s.effort,
+            fastMode: s.fastMode,
             defaultMode: s.permissions?.defaultMode,
             showThinking: s.showThinking,
             autoCompact: s.autoCompact,
@@ -618,6 +617,11 @@ export class Engine {
             if ("smallModel" in patch) s.smallModel = patch.smallModel || undefined;
             if ("reviewModel" in patch) s.reviewModel = patch.reviewModel || undefined;
             if ("effort" in patch) s.effort = patch.effort && EFFORT_LEVELS.includes(patch.effort as Effort) ? (patch.effort as Effort) : undefined;
+            if ("fastMode" in patch) {
+                if (typeof patch.fastMode !== "boolean") throw new RpcError("fastMode must be a boolean");
+                if (patch.fastMode && !resolveModelInfo(patch.model ?? s.model ?? "")?.supportsFastMode) throw new RpcError("Fast mode is not available for this model/backend");
+                s.fastMode = patch.fastMode;
+            }
             if ("showThinking" in patch) s.showThinking = Boolean(patch.showThinking);
             if ("autoCompact" in patch) s.autoCompact = patch.autoCompact !== false;
             if ("webSearch" in patch && ["auto", "anthropic", "brave", "tavily", "duckduckgo", "off"].includes(String(patch.webSearch))) s.webSearch = patch.webSearch as Settings["webSearch"];
@@ -662,6 +666,21 @@ export class Engine {
 
     private async dispatch(client: EngineClient, method: Method, p: Record<string, any>): Promise<unknown> {
         switch (method) {
+            case "terminal.open":
+                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
+            case "terminal.write":
+                this.terminals.write(client, str(p.id, "id"), str(p.data, "data"));
+                return null;
+            case "terminal.ack":
+                this.terminals.ack(client, str(p.id, "id"), p.chars);
+                return null;
+            case "terminal.resize":
+                this.terminals.resize(client, str(p.id, "id"), p.cols, p.rows);
+                return null;
+            case "terminal.close":
+                this.terminals.close(client, str(p.id, "id"));
+                return null;
             case "hello": {
                 const startCwd = this.o.startCwd && this.o.startCwd !== homedir() ? this.o.startCwd : undefined;
                 let user = "";
@@ -721,6 +740,10 @@ export class Engine {
             case "session.setMode":
                 if (!PERMISSION_MODES.includes(p.mode)) throw new RpcError("Unknown mode");
                 if (!this.runtime(p.id).setMode(p.mode)) throw new RpcError("Bypass mode is off. Start the GUI with --dangerously-skip-permissions or set permissions.allowBypass in your user settings.");
+                return null;
+            case "session.setFastMode":
+                if (typeof p.enabled !== "boolean") throw new RpcError("enabled must be a boolean");
+                this.runtime(p.id).setFastMode(p.enabled);
                 return null;
             case "session.setEffort":
                 if (!EFFORT_LEVELS.includes(p.effort)) throw new RpcError("Unknown effort level");
@@ -824,6 +847,8 @@ export class Engine {
                 return this.recentProjects();
             case "projects.inspect":
                 return this.inspectProject(str(p.path, "path"));
+            case "projects.worktrees":
+                return listWorktrees(resolve(expandHome(str(p.path, "path"))));
             case "projects.trust":
                 return this.trustProject(str(p.path, "path"), Boolean(p.trust));
             case "projects.forget": {
