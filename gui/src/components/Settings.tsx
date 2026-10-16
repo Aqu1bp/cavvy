@@ -7,7 +7,6 @@ import { ArrowLeft, ArrowUp, Check, ExternalLink, Info, Keyboard, KeyRound, Minu
 import { MODE_LABELS, type EffortLevel, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
-import { paths } from "../state/filelinks";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { mod, openExternal } from "../lib/platform";
@@ -94,10 +93,7 @@ function Group(p: { children: JSX.Element }) {
 /** "" clears a model (undefined wouldn't reach the server: JSON leaves it out). */
 async function update(patch: GuiSettings) {
     try {
-        const before = app.settings.editor;
         setApp("settings", await rpc.call("settings.update", { patch }));
-        // Which paths are linked depends on the editor (what it opens as a project isn't): ask again.
-        if (app.settings.editor !== before) paths.forget();
     } catch (e) {
         reportError(e);
     }

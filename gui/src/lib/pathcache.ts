@@ -12,8 +12,10 @@
 // - A request that fails (the connection dropped, the session closed) answers
 //   nothing: its paths wait, unlinked, until the connection comes back
 //   (retryFailed), rather than being asked again on the next render.
+// - A view rebuilt from a fresh snapshot (reconnect, reopen) may have missed
+//   the ops that created files, so its missing answers are dropped (sawSnapshot).
 // Answers depend on the chosen editor (what it would open as a project isn't
-// linked), so choosing another drops them all (forget).
+// linked), so another one, from wherever it's set, drops them all (editorIs).
 // No Solid or RPC here, so it can be tested on its own (see state/filelinks.ts).
 
 export interface PathCacheOptions {
@@ -31,6 +33,8 @@ export class PathCache {
     private failed = new Map<string, Set<string>>();
     /** Bumped by forget(): answers to requests made before it aren't kept. */
     private generation = 0;
+    /** The chosen editor as last seen; unset until the settings are first read. */
+    private editor?: { id: string | undefined };
     private held = new Map<string, Map<string, number>>();
     private listeners = new Set<() => void>();
     private max: number;
@@ -112,7 +116,8 @@ export class PathCache {
                 // Asked before forget(): under the old editor, so the replies ask again.
                 if (gen !== this.generation) return void (answered = true);
                 if (!found) return void batch.forEach((p) => this.set(this.failed, sessionId).add(p));
-                batch.forEach((p, i) => m.set(p, found[i] ?? null));
+                const live = this.map(sessionId);
+                batch.forEach((p, i) => live.set(p, found[i] ?? null));
                 answered = true;
             }),
         );
@@ -128,7 +133,22 @@ export class PathCache {
         if (any) this.changed();
     }
 
-    /** Another editor was chosen: every answer may differ, so all are dropped and replies on screen ask again. */
+    /** A session's view was rebuilt from a snapshot: ops that created files may have been missed. */
+    sawSnapshot(sessionId: string) {
+        this.forgetMissing(sessionId);
+    }
+
+    /**
+     * The chosen editor, each time the settings say: the first value is where
+     * it starts, the same one again changes nothing, and another drops every answer.
+     */
+    editorIs(id: string | undefined) {
+        const changed = this.editor !== undefined && this.editor.id !== id;
+        this.editor = { id };
+        if (changed) this.forget();
+    }
+
+    /** Every answer may differ (another editor): all are dropped and replies on screen ask again. */
     forget() {
         this.generation++;
         this.known.clear();

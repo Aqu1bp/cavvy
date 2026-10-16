@@ -2,7 +2,7 @@
 // and projects, and every open session's timeline (kept current from the
 // server's ops, applied once per frame).
 
-import { batch, createRoot, createSignal } from "solid-js";
+import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
@@ -144,6 +144,8 @@ export function handleFor(id: string | undefined): SessionHandle | undefined {
 
 function adopt(snap: SessionSnapshot): SessionHandle {
     const id = snap.state.id;
+    // Ops missed while it wasn't open (or the connection was down) may have created files.
+    paths.sawSnapshot(id);
     const existing = handles.get(id);
     if (existing) {
         existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
@@ -337,6 +339,7 @@ function onEvent(ev: ServerEvent) {
 }
 
 let connectedOnce = false;
+let watchingEditor = false;
 
 export function start() {
     rpc.onEvent(onEvent);
@@ -347,6 +350,8 @@ export function start() {
             try {
                 setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
+                // Every change of the chosen editor (Settings here, another window's seen on refresh) re-asks which paths are links.
+                if (!watchingEditor) (watchingEditor = true), createRoot(() => createEffect(() => paths.editorIs(app.settings.editor)));
                 void refreshModels().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, () => handles.delete(h.id));

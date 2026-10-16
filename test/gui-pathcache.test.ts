@@ -21,7 +21,7 @@ class World {
     down = false;
     /** Paths the chosen editor would open as a project: answered null, as fs.exists does. */
     projects = new Set<string>();
-    /** Holds answers back until release() (a request in flight). */
+    /** Holds a request in flight: its answer is worked out first (as the server would, then), sent when this settles, or lost if it rejects. */
     gate?: Promise<void>;
     cache: Cache;
     constructor(max?: number) {
@@ -30,9 +30,9 @@ class World {
             ask: async (_id, paths) => {
                 this.asked.push(paths);
                 if (this.down) throw new Error("Disconnected");
+                const answer = paths.map((p) => (this.projects.has(p) ? null : (this.files.get(p) ?? null)));
                 await this.gate;
-                if (this.down) throw new Error("Disconnected");
-                return paths.map((p) => (this.projects.has(p) ? null : (this.files.get(p) ?? null)));
+                return answer;
             },
         });
     }
@@ -213,23 +213,109 @@ describe("choosing another editor", () => {
         expect(w.asked).toHaveLength(3);
     });
 
-    test("an answer to a request made before the change isn't kept", async () => {
-        const w = new World();
+    /** A reply asking about App.sln while Rider is chosen, its request held in flight. */
+    async function inFlight(w: InstanceType<typeof World>) {
         w.files.set("App.sln", "/p/App.sln");
         w.projects.add("App.sln");
-        let release!: () => void;
-        w.gate = new Promise((r) => (release = r));
+        w.cache.editorIs("rider");
+        let release!: () => void, fail!: (e: Error) => void;
+        w.gate = new Promise((res, rej) => ((release = res), (fail = rej)));
         const m = new Mounted(w, "App.sln");
-        const inFlight = w.settle();
+        const out = w.settle();
         await Promise.resolve();
-        // The editor changes while the old request is out.
+        expect(w.asked).toEqual([["App.sln"]]);
+        // VS Code is chosen while it's out.
         w.projects.clear();
-        w.cache.forget();
         w.gate = undefined;
-        release();
-        await inFlight;
+        w.cache.editorIs("vscode");
+        return { m, out, release, fail };
+    }
+
+    test("an answer to a request made before the change isn't kept: a fresh request gives the link", async () => {
+        const w = new World();
+        const { m, out, release } = await inFlight(w);
+        release(); // Rider's answer, null, arrives late
+        await out;
+        await w.settle();
+        expect(w.asked).toEqual([["App.sln"], ["App.sln"]]);
+        expect(w.cache.lookup("s1")("App.sln")).toBe("/p/App.sln");
+        expect(m.html).toContain(`data-file="/p/App.sln"`);
+    });
+
+    test("an old request that fails after the change isn't held as failed: a fresh request gives the link", async () => {
+        const w = new World();
+        const { m, out, fail } = await inFlight(w);
+        fail(new Error("Disconnected"));
+        await out;
+        await w.settle();
+        expect(w.asked).toEqual([["App.sln"], ["App.sln"]]);
+        expect(m.html).toContain(`data-file="/p/App.sln"`);
+    });
+
+    test("only an actual change drops answers: not the first value, not the same one written again", async () => {
+        const w = new World();
+        w.files.set("src/a.ts", "/p/src/a.ts");
+        new Mounted(w, "src/a.ts");
+        await w.settle();
+        // The settings' first read: where it starts, whatever it is (even none chosen).
+        w.cache.editorIs(undefined);
+        await w.settle();
+        expect(w.asked).toHaveLength(1);
+        // A reconnect's refreshSettings, or refreshEditors, writing the same editor again.
+        w.cache.editorIs(undefined);
+        w.cache.editorIs(undefined);
+        await w.settle();
+        expect(w.asked).toHaveLength(1);
+        // A real change does drop them.
+        w.cache.editorIs("vscode");
+        await w.settle();
+        expect(w.asked).toHaveLength(2);
+    });
+
+    test("a change made here and one another window made (seen on refresh) both drop the answers", async () => {
+        const w = new World();
+        w.files.set("App.sln", "/p/App.sln");
+        w.files.set("src/a.ts", "/p/src/a.ts");
+        w.projects.add("App.sln");
+        w.cache.editorIs("rider"); // settings first read
+        const m = new Mounted(w, "App.sln and src/a.ts");
+        await w.settle();
+        expect(m.html).not.toContain(`data-file="/p/App.sln"`);
+        // Another window chose VS Code; refreshEditors (or refreshSettings on reconnect) brings it here.
+        w.projects.clear();
+        w.cache.editorIs("vscode");
         await w.settle();
         expect(m.html).toContain(`data-file="/p/App.sln"`);
+        // The same value written again changes nothing.
+        w.cache.editorIs("vscode");
+        await w.settle();
+        expect(w.asked).toHaveLength(2);
+        // Rider chosen in this window's Settings.
+        w.projects.add("App.sln");
+        w.cache.editorIs("rider");
+        await w.settle();
+        expect(m.html).not.toContain(`data-file="/p/App.sln"`);
+        expect(m.html).toContain(`data-file="/p/src/a.ts"`);
+        expect(w.asked).toHaveLength(3);
+    });
+});
+
+describe("a view rebuilt from a snapshot", () => {
+    test("drops its missing answers: a file created while the window was disconnected becomes a link", async () => {
+        const w = new World();
+        const m = new Mounted(w, "I'll add lib/new.ts.");
+        const other = new Mounted(w, "lib/nope.ts", "s2");
+        await w.settle();
+        expect(m.html).not.toContain("md-file");
+        // Disconnected: the agent writes the file and the turn ends; those ops never arrive here.
+        w.files.set("lib/new.ts", "/p/lib/new.ts");
+        // Reconnected: the session's view is adopted from a fresh snapshot.
+        w.cache.sawSnapshot("s1");
+        await w.settle();
+        expect(m.html).toContain(`data-file="/p/lib/new.ts"`);
+        // Another session's answers are left alone.
+        expect(w.asked.filter((b) => b.includes("lib/nope.ts"))).toHaveLength(1);
+        expect(other.html).not.toContain("md-file");
     });
 });
 
