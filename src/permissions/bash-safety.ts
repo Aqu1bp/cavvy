@@ -675,17 +675,17 @@ const CLIMBS = /(^|[/\s'"=:])\.(\.|[^/\s'"]*[*?[])|[$`]/;
  * of their own (see withoutWorktrees in checker.ts), and `cd
  * .claude/worktrees/x && bun test` isn't about .claude config. Text can't
  * show where a quoted name ends, so one only counts as a worktree when
- * nothing after it in the command could climb back out, and its name isn't
- * like the config's.
+ * nothing in the command could climb back out (after it, or before it, in a
+ * link made to point up: `ln -s ../.. .claude/worktrees/x/up`), and its name
+ * isn't like the config's.
  */
 function claudeConfigIn(text: string): boolean {
+    const climbs = CLIMBS.test(text);
     for (const m of text.matchAll(CLAUDE_DIR)) {
-        const after = text.slice(m.index + m[0].length);
-        const w = after.match(WORKTREE);
-        if (!w) return true;
+        const w = text.slice(m.index + m[0].length).match(WORKTREE);
+        if (!w || climbs) return true;
         const name = w[1]!;
         if (name === "." || name === ".." || spellings(name).some((n) => /^\.(harness|claude|codex|git|mcp\.json)$/.test(n))) return true;
-        if (CLIMBS.test(after.slice(w[0].length))) return true;
     }
     return false;
 }

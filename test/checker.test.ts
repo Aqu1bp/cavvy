@@ -751,6 +751,7 @@ describe("Bash", () => {
             "cp x .claude/worktrees/feature/$UP/settings.json",
             "cp x .claude/worktrees/feature/.*/.*/settings.json",
             "cp x .claude/worktrees/outer/.claude/settings.json",
+            "ln -s ../.. .claude/worktrees/feature/up",
         ]) {
             const d = check(T("Bash"), bash(cmd));
             expect([cmd, d.behavior]).toEqual([cmd, "ask"]);
