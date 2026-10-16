@@ -343,6 +343,7 @@ export class Agent {
             tools: this.toolSchemas(),
             maxTokens: s.maxOutputTokens,
             effort: s.effort,
+            fastMode: Boolean((this.session.fastMode ?? s.fastMode) && this.model.supportsFastMode),
             showThinking: s.showThinking,
             signal,
             webSearch: this.o.nativeWebSearch,
@@ -695,6 +696,7 @@ export class Agent {
             model: this.model,
             mode: this.o.mode.get(),
             effort: s.effort,
+            fastMode: Boolean((this.session.fastMode ?? s.fastMode) && this.model.supportsFastMode),
             appendSystemPrompt: this.o.appendSystemPrompt,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             // Checked each turn: the folder may have been trusted since (/login), and implicit trust doesn't count.

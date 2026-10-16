@@ -131,6 +131,7 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
         is_error: subtype !== "success",
         session_id: sessionId,
         total_cost_usd: 0.5,
+        ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: process.env.FAKE_FAST_MODE_END } : {}),
         usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
         modelUsage: { "claude-test-1": { contextWindow: 200000 } },
         ...extra,
@@ -306,7 +307,7 @@ async function use(id: string, tool: string, input: any): Promise<boolean> {
 async function turn(content: any[]) {
     interrupted = false;
     if (++prompts === 2 && process.env.FAKE_CRASH_ON_SECOND === "1") process.exit(3);
-    out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
@@ -396,8 +397,9 @@ for await (const chunk of Bun.stdin.stream()) {
                         subtype: "success",
                         request_id: m.request_id,
                         response: {
+                            claude_code_version: "2.1.301",
                             models: [
-                                { value: "default", resolvedModel: "claude-test-1", displayName: "Default (recommended)", supportedEffortLevels: ["low", "high"] },
+                                { value: "default", supportsFastMode: true, resolvedModel: "claude-test-1", displayName: "Default (recommended)", supportedEffortLevels: ["low", "high"] },
                                 { value: "sonnet", resolvedModel: "claude-test-2", displayName: "Sonnet", supportedEffortLevels: ["low", "high"] },
                             ],
                             account: { tokenSource: "none" },

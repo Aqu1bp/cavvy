@@ -56,7 +56,7 @@ beforeEach(() => {
     symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_FAST_MODE_END", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -168,6 +168,8 @@ describe("agent providers", () => {
         expect(claude.models.map((m) => m.id)).toEqual(["default", "sonnet"]);
         expect(claude.models[0]!.name).toBe("Default (recommended) (claude-test-1)");
         expect(claude.models[0]!.effortLevels).toEqual(["low", "high"]);
+        expect(claude.models[0]!.supportsFastMode).toBe(true);
+        expect(claude.models[1]!.supportsFastMode).toBe(false);
         const args = starts().find((s) => s.argv.includes("--no-session-persistence"))!.argv;
         expect(args).toContain("--strict-mcp-config");
         expect(args[args.indexOf("--setting-sources") + 1]).toBe("");
@@ -175,6 +177,8 @@ describe("agent providers", () => {
         // Default first; hidden ones left out.
         expect(codex.models.map((m) => m.id)).toEqual(["gpt-test", "gpt-other"]);
         expect(codex.models[0]!.effortLevels).toEqual(["low", "high"]);
+        expect(codex.models[0]!.fastModeTier).toBe("fast");
+        expect(codex.models[1]!.supportsFastMode).toBe(false);
     });
 
     test("the startup trust check lists the project config of the CLIs that are on, skills and agents included", () => {
@@ -937,4 +941,44 @@ describe("backend sessions in the session file", () => {
         s.compact("summary", []);
         expect(Session.load(s.path).backends.size).toBe(0);
     });
+});
+
+
+describe("fast mode backend wiring", () => {
+    test("a final fast-mode cooldown does not erase earlier paid credit usage", async () => {
+        process.env.FAKE_FAST_MODE_END = "cooldown";
+        const { run, session, events } = await makeAgent({ provider: "claude-code", model: { supportsFastMode: true }, settings: { fastMode: true } });
+        await run("hello");
+        expect(session.cost).toBe(0.5);
+        expect(notices(events).some((m) => m.includes("total estimate"))).toBe(true);
+    });
+    for (const provider of ["claude-code", "codex"] as const) {
+        for (const supported of [true, false]) test(`${provider}: fast mode ${supported ? "is requested" : "is gated"} without changing effort`, async () => {
+            const { run } = await makeAgent({ provider, model: { id: "default", supportsFastMode: supported, fastModeTier: "fast", effortLevels: ["high"] }, settings: { fastMode: true, effort: "high" } });
+            await run("hello");
+            if (provider === "codex") {
+                const thread = received().find((m) => m.method === "thread/start");
+                const turn = received().find((m) => m.method === "turn/start");
+                expect(thread.params.serviceTier).toBe(supported ? "fast" : "default");
+                expect(turn.params.serviceTier).toBe(supported ? "fast" : "default");
+                expect(turn.params.effort).toBe("high");
+            } else {
+                const a = starts()[0]!.argv as string[];
+                expect(JSON.parse(a[a.indexOf("--settings") + 1]!).fastMode).toBe(supported);
+                expect(a[a.indexOf("--effort") + 1]).toBe("high");
+            }
+        });
+        test(`${provider}: explicit standard session overrides fast default and resume`, async () => {
+            const { run, session } = await makeAgent({ provider, model: { supportsFastMode: true, fastModeTier: "fast" }, settings: { fastMode: true } });
+            session.setFastMode(false);
+            await run("hello");
+            await run("again");
+            if (provider === "codex") {
+                expect(received().filter((m) => m.method === "turn/start").every((m) => m.params.serviceTier === "default")).toBe(true);
+                expect(received().find((m) => m.method === "thread/resume").params.serviceTier).toBe("default");
+            } else {
+                for (const { argv: a } of starts()) expect(JSON.parse(a[a.indexOf("--settings") + 1]).fastMode).toBe(false);
+            }
+        });
+    }
 });

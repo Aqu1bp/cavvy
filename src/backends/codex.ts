@@ -214,6 +214,12 @@ function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
     return undefined;
 }
 
+/** Prefer the current catalog; the legacy field is only used by older CLIs. */
+export function codexFastTier(m: { serviceTiers?: { id: string }[]; additionalSpeedTiers?: string[] }): string | undefined {
+    const tiers = Array.isArray(m.serviceTiers) ? m.serviceTiers.map((t) => t.id) : m.additionalSpeedTiers ?? [];
+    return tiers.find((t) => t === "fast" || t === "priority");
+}
+
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
 
@@ -242,6 +248,8 @@ export class CodexBackend implements AgentBackendClient {
             return shown.map((m) =>
                 backendModel(this.def.id, m.model, typeof m.displayName === "string" ? m.displayName : undefined, {
                     effortLevels: Array.isArray(m.supportedReasoningEfforts) ? m.supportedReasoningEfforts.map((e: any) => e?.reasoningEffort).filter((e: unknown) => typeof e === "string") : undefined,
+                    supportsFastMode: codexFastTier(m) !== undefined,
+                    fastModeTier: codexFastTier(m),
                     supportsImages: Array.isArray(m.inputModalities) ? m.inputModalities.includes("image") : true,
                 }),
             );
@@ -378,7 +386,8 @@ class CodexTurn {
                 if (typeof off === "string") return { reason: "error", text: "", actions: [], error: off };
                 config = off;
             }
-            const threadParams = { cwd: t.cwd, model, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+            const serviceTier = t.fastMode && t.model.supportsFastMode ? t.model.fastModeTier ?? "fast" : "default";
+            const threadParams = { cwd: t.cwd, model, serviceTier, approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
@@ -419,7 +428,7 @@ class CodexTurn {
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
                     await this.waitFor(async () => {
-                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                     });
                     this.turnId = undefined;

@@ -1,10 +1,10 @@
 import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
-import { Archive, ArrowRight, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, Share, Shrink, Sparkles, Sun } from "lucide-solid";
+import { Archive, ArrowRight, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun } from "lucide-solid";
 import { MODE_LABELS } from "@shared/protocol";
 import { activate, app, reportError, rpc } from "../state/app";
 import { archive, chooseProject, exportSession, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs, THEMES } from "../state/prefs";
-import { paletteOpen, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
+import { terminalOpen, setTerminalOpen, paletteOpen, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
 import { mod } from "../lib/platform";
 import { ModeIcon, MODES } from "./ModePicker";
@@ -57,6 +57,7 @@ export function CommandPalette() {
             },
             { id: "model", section: "Actions", label: "Switch model…", hint: `${mod} /`, icon: <Sparkles size={15} />, run: () => setModelPickerOpen(true) },
             { id: "sidebar", section: "Actions", label: "Toggle sidebar", hint: `${mod} B`, icon: <PanelLeft size={15} />, run: toggleSidebar },
+            { id: "terminal", section: "Actions", label: "Toggle terminal", hint: `${mod} \``, icon: <SquareTerminal size={15} />, run: () => setTerminalOpen(!terminalOpen()) },
             { id: "panel", section: "Actions", label: "Toggle side panel", hint: `${mod} .`, icon: <PanelRight size={15} />, run: () => togglePanel() },
             { id: "settings", section: "Actions", label: "Settings", hint: `${mod} ,`, icon: <Settings size={15} />, run: () => setSettingsTab("general") },
             { id: "providers", section: "Actions", label: "Add an API key…", keywords: "providers login keys", icon: <Settings size={15} />, run: () => setSettingsTab("providers") },

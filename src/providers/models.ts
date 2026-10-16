@@ -9,8 +9,9 @@ import { createHash } from "crypto";
 import { existsSync } from "fs";
 import { AnthropicProvider } from "./anthropic";
 import { OpenAICompatProvider } from "./openai-compat";
-import { OpenAIResponsesProvider } from "./openai-responses";
-import { allProviders, getProvider, readAgentConfig, readVertexConfig, type ProviderDef } from "./registry";
+import { apiFastModeInfo } from "./fast-mode";
+import { OpenAIResponsesProvider, responsesModelInfo } from "./openai-responses";
+import { allProviders, getProvider, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
 import { VertexProvider, forgetTokens } from "./vertex";
 import { anthropicTraits } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
@@ -87,7 +88,7 @@ function fingerprint(key: string | undefined): string {
 // ---------------------------------------------------------------------------
 // Cache
 
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const TTL_MS = 12 * 60 * 60 * 1000;
 
 interface CacheEntry {
@@ -256,6 +257,7 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
     const cached = readCache().providers[parsed.provider]?.models.find((m) => m.id === parsed.id);
     if (cached) return cached;
     if (def.kind === "agent") return backendModel(def.id, parsed.id);
+    if (def.kind === "responses") return responsesModelInfo(def.id, parsed.id, resolveBaseUrl(def));
     if (def.kind === "anthropic") {
         const t = anthropicTraits(parsed.id);
         return {
@@ -264,6 +266,7 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
             contextWindow: t.contextWindow,
             maxOutput: t.maxOutput,
             pricing: t.pricing,
+            ...apiFastModeInfo(def.id, parsed.id, resolveBaseUrl(def)),
             supportsTools: true,
             supportsImages: true,
             supportsReasoning: t.adaptive,

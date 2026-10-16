@@ -352,6 +352,10 @@ Security. Whoever can talk to the server can run commands as you, so:
 
 `HARNESS_GUI_DEBUG=1` makes the server say why it refused a connection. On Linux, if the window stays blank, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
+**Terminal and worktrees.** The terminal button in the title bar (or Cmd+backtick / Ctrl+backtick) opens a resizable bottom panel with interactive shell tabs in the current project's directory. Drag its top edge to resize it; hiding the panel keeps shells running. Each project/worktree has its own tabs. Closing a tab stops its shell; closing or disconnecting the window stops its terminals (use Restart shell after reconnecting). Terminal commands are your own shell commands, outside agent permission prompts and conversation history. This panel currently requires macOS or Linux.
+
+Under the new-chat composer, click the branch to select an existing Git worktree. The menu refreshes each time it opens and shows branches and full paths, including detached worktrees. Selection changes the new chat's folder; existing chats keep their own folders. Create additional worktrees with `git worktree add`.
+
 **Adding features.** Anything in the core (`src/agent`, `src/tools`, `src/providers`, `src/permissions`, `src/mcp`) reaches both apps by itself. Something you see or click needs a part in each: the terminal's in `src/ui` and `src/commands`, the GUI's in `src/server/runtime.ts` (which plays the role of `src/ui/app.ts`) and `gui/`. Keeping the logic in the core and the two front ends thin keeps them from drifting apart.
 
 ## Headless
@@ -390,3 +394,15 @@ Layout:
 | `gui` | The GUI (SolidJS, Vite). `bun run gui:dev` (add `--demo` for the mock model) runs it with hot reload at http://localhost:5173 |
 | `desktop` | The desktop app (Tauri): Rust shell, icons, capabilities |
 | `scripts` | Mock model and demo project (`gui:demo`), sidecar build |
+
+### Fast mode
+
+The composer shows a **Standard / Fast** toggle when the selected model and backend support faster service. It changes the provider's service speed, independently of reasoning effort, and uses higher rates or plan limits. A session's choice survives closing and reopening it; the Home toggle sets the default for new sessions. Change speed while idle (or interrupt the current response first).
+
+In the terminal, use `/fast`, `/fast on`, `/fast off`, or `/fast status`; the footer shows `↯ fast` when enabled. `/fast` also saves the default for new sessions. `harness --fast` and `harness --no-fast` override speed for that session, including `-p` runs. Unsupported models never inherit a fast request.
+
+- **Codex:** reads `serviceTiers` from the installed CLI's model catalog (with its older `additionalSpeedTiers` fallback), and sends the selected fast tier on thread start/resume and each turn. Standard explicitly clears a resumed tier.
+- **Claude Code:** requires version 2.1.205+ and the CLI's `supportsFastMode` capability; passes `fastMode` through `--settings`. Standard explicitly overrides external fast preferences. Backend availability or cooldown notices appear in the conversation.
+- **OpenAI / Anthropic APIs:** enabled only for documented first-party models/endpoints, with `service_tier: "fast"` / `speed: "fast"`. Cost estimates use the response's actual speed and fast prices; provider downgrades are surfaced. Custom/proxy endpoints and other providers are not assumed to support fast service.
+
+Model support does not guarantee account or organization access or available capacity. Refresh the model picker after upgrading a CLI. References: [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed), [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode), [OpenAI pricing](https://developers.openai.com/api/docs/pricing?latest-pricing=fast), [Claude Code Fast mode](https://code.claude.com/docs/en/fast-mode), [Claude API Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode).

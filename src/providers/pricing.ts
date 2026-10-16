@@ -14,8 +14,8 @@ export interface CostEstimate {
  * fall back to the input price, so the estimate errs high, never low.
  */
 export function costOf(usage: Usage, model: ModelInfo | undefined): CostEstimate {
-    if (typeof usage.cost === "number") return { usd: usage.cost, estimated: false, unknown: false };
-    const p = model?.pricing;
+    if (typeof usage.cost === "number") return { usd: usage.cost, estimated: Boolean(usage.costEstimated), unknown: false };
+    const p = usage.fastMode ? (promptTokens(usage) > 272_000 ? model?.fastPricingLong ?? model?.fastPricing : model?.fastPricing) : model?.pricing;
     if (!p) return { usd: 0, estimated: true, unknown: true };
     const usd =
         (usage.inputTokens * p.input +

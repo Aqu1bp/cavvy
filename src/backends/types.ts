@@ -83,6 +83,7 @@ export interface BackendTurn {
     model: ModelInfo;
     mode: PermissionMode;
     effort?: Effort;
+    fastMode?: boolean;
     appendSystemPrompt?: string;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */

@@ -212,6 +212,24 @@ describe("connecting", () => {
         return { engine, c, cwd, id: snap.state.id, rt: engine.runtimes.get(snap.state.id)! };
     }
 
+    test("session speed is capability-gated, persisted, and cannot change during a turn", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await expect(engine.handle(c, "session.setFastMode", { id, enabled: true })).rejects.toThrow(/not available/);
+            await expect(engine.handle(c, "session.setFastMode", { id, enabled: "yes" })).rejects.toThrow(/boolean/);
+            rt.model = { ...rt.model!, supportsFastMode: true };
+            await engine.handle(c, "session.setFastMode", { id, enabled: true });
+            expect(rt.snapshot().state.fastMode).toBe(true);
+            expect(rt.session.fastMode).toBe(true);
+            rt.busy = true;
+            await expect(engine.handle(c, "session.setFastMode", { id, enabled: false })).rejects.toThrow(/response is done/);
+            rt.busy = false;
+            await engine.handle(c, "session.setFastMode", { id, enabled: false });
+            expect(rt.snapshot().state.fastMode).toBe(false);
+            expect(rt.session.fastMode).toBe(false);
+        } finally { rt.busy = false; await engine.stop(); }
+    });
+
     async function whenIdle(rt: { idle: boolean }) {
         for (let i = 0; i < 200 && !rt.idle; i++) await Bun.sleep(50);
         expect(rt.idle).toBe(true);
@@ -956,4 +974,28 @@ describe("sub-agents", () => {
             removeAgentConfig("claude-code");
         }
     }, 45_000);
+});
+
+describe("terminal WebSocket transport", () => {
+    test("streams only to its owning window and closes the shell on disconnect", async () => {
+        const a = await client(); const b = await client();
+        const id = "transport-terminal";
+        const output = () => a.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => e.data).join("");
+        const waitFor = async (check: () => boolean) => {
+            const deadline = Date.now() + 5000;
+            while (!check()) { if (Date.now() > deadline) throw new Error("Terminal transport timed out"); await Bun.sleep(20); }
+        };
+        try {
+            await a.call("terminal.open", { id, cwd: project(), cols: 80, rows: 24 });
+            await expect(b.call("terminal.write", { id, data: "exit\n" })).rejects.toThrow("not open");
+            await a.call("terminal.resize", { id, cols: 99, rows: 33 });
+            await a.call("terminal.write", { id, data: "printf '__owner_shell__%s\\n' $$; stty size\n" });
+            await waitFor(() => /__owner_shell__\d+\r?\n/.test(output()) && output().includes("33 99"));
+            const pid = Number(output().match(/__owner_shell__(\d+)/)![1]);
+            expect(b.events.some((e) => e.type === "terminal.data" && e.id === id)).toBe(false);
+            a.close();
+            await waitFor(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
+            await expect(b.call("terminal.close", { id })).rejects.toThrow("not open");
+        } finally { a.close(); b.close(); }
+    }, 15_000);
 });

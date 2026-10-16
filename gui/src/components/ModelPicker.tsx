@@ -1,8 +1,8 @@
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
-import { Brain, ChevronDown, RefreshCw, Search, Settings2, Star } from "lucide-solid";
+import { Brain, ChevronDown, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import type { EffortLevel, ModelSummary } from "@shared/protocol";
 import { app, refreshModels } from "../state/app";
-import { setEffort, setModel } from "../state/actions";
+import { setEffort, setModel, setFastMode } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setSettingsTab } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
@@ -269,4 +269,17 @@ export function EffortMenu(p: ComposerMenu & { current?: ModelSummary; currentRe
             </Popover>
         </Show>
     );
+}
+
+/** Fast service changes speed and pricing, independently of reasoning effort. */
+export function FastModeToggle(p: { current?: ModelSummary; currentRef?: string; enabled?: boolean; busy?: boolean }) {
+    const model = createMemo(() => resolve(p.current, p.current?.ref ?? p.currentRef));
+    return <Show when={model()?.supportsFastMode}>
+        <span class="vs" aria-hidden="true" />
+        <button class={`ctl ${p.enabled ? "on" : ""}`} aria-label="Fast mode" aria-pressed={Boolean(p.enabled)} disabled={p.busy}
+            title={p.busy ? "Change speed after this response finishes" : "Faster service at higher usage/cost. Same model and reasoning effort; account eligibility applies."}
+            onClick={() => void setFastMode(!p.enabled)}>
+            <Zap size={16} /><span>{p.enabled ? "Fast" : "Standard"}</span>
+        </button>
+    </Show>;
 }
