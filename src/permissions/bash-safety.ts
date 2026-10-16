@@ -1341,7 +1341,7 @@ function exclusionWords(argv: string[]): number[] {
         for (let i = 1; i < eff.length; i++) {
             const a = eff[i]!;
             if (a === "--") break;
-            if (/^--(glob|iglob)=!/.test(a) || /^-g!/.test(a)) out.push(i);
+            if (/^--(glob|iglob)=!/.test(a) || /^-g!/.test(a)) out.push(off + i);
             else if (a.startsWith("--")) {
                 if (!a.includes("=") && RG_VALUE_LONG.has(a.slice(2))) {
                     if ((a === "--glob" || a === "--iglob") && eff[i + 1]?.startsWith("!")) out.push(off + i + 1);
@@ -1391,8 +1391,8 @@ const GREP_VALUE_LONG = [
  */
 export function messageWords(a: CommandAnalysis): number[][] {
     if (a.unparsable || a.hasSubstitution || a.commands.some((c) => c.after === "|")) return a.commands.map(() => []);
-    // `git() { cat "$3"; }`: then it isn't git.
-    if (/\bgit\s*\(\s*\)|\bfunction\s+git\b|\balias\b/.test(a.commands.map((c) => c.text).join("\n"))) return a.commands.map(() => []);
+    // `git() { cat "$3"; }` (any function sets unsafeExpansion), an alias, or a sourced file: then it may not be git.
+    if (a.unsafeExpansion || a.commands.some((c) => [".", "source", "eval", "alias", "function"].includes(c.argv[0]!))) return a.commands.map(() => []);
     return a.commands.map((c) => {
         // git itself, found on PATH or in a system bin, with nothing set for it; and no
         // redirect, whose target would look like the message (`-m >~/.zshrc`).
@@ -1402,15 +1402,20 @@ export function messageWords(a: CommandAnalysis): number[][] {
         const { index } = gitSubcommand(argv);
         if (!["commit", "tag", "notes", "merge", "revert", "stash"].includes(argv[index] ?? "")) return [];
         const out: number[] = [];
+        // Only past options known to take no value: after any other (`-F`, `--fil`, which git
+        // takes for --file), the next word may be its value, so the rest stays as it is.
         for (let i = index + 1; i < argv.length && argv[i] !== "--"; i++) {
             const w = argv[i]!;
-            // -m after options that take no value only: in `-Fm/x` the m is -F's file.
             if (w === "--message" || /^-[aqvsne]*m$/.test(w)) out.push(++i);
             else if (w.startsWith("--message=") || /^-[aqvsne]*m./.test(w)) out.push(i);
+            else if (w.startsWith("-") && !/^-[aqvsne]+$/.test(w) && !GIT_FLAGS.has(w)) break;
         }
         return out.filter((i) => i < c.argv.length);
     });
 }
+
+// Options of git commit, tag and the like that take no value.
+const GIT_FLAGS = new Set(["--all", "--quiet", "--verbose", "--signoff", "--no-verify", "--amend", "--allow-empty", "--no-edit", "--edit", "--annotate", "--force", "--no-ff", "--ff-only"]);
 
 /** The command line with those messages blanked out, everything else in its place. */
 export function withoutMessages(cmd: string): string {

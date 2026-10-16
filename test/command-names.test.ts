@@ -500,6 +500,15 @@ describe("review round 2", () => {
         expect(dangerousReason(`git log -1 --format=%s -m "shutdown -h now" | sh`)).toBeDefined();
     });
 
+    test("round 4: exclusions after an assignment, option values before a message, overrides however spelled", () => {
+        for (const cmd of ["LANG=C rg PAT .env --glob=!foo", "command rg PAT .env -g!foo", "git commit -F --message=/../.env", "git commit -F -m/../.env", "git commit --fil --message=/../.env", `g''it() { cat "$3"; }; git commit -m .env`, "function git { cat $3; }; git commit -m .env", ". ./defs.sh; git commit -m .env"]) {
+            expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, "a .env file"]);
+        }
+        for (const cmd of ["git commit -m 'Fix alias for sudo'", "git commit -m 'Fix alias configuration in .claude'", "git commit --amend --no-edit -qam 'Use .env.local'"]) {
+            expect([cmd, dangerousReason(cmd), configTarget(cmd), sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, undefined, undefined, undefined]);
+        }
+    });
+
     test("text in single quotes isn't a use of a variable", () => {
         expect(notReadOnly("LANG=C; printf '%s\\n' '$LANG'")).toBeUndefined();
         expect(notReadOnly("X=-Oprog; git grep $X x")).toContain("`X`");
