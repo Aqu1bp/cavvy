@@ -154,6 +154,8 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
             const typed = early.take();
             if (disposed) { if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {}); return; }
             if (typed && app.conn === "open") send(typed);
+            // Only after what was typed meanwhile (the socket keeps the order): a Ctrl+C there cancels the script first.
+            if (run && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});
             fitNow();
             if (p.visible) term.focus();
         } catch (e) {

@@ -487,6 +487,8 @@ export interface ProjectScripts {
     scripts: ProjectScript[];
     /** The script run last here (the header button runs it). */
     lastUsed?: string;
+    /** Entries in the file that can't be used as they are (edited by hand, say), kept there but neither shown nor run. */
+    setAside?: { count: number; file: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +531,8 @@ export interface Methods {
     "terminal.ack": { params: { id: string; chars: number }; result: null };
     "terminal.resize": { params: { id: string; cols: number; rows: number }; result: null };
     "terminal.close": { params: { id: string }; result: null };
+    /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */
+    "terminal.arm": { params: { id: string }; result: null };
     hello: { params: { client?: string }; result: HelloResult };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };
     /** Creates a script, or updates the one with `id`. */
@@ -536,7 +540,7 @@ export interface Methods {
     "scripts.delete": { params: { cwd: string; id: string }; result: null };
     /** Every script's id, in the new order. */
     "scripts.reorder": { params: { cwd: string; ids: string[] }; result: ProjectScripts };
-    /** Opens terminal `id` in `cwd` and types the stored script's command into it. */
+    /** Opens terminal `id` in `cwd`; the stored script's command is typed into it once the window arms it (terminal.arm) and the shell is reading. */
     "scripts.run": { params: { id: string; cwd: string; script: string; cols: number; rows: number }; result: { id: string; cwd: string; script: ProjectScript } };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };

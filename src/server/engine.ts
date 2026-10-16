@@ -682,6 +682,9 @@ export class Engine {
             case "terminal.close":
                 this.terminals.close(client, str(p.id, "id"));
                 return null;
+            case "terminal.arm":
+                this.terminals.arm(client, str(p.id, "id"));
+                return null;
             case "scripts.list":
                 return await listScripts(p.cwd);
             case "scripts.save": {

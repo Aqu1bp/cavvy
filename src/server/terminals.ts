@@ -17,8 +17,8 @@ interface Shell {
     /** Output held back while the window catches up: the latest of it only. */
     held: string;
     skipped: number;
-    /** Drops input given at open that hasn't been typed yet. */
-    cancelInput?: () => void;
+    /** Input given at open, until it's typed or cancelled. */
+    typist?: Typist;
 }
 
 /**
@@ -36,13 +36,77 @@ const KEEP = 250_000;
  * while its rc files still run, it's echoed twice, or read by something in
  * them. zsh's line editor says when it starts reading: it turns bracketed
  * paste on (READING), so for zsh nothing else counts. Other shells (bash 3.2
- * never sends it) get it typed when either that arrives or their output has
- * paused for TYPE_QUIET. Either way, at the latest after TYPE_BY.
+ * never sends it) are taken as reading when either that arrives or their
+ * output has paused for TYPE_QUIET.
  */
 const READING = "\x1b[?2004h";
 const SAYS_WHEN_READING = new Set(["zsh"]);
 const TYPE_QUIET_MS = 150;
 const TYPE_BY_MS = 3000;
+
+type After = (ms: number, fn: () => void) => () => void;
+const after: After = (ms, fn) => {
+    const t = setTimeout(fn, ms);
+    return () => clearTimeout(t);
+};
+
+/**
+ * When input given at open is typed: only once the window has armed it (after
+ * sending what the user typed while the shell was opening, so a Ctrl+C there
+ * cancels it first) and the shell is reading; or, once armed, after TYPE_BY at
+ * the latest. Never if cancelled (the user typed first) or never armed.
+ * Reading, once seen, stays seen: later output doesn't undo it.
+ */
+export class Typist {
+    private ready = false;
+    private armed = false;
+    private done = false;
+    /** The end of the output so far: READING can arrive split across two reads. */
+    private tail = "";
+    private quiet?: () => void;
+    private by?: () => void;
+
+    constructor(private input: string, private waitsForReading: boolean, private write: (text: string) => void, private timers: After = after) {}
+
+    /** The shell's output. */
+    output(text: string) {
+        if (this.done || this.ready) return;
+        const seen = this.tail + text;
+        this.tail = seen.slice(-(READING.length - 1));
+        this.quiet?.();
+        this.quiet = undefined;
+        if (seen.includes(READING)) this.reading();
+        else if (!this.waitsForReading) this.quiet = this.timers(TYPE_QUIET_MS, () => this.reading());
+    }
+
+    arm() {
+        if (this.done || this.armed) return;
+        this.armed = true;
+        this.by = this.timers(TYPE_BY_MS, () => this.type());
+        if (this.ready) this.type();
+    }
+
+    cancel() {
+        this.done = true;
+        this.quiet?.();
+        this.by?.();
+    }
+
+    get pending() {
+        return !this.done;
+    }
+
+    private reading() {
+        this.ready = true;
+        if (this.armed) this.type();
+    }
+
+    private type() {
+        if (this.done) return;
+        this.cancel();
+        this.write(this.input);
+    }
+}
 
 /**
  * What xterm.js sends by itself, answering the shell or reporting focus:
@@ -90,7 +154,7 @@ export function terminalEnv(): Record<string, string> {
 export class Terminals {
     private shells = new Map<string, Shell>();
 
-    /** `input` is typed into the new shell, as if by hand, once it's reading a command (see READING). */
+    /** `input` is typed into the new shell, as if by hand, once it's armed and reading a command (see Typist). */
     open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string } = {}) {
         const size = terminalSize(cols, rows);
         if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.shells.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
@@ -105,22 +169,10 @@ export class Terminals {
         const decoder = new TextDecoder();
         let pending = "";
         let entry: Shell | undefined;
-        let input = opts.input;
-        const waitsForReading = SAYS_WHEN_READING.has(basename(shell));
-        // The end of the output so far: READING can arrive split across two reads.
-        let tail = "";
-        let quiet: ReturnType<typeof setTimeout> | undefined;
-        let by: ReturnType<typeof setTimeout> | undefined;
-        const type = () => {
-            clearTimeout(quiet);
-            clearTimeout(by);
-            // Not into a shell that has since closed or exited.
-            if (input === undefined || !entry || this.shells.get(id) !== entry) return;
-            const text = input;
-            input = undefined;
-            entry.cancelInput = undefined;
-            entry.terminal.write(text);
-        };
+        // Not into a shell that has since closed or exited.
+        const typist = opts.input === undefined ? undefined : new Typist(opts.input, SAYS_WHEN_READING.has(basename(shell)), (text) => {
+            if (entry && this.shells.get(id) === entry) entry.terminal.write(text);
+        });
         const flush = () => {
             if (!entry) return;
             if (entry.timer) clearTimeout(entry.timer);
@@ -133,13 +185,7 @@ export class Terminals {
         const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
             const text = decoder.decode(bytes, { stream: true });
             pending += text;
-            if (input !== undefined) {
-                const seen = tail + text;
-                tail = seen.slice(-(READING.length - 1));
-                clearTimeout(quiet);
-                if (seen.includes(READING)) quiet = setTimeout(type, 0);
-                else if (!waitsForReading) quiet = setTimeout(type, TYPE_QUIET_MS);
-            }
+            typist?.output(text);
             if (pending.length >= 32_768) flush();
             else if (entry && !entry.timer) entry.timer = setTimeout(flush, 16);
         } });
@@ -150,17 +196,9 @@ export class Terminals {
             terminal.close();
             throw e;
         }
-        const shellEntry: Shell = { owner, process: proc, terminal, unacked: 0, held: "", skipped: 0 };
+        const shellEntry: Shell = { owner, process: proc, terminal, unacked: 0, held: "", skipped: 0, typist };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
-        if (input !== undefined) {
-            by = setTimeout(type, TYPE_BY_MS);
-            shellEntry.cancelInput = () => {
-                clearTimeout(quiet);
-                clearTimeout(by);
-                input = undefined;
-            };
-        }
         void proc.exited.then((exitCode) => {
             if (this.shells.get(id) !== shellEntry) return;
             pending += decoder.decode();
@@ -209,11 +247,13 @@ export class Terminals {
         if (typeof data !== "string" || data.length > 65_536) throw new RpcError("Terminal input is too large", "invalid");
         // Ctrl+C, a key, a paste, before the shell is ready: the user has taken over, so the command isn't typed.
         // (Not on the terminal's own replies to the shell's queries.)
-        if (s.cancelInput && !isTerminalReply(data)) {
-            s.cancelInput();
-            s.cancelInput = undefined;
-        }
+        if (s.typist?.pending && !isTerminalReply(data)) s.typist.cancel();
         s.terminal.write(data);
+    }
+
+    /** The window has sent what was typed while the shell opened: input given at open may now be typed. */
+    arm(owner: Owner, id: string) {
+        this.owned(owner, id).typist?.arm();
     }
 
     /** The window has drawn this much of a terminal's output. */

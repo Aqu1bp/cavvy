@@ -10,6 +10,7 @@ import { app, reportError, rpc } from "../state/app";
 import { terminalActions } from "../state/ui";
 import { Popover } from "./ui/Popover";
 import { Dialog } from "./ui/Dialog";
+import { tildify } from "../lib/format";
 
 const ICONS: Record<ScriptIcon, { icon: typeof Play; label: string }> = {
     play: { icon: Play, label: "Run" },
@@ -112,6 +113,13 @@ export function ProjectScripts(p: { cwd: string }) {
                 <div class="menu-head">Project scripts</div>
                 <Show when={failed()}>
                     <div class="menu-note tone-err scripts-note">{failed()}</div>
+                </Show>
+                <Show when={list()?.setAside}>
+                    {(aside) => (
+                        <div class="menu-note scripts-note" title={aside().file}>
+                            {aside().count === 1 ? "1 entry" : `${aside().count} entries`} in {tildify(aside().file, app.hello?.homeDir)} can't be used as {aside().count === 1 ? "it is" : "they are"} (a duplicate, or edited by hand), so {aside().count === 1 ? "it's" : "they're"} not shown or run. Fix them in the file.
+                        </div>
+                    )}
                 </Show>
                 <Show when={list() && !scripts().length}>
                     <div class="menu-note scripts-note">

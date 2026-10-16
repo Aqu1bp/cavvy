@@ -1231,6 +1231,7 @@ describe("project scripts", () => {
             const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
             const heard = other.events.length;
             const result = await c.call("scripts.run", { id, cwd: linked, script: s.id, cols: 90, rows: 24 });
+            await c.call("terminal.arm", { id });
             expect(result).toMatchObject({ id, script: s });
             // In the worktree it was run from, not the main checkout where it was defined.
             await waitFor(() => output().includes(`__ran__\r\n${linked}\r\n`));
@@ -1267,6 +1268,7 @@ describe("project scripts", () => {
             const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
             await c.call("scripts.run", { id, cwd: dir, script: s.id, cols: 80, rows: 24 });
             await c.call("terminal.write", { id, data: "\x03" });
+            await c.call("terminal.arm", { id });
             await Bun.sleep(3400);
             await c.call("terminal.write", { id, data: "printf '__%s__\\n' mine\n" });
             await waitFor(() => output().includes("__mine__\r\n"));
@@ -1286,6 +1288,7 @@ describe("project scripts", () => {
             expect((await c.call("scripts.list", { cwd: dir })).scripts.map((x: ProjectScript) => x.id)).toEqual(["good"]);
             const id = "kept-run";
             await c.call("scripts.run", { id, cwd: dir, script: "good", cols: 80, rows: 24 });
+            await c.call("terminal.arm", { id });
             await waitFor(() => c.events.some((e) => e.type === "terminal.data" && e.id === id && e.data.includes("__good__")));
             // Remembering it as the last one run is skipped rather than rewriting what it didn't understand.
             await Bun.sleep(200);

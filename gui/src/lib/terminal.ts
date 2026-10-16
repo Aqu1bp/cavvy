@@ -10,28 +10,23 @@ export function* terminalInputChunks(data: string): Generator<string> {
 
 /**
  * What's typed while a shell is still being opened (a project script's
- * opening waits on the folder and git first). Held, then sent in order as soon
- * as the shell is open, so a Ctrl+C pressed meanwhile still reaches it (and
- * stops the script being typed); dropped if it doesn't open.
+ * opening waits on the folder and git first). Held, all of it, then sent in
+ * order (in RPC-sized chunks) as soon as the shell is open, so a Ctrl+C or a
+ * paste meanwhile still reaches it and stops the script being typed; dropped
+ * if it doesn't open.
  */
 export class EarlyInput {
     private held: string[] | undefined;
-    private size = 0;
 
     /** The shell is being opened: hold what's typed. */
     begin() {
         this.held = [];
-        this.size = 0;
     }
 
     /** True when `data` was held. */
     hold(data: string): boolean {
         if (!this.held) return false;
-        // A terminal's worth of typing, not a flood.
-        if (this.size + data.length <= 65_536) {
-            this.held.push(data);
-            this.size += data.length;
-        }
+        this.held.push(data);
         return true;
     }
 
@@ -39,7 +34,6 @@ export class EarlyInput {
     take(): string {
         const all = this.held?.join("") ?? "";
         this.held = undefined;
-        this.size = 0;
         return all;
     }
 }
