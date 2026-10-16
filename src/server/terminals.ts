@@ -180,15 +180,14 @@ export function terminalEnv(): Record<string, string> {
 }
 
 /** Parser state at a buffer boundary; control strings can span reads and contain newlines. */
-type EscapeState = "ground" | "escape" | "csi" | "osc" | "oscEscape" | "string" | "stringEscape";
+type EscapeState = "ground" | "escape" | "csi" | "osc" | "string";
 function advanceEscape(state: EscapeState, char: string): EscapeState {
     if (char === "\x18" || char === "\x1a" || char === "\x9c") return "ground";
-    if (state === "osc" || state === "oscEscape" || state === "string" || state === "stringEscape") {
-        const osc = state === "osc" || state === "oscEscape";
-        if ((osc && char === "\x07") || ((state === "stringEscape" || state === "oscEscape") && char === "\\")) return "ground";
-        return char === "\x1b" ? (osc ? "oscEscape" : "stringEscape") : (osc ? "osc" : "string");
-    }
+    // Like xterm, ESC ends a control string and starts an escape. A following
+    // backslash completes ST; any other character belongs to the new escape.
     if (char === "\x1b") return "escape";
+    if (state === "osc") return char === "\x07" ? "ground" : "osc";
+    if (state === "string") return "string";
     if (char === "\x9b") return "csi";
     if (char === "\x9d") return "osc";
     if ("\x90\x98\x9e\x9f".includes(char)) return "string";
@@ -206,7 +205,8 @@ function advanceEscape(state: EscapeState, char: string): EscapeState {
 function cleanCut(text: string, from: number, state: EscapeState = "ground") {
     if (from === 0 && state === "ground") return { at: 0, state };
     const line = text.indexOf("\n", from);
-    const target = line !== -1 && line - from < 4096 ? line + 1 : from;
+    // Continuing a discarded string only needs its end, not the next text line.
+    const target = from > 0 && line !== -1 && line - from < 4096 ? line + 1 : from;
     for (let at = 0; at < text.length; at++) {
         if (at >= target && state === "ground" && !/[\uDC00-\uDFFF]/.test(text[at]!)) return { at, state };
         state = advanceEscape(state, text[at]!);
@@ -342,8 +342,10 @@ export class Terminals {
         s.tail = seen.slice(-7);
         s.out += text;
         s.total += text.length;
-        if (s.out.length > SCROLLBACK * 1.25) {
-            const cut = cleanCut(s.out, s.out.length - SCROLLBACK, s.outState);
+        // Once an oversized control string was cut, keep only its parser state
+        // until it ends. Do not accumulate (or repeatedly rescan) its payload.
+        if (s.outState !== "ground" || s.out.length > SCROLLBACK * 1.25) {
+            const cut = cleanCut(s.out, Math.max(0, s.out.length - SCROLLBACK), s.outState);
             s.out = s.out.slice(cut.at);
             s.outState = cut.state;
         }
@@ -355,7 +357,7 @@ export class Terminals {
         const start = s.total - s.out.length;
         let from = s.sent;
         let note = "";
-        const skipped = s.total - from > KEEP || from < start;
+        const skipped = s.total - from > KEEP || (from < start && !s.discard);
         if (skipped || s.discard) {
             const cut = cleanCut(s.out, Math.max(0, (skipped ? s.out.length - KEEP : from - start)), s.outState);
             from = start + cut.at;

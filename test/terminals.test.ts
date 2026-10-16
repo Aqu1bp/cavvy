@@ -368,6 +368,73 @@ describe("a window's tabs across a reload", () => {
 });
 
 describe("terminal cleanup and replay boundaries", () => {
+    // Feed exact PTY read boundaries without shell echo or timing changing the controls.
+    function replayFixture() {
+        const shells = new Terminals();
+        const owner = client("scanner");
+        const entry = {
+            window: owner.window, out: "", outState: "ground", discard: false,
+            total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "",
+            cwd: iso.home, exitCode: 0,
+        };
+        const internal = shells as any;
+        internal.shells.set("scanner", entry);
+        return {
+            entry, owner,
+            record: (text: string) => internal.record(entry, text),
+            attach: () => shells.attach(owner, "scanner"),
+            send: () => internal.sendRest("scanner", entry),
+        };
+    }
+
+    test.each([
+        { name: "RIS", end: "\x1bc" },
+        { name: "CSI", end: "\x1b[31m" },
+        { name: "another OSC", end: "\x1b]0;replacement\x07" },
+        { name: "ST", end: "\x1b\\" },
+        { name: "BEL", end: "\x07" },
+        { name: "CAN", end: "\x18" },
+        { name: "SUB", end: "\x1a" },
+        { name: "C1 ST", end: "\x9c" },
+    ])("replay and later output survive an oversized OSC ended by $name", ({ end }) => {
+        const osc = "\x1b]0;" + "x".repeat(1_300_000);
+        const whole = replayFixture();
+        whole.record(osc + end + "VISIBLE\r\n");
+        whole.attach();
+        expect(whole.owner.output()).toBe("VISIBLE\r\n");
+        whole.record("LATER\r\n");
+        whole.send();
+        expect(whole.owner.output()).toBe("VISIBLE\r\nLATER\r\n");
+
+        const split = replayFixture();
+        split.record(osc);
+        split.attach();
+        expect(split.owner.events[0]).toMatchObject({ reset: true, data: "" });
+        // Includes a read ending at ESC: its next character starts a new escape.
+        for (const char of end.slice(0, -1)) { split.record(char); split.send(); }
+        split.record(end.slice(-1) + "VISIBLE\r\n");
+        split.send();
+        split.record("LATER\r\n");
+        split.send();
+        expect(split.owner.output()).toBe("VISIBLE\r\nLATER\r\n");
+        expect(split.owner.pos()).toBe(osc.length + end.length + "VISIBLE\r\nLATER\r\n".length);
+    });
+
+    test.each(["\x1b]0;", "\x1bP1;2|"])("an oversized unterminated string %j retains only parser state across reads", (start) => {
+        const replay = replayFixture();
+        replay.record(start + "x".repeat(1_300_000));
+        expect(replay.entry.out.length).toBe(0);
+        for (let i = 0; i < 30; i++) {
+            replay.record("payload\n".repeat(8192));
+            expect(replay.entry.out.length).toBe(0);
+        }
+        replay.record("\x1b");
+        expect(replay.entry.out.length).toBe(0);
+        replay.record("\\VISIBLE\r\n");
+        replay.attach();
+        expect(replay.owner.output()).toBe("VISIBLE\r\n");
+    });
+
     test("the total cap includes detached and exited terminals from other windows", () => {
         const shells = new Terminals();
         // Exercise the global admission check without launching 48 interactive shells.
