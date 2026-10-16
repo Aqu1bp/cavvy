@@ -87,7 +87,7 @@ describe("CLI account folder protections", () => {
 });
 
 
-test("effective Default homes stay protected with named accounts selected, including symlinked missing homes", async () => {
+test("only effective Default credentials are protected, including symlinked missing homes", async () => {
     const { accountFolders } = await import("../src/providers/accounts");
     const { claudePermissions } = await import("../src/backends/claude-code");
     const { claudeAccountSandbox, accountPermissionConfig } = await import("../src/backends/account-permissions");
@@ -98,21 +98,45 @@ test("effective Default homes stay protected with named accounts selected, inclu
     process.env.CODEX_HOME = join(link, "codex-default");
     saveAgentConfig("codex", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }], defaultAccount: "personal" });
     try {
-        for (const name of ["claude-default", "codex-default"]) {
-            const canonical = join(outside, name);
-            expect(accountFolders()).toContain(canonical);
-            for (const root of [canonical, join(link, name)]) {
-                expect(check("Read", { file_path: join(root, "auth.json") }).behavior).toBe("deny");
-                expect(check("Write", { file_path: join(root, "auth.json"), content: "x" }).behavior).toBe("deny");
-                expect(check("Bash", { command: `cat '${root}/auth.json'` }).behavior).toBe("deny");
+        for (const [name, credential] of [["claude-default", ".credentials.json"], ["codex-default", "auth.json"]]) {
+            const canonical = join(outside, name!);
+            const secret = join(canonical, credential!);
+            expect(accountFolders()).not.toContain(canonical);
+            for (const root of [canonical, join(link, name!)]) {
+                for (const mode of ["default", "acceptEdits", "plan", "auto", "bypassPermissions"] as PermissionMode[]) {
+                    expect(check("Read", { file_path: join(root, credential!) }, mode).behavior).toBe("deny");
+                    expect(check("Write", { file_path: join(root, credential!), content: "x" }, mode).behavior).toBe("deny");
+                    expect(check("Bash", { command: `cat '${root}/${credential}'` }, mode).behavior).toBe("deny");
+                    for (const file of [".claude.json", "settings.json", "CLAUDE.md", "skills/example.md", "plugins/example.json", "config.toml"]) {
+                        expect(check("Read", { file_path: join(root, file) }, mode).behavior).not.toBe("deny");
+                        expect(accountTarget(`cat '${root}/${file}'`, workspace)).toBe(false);
+                    }
+                }
             }
             const policy = sandboxPolicy([workspace], { harnessHome: isolated.home });
-            expect(policy.unreadable).toContain(canonical);
-            expect(policy.readOnly).toContain(canonical);
-            expect(claudePermissions({ deny: [], ask: [], root: workspace }).deny).toContain(`Read(/${canonical}/**)`);
-            expect(claudeAccountSandbox()!.filesystem.denyRead).toContain(canonical);
-            expect(claudeAccountSandbox()!.filesystem.denyWrite).toContain(canonical);
-            for (const profile of Object.values(accountPermissionConfig([])!)) expect((profile as any).filesystem[canonical]).toBe("deny");
+            expect(policy.unreadable).toContain(secret);
+            expect(policy.readOnly).toContain(secret);
+            expect(policy.unreadable).not.toContain(canonical);
+            const deny = claudePermissions({ deny: [], ask: [], root: workspace }).deny;
+            expect(deny).toContain(`Read(/${secret})`);
+            expect(deny).not.toContain(`Read(/${canonical}/**)`);
+            expect(claudeAccountSandbox()!.filesystem.denyRead).toContain(secret);
+            expect(claudeAccountSandbox()!.filesystem.denyWrite).toContain(secret);
+            expect(claudeAccountSandbox()!.filesystem.denyRead).not.toContain(canonical);
+            for (const profile of Object.values(accountPermissionConfig([])!)) {
+                expect((profile as any).filesystem[secret]).toBe("deny");
+                expect((profile as any).filesystem[canonical]).toBeUndefined();
+            }
+            // Resolve individual credential-file symlinks as well as home aliases.
+            mkdirSync(canonical);
+            const target = join(outside, `${name}-credential`);
+            writeFileSync(target, "fake-default-marker");
+            symlinkSync(target, secret);
+            expect(check("Read", { file_path: target }).behavior).toBe("deny");
+            expect(accountTarget(`cat '${target}'`, workspace)).toBe(true);
+            expect(sandboxPolicy([workspace], { harnessHome: isolated.home }).unreadable).toContain(target);
+            expect(claudeAccountSandbox()!.filesystem.denyRead).toContain(target);
+            for (const profile of Object.values(accountPermissionConfig([])!)) expect((profile as any).filesystem[target]).toBe("deny");
         }
     } finally {
         [process.env.CLAUDE_CONFIG_DIR, process.env.CODEX_HOME] = previous;
@@ -137,5 +161,22 @@ test("account ancestors inside writable roots cannot be renamed, while siblings 
         const result = Bun.spawnSync(sandboxArgv({ kind: "seatbelt", policy }, "/bin/sh", `mv '${ancestor}' '${moved}' && cat '${moved}/account/auth.json'`));
         expect(result.exitCode).not.toBe(0);
         expect(Bun.spawnSync(sandboxArgv({ kind: "seatbelt", policy }, "/bin/sh", `touch '${ancestor}/sibling'`)).exitCode).toBe(0);
+    }
+});
+
+
+test("searches with explicit unrelated targets do not inherit cwd account containment", () => {
+    const unrelated = join(outside, "public");
+    mkdirSync(unrelated);
+    for (const command of [
+        `ls '${unrelated}'`, `ls -la '${unrelated}'`, `tree '${unrelated}'`, `find '${unrelated}' -type f`,
+        `rg marker '${unrelated}'`, `rg -m 2 marker '${unrelated}'`, `rg -e marker '${unrelated}'`, `rg --context 2 marker '${unrelated}'`, `rg --color always marker '${unrelated}'`, `rg --files --color never '${unrelated}'`,
+        `grep -R marker '${unrelated}'`, `fd marker '${unrelated}'`,
+    ]) expect({ command, blocked: accountTarget(command, outside) }).toEqual({ command, blocked: false });
+    for (const command of ["ls", "ls -la", "ls -w 80", "ls -T 8", "tree", "find -type f", "rg marker", "rg -g '*.ts' marker", "rg -e marker", "rg --files", "rg --context 2 marker", "rg --color always marker", "rg --files --color never", "grep -R marker", "fd marker"]) {
+        expect(accountTarget(command, outside)).toBe(true);
+    }
+    for (const command of [`ls '${folder}'`, `rg marker '${outside}'`, `find '${outside}' -type f`, `ls '${unrelated}' '${folder}'`]) {
+        expect(accountTarget(command, outside)).toBe(true);
     }
 });

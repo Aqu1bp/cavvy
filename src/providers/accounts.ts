@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync } from
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import { homedir } from "os";
 import { paths } from "../config/paths";
+import { canonical } from "../util/files";
 import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount } from "./registry";
 import { RpcError } from "../server/rpc-error";
 
@@ -53,12 +54,28 @@ export function accountEnv(provider: string, id = "default"): Record<string, str
     const value = id === "default" ? process.env[key] : a.folder;
     return value ? { [key]: value } : {};
 }
+export function hasNamedAccounts(): boolean {
+    return ACCOUNT_PROVIDERS.some((p) => readAgentConfig(p)?.accounts?.length);
+}
 /** Read afresh: accounts added during a session must immediately be protected. */
 export function accountFolders(): string[] {
-    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => listAccounts(p).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
+    if (!hasNamedAccounts()) return [];
+    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
+}
+/** Default homes stay usable; their sign-in files are protected only alongside named accounts. */
+export function accountCredentialFiles(): string[] {
+    if (!hasNamedAccounts()) return [];
+    const credentials = ACCOUNT_PROVIDERS.map((p) => join(resolve(defaultFolder(p)), p === "codex" ? "auth.json" : ".credentials.json"));
+    return [...new Set(credentials.flatMap((file) => [file, canonical(file)]))];
+}
+export function accountProtectedPaths(): string[] {
+    return [...new Set([...accountFolders(), ...accountCredentialFiles()])];
 }
 function projectFolder(folder: string, roots: string[]): boolean {
-    if (roots.some((root) => inside(folder, accountRealPath(resolve(root))))) return true;
+    if (roots.some((root) => {
+        const real = accountRealPath(resolve(root));
+        return inside(folder, real) || inside(real, folder);
+    })) return true;
     for (let d = folder; ; d = dirname(d)) {
         if (existsSync(join(d, ".git"))) return true;
         if (dirname(d) === d) return false;

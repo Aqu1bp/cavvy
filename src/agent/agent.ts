@@ -968,6 +968,11 @@ export class Agent {
         return [...this.children].some((child) => child.session.accountId(provider) === id || child.childUsesAccount(provider, id));
     }
 
+    /** Adding accounts refreshes the protection snapshot of every running CLI child. */
+    hasCliChild(): boolean {
+        return [...this.children].some((child) => isAgentBackend(child.client) || child.hasCliChild());
+    }
+
     /** Stop one delegated task, or all of them; how many were running. */
     stopDelegated(id?: string): number {
         if (!this.delegations) return 0;

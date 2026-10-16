@@ -5,7 +5,7 @@ import { closeSync, existsSync, lstatSync, openSync, readlinkSync, readSync, sta
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { CASE_FOLDS, canonical, CASE_INSENSITIVE_FS, expandPath, isInside, spellings } from "../util/files";
-import { accountFolders } from "../providers/accounts";
+import { accountCredentialFiles, accountFolders } from "../providers/accounts";
 
 export interface SimpleCommand {
     text: string;
@@ -1260,34 +1260,92 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
 /** What sensitiveTarget() calls a project's .env file. */
 export const ENV_FILE = "a .env file";
 
+function recursiveGrep(args: string[]): boolean {
+    return args.some((a, i) => /^-[^-]*[rR]/.test(a) || /^--(recursive|dereference-recursive|directories=recurse)$/.test(a) || ((a === "-d" || a === "--directories") && args[i + 1] === "recurse"));
+}
+
+/** Whether a search uses cwd when no path operand is supplied. Unknown options stay conservative. */
+function searchUsesCwd(program: string, args: string[]): boolean {
+    if (program === "find") {
+        const first = args.find((a) => !["-H", "-L", "-P"].includes(a));
+        return first === undefined || /^[-!(]/.test(first);
+    }
+    const listing = program === "ls" || program === "tree";
+    const grep = /^(grep|egrep|fgrep)$/.test(program);
+    const options = SEARCH_OPTIONS[program === "rg" ? "rg" : grep ? "grep" : ""];
+    const flags = options?.flags ?? (program === "ls" ? "ABCFGHLOPRSTUW@abcdefghiklmnopqrstuwx1" : program === "tree" ? "adfFlpqrstuxACDSQNhv" : "");
+    // GNU ls takes values for these even where BSD ls treats them as flags.
+    const valued = options?.valued ?? (program === "ls" ? "ITw" : program === "tree" ? "LPIo" : "");
+    let pattern = listing;
+    let operands = 0;
+    let end = false;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (end || !a.startsWith("-") || a === "-") { operands++; continue; }
+        if (a === "--") { end = true; continue; }
+        if (a.startsWith("--")) {
+            const eq = a.indexOf("=");
+            const name = a.slice(2, eq < 0 ? undefined : eq);
+            if (program === "rg" && name === "files") { pattern = true; continue; }
+            if (name === "regexp" || name === "file") pattern = true;
+            if (options?.longValued.has(name)) {
+                if (eq < 0 && (!grep || !["color", "colour", "context"].includes(name))) i++;
+            } else if (!options?.long.has(name)) return true;
+            continue;
+        }
+        for (let k = 1; k < a.length; k++) {
+            const ch = a[k]!;
+            if (valued.includes(ch)) {
+                if (ch === "e" || ch === "f") pattern = true;
+                if (k + 1 === a.length) i++;
+                break;
+            }
+            if (!flags.includes(ch) && !/\d/.test(ch)) return true;
+        }
+    }
+    // Plain grep without files reads stdin; recursive grep defaults to cwd.
+    if (grep && !recursiveGrep(args)) return false;
+    return operands <= (pattern ? 0 : 1);
+}
+
 /** Account directories are private even when a command has an explicit allow rule. */
 export function accountTarget(cmd: string, cwd: string): boolean {
     const folders = [...new Set(accountFolders().flatMap((p) => [p, canonical(p)]).flatMap(spellings))];
-    if (!folders.length) return false;
+    const files = accountCredentialFiles().flatMap(spellings);
+    if (!folders.length && !files.length) return false;
     const analysis = analyzeCommand(cmd);
     const forms = (p: string, dir: string) => {
         const abs = expandPath(p.replace(/^\$\{?HOME\}?(?=\/|$)/, homedir()), dir);
         return [abs, canonical(abs)].flatMap(spellings);
     };
-    const touches = (word: string, dir: string, search = false) => {
+    const touches = (word: string, dir: string, search = false, contents = false, namesOnly = false) => {
         if (!word || word.startsWith("-")) return false;
         // A static prefix suffices to reject globs without enumerating private files.
         const at = word.search(/[*?\[]/);
         const p = at < 0 ? word : word.slice(0, at).replace(/[^/]*$/, "") || ".";
-        return forms(p, dir).some((f) => folders.some((a) => isInside(f, a) || ((search || at >= 0) && isInside(a, f))));
+        return forms(p, dir).some((f) =>
+            folders.some((a) => isInside(f, a) || ((search || at >= 0) && isInside(a, f))) ||
+            files.some((a) => f === a || ((contents || (at >= 0 && !namesOnly)) && isInside(a, f))));
     };
     let dirs = [cwd];
     for (const c of analysis.commands) {
         const argv = effectiveArgv(c.argv);
         // Inspect embedded paths too (python -c 'open("/private/account/auth.json")').
         const texts = [c.text, ...argv].flatMap(spellings);
-        if (folders.some((f) => texts.some((t) => t.includes(f)))) return true;
-        const search = /^(rg|grep|egrep|fgrep|ag|ack|find|fd|ls|tree)$/.test(argv[0]?.split("/").at(-1) ?? "");
+        if ([...folders, ...files].some((f) => texts.some((t) => t.includes(f)))) return true;
+        const program = argv[0]?.split("/").at(-1) ?? "";
+        const search = /^(rg|grep|egrep|fgrep|ag|ack|find|fd|ls|tree)$/.test(program);
+        const args = argv.slice(1);
+        const executes = program === "find" ? args.some((a) => /^-(exec|execdir|ok|okdir|delete)$/.test(a))
+            : program === "fd" && args.some((a) => /^-[^-]*[xX]/.test(a) || /^--exec(?:-batch)?(=|$)/.test(a));
+        const namesOnly = /^(ls|tree)$/.test(program) || (/^(find|fd)$/.test(program) && !executes) || (program === "rg" && args[0] === "--files");
+        const contents = executes || (/^(rg|ag|ack)$/.test(program) && !namesOnly) || (/^(grep|egrep|fgrep)$/.test(program) && recursiveGrep(args));
         if (dirs.some((d) => touches(d, d))) return true;
-        if (search && dirs.some((d) => touches(d, d, true))) return true;
-        for (const word of [...argv.slice(1), ...analysis.redirects]) {
-            if (dirs.some((d) => touches(word, d, search))) return true;
+        if (search && searchUsesCwd(program, args) && dirs.some((d) => touches(d, d, true, contents, namesOnly))) return true;
+        for (const word of args) {
+            if (dirs.some((d) => touches(word, d, search, contents, namesOnly))) return true;
         }
+        if (analysis.redirects.some((p) => dirs.some((d) => touches(p, d)))) return true;
         if ((argv[0] === "cd" || argv[0] === "pushd") && argv[1] && settledCd(argv, c.text)) {
             dirs = [...new Set([...dirs, ...dirs.map((d) => expandPath(argv[1]!, d))])].slice(0, 32);
         }

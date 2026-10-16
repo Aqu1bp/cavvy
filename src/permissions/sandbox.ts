@@ -16,7 +16,7 @@ import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, shellWord, SHELLS, withoutMessages } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
-import { accountFolders } from "../providers/accounts";
+import { accountProtectedPaths } from "../providers/accounts";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -166,7 +166,7 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHom
     const temp = [...new Set([process.platform === "darwin" ? "/private/tmp" : "/tmp", real(tmpdir())])];
     const harness = real(opts.harnessHome);
     // Resolve afresh so newly added accounts are protected in running sessions.
-    const accounts = [...new Set(accountFolders().map(canonical))].filter((a) => !isWithin(a, harness));
+    const accounts = [...new Set(accountProtectedPaths().map(canonical))].filter((a) => !isWithin(a, harness));
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],

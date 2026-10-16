@@ -1,18 +1,16 @@
 // CLI-native tool sandboxes need the same account boundaries as Harness tools.
-import { accountFolders, accountRealPath } from "../providers/accounts";
-import { readAgentConfig } from "../providers/registry";
+import { accountProtectedPaths, accountRealPath, hasNamedAccounts } from "../providers/accounts";
 import type { PermissionMode } from "../permissions/modes";
 
 const PREFIX = "harness_accounts_";
-const configuredAccounts = () => ["claude-code", "codex"].some((provider) => readAgentConfig(provider)?.accounts?.length);
 
 /** Both spellings matter on systems where /tmp or the user's home is a symlink. */
 export function accountProtectionFolders(): string[] {
-    return [...new Set(accountFolders().flatMap((folder) => [folder, accountRealPath(folder)]))];
+    return [...new Set(accountProtectedPaths().flatMap((folder) => [folder, accountRealPath(folder)]))];
 }
 
 export function claudeAccountSandbox() {
-    if (!configuredAccounts()) return undefined;
+    if (!hasNamedAccounts()) return undefined;
     const folders = accountProtectionFolders();
     return {
         enabled: true,
@@ -29,7 +27,7 @@ export function accountPermissionProfile(mode: PermissionMode, readOnly = false)
 
 /** No profiles for existing users without accounts. Never fall back by dropping these denies. */
 export function accountPermissionConfig(additionalDirectories: string[]): Record<string, unknown> | undefined {
-    if (!configuredAccounts()) return undefined;
+    if (!hasNamedAccounts()) return undefined;
     const filesystem = Object.fromEntries(accountProtectionFolders().map((folder) => [folder, "deny"]));
     const workspace_roots = Object.fromEntries(additionalDirectories.map((folder) => [folder, true]));
     return {

@@ -1427,7 +1427,7 @@ export class Engine {
                 return this.accountsList(str(p.provider, "provider"), p.refresh === true);
             case "accounts.add": {
                 const provider = str(p.provider, "provider");
-                if ([...this.runtimes.values()].some((rt) => rt.busy)) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
+                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
                 const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
                 forgetClient(provider);
                 await this.refreshListings(true);

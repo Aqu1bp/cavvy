@@ -17,7 +17,7 @@ const { loadSettings } = await import("../src/config/settings");
 const client = { subs: new Set<string>(), send() {} };
 afterAll(() => { iso.cleanup(); rmSync(cwd, { recursive: true, force: true }); });
 
-for (const provider of ["claude-code", "codex"]) test(`${provider}: removal waits for a delegated child's original account after the parent switches`, async () => {
+for (const provider of ["claude-code", "codex"]) test(`${provider}: account changes wait for delegated CLI children after the parent switches`, async () => {
     const selected = addAccount(provider, { id: "working", name: "Working" });
     const unused = addAccount(provider, { id: "unused", name: "Unused" });
     const session = Session.create(cwd, { persist: false });
@@ -38,7 +38,7 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: removal wait
         helpers: { resolveModel: async () => ({ model: { provider, id: "default" }, client: backend }) },
         host: { emit() {}, ui: {} },
     });
-    const engine = new Engine();
+    const engine = new Engine({ listModels: async () => [] });
     // The parent turn has ended; only its delegated child is still running.
     engine.runtimes.set(session.meta.id, { busy: false, session, agent, ws: { cwd } } as any);
     const task = (agent as any).tasks().start({ description: "Wait", prompt: "Wait", agent: "general-purpose", model: `${provider}:default`, writes: false });
@@ -47,10 +47,15 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: removal wait
         session.setAccount(provider, "default");
         await expect(engine.handle(client, "accounts.remove", { provider, id: selected.id, confirmedFolder: selected.folder })).rejects.toMatchObject({ code: "busy" });
         expect(existsSync(selected.folder)).toBe(true);
+        // Adding either provider changes the protection snapshot of both CLIs.
+        for (const addedProvider of ["claude-code", "codex"]) {
+            await expect(engine.handle(client, "accounts.add", { provider: addedProvider, id: "while-running", name: "While running" })).rejects.toMatchObject({ code: "busy" });
+        }
         await engine.handle(client, "accounts.remove", { provider, id: unused.id, confirmedFolder: unused.folder });
         expect(existsSync(unused.folder)).toBe(false);
         finish.resolve();
         await task.settled;
+        await expect(engine.handle(client, "accounts.add", { provider, id: "after-child", name: "After child" })).resolves.toMatchObject({ id: "after-child" });
         await engine.handle(client, "accounts.remove", { provider, id: selected.id, confirmedFolder: selected.folder });
         expect(existsSync(selected.folder)).toBe(false);
     } finally {

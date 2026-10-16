@@ -65,3 +65,20 @@ test("deletion refuses replaced roots and never follows child symlinks", () => {
     removeAccount("codex", a.id, a.folder);
     expect(existsSync(outside)).toBe(true);
 });
+
+
+test("managed removal refuses projects on either side of the account, including aliases", () => {
+    const a = addAccount("codex", { id: "contains-project", name: "Contains project" });
+    const project = join(a.folder, "project");
+    mkdirSync(project);
+    const sentinel = join(project, "source.ts");
+    writeFileSync(sentinel, "keep");
+    const alias = join(outside, "nested-project-link");
+    symlinkSync(project, alias);
+    for (const root of [project, alias, a.folder, iso.home]) {
+        expect(() => removeAccount("codex", a.id, a.folder, [root])).toThrow(/projects/);
+        expect(existsSync(sentinel)).toBe(true);
+        expect(account("codex", a.id).folder).toBe(a.folder);
+    }
+    removeAccount("codex", a.id, a.folder);
+});
