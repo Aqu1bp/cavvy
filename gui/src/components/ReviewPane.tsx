@@ -11,7 +11,7 @@ import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
 import { review, setReview } from "../state/ui";
-import { changedOutside, fetchGitChanges, lastView, useGitChanges, type ReviewScope } from "../state/changes";
+import { changedOutside, fetchGitChanges, lastView, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural } from "../lib/format";
 import { DiffView } from "./blocks/DiffView";
@@ -116,8 +116,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const noRepo = () => git()?.repo === false;
     const shownScope = (): ReviewScope => (noRepo() ? "harness" : scope());
     const [harness, { refetch: refetchHarness }] = createResource(
-        () => shownScope() === "harness" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
-        ({ id }) => rpc.call("session.changes", { id }).catch((e) => (reportError(e), { files: [], added: 0, removed: 0, tracked: true })),
+        () => sessionReadReady(p.handle) && shownScope() === "harness" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
+        ({ id }) =>
+            rpc.call("session.changes", { id }).catch((e) => {
+                if (sessionReadReady(p.handle)) reportError(e);
+                return { files: [], added: 0, removed: 0, tracked: true };
+            }),
     );
     const view = () => (shownScope() === "harness" ? harness() : git());
     const loading = () => (shownScope() === "harness" ? harness.loading : git.loading);
@@ -149,6 +153,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
     const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
+            if (!sessionReadReady(p.handle)) return false;
             const key = unlistedKey();
             return key ? { key, id: id(), scope: gitScope(), base: base(), path: picked()! } : false;
         },
@@ -173,6 +178,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
     const [full, { refetch: refetchFull }] = createResource(
         () => {
+            if (!sessionReadReady(p.handle)) return false;
             const key = fullKey();
             return key ? { key, id: id(), scope: gitScope(), base: base(), path: file()!.path } : false;
         },
@@ -189,7 +195,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const shownFile = (): Row | undefined => (file()?.deferred ? (loaded()?.file ?? file()) : file());
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
     const [fallback] = createResource(
-        () => gitScope() === "branch" && git()?.error && !git()?.bases.length && id(),
+        () => sessionReadReady(p.handle) && gitScope() === "branch" && git()?.error && !git()?.bases.length && id(),
         (id) => fetchGitChanges(id, "uncommitted"),
     );
     const bases = () => (git()?.bases.length ? git()!.bases : (fallback()?.bases ?? []));

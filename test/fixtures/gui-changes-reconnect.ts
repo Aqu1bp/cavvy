@@ -17,6 +17,8 @@ const { useChanges, useGitChanges } = await import("../../gui/src/state/changes"
 const snapshot = { seq: 0, state: { id: "session", cwd: "/project", filesChanged: 1, busy: false }, turns: [], agents: [] };
 const changes = { files: [{ path: "file.ts", added: 1, removed: 0 }], added: 1, removed: 0, tracked: true };
 const gitChanges = { ...changes, repo: true, scope: "uncommitted", bases: [], more: 0 };
+let currentChanges = changes;
+let currentGitChanges = gitChanges;
 let loaded = false;
 let reconnecting = false;
 let releaseHello: (() => void) | undefined;
@@ -45,7 +47,7 @@ class ServerSocket extends Socket {
             if (!loaded) {
                 premature++;
                 queueMicrotask(() => this.message({ id, error: { code: "not_open", message: "Session is not open" } }));
-            } else reply(method === "session.changes" ? changes : gitChanges);
+            } else reply(method === "session.changes" ? currentChanges : currentGitChanges);
         } else {
             throw new Error(`Unexpected RPC: ${method}`);
         }
@@ -63,45 +65,68 @@ try {
     Socket.instances[0]!.open();
     await settle();
     const handle = await openSession("session");
-    const [harness, git] = createRoot((cleanup) => {
+    const [harnessResource, gitResource] = createRoot((cleanup) => {
         dispose = cleanup;
-        return [useChanges(() => handle)[0], useGitChanges(() => handle)[0]] as const;
+        return [useChanges(() => handle), useGitChanges(() => handle)] as const;
     });
+    const [harness, { refetch: refetchHarness }] = harnessResource;
+    const [git, { refetch: refetchGit }] = gitResource;
     await settle();
     assert.deepEqual(harness(), changes);
     assert.deepEqual(git(), gitChanges);
     assert.equal(reads, 2);
 
+    if (process.argv.includes("--pending")) {
+        void refetchHarness();
+        void refetchGit();
+        assert.equal(reads, 4);
+    }
+    const beforeReconnect = reads;
     Socket.instances[0]!.close();
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    void refetchHarness();
+    void refetchGit();
+    await settle();
+    assert.deepEqual(harness(), changes, "offline refresh keeps the previous Harness changes");
+    assert.deepEqual(git(), gitChanges, "offline focus and visibility keep the previous Git changes");
+    assert.equal(toasts.length, 0, "offline read refreshes do not report an error");
+    await assert.rejects(rpc.call("session.send", { id: handle.id, text: "offline mutation" }), /Not connected/);
     // Simulate the server unloading an idle session during a long disconnect.
     loaded = false;
     reconnecting = true;
     rpc.reconnectNow();
     await settle();
     Socket.instances[1]!.open();
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    void refetchHarness();
+    void refetchGit();
     await settle();
     assert.ok(releaseHello, "hold startup before session.open has run");
     assert.equal(premature, 0, "connection open must not refetch an unloaded session");
-    assert.equal(reads, 2);
+    assert.equal(reads, beforeReconnect);
     assert.deepEqual(harness(), changes);
     assert.deepEqual(git(), gitChanges);
 
+    currentChanges = { ...changes, files: [{ path: "after-reconnect.ts", added: 2, removed: 0 }], added: 2 };
+    currentGitChanges = { ...gitChanges, ...currentChanges };
     releaseHello();
     await settle();
     assert.equal(opens, 2, "start() reopens the same handle after its startup refreshes");
-    assert.equal(reads, 2, "an unchanged snapshot keeps the existing resource results");
-    assert.deepEqual(harness(), changes);
-    assert.deepEqual(git(), gitChanges);
+    assert.equal(reads, beforeReconnect + 2, "an unchanged reopened snapshot still refreshes both resources once");
+    assert.deepEqual(harness(), currentChanges);
+    assert.deepEqual(git(), currentGitChanges);
 
     handle.set("state", "filesChanged", 2);
     await settle();
-    assert.equal(reads, 4, "edits still refresh both resources");
+    assert.equal(reads, beforeReconnect + 4, "edits still refresh both resources");
     handle.set("state", "busy", true);
     await settle();
-    assert.equal(reads, 6);
+    assert.equal(reads, beforeReconnect + 6);
     handle.set("state", "busy", false);
     await settle();
-    assert.equal(reads, 8, "turn completion still refreshes both resources");
+    assert.equal(reads, beforeReconnect + 8, "turn completion still refreshes both resources");
 } finally {
     dispose?.();
     rpc.close();

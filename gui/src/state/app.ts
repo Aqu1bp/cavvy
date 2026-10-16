@@ -204,6 +204,9 @@ export interface Draft {
 
 export interface SessionHandle {
     id: string;
+    /** Reads can resume only after this handle's session has been opened on the server. */
+    ready: () => boolean;
+    setReady: (ready: boolean) => void;
     view: SessionView;
     set: SetStoreFunction<SessionView>;
     seq: number;
@@ -233,17 +236,21 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     deleted.delete(id);
     const existing = handles.get(id);
     if (existing) {
-        existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
         existing.seq = snap.seq;
         existing.queue = [];
+        batch(() => {
+            existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
+            existing.setReady(true);
+        });
         return existing;
     }
     const h = createRoot(() => {
         const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
         const [draft, setDraft] = createSignal<Draft | undefined>();
+        const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
         const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])], files: [...(prev.files ?? []), ...(d.files ?? [])] } : d));
-        return { id, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
+        return { id, ready, setReady, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
     trim();
@@ -486,7 +493,10 @@ export function start() {
     rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
     rpc.onState((s) => {
-        setApp("conn", s);
+        batch(() => {
+            if (s !== "open") for (const h of handles.values()) h.setReady(false);
+            setApp("conn", s);
+        });
         if (s !== "open") return;
         void (async () => {
             try {
