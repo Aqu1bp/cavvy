@@ -1378,6 +1378,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
     });
 
+    // Six fake Claude Code sessions, each a CLI process (~0.8 s apiece, measured): over bun's default 5 s under load.
     test("plan mode, a deny rule, a declined prompt and a non-interactive run refuse it; an allow rule runs it unasked", async () => {
         const VALUE = "test-secret-mcp-003";
         const secrets = new SecretStore();
@@ -1421,7 +1422,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(ruled.asked).toHaveLength(0);
         expect(mcpResults().at(-1)).toMatchObject({ isError: false, text: "[REDACTED RULE_TOKEN]" });
         expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
-    });
+    }, 30_000);
 
     for (const tool of ["request_secret", "run_with_secrets"]) {
         for (const rule of [`mcp__harness__${tool}`, "mcp__harness", "mcp__harness__*"]) {
