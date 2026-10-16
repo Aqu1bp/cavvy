@@ -387,6 +387,23 @@ export interface WorktreeInfo {
     /** Empty string means locked/prunable without a reason. */
     locked?: string;
     prunable?: string;
+    /** The repository's main worktree (Git lists it first). */
+    main: boolean;
+    /** Inside <main worktree>/.claude/worktrees/, where Harness creates them and may remove them. */
+    managed: boolean;
+}
+
+/** A worktree on a new branch; without `location` it goes in <main worktree>/.claude/worktrees/<folder>. */
+export interface CreateWorktreeParams {
+    /** A folder in the repository (any of its worktrees). */
+    path: string;
+    branch: string;
+    /** Branch or commit to start from; the folder's HEAD when omitted. */
+    base?: string;
+    /** One path segment; the branch name with "/" as "-" when omitted. */
+    folder?: string;
+    /** An absolute path the user chose elsewhere: it mustn't exist yet, and its parent must. */
+    location?: string;
 }
 
 export interface ProviderInfo {
@@ -541,6 +558,10 @@ export interface Methods {
     "projects.recent": { params: Record<string, never>; result: ProjectInfo[] };
     "projects.inspect": { params: { path: string }; result: ProjectInfo };
     "projects.worktrees": { params: { path: string }; result: WorktreeInfo[] };
+    /** `git worktree add -b`, with the repository's hooks off. */
+    "projects.createWorktree": { params: CreateWorktreeParams; result: { path: string; branch: string } };
+    /** `git worktree remove` without --force, for a managed worktree; its branch is kept. `path` is any folder in the repository. */
+    "projects.removeWorktree": { params: { path: string; worktree: string }; result: null };
     "projects.trust": { params: { path: string; trust: boolean }; result: ProjectInfo };
     "projects.forget": { params: { path: string }; result: null };
     "fs.mentions": { params: { cwd: string; query: string }; result: string[] };
