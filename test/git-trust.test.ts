@@ -1,16 +1,24 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { gitBranch, gitSnapshot } = await import("../src/util/git");
+// The audit now intentionally includes system/global/environment config. Keep
+// host settings out of fixtures, then supply each scope explicitly below.
+const inheritedGitConfig = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("GIT_CONFIG")));
+for (const key of Object.keys(inheritedGitConfig)) delete process.env[key];
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+const { gitBranch, gitListFiles, gitSnapshot } = await import("../src/util/git");
 const { environmentBlock } = await import("../src/agent/system-prompt");
 const { trustFolder, trustForSession } = await import("../src/config/trust");
 const { Engine } = await import("../src/server/engine");
 const repo = tempDir("hostile-git-");
 const plain = tempDir("not-git-");
 afterAll(() => {
+    for (const key of Object.keys(process.env)) if (key.startsWith("GIT_CONFIG")) delete process.env[key];
+    Object.assign(process.env, inheritedGitConfig);
     iso.cleanup();
     rmSync(repo, { recursive: true, force: true });
     rmSync(plain, { recursive: true, force: true });
@@ -231,7 +239,7 @@ test("a failed included or per-worktree config read skips status", () => {
     }
 });
 
-test("log never lazy-fetches a configured mailmap blob through the repository transport", () => {
+for (const legacy of [false, true]) test(`log never lazy-fetches a configured mailmap blob through the repository transport (older git: ${legacy})`, () => {
     const source = freshRepo();
     writeFileSync(join(source, "a"), "Mapped <mapped@example.invalid> Original <original@example.invalid>\n");
     run(source, ["-c", "commit.gpgsign=false", "commit", "-am", "mailmap blob"]);
@@ -248,30 +256,151 @@ test("log never lazy-fetches a configured mailmap blob through the repository tr
     rmSync(marker);
     // The fixture's own objects are loose; only the fetched mailmap was packed.
     for (const name of readdirSync(join(dir, ".git", "objects", "pack"))) rmSync(join(dir, ".git", "objects", "pack", name));
-    expect(gitSnapshot(dir)?.status).toBe("(clean)");
-    expect(gitSnapshot(dir)?.recentCommits).toContain("fixture");
-    expect(existsSync(marker)).toBe(false);
-    trustFolder(dir);
-    expect(gitSnapshot(dir)?.status).toBe("(clean)");
-    expect(gitSnapshot(dir)?.recentCommits).toContain("fixture");
-    expect(existsSync(marker)).toBe(false);
+    const before = process.env.PATH;
+    const calls = join(dir, ".git", "protocols");
+    if (legacy) {
+        const bin = join(dir, ".git", "bin");
+        mkdirSync(bin);
+        // Model pre-2.45 git by ignoring its unsupported environment variable.
+        const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+        writeFileSync(join(bin, "git"), `#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nprintf '%s\\n' "$GIT_ALLOW_PROTOCOL" >> ${quote(calls)}\nexec ${quote(Bun.which("git")!)} "$@"\n`, { mode: 0o700 });
+        process.env.PATH = `${bin}:${before}`;
+    }
+    try {
+        const snapshot = gitSnapshot(dir);
+        expect(existsSync(marker)).toBe(false);
+        expect(snapshot?.status).toBe("(clean)");
+        expect(snapshot?.recentCommits).toContain("fixture");
+        expect(gitBranch(dir)).toBe("main");
+        expect(gitListFiles(dir)).toContain("a");
+        trustFolder(dir);
+        expect(gitSnapshot(dir)?.status).toBe("(clean)");
+        expect(gitSnapshot(dir)?.recentCommits).toContain("fixture");
+        expect(existsSync(marker)).toBe(false);
+        if (legacy) {
+            const protocols = readFileSync(calls, "utf8").trimEnd().split("\n");
+            expect(protocols.length).toBeGreaterThan(5);
+            expect(protocols.every((protocol) => protocol === "harness-none")).toBe(true);
+        }
+    } finally {
+        if (before === undefined) delete process.env.PATH;
+        else process.env.PATH = before;
+    }
 });
 
-test("user-global execution settings do not suppress status in an ordinary repository", () => {
+for (const scope of ["global", "system", "global-include", "global-includeIf", "env-count", "env-parameters", "env-file"]) test(`${scope} clean filters activated by repository attributes never run before trust`, () => {
+    const dir = freshRepo();
+    const { marker } = markerScript(dir);
+    const global = join(dir, ".git", "global-config");
+    run(dir, ["config", "--file", global, "filter.x.clean", "./.git/marker.sh"]);
+    let configEnv: Record<string, string> = { GIT_CONFIG_GLOBAL: global };
+    if (scope === "system") configEnv = { GIT_CONFIG_NOSYSTEM: "0", GIT_CONFIG_SYSTEM: global };
+    if (scope === "env-count") configEnv = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "filter.x.clean", GIT_CONFIG_VALUE_0: "./.git/marker.sh" };
+    if (scope === "env-parameters") configEnv = { GIT_CONFIG_PARAMETERS: "'filter.x.clean=./.git/marker.sh'" };
+    if (scope === "env-file") {
+        const benign = join(dir, ".git", "benign-config");
+        run(dir, ["config", "--file", benign, "user.name", "Test"]);
+        configEnv.GIT_CONFIG = benign;
+    }
+    if (scope === "global-include" || scope === "global-includeIf") {
+        const outer = join(dir, ".git", "global-outer");
+        run(dir, ["config", "--file", outer, scope === "global-include" ? "include.path" : "includeIf.onbranch:main.path", global]);
+        configEnv = { GIT_CONFIG_GLOBAL: outer };
+    }
+    staleFile(dir);
+    run(dir, ["status", "--short"], configEnv);
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    staleFile(dir);
+    const before = Object.fromEntries(Object.keys(configEnv).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, configEnv);
+    try {
+        const snapshot = gitSnapshot(dir);
+        expect(existsSync(marker)).toBe(false);
+        expect(snapshot?.branch).toBe("main");
+        expect(snapshot?.status).toBeUndefined();
+        expect(snapshot?.statusSkipped).toBe("repository filter configuration requires user trust");
+    } finally {
+        for (const [key, value] of Object.entries(before)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    }
+});
+
+for (const key of ["include.path", "includeIf.onbranch:other.path", "diff.external", "diff.x.command", "diff.x.textconv", "core.hooksPath"]) test(`global ${key} with an absolute path keeps status`, () => {
+    const dir = freshRepo();
+    const global = join(dir, ".git", "global-config");
+    const empty = join(dir, ".git", "empty-config");
+    writeFileSync(empty, "");
+    run(dir, ["config", "--file", global, key, empty]);
+    const before = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = global;
+    try {
+        const snapshot = gitSnapshot(dir);
+        expect(snapshot?.branch).toBe("main");
+        expect(snapshot?.status).toBe("(clean)");
+        expect(snapshot?.statusSkipped).toBeUndefined();
+    } finally {
+        if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+        else process.env.GIT_CONFIG_GLOBAL = before;
+    }
+});
+
+test("disabled user-global fsmonitor and user-owned includes keep status", () => {
     const dir = freshRepo();
     const global = join(dir, ".git", "global-config");
     run(dir, ["config", "--file", global, "core.fsmonitor", "false"]);
     const included = join(dir, ".git", "empty-config");
     writeFileSync(included, "");
-    run(dir, ["config", "includeIf.onbranch:main.path", included]);
+    run(dir, ["config", "--file", global, "includeIf.onbranch:main.path", included]);
     const before = process.env.GIT_CONFIG_GLOBAL;
     process.env.GIT_CONFIG_GLOBAL = global;
     try {
         expect(gitSnapshot(dir)?.status).toBe("(clean)");
+        expect(gitSnapshot(dir)?.statusSkipped).toBeUndefined();
     } finally {
         if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL;
         else process.env.GIT_CONFIG_GLOBAL = before;
     }
+});
+
+test("a global LFS-style filter runs status through an installed program", () => {
+    const dir = freshRepo();
+    const bin = tempDir("git-lfs-bin-");
+    repos.push(bin);
+    const marker = join(bin, "executed");
+    writeFileSync(join(bin, "git-lfs"), `#!/bin/sh\ntouch '${marker}'\ncat\n`, { mode: 0o700 });
+    const global = join(dir, ".git", "global-config");
+    run(dir, ["config", "--file", global, "filter.lfs.clean", "git-lfs clean -- %f"]);
+    writeFileSync(join(dir, ".gitattributes"), "a filter=lfs\n");
+    staleFile(dir);
+    const beforeGlobal = process.env.GIT_CONFIG_GLOBAL;
+    const beforePath = process.env.PATH;
+    process.env.GIT_CONFIG_GLOBAL = global;
+    process.env.PATH = `${bin}:${beforePath}`;
+    try {
+        const snapshot = gitSnapshot(dir);
+        expect(snapshot?.status).toContain(" M .gitattributes");
+        expect(snapshot?.statusSkipped).toBeUndefined();
+        expect(existsSync(marker)).toBe(true);
+    } finally {
+        if (beforeGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+        else process.env.GIT_CONFIG_GLOBAL = beforeGlobal;
+        if (beforePath === undefined) delete process.env.PATH;
+        else process.env.PATH = beforePath;
+    }
+});
+
+for (const key of ["credential.helper", "gpg.program", "gpg.ssh.program", "core.sshCommand", "core.askPass"]) test(`local ${key} does not suppress status or execute`, () => {
+    const dir = freshRepo();
+    const { script, marker } = markerScript(dir);
+    run(dir, ["config", key, script]);
+    writeFileSync(join(dir, "a"), "changed\n");
+    const snapshot = gitSnapshot(dir);
+    expect(snapshot?.status).toContain(" M a");
+    expect(snapshot?.statusSkipped).toBeUndefined();
+    expect(existsSync(marker)).toBe(false);
 });
 
 

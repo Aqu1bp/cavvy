@@ -16,9 +16,23 @@ export function gitEnv(): Record<string, string> {
     return childEnv({ GIT_OPTIONAL_LOCKS: "0" });
 }
 
+function untrustedGitEnv(): Record<string, string> {
+    // Git before 2.45 ignores GIT_NO_LAZY_FETCH. As in git-changes, deny every
+    // real protocol too, so missing objects cannot invoke a promisor transport.
+    return { ...gitEnv(), GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "harness-none" };
+}
+
 function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined {
     try {
-        const r = spawnSync(gitArgv(args), { cwd, stdout: "pipe", stderr: "ignore", timeout: timeoutMs, env: { ...gitEnv(), GIT_NO_LAZY_FETCH: "1" } });
+        // Config reads cannot run fsmonitor. Audit the original settings without
+        // adding our own core.fsmonitor override to the list of configured keys.
+        const argv = args[0] === "config" ? ["git", ...args] : gitArgv(args);
+        const env = untrustedGitEnv();
+        // GIT_CONFIG redirects only `git config`, not status. It must not hide
+        // the effective settings that ordinary git commands will actually use.
+        if (args[0] === "config") delete env.GIT_CONFIG;
+        const r = spawnSync(argv, { cwd, stdout: "pipe", stderr: "ignore", timeout: timeoutMs, env });
+        if (r.exitCode === 1 && args[0] === "config" && args.includes("--get-regexp")) return "";
         if (r.exitCode !== 0) return undefined;
         return r.stdout.toString().trimEnd();
     } catch {
@@ -29,7 +43,7 @@ function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined 
 /** Tracked and untracked-but-not-ignored files under `cwd`, relative to it; undefined outside a git work tree. */
 export function gitListFiles(cwd: string): string[] | undefined {
     try {
-        const r = spawnSync(gitArgv(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]), { cwd, stdout: "pipe", stderr: "ignore", timeout: 10_000, env: gitEnv() });
+        const r = spawnSync(gitArgv(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]), { cwd, stdout: "pipe", stderr: "ignore", timeout: 10_000, env: untrustedGitEnv() });
         if (r.exitCode !== 0) return undefined;
         return [...new Set(r.stdout.toString().split("\0").filter(Boolean))];
     } catch {
@@ -70,12 +84,20 @@ export function gitBranch(cwd: string): string | undefined {
  * Keep the hook checks even with optional index writes disabled, and ignore submodules
  * even without submodule.* keys: .gitmodules alone can introduce a hostile nested repo.
  */
-const STATUS_EXEC_CONFIG = [/^filter\./, /^core\.fsmonitor$/, /^submodule\./, /^core\.hookspath$/, /^hook\./];
+const STATUS_EXEC_CONFIG = [/^filter\./, /^core\.(fsmonitor|hookspath)$/, /^submodule\./, /^hook\./, /^diff\.external$/, /^diff\..*\.(command|textconv)$/];
+const USER_EXEC_CONFIG = [/^filter\..*\.(clean|smudge|process)$/, /^diff\..*\.(textconv|command)$/, /^diff\.external$/, /^core\.fsmonitor$/];
 
 function statusSkipReason(cwd: string): string | undefined {
     const unreadable = "repository configuration could not be checked";
-    const local = git(cwd, ["config", "--local", "--includes", "--name-only", "--list", "-z"]);
-    if (local === undefined) return unreadable;
+    // Repository-owned settings and includes require trust regardless of value.
+    // Resolve conditional includes with all scopes present, then retain repo keys.
+    const scoped = git(cwd, ["config", "--includes", "--show-scope", "--name-only", "--list", "-z"]);
+    if (scoped === undefined) return unreadable;
+    const names = scoped.split("\0");
+    const keys: string[] = [];
+    for (let i = 0; i < names.length - 1; i += 2) {
+        if (names[i] === "local" || names[i] === "worktree") keys.push(names[i + 1]!);
+    }
     const file = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"]);
     if (!file) return unreadable;
     let worktree = "";
@@ -87,19 +109,31 @@ function statusSkipReason(cwd: string): string | undefined {
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") return unreadable;
     }
-    const keys = [...local.split("\0"), ...worktree.split("\0")];
-    if (keys.some((key) => key.startsWith("includeif."))) {
-        // hasconfig conditions can depend on another scope (e.g. a worktree include
-        // selected by a local remote URL). Resolve those with the complete config,
-        // but only count repository-owned keys. See git-config's Conditional includes.
-        const scoped = git(cwd, ["config", "--includes", "--show-scope", "--name-only", "--list", "-z"]);
-        if (scoped === undefined) return unreadable;
-        const fields = scoped.split("\0");
+    keys.push(...worktree.split("\0"));
+    let key = keys.find((key) => STATUS_EXEC_CONFIG.some((pattern) => pattern.test(key)))
+        ?? keys.find((key) => /^(include|includeif)\./.test(key));
+    if (!key) {
+        // User-owned scopes (including their includes) may use installed programs.
+        // Only relative-path drivers can select programs controlled by this repo.
+        const effective = git(cwd, ["config", "--includes", "--show-scope", "-z", "--get-regexp", "^(filter|diff|core)\\."]);
+        if (effective === undefined) return unreadable;
+        const fields = effective.split("\0");
         for (let i = 0; i < fields.length - 1; i += 2) {
-            if (fields[i] === "local" || fields[i] === "worktree") keys.push(fields[i + 1]!);
+            const scope = fields[i];
+            if (scope === "local" || scope === "worktree") continue;
+            if (scope !== "global" && scope !== "system" && scope !== "command") return unreadable;
+            // Git emits scope\0key\nvalue\0; values may themselves contain newlines.
+            const entry = fields[i + 1]!;
+            const newline = entry.indexOf("\n");
+            const name = newline === -1 ? entry : entry.slice(0, newline);
+            const value = newline === -1 ? "" : entry.slice(newline + 1);
+            if (USER_EXEC_CONFIG.some((pattern) => pattern.test(name))
+                && (value.startsWith(".") || (value.includes("/") && !value.startsWith("/") && !value.startsWith("~")))) {
+                key = name;
+                break;
+            }
         }
     }
-    const key = keys.find((key) => STATUS_EXEC_CONFIG.some((pattern) => pattern.test(key)));
     if (key) {
         // Only fixed section names enter the prompt; subsections and values may hold secrets.
         const section = key.startsWith("core.") ? key : key.split(".")[0];
