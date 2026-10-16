@@ -212,7 +212,7 @@ describe("connecting", () => {
     });
 
     // These start one request while another is half way, so they talk to the engine directly.
-    async function engineWithSession(o: { unloadAfterMs?: number } = {}) {
+    async function engineWithSession(o: { unloadAfterMs?: number; log?: (msg: string) => void } = {}) {
         const { Engine } = await import("../src/server/engine");
         const engine = new Engine(o);
         const c = { subs: new Set<string>(), send() {} };
@@ -348,6 +348,58 @@ describe("connecting", () => {
             await engine.stop();
         }
     });
+
+    test("a title that fails every try comes from the first prompt that said something, and each failure is logged", async () => {
+        const logged: string[] = [];
+        const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
+        const titles = () => mock.requests.filter((r) => r.kind === "title").length;
+        try {
+            const before = titles();
+            for (const [i, text] of ["untitled: fix the login bug", "an untitled second", "still untitled"].entries()) {
+                await engine.handle(c, "session.send", { id, text });
+                await whenIdle(rt);
+                for (let k = 0; k < 100 && logged.length <= i; k++) await Bun.sleep(20);
+                expect(logged[i]).toContain(`no title (try ${i + 1} of 3)`);
+                if (i < 2) expect(rt.session.title).toBeUndefined();
+            }
+            for (let k = 0; k < 100 && !rt.session.title; k++) await Bun.sleep(20);
+            expect(rt.session.title).toBe("Untitled: fix the login bug");
+            expect(titles()).toBe(before + 3);
+            // Named: no more asking.
+            await engine.handle(c, "session.send", { id, text: "explain the layout" });
+            await whenIdle(rt);
+            await Bun.sleep(50);
+            expect(titles()).toBe(before + 3);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    for (const provider of ["claude-code", "codex"] as const)
+    test(`a ${provider} session with no smallModel is named from its prompt: ${provider} can't be asked for a title`, async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig(provider, { path: provider === "codex" ? fakeCodex() : fakeClaude() });
+        process.env.FAKE_SCENARIO = provider === "codex" ? "cmd" : "silent";
+        const logged: string[] = [];
+        const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
+        const titles = () => mock.requests.filter((r) => r.kind === "title").length;
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: `${provider}:default`, persist: false });
+            expect(rt.model?.provider).toBe(provider);
+            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+            const before = titles();
+            await engine.handle(c, "session.send", { id, text: "## map the auth module\nand say how sign-in strategies are registered" });
+            for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
+            expect(rt.session.title).toBe("Map the auth module");
+            expect(titles()).toBe(before);
+            expect(logged).toEqual([]);
+        } finally {
+            await engine.stop();
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig(provider);
+        }
+    }, 30_000);
 
     test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");

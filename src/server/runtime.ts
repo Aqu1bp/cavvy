@@ -23,6 +23,7 @@ import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
 import { costOf } from "../providers/pricing";
+import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, toolCallsOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -86,6 +87,27 @@ export function titleWorthy(prompt: string): boolean {
 /** Title requests per session, failures included: a model that can't give one isn't asked forever. */
 const TITLE_TRIES = 3;
 
+/**
+ * A title made from the prompt itself, for when no model gives one: its
+ * first line that says something, cut at a word to 60 characters.
+ */
+export function promptTitle(prompt: string): string | undefined {
+    const line = prompt
+        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
+        .split("\n")
+        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\s+/g, " ").trim())
+        .find((l) => /[\p{L}\p{N}]/u.test(l));
+    if (!line) return undefined;
+    let t = line;
+    if (t.length > 60) {
+        const cut = t.slice(0, 60);
+        const space = cut.lastIndexOf(" ");
+        t = `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
+    } else t = t.replace(/[\s.]+$/, "");
+    // A plain first word starts it in capitals, as a model's title would; not a path or a name like `src/x`.
+    return /^\p{Ll}[\p{L}']*(?=[\s,:;!?]|$)/u.test(t) ? t[0]!.toUpperCase() + t.slice(1) : t;
+}
+
 /** How long closing waits for a turn to stop on its own before noting the interrupt for it (changeable for tests). */
 export const closeTiming = { turnMs: 3000 };
 
@@ -141,6 +163,8 @@ export class Runtime {
     /** A title request is running or got one; cleared when it failed, so a later prompt tries again. */
     private titleAsked = false;
     private titleTries = 0;
+    /** The first prompt a title was asked about: the one to name the session after when no model will. */
+    private titleFrom?: string;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
@@ -433,14 +457,31 @@ export class Runtime {
     async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
-        const smallRef = this.settings().smallModel;
         if (opts?.review) {
             // The reviewer, or with none the session's own model.
             const r = await reviewTarget(this.settings().reviewModel);
             if (r) ({ model, client } = r);
         } else if (opts?.main) {
             // the session's own model
-        } else if (smallRef) {
+        } else ({ model, client } = await this.smallTarget());
+        const res = await client.stream(
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            () => {},
+        );
+        if (res.usage) {
+            const c = costOf(res.usage, model);
+            this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
+            this.setState({ cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals() });
+        }
+        return opts?.review ? reviewText(res) : textOf(res);
+    }
+
+    /** Who answers one-off requests (titles, summaries): smallModel, else a small model of the session's provider, else its own. */
+    private async smallTarget(): Promise<{ model: ModelInfo; client: ProviderClient }> {
+        let model = this.model!;
+        let client = this.client!;
+        const smallRef = this.settings().smallModel;
+        if (smallRef) {
             const p = parseModelRef(smallRef);
             if (p) {
                 try {
@@ -454,16 +495,7 @@ export class Runtime {
             const small = smallModelFor(model.provider, this.engine.listings);
             if (small) model = small;
         }
-        const res = await client.stream(
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
-            () => {},
-        );
-        if (res.usage) {
-            const c = costOf(res.usage, model);
-            this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
-            this.setState({ cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals() });
-        }
-        return opts?.review ? reviewText(res) : textOf(res);
+        return { model, client };
     }
 
     tools(): Tool<any>[] {
@@ -1333,7 +1365,15 @@ export class Runtime {
         if (!this.client) return;
         this.titleAsked = true;
         this.titleTries++;
+        this.titleFrom ??= prompt;
         let title: string | undefined;
+        // Claude Code and Codex run whole turns only, so they can't be asked for one: without a
+        // smallModel on another provider the prompt names the session.
+        if (isAgentBackend((await this.smallTarget().catch(() => undefined))?.client ?? this.client)) {
+            const t = promptTitle(this.titleFrom);
+            if (t && !this.session.title) this.rename(t);
+            return;
+        }
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
@@ -1349,10 +1389,15 @@ export class Runtime {
                 .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
                 .slice(0, 60);
             // Not a title: the prompt said back, or a paragraph.
-            if (title && title.split(/\s+/).length > 10) title = undefined;
-        } catch {
-            // no title this time
+            if (title && title.split(/\s+/).length > 10) {
+                this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
+                title = undefined;
+            }
+        } catch (e) {
+            this.engine.log(`session ${this.id}: no title (try ${this.titleTries} of ${TITLE_TRIES}): ${(e as Error).message}`);
         }
+        // The last try failed too: the first prompt that said something names it.
+        if (!title && this.titleTries >= TITLE_TRIES) title = promptTitle(this.titleFrom);
         if (title && !this.session.title) this.rename(title);
         // Until one comes, the sidebar shows the first prompt; a later prompt asks again.
         else if (!title) this.titleAsked = false;

@@ -613,6 +613,19 @@ describe("a last grep that finds nothing isn't an error", () => {
 
 describe("titles come from a prompt that says something", () => {
     test.each([
+        ["fix the login bug", "Fix the login bug"],
+        ["## Fix the build.\nIt fails on CI", "Fix the build"],
+        ["<system-reminder>mode</system-reminder>\n\n  > why does   it hang?", "Why does it hang?"],
+        ["src/auth.ts throws on sign-in", "src/auth.ts throws on sign-in"],
+        ["untitled: fix it", "Untitled: fix it"],
+        ["please read every file in this repository and then tell me what each one of them does", "Please read every file in this repository and then tell me…"],
+        ["...", undefined],
+    ])("named from the prompt itself: %p", async (prompt, want) => {
+        const { promptTitle } = await import("../src/server/runtime");
+        expect(promptTitle(prompt as string)).toBe(want as string | undefined);
+    });
+
+    test.each([
         ["Hi", false], ["hi!", false], ["Hello there", false], ["hey", false], ["thanks!", false], ["ok", false], ["good morning :)", false], ["test", false], ["??", false],
         ["fix the login bug", true], ["hi, can you fix the login bug?", true], ["Explain the layout", true], ["why", true], ["日本語の質問", true],
     ])("%p: %p", async (prompt, want) => {
