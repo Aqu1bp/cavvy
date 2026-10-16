@@ -320,6 +320,35 @@ describe("connecting", () => {
         }
     });
 
+    test("a greeting doesn't name the session, and a title that failed is asked for again: the next real prompt names it", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        const titles = () => mock.requests.filter((r) => r.kind === "title").length;
+        const titled = async () => {
+            for (let i = 0; i < 100 && !rt.session.title; i++) await Bun.sleep(20);
+        };
+        try {
+            const before = titles();
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            await engine.handle(c, "session.send", { id, text: "hello there!" });
+            await whenIdle(rt);
+            expect(titles()).toBe(before);
+            // This one is asked about, and the request fails.
+            await engine.handle(c, "session.send", { id, text: "an untitled one" });
+            await whenIdle(rt);
+            for (let i = 0; i < 100 && titles() === before; i++) await Bun.sleep(20);
+            await Bun.sleep(50);
+            expect(rt.session.title).toBeUndefined();
+            await engine.handle(c, "session.send", { id, text: "explain the layout" });
+            await whenIdle(rt);
+            await titled();
+            expect(rt.session.title).toBe("Explain the layout");
+            expect(titles()).toBe(before + 2);
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id } = await engineWithSession();

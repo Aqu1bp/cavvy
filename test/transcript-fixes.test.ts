@@ -378,3 +378,13 @@ describe("a last grep that finds nothing isn't an error", () => {
         expect(missing.content).toContain("Exit code: 2");
     });
 });
+
+describe("titles come from a prompt that says something", () => {
+    test.each([
+        ["Hi", false], ["hi!", false], ["Hello there", false], ["hey", false], ["thanks!", false], ["ok", false], ["good morning :)", false], ["test", false], ["??", false],
+        ["fix the login bug", true], ["hi, can you fix the login bug?", true], ["Explain the layout", true], ["why", true], ["日本語の質問", true],
+    ])("%p: %p", async (prompt, want) => {
+        const { titleWorthy } = await import("../src/server/runtime");
+        expect(titleWorthy(prompt as string)).toBe(want as boolean);
+    });
+});

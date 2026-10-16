@@ -12,6 +12,7 @@
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
 //   "hangforever"    nothing is ever sent back (until the request is cancelled)
 //   "emptyreply"     a response with no text and no tool calls
+//   "untitled"       the request for the session's title is refused (HTTP 400)
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -229,6 +230,10 @@ export function startMockLlm(o: MockOptions = {}) {
             calls++;
 
             const isTitle = /name coding-assistant sessions/.test(system);
+            if (isTitle && /\buntitled\b/i.test(prompt)) {
+                requests.push({ model: body.model ?? "mock-haiku", kind: "title" });
+                return Response.json({ error: { message: "No title for this one", code: 400 } }, { status: 400 });
+            }
             if (!isTitle && /\breject400\b/i.test(prompt)) {
                 requests.push({ model: body.model ?? "mock-opus", kind: body.tools?.length ? "turn" : "summary" });
                 return Response.json({ error: { message: "Invalid request: the mock refuses this one", code: 400 } }, { status: 400 });

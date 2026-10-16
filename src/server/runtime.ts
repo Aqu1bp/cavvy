@@ -74,6 +74,18 @@ export function cleanTitle(title: string): string {
     return title.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+/** A first message that's only a greeting, a thanks, a yes or a test: nothing to name a session after. */
+const SMALL_TALK = /^(h(i+|ello|ey+|iya|owdy)|yo|sup|hola|greetings|good (morning|afternoon|evening|day)|thanks?( you)?( so much| a lot)?|thx|ty|ok(ay)?|k|cool|nice|great|yes|no|yep|nope|sure|test(ing)?|ping|hm+|\?+)(\s+(there|all|everyone|again|claude|harness|buddy|friend|mate))?[\s!.?,:)(]*$/i;
+
+/** Whether a prompt says enough to name the session after (a later one is tried if not). */
+export function titleWorthy(prompt: string): boolean {
+    const t = prompt.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+    return t.replace(/[^\p{L}\p{N}]/gu, "").length >= 3 && !SMALL_TALK.test(t);
+}
+
+/** Title requests per session, failures included: a model that can't give one isn't asked forever. */
+const TITLE_TRIES = 3;
+
 export function modelSummary(m: ModelInfo): ModelSummary {
     const p = getProvider(m.provider);
     return {
@@ -123,7 +135,9 @@ export class Runtime {
     /** Compactions so far: the transcript segment new prompts belong to. */
     private segment = 0;
     private ids = 0;
+    /** A title request is running or got one; cleared when it failed, so a later prompt tries again. */
     private titleAsked = false;
+    private titleTries = 0;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
@@ -1215,7 +1229,9 @@ export class Runtime {
         this.ui.write({ t: "turn", seg: this.segment, index, at: this.turnStartedAt });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
-        if (!this.session.title && !this.titleAsked) void this.generateTitle(display);
+        // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
+        const about = opts.kind === "command" ? text : display;
+        if (!this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;
         try {
@@ -1311,15 +1327,17 @@ export class Runtime {
     }
 
     private async generateTitle(prompt: string) {
+        if (!this.client) return;
         this.titleAsked = true;
-        if (!this.client || prompt.trim().length < 3) return;
+        this.titleTries++;
+        let title: string | undefined;
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
                 prompt.slice(0, 3000),
                 AbortSignal.timeout(20_000),
             );
-            const title = raw
+            title = raw
                 .replace(/<[^>]*>/g, "")
                 .split("\n")
                 .map((l) => l.trim())
@@ -1327,10 +1345,14 @@ export class Runtime {
                 ?.replace(/^title:\s*/i, "")
                 .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
                 .slice(0, 60);
-            if (title && !this.session.title) this.rename(title);
+            // Not a title: the prompt said back, or a paragraph.
+            if (title && title.split(/\s+/).length > 10) title = undefined;
         } catch {
-            // the first prompt names it instead
+            // no title this time
         }
+        if (title && !this.session.title) this.rename(title);
+        // Until one comes, the sidebar shows the first prompt; a later prompt asks again.
+        else if (!title) this.titleAsked = false;
     }
 
     /** `!command` from the input box: the user runs it themselves; the model sees it with the next prompt. */
