@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -57,7 +57,49 @@ function untouched(dir: string, paths: string[]) {
 const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").trim().split("\n").sort();
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
+const byteName = Buffer.from([0x61, 0xff]);
+const supportsByteNames = (() => {
+    try {
+        writeFileSync(Buffer.concat([Buffer.from(`${iso.home}/`), byteName]), "probe\n");
+        return readdirSync(iso.home, { encoding: "buffer" }).some((name) => name.equals(byteName));
+    } catch (e) {
+        if (["EILSEQ", "EINVAL", "EPERM"].includes((e as NodeJS.ErrnoException).code ?? "")) return false;
+        throw e;
+    }
+})();
+
 describe("git commit from Review", () => {
+    for (const source of ["untracked", "index", "HEAD", "hook"]) {
+        test.skipIf(source !== "hook" && !supportsByteNames)(`rejects non-UTF-8 names from ${source} without changing HEAD or staging`, async () => {
+            const dir = repo({ "a\uFFFD": "old\n" });
+            const rawPath = Buffer.concat([Buffer.from(`${dir}/`), byteName]);
+            if (source !== "hook") {
+                writeFileSync(rawPath, "raw-byte file\n");
+                if (source !== "untracked") git(dir, "add", "-A");
+                if (source === "HEAD") {
+                    git(dir, "commit", "-qm", "track raw-byte name");
+                    rmSync(rawPath);
+                    git(dir, "add", "-A");
+                }
+            } else {
+                // Index-only names exercise hook validation even on APFS.
+                const blob = git(dir, "rev-parse", "HEAD:a\uFFFD").trim();
+                hook(dir, "pre-commit", `const entry = Buffer.concat([Buffer.from("100644 ${blob}\\t"), Buffer.from([0x61, 0xff, 0])]);
+const r = Bun.spawnSync(gitArgv(["update-index", "-z", "--index-info"]), { env: gitEnv(), stdin: entry, stdout: "inherit", stderr: "inherit" });
+process.exit(r.exitCode);`);
+            }
+            write(dir, "a\uFFFD", "new\n");
+            const before = index(dir);
+            const head = git(dir, "rev-parse", "HEAD");
+
+            await expect(gitCommit(dir, ["a\uFFFD"], "reject ambiguous names")).rejects.toThrow("file name in this repository isn't valid UTF-8; commit from a terminal");
+
+            expect(index(dir)).toBe(before);
+            expect(git(dir, "rev-parse", "HEAD")).toBe(head);
+            expect(existsSync(join(dir, ".git", "index.lock"))).toBe(false);
+        });
+    }
+
     test("commits in a repository whose directory name ends in a space", async () => {
         const original = repo({ "selected.txt": "old\n" });
         const dir = `${original} `;

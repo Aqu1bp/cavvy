@@ -16,6 +16,7 @@ export const gitCommitTiming = { commandMs: 120_000, killGraceMs: 1_000 };
 
 interface GitOptions {
     index?: string;
+    pathOutput?: boolean;
     input?: string;
     allowFailure?: boolean;
     literal?: boolean;
@@ -74,17 +75,23 @@ async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
     };
     opts.signal?.addEventListener("abort", abort, { once: true });
     if (opts.signal?.aborted) abort();
-    let out: string,
+    let bytes: ArrayBuffer,
         err: string,
         code: number;
     try {
-        [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+        [bytes, err, code] = await Promise.all([new Response(proc.stdout).arrayBuffer(), new Response(proc.stderr).text(), proc.exited]);
         // Even when git exits on TERM, finish cancelling its process group.
         await stopping;
     } finally {
         clearTimeout(timeout);
         clearTimeout(shutdownTimeout);
         opts.signal?.removeEventListener("abort", abort);
+    }
+    let out: string;
+    try {
+        out = new TextDecoder("utf-8", { fatal: opts.pathOutput, ignoreBOM: true }).decode(bytes);
+    } catch {
+        throw new RpcError("A file name in this repository isn't valid UTF-8; commit from a terminal.", "git");
     }
     if (stopping && opts.signal?.aborted) throw cancelled();
     if (stopping) throw new RpcError(`${err}${out}${err || out ? "\n" : ""}Git ${args[0]} timed out; its process group was stopped.`, "git_timeout");
@@ -94,7 +101,7 @@ async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
 
 /** Compare entries and stored flags, excluding stat cache and in-memory bookkeeping. */
 async function unselectedEntries(root: string, index: string, selected: Set<string>, options: GitOptions = {}): Promise<string> {
-    const { out } = await runGit(root, ["ls-files", "--stage", "--debug", "-z"], { ...options, index });
+    const { out } = await runGit(root, ["ls-files", "--stage", "--debug", "-z"], { ...options, index, pathOutput: true });
     const entries: string[] = [];
     let pos = 0;
     while (pos < out.length) {
@@ -155,7 +162,7 @@ async function selectForCommit(cwd: string, paths: string[], signal?: AbortSigna
 /** Merge/rebase commits need their own workflow; this dialog makes ordinary commits. */
 async function checkOperation(root: string, signal?: AbortSignal) {
     for (const name of ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"]) {
-        const path = (await runGit(root, ["rev-parse", "--path-format=absolute", "--git-path", name], { signal })).out.replace(/\n$/, "");
+        const path = (await runGit(root, ["rev-parse", "--path-format=absolute", "--git-path", name], { signal, pathOutput: true })).out.replace(/\n$/, "");
         if (await lstat(path).catch(() => undefined)) throw new RpcError(`Cannot commit while a merge, rebase, cherry-pick or revert is in progress (${name}). Finish or abort it first.`, "git");
     }
 }
@@ -164,10 +171,15 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
     const git = (root: string, args: string[], opts: GitOptions = {}) => runGit(root, args, { signal: options.signal, ...opts });
     cwd = canonical(cwd);
     if (!message.trim() || message.includes("\0") || Buffer.byteLength(message) > 64 * 1024) throw new RpcError("Enter a commit message (at most 64 KiB, without NUL characters).", "invalid");
+    const root = (await git(cwd, ["rev-parse", "--show-toplevel"], { pathOutput: true })).out.replace(/\n$/, "");
+    // Reject byte-only names before selection can collapse them to replacement
+    // characters, including names removed from the index but still in HEAD.
+    await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { pathOutput: true });
+    const head = await git(root, ["rev-parse", "--verify", "HEAD"], { allowFailure: true });
+    if (!head.code) await git(root, ["ls-tree", "-r", "--name-only", "-z", head.out.trim()], { pathOutput: true });
     const files = await selectForCommit(cwd, paths, options.signal);
-    const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).out.replace(/\n$/, "");
     await checkOperation(root, options.signal);
-    const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).out.replace(/\n$/, "");
+    const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"], { pathOutput: true })).out.replace(/\n$/, "");
     const lock = `${index}.lock`;
     const held = await open(lock, "wx").catch((e) => {
         if (e.code === "EEXIST") throw new RpcError("Git's index is locked by another operation. Wait for it to finish and try again.", "busy");
@@ -175,6 +187,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
     });
     let dir: string | undefined;
     let ownsLock = true;
+    let preserveRecovery = false;
     try {
         await held.close();
         // Alongside the index, so split-index references keep resolving in the same repository.
@@ -230,7 +243,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         // NUL-delimited index-info removes/replaces only exact entries, even for
         // names containing tabs or newlines. Unselected index flags stay intact.
         const copyEntries = async (from: string, to: string) => {
-            const entries = (await git(root, ["ls-files", "--stage", "-z"], { index: from })).out
+            const entries = (await git(root, ["ls-files", "--stage", "-z"], { index: from, pathOutput: true })).out
                 .split("\0")
                 .filter((r) => selected.has(r.slice(r.indexOf("\t") + 1)));
             const removes = [...selected].map((p) => `0 ${zero}\t${p}\0`).join("");
@@ -244,7 +257,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         // on the selected files' existing index entries, not just on HEAD.
         await copyEntries(lock, privateIndex);
         const sparse = new Set(
-            (await git(root, ["ls-files", "-v", "-z"], { index: lock })).out
+            (await git(root, ["ls-files", "-v", "-z"], { index: lock, pathOutput: true })).out
                 .split("\0")
                 .filter((entry) => /^s /i.test(entry))
                 .map((entry) => entry.slice(2)),
@@ -265,7 +278,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             const diff = await git(
                 root,
                 ["diff", "--cached", "--ignore-submodules=none", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", ...(oldHead.code ? [] : [oldHead.out.trim()]), "--"],
-                { index: privateIndex },
+                { index: privateIndex, pathOutput: true },
             );
             if (diff.out.split("\0").filter(Boolean).some((p) => !selected.has(p))) throw new RpcError("The selection or a repository hook also changes unchecked paths. Select the whole change and try again.", "invalid");
             return diff.out.length > 0;
@@ -318,8 +331,27 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         } catch (e) {
             // A reference-transaction hook runs again AFTER publication. Its
             // timeout cannot undo the commit; finish reconciling the real index.
-            const published = await git(root, ["rev-parse", "--verify", headRef || "HEAD"], { allowFailure: true, recovery: true });
-            if (published.out.trim() !== hash) throw e;
+            preserveRecovery = true;
+            try {
+                const published = await git(root, ["rev-parse", "--quiet", "--verify", headRef || "HEAD"], { allowFailure: true, recovery: true });
+                const tip = published.out.trim();
+                // An unchanged tip is the ordinary pre-publication failure case.
+                if ((!published.code && tip === oldHead.out.trim()) || (published.code === 1 && oldHead.code)) {
+                    preserveRecovery = false;
+                    throw e;
+                }
+                if (published.code) throw new Error(published.err || "Cannot read the current branch tip.");
+                // Another writer may have advanced the branch while the committed
+                // hook was blocked. Our commit still needs its prepared index.
+                if (tip !== hash) {
+                    const ancestor = await git(root, ["merge-base", "--is-ancestor", hash, tip], { allowFailure: true, recovery: true });
+                    if (ancestor.code) throw new Error(ancestor.err || "The current branch no longer contains the created commit.");
+                }
+                preserveRecovery = false;
+            } catch (recoveryError) {
+                if (!preserveRecovery) throw recoveryError;
+                throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but publication could not be confirmed: ${(recoveryError as Error).message}\nThe prepared index is preserved at ${lock}, with recovery files at ${dir}. Recover from a terminal before committing again.`, "git");
+            }
         }
         try {
             // The copy was validated before publication while holding the lock.
@@ -327,7 +359,8 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
             await rename(lock, index);
             ownsLock = false;
         } catch (e) {
-            throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but the index could not be updated: ${(e as Error).message}`, "git");
+            preserveRecovery = true;
+            throw new RpcError(`Commit ${hash.slice(0, 7)} was created, but the index could not be updated: ${(e as Error).message}\nThe prepared index is preserved at ${lock}, with recovery files at ${dir}. Recover from a terminal before committing again.`, "git");
         }
         // Like git commit, a post-commit hook's exit status cannot undo the commit.
         await hook("post-commit", [], true).catch((e) => {
@@ -336,11 +369,11 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         return { hash, subject, branch: headRef.replace(/^refs\/heads\//, "") || undefined };
     } finally {
         await held.close().catch(() => {});
-        if (ownsLock) {
+        if (ownsLock && !preserveRecovery) {
             await rm(lock, { force: true });
             await rm(`${lock}.lock`, { force: true });
         }
-        if (dir) await rm(dir, { recursive: true, force: true });
+        if (dir && !preserveRecovery) await rm(dir, { recursive: true, force: true });
     }
 }
 
