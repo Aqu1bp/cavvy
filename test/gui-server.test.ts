@@ -120,7 +120,7 @@ class Client {
         return new Promise((resolve, reject) => this.waiting.set(id, { resolve, reject }));
     }
 
-    async open(method: "session.create" | "session.open" | "cliSessions.import", params: Record<string, unknown>): Promise<string> {
+    async open(method: "session.create" | "session.open" | "cliSessions.import" | "session.fork", params: Record<string, unknown>): Promise<string> {
         const snap = await this.call<SessionSnapshot>(method, params);
         this.views.set(snap.state.id, { state: snap.state, turns: snap.turns, agents: snap.agents, seq: snap.seq });
         return snap.state.id;
@@ -1466,6 +1466,242 @@ describe("sessions", () => {
     });
 });
 
+const { findSessionAnywhere, listSessions } = await import("../src/agent/session");
+
+describe("forking", () => {
+    /** What a turn looks like in the timeline: its prompt, how it ended, its times, its tool rows and its text. */
+    const shape = (t: Turn) => ({
+        prompt: t.prompt,
+        status: t.status,
+        startedAt: t.startedAt,
+        endedAt: t.endedAt,
+        tools: tools(t).map((b) => ({ name: b.name, status: b.status, summary: b.summary, diff: b.diff, durationMs: b.durationMs })),
+        text: texts(t),
+    });
+    const prompted = (v: { turns: Turn[] }) => v.turns.filter((t) => t.prompt);
+    /** Without the difference between a field left out and a null one (ops travel as JSON, where undefined is null). */
+    const plain = (x: unknown) => JSON.parse(JSON.stringify(x, (_k, v) => (v === null ? undefined : v)));
+    const sessionFiles = (cwd: string) => listSessions(cwd, 1000).map((s) => s.id).sort();
+
+    /** A session with three turns: a question, an edit (with its tool rows), and one more. */
+    async function threeTurns(c: Client, dir = project()) {
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        await c.call("session.send", { id, text: "demo" });
+        await c.answer(id, { kind: "permission", choice: "yes" }); // the shell command
+        await c.until(id, done, 15_000);
+        await c.call("session.send", { id, text: "third prompt" });
+        await c.until(id, (v) => done(v) && prompted(v).length === 3 && Boolean(v.state.title));
+        return { id, dir };
+    }
+
+    test("from an earlier turn: a new session with the conversation up to it, shown as it was, with the same model, effort and mode; the original as it was", async () => {
+        const c = await client();
+        const watcher = await client();
+        const { id, dir } = await threeTurns(c);
+        await c.call("session.setEffort", { id, effort: "high" });
+        const file = findSessionAnywhere(id)!;
+        const before = readFileSync(file, "utf-8");
+        const orig = c.view(id);
+        const demo = prompted(orig)[1]!;
+
+        const forkId = await c.open("session.fork", { id, index: demo.prompt!.index, text: "demo", turn: demo.id });
+        const fork = c.view(forkId);
+        expect(forkId).not.toBe(id);
+        expect(fork.state.title).toBe(`Fork of ${orig.state.title}`);
+        expect(fork.state.forkOf).toEqual({ id, title: orig.state.title! });
+        expect(fork.state.cwd).toBe(orig.state.cwd);
+        expect(fork.state.model?.ref).toBe(orig.state.model!.ref);
+        expect(fork.state.effort).toBe("high");
+        expect(fork.state.mode).toBe("acceptEdits");
+        expect(fork.state.fastMode).toBe(orig.state.fastMode);
+        expect([fork.state.cost, fork.state.tokensIn, fork.state.tokensOut]).toEqual([0, 0, 0]);
+        expect(fork.state.filesChanged).toBe(0);
+        // Its timeline is the original's up to that turn: prompts, replies, tool rows with summaries and diffs, times.
+        expect(plain(prompted(fork).map(shape))).toEqual(plain(prompted(orig).slice(0, 2).map(shape)));
+        expect(tools(prompted(fork)[1]!).find((b) => b.name === "Edit")?.diff?.hunks.length).toBeGreaterThan(0);
+        // Every window's sidebar has it; the original is untouched.
+        await new Promise<void>((r) => setTimeout(r, 50));
+        expect(watcher.events.some((e) => e.type === "sessions.upsert" && e.session.id === forkId && e.session.title === `Fork of ${orig.state.title}`)).toBe(true);
+        expect(readFileSync(file, "utf-8")).toBe(before);
+        const list = await c.call<{ id: string }[]>("sessions.list");
+        expect(list.map((s) => s.id)).toEqual(expect.arrayContaining([id, forkId]));
+        // No title is made up for it over "Fork of …".
+        await c.call("session.send", { id: forkId, text: "what was my first message? (in the fork, MANGO)" });
+        await c.until(forkId, (v) => done(v) && prompted(v).length === 3);
+        expect(c.view(forkId).state.title).toBe(`Fork of ${orig.state.title}`);
+        const answer = texts(lastTurn(c.view(forkId)));
+        expect(answer).toContain('Your first message was "first prompt"');
+        expect(answer).not.toContain("third prompt");
+        // And the original goes on without anything said in the fork.
+        await c.call("session.send", { id, text: "what was my first message?" });
+        await c.until(id, (v) => done(v) && prompted(v).length === 4);
+        const back = texts(lastTurn(c.view(id)));
+        expect(back).toContain('Your first message was "first prompt"');
+        expect(back).toContain("third prompt");
+        expect(back).not.toContain("MANGO");
+        expect(sessionFiles(dir)).toEqual([id, forkId].sort());
+        c.close();
+        watcher.close();
+    }, 45_000);
+
+    test("bad input is refused, and no session is made", async () => {
+        const c = await client();
+        const { id, dir } = await threeTurns(c);
+        const [first, demo] = prompted(c.view(id));
+        const fork = (p: Record<string, unknown>) => c.call("session.fork", { id, text: "demo", index: demo!.prompt!.index, turn: demo!.id, ...p });
+        await expect(fork({ id: "20200101-000000-abcdef" })).rejects.toThrow(/isn't open/);
+        await expect(fork({ index: "3" })).rejects.toThrow(/must be an integer/);
+        await expect(fork({ index: 1.5 })).rejects.toThrow(/must be an integer/);
+        await expect(fork({ index: 999 })).rejects.toThrow(/isn't one of this conversation's prompts/);
+        await expect(fork({ index: -1 })).rejects.toThrow(/isn't one of this conversation's prompts/);
+        // A reply, not a prompt.
+        await expect(fork({ index: first!.prompt!.index! + 1 })).rejects.toThrow(/isn't one of this conversation's prompts/);
+        await expect(fork({ text: undefined })).rejects.toThrow(/text must be a string/);
+        await expect(fork({ turn: undefined })).rejects.toThrow(/turn must be a string/);
+        // Drawn before something changed it (a rewind in another window, say).
+        await expect(fork({ text: "something else" })).rejects.toThrow(/changed since this was shown/);
+        await expect(fork({ turn: first!.id })).rejects.toThrow(/changed since this was shown/);
+        // From before a compaction.
+        await c.call("session.compact", { id });
+        await c.until(id, done);
+        await expect(fork({})).rejects.toThrow(/before a compaction/);
+        expect(sessionFiles(dir)).toEqual([id]);
+        c.close();
+    }, 45_000);
+
+    test("the running turn can't be forked; an earlier, finished one can", async () => {
+        const c = await client();
+        const dir = project();
+        const id = await c.open("session.create", { cwd: dir });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        await c.call("session.send", { id, text: "ask me a question" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        const [first, running] = prompted(c.view(id));
+        await expect(c.call("session.fork", { id, index: running!.prompt!.index, text: running!.prompt!.text, turn: running!.id })).rejects.toThrow(/still running/);
+        expect(sessionFiles(dir)).toEqual([id]);
+        const forkId = await c.open("session.fork", { id, index: first!.prompt!.index, text: "first prompt", turn: first!.id });
+        expect(prompted(c.view(forkId)).map((t) => t.prompt!.text)).toEqual(["first prompt"]);
+        expect(c.view(forkId).state.busy).toBe(false);
+        await c.answer(id, { kind: "question", answers: ["OpenID Connect"] });
+        await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("a turn rewound in another window and sent again isn't forked from the window that showed the old one", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "first prompt" });
+        await c.until(id, done);
+        await c.call("session.send", { id, text: "retry" });
+        await c.until(id, (v) => done(v) && prompted(v).length === 2);
+        const shown = prompted(c.view(id))[1]!;
+        // Another window: rewound to before it, and the same prompt sent again (a new answer at the same place).
+        const plan = await c.call("session.rewindPlan", { id, index: shown.prompt!.index });
+        await c.call("session.rewind", { id, index: shown.prompt!.index, planId: plan.planId, code: false, conversation: true });
+        await c.call("session.send", { id, text: "retry" });
+        await c.until(id, (v) => done(v) && prompted(v).length === 2 && prompted(v)[1]!.id !== shown.id);
+        const again = prompted(c.view(id))[1]!;
+        expect(again.prompt).toEqual(shown.prompt);
+        await expect(c.call("session.fork", { id, index: shown.prompt!.index, text: "retry", turn: shown.id })).rejects.toThrow(/changed since this was shown/);
+        const forkId = await c.open("session.fork", { id, index: again.prompt!.index, text: "retry", turn: again.id });
+        expect(prompted(c.view(forkId)).map((t) => t.prompt!.text)).toEqual(["first prompt", "retry"]);
+        c.close();
+    }, 30_000);
+
+    /** A turn that finished while the message queued during it runs (waiting on a question): `first` and `queued`. */
+    async function finishedWhileQueuedRuns(c: Client) {
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "pause first" });
+        expect((await c.call("session.send", { id, text: "ask me a question" })).queued).toBe(true);
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        const [first, queued] = prompted(c.view(id));
+        expect(first!.status).toBe("done");
+        expect(queued!.status).toBe("running");
+        return { id, first: first!, queued: queued! };
+    }
+
+    test("a turn that finished while a message queued during it runs can be forked, up to that message", async () => {
+        const c = await client();
+        const { id, first, queued } = await finishedWhileQueuedRuns(c);
+        const forkId = await c.open("session.fork", { id, index: first.prompt!.index, text: "pause first", turn: first.id });
+        expect(prompted(c.view(forkId)).map((t) => t.prompt!.text)).toEqual(["pause first"]);
+        expect(texts(prompted(c.view(forkId))[0]!)).toBe("Done waiting.");
+        const rt = srv.engine.runtimes.get(forkId)!;
+        expect(rt.session.messages.length).toBe(queued.prompt!.index);
+        await expect(c.call("session.fork", { id, index: queued.prompt!.index, text: queued.prompt!.text, turn: queued.id })).rejects.toThrow(/still running/);
+        await c.answer(id, { kind: "question", answers: ["OpenID Connect"] });
+        await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("while the original is working, none of its backend sessions are shared; once it's done, they are", async () => {
+        const c = await client();
+        const { id, first } = await finishedWhileQueuedRuns(c);
+        const original = srv.engine.runtimes.get(id)!;
+        // A Claude Code session that saw only the first turn, as if that turn had run on it.
+        original.session.setBackendSession("claude-code", "sess-shared", first.prompt!.index + 2);
+        const file = findSessionAnywhere(id)!;
+        const before = readFileSync(file, "utf-8");
+        const busy = await c.open("session.fork", { id, index: first.prompt!.index, text: "pause first", turn: first.id });
+        expect(srv.engine.runtimes.get(busy)!.session.backends.size).toBe(0);
+        expect(original.session.backends.get("claude-code")?.fork).toBeUndefined();
+        expect(readFileSync(file, "utf-8")).toBe(before);
+
+        await c.answer(id, { kind: "question", answers: ["OpenID Connect"] });
+        await c.until(id, done);
+        const idle = await c.open("session.fork", { id, index: first.prompt!.index, text: "pause first", turn: first.id });
+        expect(srv.engine.runtimes.get(idle)!.session.backends.get("claude-code")).toEqual({ id: "sess-shared", synced: first.prompt!.index + 2, fork: true });
+        expect(original.session.backends.get("claude-code")?.fork).toBe(true);
+        c.close();
+    }, 30_000);
+
+    test("rewinding the fork to before the fork point restores the conversation only, and says why; the original's rewind still restores its files", async () => {
+        const c = await client();
+        const dir = project();
+        const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "demo" });
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, done, 15_000);
+        const demo = prompted(c.view(id))[0]!;
+        const forkId = await c.open("session.fork", { id, index: demo.prompt!.index, text: "demo", turn: demo.id });
+        await c.call("session.send", { id: forkId, text: "a prompt in the fork" });
+        await c.until(forkId, (v) => done(v) && prompted(v).length === 2);
+
+        const targets = await c.call("session.rewindTargets", { id: forkId });
+        expect(targets.map((t: { text: string; forked?: boolean }) => [t.text, Boolean(t.forked)])).toEqual([
+            ["a prompt in the fork", false],
+            ["demo", true],
+        ]);
+        const plan = await c.call("session.rewindPlan", { id: forkId, index: demo.prompt!.index });
+        expect(plan.forked).toBe(true);
+        expect(plan.restore).toEqual([]);
+        const r = await c.call("session.rewind", { id: forkId, index: demo.prompt!.index, planId: plan.planId, code: true, conversation: true });
+        expect(r.restored).toEqual([]);
+        expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(true);
+        await c.until(forkId, (v) => prompted(v).length === 0);
+
+        const [t] = await c.call("session.rewindTargets", { id });
+        expect(t.forked).toBeUndefined();
+        const own = await c.call("session.rewindPlan", { id, index: t.index });
+        expect(own.restore.map((x: { path: string }) => x.path).sort()).toEqual(["src/auth/index.ts", "src/auth/sso.ts"]);
+        await c.call("session.rewind", { id, index: t.index, planId: own.planId, code: true, conversation: true });
+        expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(false);
+        expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
+        c.close();
+    }, 45_000);
+
+    test("/fork is in the command menu", async () => {
+        const c = await client();
+        const cmds = await c.call<{ name: string }[]>("commands.list", { cwd: project() });
+        expect(cmds.map((x) => x.name)).toContain("fork");
+        c.close();
+    });
+});
+
 describe("using a plan through an installed CLI", () => {
     // A fake `claude` (test/fixtures) on PATH, as an installed Claude Code would be.
     let bin = "";
@@ -1625,7 +1861,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "map the auth module" });
             await c.until(id, done, 30_000);
             const v = c.view(id);
@@ -1658,7 +1894,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "count the files" });
             // Its sub-agent's command asks (Manual mode): as that sub-agent, under the task, and it's the one waiting.
             let during: unknown;
@@ -1717,7 +1953,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "count the files" });
             await c.until(id, (v) => done(v) && v.state.interactions.length > 0, 20_000);
             await Bun.sleep(200);
@@ -1751,7 +1987,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "map the auth module" });
             await c.until(id, done, 30_000);
             const v = c.view(id);
@@ -1892,7 +2128,7 @@ describe("sub-agents", () => {
         try {
             const c = await client();
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.setModel", { id, ref: "codex:default", persist: false });
             await c.call("session.send", { id, text: "count the files with a sub-agent" });
             // Its command asks (Manual mode), naming it.
             const ask = await c.answer(id, { kind: "permission", choice: "yes" });
@@ -1931,7 +2167,7 @@ describe("sub-agents", () => {
         try {
             const c = await client();
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.setModel", { id, ref: "codex:default", persist: false });
             await c.call("session.send", { id, text: "count the files, then the tests" });
             await c.answer(id, { kind: "permission", choice: "yes" });
             // Its second turn's command: the chip it asks from is working again.
@@ -1973,7 +2209,7 @@ describe("sub-agents", () => {
             const c = await client();
             const dir = project();
             const id = await c.open("session.create", { cwd: dir });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "get a note written" });
             // Its Write asks (Manual mode), naming it, and it shows as waiting, after the turn is over.
             await c.until(id, (v) => done(v) && v.state.interactions.length > 0 && v.agents[0]?.status === "waiting", 20_000);
@@ -2640,6 +2876,345 @@ describe("project scripts", () => {
     }, 20_000);
 });
 
+describe("the setup script, run in a worktree created from the GUI", () => {
+    // Run in a plain shell with an empty home, as above.
+    const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
+    beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("setup-home-"); });
+    afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+    /** Past the Typist's latest typing time (TYPE_BY_MS, 3 s), so a command that was going to be typed has been. */
+    const PAST_TYPING_MS = 3400;
+    const MARKER = "setup-ran";
+    type Made = { path: string; branch: string; setup?: { ticket: string; script: ProjectScript }; setupError?: string };
+    const waitFor = async (check: () => boolean, what = "setup script") => {
+        const deadline = Date.now() + 8000;
+        while (!check()) { if (Date.now() > deadline) throw new Error(`${what} timed out`); await Bun.sleep(20); }
+    };
+    const terminalEvents = (c: Client) => c.events.filter((e) => e.type.startsWith("terminal."));
+    let n = 0;
+
+    /** A repository with one commit and nothing for trust to protect, by its real path. */
+    async function repo() {
+        const { gitArgv, gitEnv } = await import("../src/util/git");
+        const main = join(realpathSync(tempDir("harness-gui-setup-")), "repo");
+        mkdirSync(main);
+        for (const args of [["init", "-b", "main"], ["commit", "--allow-empty", "-m", "Initial commit"]]) {
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd: main, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+            if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+        }
+        return main;
+    }
+    /** A trusted repository with a script marked to run in new worktrees. */
+    async function marked(c: Client, command = `touch ${MARKER}`) {
+        const main = await repo();
+        await c.call("projects.trust", { path: main, trust: true });
+        const script = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "install", command, runOnWorktreeCreate: true });
+        return { main, script };
+    }
+    const create = async (c: Client, main: string, extra: Record<string, unknown> = {}) => {
+        const preview = extra.setup === true ? await c.call<{ script?: ProjectScript }>("scripts.setupInfo", { cwd: main }).catch(() => undefined) : undefined;
+        const setupScript = preview?.script && { id: preview.script.id, command: preview.script.command };
+        return c.call<Made>("projects.createWorktree", { path: main, branch: `setup-${++n}`, setupScript, ...extra });
+    };
+    const start = async (c: Client, made: Made, ticket = made.setup!.ticket, script = made.setup!.script.id) => {
+        const id = `setup-terminal-${++n}`;
+        const opened = await c.call("scripts.run", { id, cwd: made.path, script, cols: 80, rows: 24, setup: ticket });
+        await c.call("terminal.arm", { id });
+        return { id, opened };
+    };
+    const ran = (dir: string) => existsSync(join(dir, MARKER));
+
+    test("runs: a trusted repository, a marked script, setup asked for; typed once, in the new worktree", async () => {
+        const c = await client();
+        try {
+            const { main, script } = await marked(c);
+            expect(await c.call("scripts.setupInfo", { cwd: main })).toEqual({ main, script, trusted: true });
+            const made = await create(c, main, { setup: true });
+            expect(made.path).toBe(join(main, ".claude", "worktrees", made.branch));
+            expect(made.setup?.script).toEqual(script);
+            expect(made.setup?.ticket).toMatch(/^[0-9a-f]{32}$/);
+            expect(made.setupError).toBeUndefined();
+            // Creating it started nothing: the window starts it, in a tab it shows.
+            expect(terminalEvents(c)).toHaveLength(0);
+            const { id, opened } = await start(c, made);
+            expect(opened).toMatchObject({ id, cwd: made.path, script });
+            await waitFor(() => ran(made.path));
+            expect(ran(main)).toBe(false);
+            // Typed visibly, into a shell that stays open.
+            const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+            await waitFor(() => output().includes(`touch ${MARKER}`));
+            expect(c.events.some((e) => e.type === "terminal.exit" && e.id === id)).toBe(false);
+            // A setup run isn't a click: the header button keeps what it had.
+            expect((await c.call("scripts.list", { cwd: main })).lastUsed).toBeUndefined();
+            // Once.
+            await expect(start(c, made)).rejects.toMatchObject({ code: "setup_refused" });
+            await c.call("terminal.close", { id });
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("never when opted out: no script marked, \"don't run it this time\", or a client that doesn't ask", async () => {
+        const c = await client();
+        try {
+            const main = await repo();
+            await c.call("projects.trust", { path: main, trust: true });
+            const unmarked = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "install", command: `touch ${MARKER}` });
+            expect(await c.call("scripts.setupInfo", { cwd: main })).toEqual({ main, trusted: true });
+            const none = await create(c, main, { setup: true });
+            expect(none.setup).toBeUndefined();
+            expect(none.setupError).toMatch(/no script is marked/);
+            await c.call("scripts.save", { cwd: main, id: unmarked.id, name: "install", command: `touch ${MARKER}`, runOnWorktreeCreate: true });
+            const skipped = await create(c, main, { setup: false });
+            const older = await create(c, main);
+            for (const made of [skipped, older]) expect(made).toEqual({ path: made.path, branch: made.branch });
+            expect(srv.engine.setups.size).toBe(0);
+            await Bun.sleep(PAST_TYPING_MS);
+            for (const made of [none, skipped, older]) expect(ran(made.path)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("never when the repository is trusted only for having nothing to protect", async () => {
+        const c = await client();
+        try {
+            const main = await repo();
+            // A session there trusts the folder for this run, without the user's say-so.
+            await c.open("session.create", { cwd: main });
+            expect((await c.call("projects.inspect", { path: main })).trusted).toBe(true);
+            await c.call("scripts.save", { cwd: main, name: "install", command: `touch ${MARKER}`, runOnWorktreeCreate: true });
+            expect((await c.call("scripts.setupInfo", { cwd: main })).trusted).toBe(false);
+            const made = await create(c, main, { setup: true });
+            expect(made.setup).toBeUndefined();
+            expect(made.setupError).toMatch(/haven't trusted/);
+            expect(existsSync(made.path)).toBe(true);
+            // There's no ticket to start it with, and a made-up one is refused.
+            const script = (await c.call("scripts.list", { cwd: main })).scripts[0].id;
+            await expect(start(c, made, "0123456789abcdef0123456789abcdef", script)).rejects.toMatchObject({ code: "setup_refused" });
+            await Bun.sleep(PAST_TYPING_MS);
+            expect(ran(made.path)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("trust is checked again when it starts", async () => {
+        const c = await client();
+        const trusted = join(iso.home, "trusted.json");
+        try {
+            const { main } = await marked(c);
+            const made = await create(c, main, { setup: true });
+            const before = readFileSync(trusted, "utf-8");
+            writeFileSync(trusted, JSON.stringify({ dirs: (JSON.parse(before).dirs as string[]).filter((d) => d !== main) }));
+            await expect(start(c, made)).rejects.toThrow(/isn't trusted/);
+            expect(ran(made.path)).toBe(false);
+        } finally {
+            c.close();
+        }
+    }, 20_000);
+
+    test("never from another window, after a reconnect, or late", async () => {
+        const a = await client();
+        const b = await client();
+        const { SETUP_TTL_MS } = await import("../src/server/setup");
+        try {
+            const { main } = await marked(a);
+            const other = await create(a, main, { setup: true });
+            await expect(start(b, other)).rejects.toThrow(/another window/);
+            // Tried by another window, it's gone for this one too.
+            await expect(start(a, other)).rejects.toMatchObject({ code: "setup_refused" });
+
+            const late = await create(a, main, { setup: true });
+            srv.engine.setups.now = () => Date.now() + SETUP_TTL_MS + 1;
+            try {
+                await expect(start(a, late)).rejects.toThrow(/in time/);
+            } finally {
+                srv.engine.setups.now = Date.now;
+            }
+
+            const reloaded = await create(a, main, { setup: true });
+            expect(srv.engine.setups.size).toBe(1);
+            a.close();
+            await waitFor(() => srv.engine.setups.size === 0, "dropping the window's tickets");
+            const again = await client();
+            try {
+                await expect(start(again, reloaded)).rejects.toMatchObject({ code: "setup_refused" });
+            } finally {
+                again.close();
+            }
+            await Bun.sleep(PAST_TYPING_MS);
+            for (const made of [other, late, reloaded]) expect(ran(made.path)).toBe(false);
+            expect(terminalEvents(b)).toHaveLength(0);
+        } finally {
+            a.close();
+            b.close();
+        }
+    }, 25_000);
+
+    test("never on opening, inspecting or listing a worktree, whether made here or with git worktree add", async () => {
+        const c = await client();
+        try {
+            const { main } = await marked(c);
+            const made = await create(c, main);
+            const { gitArgv, gitEnv } = await import("../src/util/git");
+            const elsewhere = join(main, ".claude", "worktrees", "by-hand");
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "worktree", "add", "-b", "by-hand", elsewhere]), { cwd: main, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+            expect(r.exitCode).toBe(0);
+            for (const dir of [made.path, elsewhere]) {
+                await c.call("projects.inspect", { path: dir });
+                await c.call("projects.worktrees", { path: dir });
+                const id = await c.open("session.create", { cwd: dir });
+                await c.call("session.send", { id, text: "first prompt" });
+                await c.until(id, done);
+                await c.call("session.close", { id });
+                await Bun.sleep(400);
+                await c.call("session.open", { id });
+            }
+            expect(srv.engine.setups.size).toBe(0);
+            await Bun.sleep(PAST_TYPING_MS);
+            expect(ran(made.path)).toBe(false);
+            expect(ran(elsewhere)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 30_000);
+
+    test("unmarking or editing the script, or removing the folder, between create and start makes the start refuse", async () => {
+        const c = await client();
+        try {
+            const { main, script } = await marked(c);
+            const edited = await create(c, main, { setup: true });
+            await c.call("scripts.save", { cwd: main, id: script.id, name: "install", command: `touch ${MARKER}-edited` });
+            await expect(start(c, edited)).rejects.toThrow(/command changed/);
+            const unmarked = await create(c, main, { setup: true });
+            await c.call("scripts.save", { cwd: main, id: script.id, name: "install", command: `touch ${MARKER}-edited`, runOnWorktreeCreate: false });
+            await expect(start(c, unmarked)).rejects.toThrow(/no longer marked/);
+            // Another script can't use the ticket either.
+            await c.call("scripts.save", { cwd: main, id: script.id, name: "install", command: `touch ${MARKER}`, runOnWorktreeCreate: true });
+            const other = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "other", command: `touch ${MARKER}` });
+            const swapped = await create(c, main, { setup: true });
+            await expect(start(c, swapped, swapped.setup!.ticket, other.id)).rejects.toThrow(/isn't the project's setup script/);
+            // Nor another folder.
+            const moved = await create(c, main, { setup: true });
+            await expect(c.call("scripts.run", { id: `setup-terminal-${++n}`, cwd: main, script: script.id, cols: 80, rows: 24, setup: moved.setup!.ticket })).rejects.toThrow(/only in the worktree/);
+            const gone = await create(c, main, { setup: true });
+            rmSync(gone.path, { recursive: true, force: true });
+            await expect(start(c, gone)).rejects.toMatchObject({ code: expect.stringMatching(/setup_refused|not_found/) });
+            await Bun.sleep(PAST_TYPING_MS);
+            for (const made of [edited, unmarked, swapped, moved]) {
+                expect(ran(made.path)).toBe(false);
+                expect(existsSync(join(made.path, `${MARKER}-edited`))).toBe(false);
+            }
+            expect(ran(main)).toBe(false);
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    }, 25_000);
+
+    test("a failing setup command, or one that can't open, leaves the worktree as it is", async () => {
+        const c = await client();
+        try {
+            const { main } = await marked(c, `touch ${MARKER} && (exit 7)`);
+            const made = await create(c, main, { setup: true });
+            const { id } = await start(c, made);
+            await waitFor(() => ran(made.path));
+            await Bun.sleep(300);
+            expect(c.events.some((e) => e.type === "terminal.exit" && e.id === id)).toBe(false);
+            const listed = await c.call<{ path: string }[]>("projects.worktrees", { path: main });
+            expect(listed.some((w) => w.path === made.path)).toBe(true);
+            await c.call("terminal.close", { id });
+
+            // The window's 12 terminals are open: the setup can't start, and the worktree stays.
+            const full = await create(c, main, { setup: true });
+            const ids = Array.from({ length: 12 }, (_, i) => `setup-full-${i}`);
+            for (const tid of ids) await c.call("terminal.open", { id: tid, cwd: main, cols: 80, rows: 24 });
+            await expect(start(c, full)).rejects.toThrow(/Close a terminal before opening another/);
+            for (const tid of ids) await c.call("terminal.close", { id: tid });
+            expect((await c.call<{ path: string }[]>("projects.worktrees", { path: main })).some((w) => w.path === full.path)).toBe(true);
+            expect(existsSync(full.path)).toBe(true);
+        } finally {
+            c.close();
+        }
+    }, 25_000);
+
+    test("bad parameters are invalid", async () => {
+        const c = await client();
+        try {
+            const { main, script } = await marked(c);
+            for (const setup of ["yes", 1, {}, null]) await expect(create(c, main, { setup })).rejects.toMatchObject({ code: "invalid" });
+            for (const setup of [7, "short", "g".repeat(32), "0".repeat(33), null]) {
+                await expect(c.call("scripts.run", { id: `setup-terminal-${++n}`, cwd: main, script: script.id, cols: 80, rows: 24, setup })).rejects.toMatchObject({ code: "invalid" });
+            }
+            await expect(c.call("scripts.save", { cwd: main, name: "x", command: "x", runOnWorktreeCreate: "true" })).rejects.toMatchObject({ code: "invalid" });
+            await expect(c.call("scripts.setupInfo", { cwd: 7 })).rejects.toMatchObject({ code: "invalid" });
+            await expect(c.call("scripts.setupInfo", { cwd: "x".repeat(5000) })).rejects.toMatchObject({ code: "invalid" });
+            expect(terminalEvents(c)).toHaveLength(0);
+        } finally {
+            c.close();
+        }
+    });
+});
+
+describe("CLI accounts over RPC", () => {
+    test("add, unsigned status, rename, defaults, busy switch and confined removal", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        saveAgentConfig("codex", { path: fakeCodex() });
+        process.env.FAKE_LOGGED_IN = "0";
+        process.env.FAKE_ACCOUNT = "none";
+        const c = await client();
+        try {
+            for (const provider of ["claude-code", "codex"]) {
+                const a = await c.call("accounts.add", { provider, id: "rpc-personal", name: "Personal" });
+                expect(existsSync(a.folder)).toBe(true);
+                const listed = await c.call<any[]>("accounts.list", { provider, refresh: true });
+                expect(listed.find((v) => v.id === a.id)).toMatchObject({ signedIn: false, description: "not signed in", folder: a.folder });
+                const log = join(tempDir("account-login-log-"), "starts.jsonl");
+                process.env.FAKE_LOG = log;
+                const terminalId = `login-${provider}`;
+                await c.call("terminal.open", { id: terminalId, cwd: "/ignored", cols: 80, rows: 24, login: { provider, accountId: a.id, env: { CODEX_HOME: "/client-must-not-control-this" } } });
+                const deadline = Date.now() + 5000;
+                while (!c.events.some((e) => e.type === "terminal.exit" && e.id === terminalId)) {
+                    if (Date.now() > deadline) throw new Error("Login fixture did not exit");
+                    await Bun.sleep(10);
+                }
+                const starts = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((v) => v.argv);
+                const login = starts.find((v) => v.argv.includes("login"));
+                expect(login.argv).toEqual(provider === "codex" ? ["login"] : ["auth", "login"]);
+                expect(login[provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(a.folder);
+                expect(login[provider === "codex" ? "claudeConfigDir" : "codexHome"]).toBeUndefined();
+                delete process.env.FAKE_LOG;
+                await c.call("accounts.rename", { provider, id: a.id, name: "Work" });
+                expect((await c.call<any[]>("accounts.list", { provider })).find((v) => v.id === a.id).name).toBe("Work");
+                await c.call("accounts.setDefault", { provider, id: a.id });
+                const session = await c.open("session.create", { cwd: project() });
+                expect(c.view(session).state.accounts?.[provider]).toBe(a.id);
+                await c.call("session.setAccount", { id: session, provider, accountId: "default" });
+                await c.until(session, (v) => v.state.accounts?.[provider] === "default");
+                await expect(c.call("accounts.remove", { provider, id: a.id, confirmedFolder: "wrong" })).rejects.toMatchObject({ code: "invalid" });
+                await c.call("accounts.remove", { provider, id: a.id, confirmedFolder: a.folder });
+                expect(existsSync(a.folder)).toBe(false);
+                await expect(c.call("accounts.remove", { provider, id: "default", confirmedFolder: "/" })).rejects.toMatchObject({ code: "invalid" });
+                await expect(c.call("accounts.add", { provider, id: "../bad", name: "Bad" })).rejects.toMatchObject({ code: "invalid" });
+                await expect(c.call("accounts.add", { provider, id: "badfolder", name: "Bad", folder: "/tmp/../bad" })).rejects.toMatchObject({ code: "invalid" });
+            }
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.send", { id, text: "demo" });
+            await c.until(id, (v) => v.state.interactions.length > 0);
+            await expect(c.call("session.setAccount", { id, provider: "codex", accountId: "default" })).rejects.toMatchObject({ code: "busy" });
+            await c.call("session.interrupt", { id });
+        } finally {
+            delete process.env.FAKE_LOGGED_IN;
+            delete process.env.FAKE_ACCOUNT;
+            delete process.env.FAKE_LOG;
+            c.close();
+        }
+    }, 30_000);
+});
 describe("notes to the model on what changed", () => {
     async function freshSession() {
         const { Engine } = await import("../src/server/engine");
@@ -2954,6 +3529,7 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         expect(failed.error).toContain("[REDACTED env SENTINEL_TOKEN]");
         await c.call("session.mcpReconnect", { id, name: "srv" });
         await c.until(id, (v) => srvOf(v)?.status === "failed");
+        expect(c.view(id).state.model?.provider).toBe("mock");
         await c.call("session.send", { id, text: "explain the layout" });
         await c.until(id, done);
         await c.call("session.mcpRevoke", { id, name: "srv" });

@@ -13,7 +13,7 @@
     "test": "bun --no-env-file test",
     "typecheck": "tsc --noEmit -p .",
     "gui": "bun --no-env-file --config=bunfig.toml src/index.ts gui",
-    "gui:build": "cd gui && bun install && bun run build",
+    "gui:build": "cd gui && bun run build",
     "gui:dev": "bun --no-env-file --config=bunfig.toml scripts/gui-dev.ts",
     "gui:demo": "bun --no-env-file --config=bunfig.toml scripts/gui-demo.ts",
     "gui:typecheck": "cd gui && bun run typecheck",

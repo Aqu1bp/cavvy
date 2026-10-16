@@ -218,10 +218,10 @@ export function FindBar(p: {
     };
 
     return (
-        <div class="find-bar" role="search" on:keydown={onBarKey}>
+        <div class="find-bar" role="search" aria-label="Conversation" on:keydown={onBarKey}>
             <Search size={14} class="muted" />
             <input ref={input} value={text()} onInput={(e) => onInput(e.currentTarget.value)} on:keydown={onKey} placeholder="Find in conversation" spellcheck={false} aria-label="Find in conversation" />
-            <span class="find-count num">{count()}</span>
+            <span class="find-count num" role="status" aria-live="polite" aria-atomic="true">{count()}</span>
             <Show when={matches().length > 1}>
                 <button class="icon-btn" title="Previous (Shift+Enter)" aria-label="Previous match" onClick={() => go(cur() - 1)}>
                     <ChevronUp size={14} />

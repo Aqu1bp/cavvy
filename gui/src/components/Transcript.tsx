@@ -1,6 +1,8 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { ArrowDown } from "lucide-solid";
-import { toast, type SessionHandle } from "../state/app";
+import { ArrowDown, GitFork } from "lucide-solid";
+import type { Turn } from "@shared/protocol";
+import { fork, forkAnchor } from "../state/actions";
+import { activate, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
@@ -131,6 +133,11 @@ export function Transcript(p: { handle: SessionHandle }) {
         reading = capture();
     };
 
+    const forkFrom = (t: Turn) => {
+        const at = forkAnchor(turns(), turns().indexOf(t));
+        if (at) void fork(p.handle.id, at);
+    };
+
     /** Draws the pages down to this turn and stops following the end, to show something in it. */
     const show = (turnId: string) => {
         const i = turns().findIndex((t) => t.id === turnId);
@@ -177,12 +184,19 @@ export function Transcript(p: { handle: SessionHandle }) {
             <div class="transcript-fade" aria-hidden="true" />
             <div class="transcript" ref={scroller} onScroll={onScroll} aria-label="Conversation">
                 <div class="transcript-col" ref={content}>
+                    <Show when={p.handle.view.state.forkOf}>
+                        {(f) => (
+                            <button class="forked-from" title="Open the original session" onClick={() => void activate(f().id)}>
+                                <GitFork size={13} /> Forked from <span class="truncate">{f().title}</span>
+                            </button>
+                        )}
+                    </Show>
                     <Show when={hidden()}>
                         <button class="earlier" onClick={earlier}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
-                    <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind}
+                    <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
                         workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} />}</For>
                     <div class="transcript-end" />
                 </div>

@@ -4,7 +4,8 @@
 
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
-import type { GuiSettings, HelloResult, PermissionModeId, PlanLimits, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import { planLimitKey, type PlanLimits } from "@shared/protocol";
+import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri } from "../lib/platform";
@@ -152,7 +153,7 @@ export interface AppState {
     /** The mode picked on the home screen, which new sessions start in; the saved default until then. */
     homeMode?: PermissionModeId;
     seen: Record<string, number>;
-    /** The agent CLIs' plan limits, by provider (claude-code, codex): the account's, shared by its sessions. */
+    /** The agent CLIs' plan limits, by provider and account: the account's, shared by its sessions. */
     limits: Record<string, PlanLimits>;
 }
 
@@ -345,6 +346,14 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
+/** Fork a session at the end of the turn `turn` of its prompt `index` (shown as `text`), and show the fork. */
+export async function forkSession(id: string, at: { index: number; text: string; turn: string }): Promise<SessionHandle> {
+    const snap = await rpc.call("session.fork", { id, ...at });
+    const h = adopt(snap);
+    await activate(h.id);
+    return h;
+}
+
 /** Show a session in the main view. `cwd` is its project, for one not in the lists (an old one found by search). */
 export async function activate(id: string | undefined, cwd?: string) {
     // A jump waiting for another session doesn't wait any more.
@@ -452,8 +461,8 @@ export async function refreshProjects() {
 let watchingEditor = false;
 
 export async function refreshLimits() {
-    const all = await rpc.call("limits.get", {});
-    setApp("limits", reconcile(Object.fromEntries(all.map((l) => [l.provider, l]))));
+    const limits = await rpc.call("limits.get", {});
+    setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), l]))));
 }
 
 export async function refreshSettings() {
@@ -556,9 +565,10 @@ function onEvent(ev: ServerEvent) {
             toast(ev.message, ev.level);
             return;
         case "limits":
-            setApp("limits", ev.limits.provider, reconcile(ev.limits));
+            setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(ev.limits));
             return;
         case "models.changed":
+            void refreshProviders().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;
