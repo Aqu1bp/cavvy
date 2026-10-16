@@ -1,16 +1,14 @@
 import { expect, test } from "bun:test";
-import { homedir } from "os";
-import { resolve, sep } from "path";
-import { harnessHome } from "../src/config/paths";
+import { join } from "path";
 
-// Capture at module load so another file's setup cannot make the preload test pass.
-const { HARNESS_HOME, HARNESS_NO_KEYCHAIN } = process.env;
-const configuredHome = harnessHome();
-const userHome = resolve(homedir());
-
-test("the preload isolates state and disables the keychain before application imports", () => {
-    expect(HARNESS_HOME).toBeTruthy();
-    expect(configuredHome).toBe(resolve(HARNESS_HOME!));
-    expect(configuredHome === userHome || configuredHome.startsWith(userHome + sep)).toBe(false);
-    expect(HARNESS_NO_KEYCHAIN).toBe("1");
-});
+// In a fresh `bun test` with neither variable set, so an inherited environment
+// can't stand in for the preload; it reads the project's bunfig.toml as every run does.
+test("bun test's preload isolates the home and disables the keychain", () => {
+    const env = { ...process.env };
+    delete env.HARNESS_HOME;
+    delete env.HARNESS_NO_KEYCHAIN;
+    const root = join(import.meta.dir, "..");
+    const r = Bun.spawnSync([process.execPath, "test", "./test/fixtures/preload-probe.test.ts"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    expect(r.stderr.toString()).toContain("1 pass");
+    expect(r.exitCode).toBe(0);
+}, 20_000);
