@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -704,5 +704,32 @@ describe("review fixes", () => {
         await expect(removeWorktree({ path: a, worktree: b, inUse: noop })).rejects.toMatchObject({ code: "needs_trust", folder: b });
         expect(existsSync(mark)).toBe(false);
         expect(existsSync(b)).toBe(true);
+    });
+
+    test("a worktree whose commondir names another repository is refused before Git runs in it", async () => {
+        const { main, mark, script } = withFilterScript("commondir");
+        const b = await createWorktree({ path: main, branch: "b" });
+        const other = join(realpathSync(iso.home), "commondir-other.git");
+        cpSync(join(main, ".git"), other, { recursive: true });
+        git(main, "config", "--file", join(other, "config"), "filter.evil.clean", `'${script}'`);
+        writeFileSync(join(main, ".git", "worktrees", "b", "commondir"), `${other}\n`);
+        const later = new Date(Date.now() + 60_000);
+        utimesSync(join(b.path, "a.txt"), later, later);
+        await expect(removeWorktree({ path: main, worktree: b.path, inUse: noop })).rejects.toMatchObject({ code: "inconsistent" });
+        // Asked from B itself, or creating from it: refused too.
+        await expect(removeWorktree({ path: b.path, worktree: b.path, inUse: noop })).rejects.toMatchObject({ code: "inconsistent" });
+        await expect(createWorktree({ path: b.path, branch: "c" })).rejects.toMatchObject({ code: "inconsistent" });
+        expect(existsSync(mark)).toBe(false);
+        expect(existsSync(b.path)).toBe(true);
+    });
+
+    test("ordinary worktrees, asked from the main worktree, a linked one, or a subfolder, pass the identity check", async () => {
+        const main = repo("identity-ok");
+        const a = await createWorktree({ path: main, branch: "a" });
+        mkdirSync(join(a.path, "sub"));
+        const b = await createWorktree({ path: join(a.path, "sub"), branch: "b" });
+        mkdirSync(join(main, "inner"));
+        expect(await removeWorktree({ path: join(main, "inner"), worktree: b.path, inUse: noop })).toEqual({ removed: true });
+        expect(await removeWorktree({ path: a.path, worktree: a.path, inUse: noop })).toEqual({ removed: true });
     });
 });

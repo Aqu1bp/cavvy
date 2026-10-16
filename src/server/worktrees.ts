@@ -305,6 +305,48 @@ function perWorktreeKeys(dir: string): string[] | undefined {
 }
 
 /**
+ * The registered worktree (Git's own records, not --show-toplevel, which the
+ * repository's core.worktree can point anywhere) a folder is in: the deepest
+ * one containing it.
+ */
+function worktreeOf(repo: Repo, dir: string): string | undefined {
+    const real = canonical(dir);
+    return repo.records
+        .filter((r) => !r.bare && isDir(r.path))
+        .map((r) => canonical(r.path))
+        .filter((w) => isInside(real, w))
+        .sort((a, b) => b.length - a.length)[0];
+}
+
+/**
+ * Every folder Git will run in must be this repository's: its common Git dir
+ * the main worktree's, and its own Git dir that common dir (the main
+ * worktree) or a direct child of <common>/worktrees/ (a linked one). A
+ * linked worktree's commondir file can name another repository, whose config
+ * Git would then use there although only this one's was audited; trusting
+ * wouldn't make that consistent, so it isn't offered. Comes before anything
+ * that trusts what Git reads in those folders.
+ */
+function checkIdentity(repo: Repo, folders: string[]) {
+    const dirOf = (cwd: string, flag: string[]) => {
+        const d = runGit(cwd, ["rev-parse", ...flag])?.replace(/\n$/, "");
+        return d ? canonical(d) : undefined;
+    };
+    const common = (cwd: string) => dirOf(cwd, ["--path-format=absolute", "--git-common-dir"]);
+    const inconsistent = (dir: string) =>
+        new RpcError(`${dir} has Git metadata that doesn't match this repository (its Git directory or common directory points elsewhere), so Harness won't run Git there. Check it with git rev-parse --git-common-dir.`, "inconsistent");
+    const expected = common(repo.main);
+    if (!expected) throw inconsistent(repo.main);
+    const main = canonical(repo.main);
+    for (const dir of folders) {
+        const worktree = worktreeOf(repo, dir);
+        if (!worktree || common(dir) !== expected) throw inconsistent(dir);
+        const own = dirOf(dir, ["--absolute-git-dir"]);
+        if (worktree === main ? own !== expected : !own || dirname(own) !== join(expected, "worktrees")) throw inconsistent(dir);
+    }
+}
+
+/**
  * Hooks are off, but Git reading file contents (checking files out, or
  * comparing them for status) still runs whatever the repository's own config
  * sets up: filter drivers above all. In a project the user hasn't trusted,
@@ -337,13 +379,8 @@ function checkConfigTrust(repo: Repo, cwd: string, worktrees: string[], action: 
     if (runGit(main, ["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"])?.trim() !== "true") return;
     // Each folder as the registered worktree it's in (Git's own records, not --show-toplevel, which the
     // repository's core.worktree can point anywhere): trusting a subfolder isn't trusting its worktree's config.
-    const registered = repo.records.filter((r) => !r.bare && isDir(r.path)).map((r) => canonical(r.path));
-    const worktreeOf = (dir: string) => {
-        const real = canonical(dir);
-        return registered.filter((w) => isInside(real, w)).sort((a, b) => b.length - a.length)[0];
-    };
     const roots = new Set<string>([canonical(main), ...worktrees.filter(isDir).map(canonical)]);
-    const own = worktreeOf(cwd);
+    const own = worktreeOf(repo, cwd);
     if (!own) throw refuse(`The worktree configuration for ${cwd}`, cwd, undefined);
     roots.add(own);
     for (const dir of roots) {
@@ -358,6 +395,7 @@ function checkConfigTrust(repo: Repo, cwd: string, worktrees: string[], action: 
 export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string }> {
     const cwd = resolve(o.path);
     const repo = repoOf(cwd);
+    checkIdentity(repo, [cwd]);
     checkConfigTrust(repo, cwd, [], "create");
     const branch = checkBranch(cwd, o.branch);
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
@@ -402,12 +440,14 @@ export interface Removal {
 export function planRemoval(o: { path: string; worktree: string; inUse: (path: string) => boolean }): Removal {
     const cwd = resolve(o.path);
     const repo = repoOf(cwd);
+    checkIdentity(repo, [cwd]);
     const wanted = resolve(o.worktree);
     const index = repo.records.findIndex((r) => resolve(r.path) === wanted || canonical(r.path) === canonical(wanted));
     const record = repo.records[index];
     if (!record) throw new RpcError(`${wanted} isn't one of this repository's worktrees.`, "not_found");
     if (index === 0) throw new RpcError("The main worktree can't be removed.", "not_managed");
     const exists = isDir(record.path);
+    if (exists) checkIdentity(repo, [record.path]);
     if (!isManaged(repo.main, record.path, exists)) throw new RpcError(`Only worktrees in ${join(repo.main, WORKTREES_DIR)} can be removed here.`, "not_managed");
     if (record.locked !== undefined) throw new RpcError(`${record.path} is locked${record.locked ? ` (${record.locked})` : ""}. Unlock it with git worktree unlock first.`, "locked");
     if (o.inUse(record.path)) throw new RpcError(`A Harness session is open in ${record.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
