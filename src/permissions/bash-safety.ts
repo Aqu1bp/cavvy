@@ -175,8 +175,11 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         }
         if (quote === '"') {
             if (c === "\\" && n !== undefined) {
-                lead(false);
-                word += n;
+                // In double quotes a backslash only escapes $ ` " \ and a newline; before anything else it stays (`"\u0025d"`).
+                if (n !== "\n") {
+                    lead(false);
+                    word += '$`"\\'.includes(n) ? n : c + n;
+                }
                 text += c + n;
                 i++;
                 continue;
@@ -531,6 +534,8 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (args.length === 1 && VERSION_FLAGS.has(args[0]!) && (READ_ONLY_PROGRAMS.has(base) || TWO_WORD.has(base) || KNOWN_CLIS.has(base))) return true;
     // `printf -v 'a[$(cmd)]' x`: zsh evaluates the subscript.
     if (base === "printf" && args.some((a) => /^-[a-zA-Z]*v/.test(a))) return false;
+    // zsh's stat builtin (zmodload zsh/stat) stores into the array -A or -H names: `stat -A 'a[$(cmd)]' f`.
+    if (base === "stat" && args.some((a) => /^-[a-zA-Z]*[AH]/.test(a))) return false;
     if (base === "find") return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprintf|fls)/.test(a));
     if (base === "sed") return sedReadOnly(args);
     if (base === "sort") return !args.some((a) => /^-[a-zA-Z]*o/.test(a) || a.startsWith("--output") || a.startsWith("--compress-program"));
@@ -583,9 +588,15 @@ export function isReadOnlyCommand(cmd: string): boolean {
             if (a.commands.slice(i + 1).some((d) => d.argv.some((w) => use.test(w)))) return false;
         }
     }
+    // The checks read words as written. An expansion inside other text can be empty and leave text they
+    // never saw (an option, say); one standing alone, or before a path, is a value, not hidden text.
+    if (a.commands.some((c) => c.expands?.some((i) => !STANDALONE_EXPANSION.test(c.argv[i]!)))) return false;
     if (a.commands.some((c) => globTurnsUnsafe(c) || mathRuns(c))) return false;
     return a.commands.every((c) => isReadOnlySimple(c.argv));
 }
+
+/** A word that's one parameter (`$x`, `${x}`, `$1`, `${#x}`, `$?`), alone or before a path: its value, nothing spliced into text. */
+const STANDALONE_EXPANSION = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\d|[#?$!@*-]|\{#?(?:[A-Za-z_][A-Za-z0-9_]*|\d+|[#?$!@*-])\})(?:\/.*)?$/;
 
 /** Read-only whatever options or operands they're given (none runs a program or writes a file). */
 const GLOB_SAFE = new Set(["cat", "head", "tail", "wc", "ls", "echo", "stat", "du", "df", "grep", "egrep", "fgrep", "cut", "tr", "diff", "cmp", "comm", "nl", "column", "basename", "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "sha1sum", "hexdump", "od", "strings", "true", "false", "which", "whereis", "type", "sleep", "seq", "expr", "cd", "pwd"]);
@@ -620,7 +631,8 @@ const PLAIN_NUMBER = /^[-+]?(?:0[xX][0-9a-fA-F]+|\d+\.?\d*|\.\d+)$/;
  * zsh evaluates some builtins' arguments as arithmetic, and arithmetic can
  * assign: `printf %d 'a[$(cmd)]=1'` runs cmd, `printf %d PATH=1` empties
  * PATH for what follows. So do printf's `%n` and `*`, and `test -t`. Such an
- * argument must be a plain number, written out (not an expansion or glob).
+ * argument must be a plain number, written out (not an expansion or glob);
+ * bash's `test -v` and `-R` take a name, which must be a plain one.
  * A format that's an expansion or glob can be anything, `%n` too.
  */
 function mathRuns(c: SimpleCommand): boolean {
@@ -628,13 +640,17 @@ function mathRuns(c: SimpleCommand): boolean {
     const base = (words[0] ?? "").split("/").pop()!;
     const off = c.argv.length - words.length;
     const plain = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && PLAIN_NUMBER.test(words[i]!);
-    if (base === "test" || base === "[") return words.some((w, i) => w === "-t" && !plain(i + 1) && words[i + 1] !== "]" && i + 1 < words.length);
+    // bash (4.2+) reads `-v`'s and `-R`'s operand as a name, `a[$(cmd)]` included: it must be a plain name.
+    const name = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(words[i]!);
+    if (base === "test" || base === "[") return words.some((w, i) => i + 1 < words.length && words[i + 1] !== "]" && ((w === "-t" && !plain(i + 1)) || ((w === "-v" || w === "-R") && !name(i + 1))));
     if (base !== "printf") return false;
     const f = words[1] === "--" ? 2 : 1;
     if (f >= words.length) return false;
     if (c.expands?.includes(off + f) || c.globbed?.includes(off + f)) return true;
-    const specs = words[f]!.match(/%[^a-zA-Z%]*[a-zA-Z%]?/g) ?? [];
-    if (specs.every((sp) => TEXT_CONVERSION.test(sp))) return false;
+    // zsh reads `\u0025d` as `%d` before it looks for conversions: other than plain ones (`\n`), an escape could be one.
+    const format = words[f]!.replace(/\\[ntrabfve\\"']/g, "");
+    const specs = format.match(/%[^a-zA-Z%]*[a-zA-Z%]?/g) ?? [];
+    if (!format.includes("\\") && specs.every((sp) => TEXT_CONVERSION.test(sp))) return false;
     return words.slice(f + 1).some((_, k) => !plain(f + 1 + k));
 }
 

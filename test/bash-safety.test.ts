@@ -27,6 +27,8 @@ describe("analyzeCommand", () => {
     test("respects single quotes, double quotes and escapes", () => {
         expect(argvs("echo 'a;b' \"c && d\" e\\;f")).toEqual([["echo", "a;b", "c && d", "e;f"]]);
         expect(argvs('echo "say \\"hi\\""')).toEqual([["echo", 'say "hi"']]);
+        // In double quotes a backslash escapes only $ ` " \ and a newline; before anything else the shell keeps it.
+        expect(argvs('echo "a\\nb" "\\u0025d" "c\\\\d" "e\\$f" "g\\\nh"')).toEqual([["echo", "a\\nb", "\\u0025d", "c\\d", "e$f", "gh"]]);
     });
 
     test("fd duplication (2>&1, >&2) is not a command separator", () => {
