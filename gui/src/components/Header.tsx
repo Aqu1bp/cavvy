@@ -154,4 +154,3 @@ export function Header(p: { handle?: SessionHandle }) {
         </TitleBar>
     );
 }
-
