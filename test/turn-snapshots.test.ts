@@ -76,6 +76,53 @@ function expectPrivate(root: string) {
 }
 
 describe("per-turn snapshots", () => {
+    test("malformed journal records cannot supply paths or repository roots", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        await snapshots.begin(1, "valid");
+        write(cwd, "a.txt", "after\n");
+        await snapshots.end();
+        const valid = snapshots.list()[0]!;
+        const bad = [
+            { id: "2" }, { id: -1 }, { prompt: null }, { startedAt: "now" }, { endedAt: null },
+            { end: undefined }, { changed: {} }, { changed: [null] },
+            ...["../escape", "dir/../escape", "/outside", ".git/config", "x/.GiT/config", "", "bad\0path"].flatMap((path) => [
+                { changed: [path] },
+                { start: { ...valid.start, skipped: { [path]: "omitted" } } },
+                { end: { ...valid.end, skippedStamps: { [path]: "stamp" } } },
+            ]),
+            { start: { ...valid.start, root: join(cwd, "elsewhere") } },
+            { end: { ...valid.end, root: dirname(cwd) } },
+            { start: { ...valid.start, root: undefined } },
+            { start: { ...valid.start, incomplete: "yes" } },
+            { start: { ...valid.start, durationMs: -1 } },
+            { start: { ...valid.start, notes: [42] } },
+            { start: { ...valid.start, skipped: [] } },
+            { start: { ...valid.start, skipped: { "a.txt": 42 } } },
+            { start: { ...valid.start, skippedStamps: { "a.txt": null } } },
+        ];
+        writeFileSync(join(dir, "turn-snapshots.jsonl"), [valid, ...bad.map((fields, i) => ({ ...valid, id: i + 2, ...fields }))].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        const reopened = new TurnSnapshots(dir, cwd);
+        expect(reopened.list().map((r) => r.id)).toEqual([1]);
+        expect(reopened.changedPaths()).toEqual([join(cwd, "a.txt")]);
+        expect((await reopened.changes({ scope: "last-turn" })).files.map((f) => f.path)).toEqual(["a.txt"]);
+    });
+
+    test("version 1 absolute changed paths are contained before conversion, including from a subfolder", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        await snapshots.begin(1, "old format");
+        write(cwd, "a.txt", "after\n");
+        await snapshots.end();
+        const valid = { ...snapshots.list()[0]!, version: 1, changed: [join(cwd, "a.txt")] };
+        const bad = [join(dirname(cwd), "other.txt"), join(cwd, ".git/config"), `${cwd}/sub/../a.txt`, "a.txt"];
+        writeFileSync(join(dir, "turn-snapshots.jsonl"), [valid, ...bad.map((path, i) => ({ ...valid, id: i + 2, changed: [path] }))].map((r) => JSON.stringify(r)).join("\n") + "\n");
+        mkdirSync(join(cwd, "sub"));
+        const reopened = new TurnSnapshots(dir, join(cwd, "sub"));
+        expect(reopened.list().map((r) => r.id)).toEqual([1]);
+        expect(reopened.list()[0]!.changed).toEqual(["a.txt"]);
+        expect(reopened.changedPaths()).toEqual([join(cwd, "a.txt")]);
+        expect((await reopened.changes({ scope: "last-turn" })).files.map((f) => f.path)).toEqual(["../a.txt"]);
+    });
+
     test("prototype-named files keep ordinary diffs and omission metadata after reopening", async () => {
         const names = ["constructor", "toString", "__proto__"];
         const { cwd, dir, snapshots } = setup(Object.fromEntries(names.map((name) => [name, "before\n"])));

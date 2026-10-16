@@ -1,5 +1,5 @@
 // Raw working-tree snapshots, independent of edit tools and backend history.
-// Version 1 journal: one complete turn record per line, later records replace
+// Version 2 journal (reads version 1 too): one complete turn record per line, later records replace
 // earlier ones with the same checkpoint id. All objects belong to this session;
 // no alternates, repository writes, filters, hooks, or network access are used.
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
@@ -12,7 +12,8 @@ import { deflateSync } from "zlib";
 import { randomBytes } from "crypto";
 import { FileHistory, MAX_SNAPSHOT_BYTES, canonical } from "./checkpoints";
 import type { Session } from "./session";
-import { blobId, blobs, git, parseTree, readRegular, render, WorkTree, type Change, type Entry } from "../server/git-changes";
+import { blobId, blobs, git, gitEnvironment, parseTree, readRegular, render, WorkTree, type Change, type Entry } from "../server/git-changes";
+import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
 import type { GitChangesInfo, GitScope } from "../server/protocol";
@@ -30,21 +31,21 @@ export interface TurnCapture {
 }
 
 export interface SnapshotTurn {
-    version: 1;
+    version: 2;
     id: number;
     prompt: string;
     startedAt: number;
     endedAt?: number;
     start: TurnCapture;
     end?: TurnCapture;
-    /** Absolute paths, for the cumulative Changes badge, including omitted files. */
+    /** Repository-relative paths, including omitted files. Version 1 stored absolute paths. */
     changed?: string[];
 }
 
 const instances = new WeakMap<FileHistory, WeakMap<Session, TurnSnapshots>>();
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const POLICY = "Ignored files are not captured. Concurrent sessions in this repository see each other's changes. Submodule and nested repository contents are not captured.";
-const safePath = (p: string) => p.length > 0 && !isAbsolute(p) && !p.split("/").some((part) => part === ".." || part.toLowerCase() === ".git");
+const safePath = (p: string) => p.length > 0 && !p.includes("\0") && !isAbsolute(p) && !p.split("/").some((part) => part === ".." || part.toLowerCase() === ".git");
 const pathMap = (...sources: Record<string, string>[]): Record<string, string> => Object.assign(Object.create(null), ...sources);
 const own = (map: Record<string, string> | undefined, path: string) => map && Object.hasOwn(map, path) ? map[path] : undefined;
 
@@ -106,11 +107,28 @@ export class TurnSnapshots {
         this.journal = join(dir, "turn-snapshots.jsonl");
         let lines: string;
         try { lines = readFileSync(this.journal, "utf-8"); } catch { return; }
+        // list()/changedPaths() are synchronous: validate against cwd's actual
+        // repository before exposing any saved path, never against a journal-supplied cwd.
+        try {
+            const top = Bun.spawnSync(gitArgv(["rev-parse", "--show-toplevel"]), { cwd, env: gitEnvironment({ privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } }), timeout: 2000, stdout: "pipe", stderr: "ignore" });
+            if (top.exitCode !== 0) return;
+            this.root = top.stdout.toString().replace(/\n$/, "");
+        } catch { return; }
         for (const line of lines.split("\n")) {
             try {
-                const r = JSON.parse(line) as SnapshotTurn;
-                if (r.version !== 1 || !Number.isSafeInteger(r.id) || typeof r.prompt !== "string" || !this.validCapture(r.start) || (r.end && !this.validCapture(r.end))) continue;
-                this.turns.set(r.id, r);
+                const r = JSON.parse(line);
+                if (!r || (r.version !== 1 && r.version !== 2) || !Number.isSafeInteger(r.id) || r.id <= 0 || typeof r.prompt !== "string" || !this.validTime(r.startedAt) || (r.endedAt !== undefined && !this.validTime(r.endedAt)) || !this.validCapture(r.start) || (r.end !== undefined && !this.validCapture(r.end))) continue;
+                if ((r.end === undefined) !== (r.endedAt === undefined)) continue;
+                if (r.changed !== undefined) {
+                    if (!r.end || !Array.isArray(r.changed) || !r.changed.every((p: unknown) => typeof p === "string")) continue;
+                    if (r.version === 1) {
+                        // Read old absolute paths only when they are contained in this repository.
+                        if (!r.start.root || !r.changed.every((p: string) => isAbsolute(p) && !p.split("/").includes(".."))) continue;
+                        r.changed = r.changed.map((p: string) => relative(this.root!, p));
+                    }
+                    if (!r.changed.every(safePath)) continue;
+                }
+                this.turns.set(r.id, { ...r, version: 2 });
             } catch { /* A crash may leave the last line torn. */ }
         }
         // Do not append onto a torn record after reopening.
@@ -131,8 +149,13 @@ export class TurnSnapshots {
         return snapshots;
     }
 
+    private validTime(value: unknown): boolean {
+        return typeof value === "number" && Number.isFinite(value) && value >= 0;
+    }
+
     private validCapture(c: TurnCapture): boolean {
-        return !!c && (!c.tree || OID.test(c.tree)) && Array.isArray(c.notes) && !!c.skipped && typeof c.skipped === "object" && (!c.root || isAbsolute(c.root));
+        const paths = (value: unknown) => !!value && typeof value === "object" && !Array.isArray(value) && Object.entries(value).every(([path, text]) => safePath(path) && typeof text === "string");
+        return !!c && typeof c.incomplete === "boolean" && this.validTime(c.durationMs) && (c.root === undefined || c.root === this.root) && (c.tree === undefined || (typeof c.tree === "string" && OID.test(c.tree) && c.root === this.root)) && Array.isArray(c.notes) && c.notes.every((note) => typeof note === "string") && paths(c.skipped) && (c.skippedStamps === undefined || paths(c.skippedStamps));
     }
 
     list(): SnapshotTurn[] {
@@ -140,7 +163,7 @@ export class TurnSnapshots {
     }
 
     changedPaths(): string[] {
-        return [...new Set(this.list().flatMap((t) => t.changed ?? []))];
+        return [...new Set(this.list().flatMap((t) => (t.changed ?? []).map((path) => join(t.start.root ?? this.cwd, path))))];
     }
 
     private ensure() {
@@ -180,7 +203,7 @@ export class TurnSnapshots {
             if (!captured || this.stopped) return; // Not a repository, or this session was let go.
             if (this.active) await this.finish(structuredClone(captured));
             if (this.stopped) return;
-            this.active = { version: 1, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
+            this.active = { version: 2, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
             this.persist(this.active);
         });
     }
@@ -212,7 +235,7 @@ export class TurnSnapshots {
         this.active = undefined;
         try {
             const changes = await this.compare(turn, Date.now() + 2000);
-            turn.changed = changes.map((c) => join(turn.start.root ?? this.cwd, c.path));
+            turn.changed = changes.map((c) => c.path);
         } catch {
             captured.incomplete = true;
             captured.notes.push("The snapshot comparison is unavailable; some objects may be missing.");
@@ -370,7 +393,9 @@ export class TurnSnapshots {
         if (!capture.tree) throw new Error("This turn has an incomplete snapshot with no tree.");
         const r = await git(capture.root ?? this.cwd, ["ls-tree", "-r", "-l", "-z", capture.tree], { privateEnv: this.env(), deadline });
         if (r.code || r.cut) throw new Error("Snapshot objects are missing or unreadable; this turn is incomplete.");
-        return parseTree(r.out);
+        const entries = parseTree(r.out);
+        if ([...entries.keys()].some((path) => !safePath(path))) throw new Error("Snapshot contains an unsafe repository path.");
+        return entries;
     }
 
     private async compare(turn: SnapshotTurn, deadline: number): Promise<Change[]> {
