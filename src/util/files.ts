@@ -31,6 +31,49 @@ export function canonical(p: string, hops = 0): string {
     }
 }
 
+/** macOS and Windows volumes ignore case by default: `.HARNESS` is `.harness` there. */
+export const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
+
+const INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+/**
+ * Text folded so that names a case-insensitive volume opens as the same file
+ * come out alike. APFS compares names by Unicode case folding, not by
+ * lower-casing: `.harneſſ` (long s) and `.harneẞ` are `.harness` there, and
+ * toLowerCase changes neither. This is Unicode's compatibility caseless
+ * match: full case folding (taken here as lower(upper(lower)), which turns
+ * ß and ẞ into "ss", ſ into "s", ﬅ into "st", the Kelvin sign into "k"),
+ * NFKC (fullwidth ｈ is h), and invisible characters dropped. That is wider
+ * than any one volume (APFS keeps fullwidth letters apart): right for
+ * finding protected names, wrong for exempting a name. Folding never adds a
+ * `/` (fullwidth ／ becomes ∕), so a name stays one path segment.
+ */
+export function caselessFold(s: string): string {
+    return s.split("/").map(foldName).join("/");
+}
+
+function foldName(s: string): string {
+    let out = s.replace(INVISIBLE, "");
+    // Twice: case mapping can leave text that normalizes further, and back.
+    for (let i = 0; i < 2; i++) out = out.normalize("NFKC").toLowerCase().toUpperCase().toLowerCase();
+    // Lower-casing picks σ or ς by position in the word; folding has only σ.
+    return out.normalize("NFKC").replace(INVISIBLE, "").replace(/ς/g, "σ").replace(/\//g, "∕");
+}
+
+/**
+ * The ways to spell a path when matching it against protected names. On a
+ * case-insensitive volume: lower-cased, which is never wider than what the
+ * volume equates (so exemptions like `.env.example` can be judged on it),
+ * and caselessFold'ed, which is wider (so nothing the volume would open as
+ * a protected name gets past). Elsewhere just as given. A check protects
+ * the path if any spelling matches, and exempts it only if every one does.
+ */
+export const CASE_FOLDS: readonly ((s: string) => string)[] = CASE_INSENSITIVE_FS ? [(s) => s.toLowerCase(), caselessFold] : [(s) => s];
+
+export function spellings(s: string): string[] {
+    return [...new Set(CASE_FOLDS.map((f) => f(s)))];
+}
+
 export function isInside(child: string, parent: string): boolean {
     const rel = relative(parent, child);
     return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));

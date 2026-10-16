@@ -4,6 +4,7 @@
 import { closeSync, existsSync, lstatSync, openSync, readlinkSync, readSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
 
 export interface SimpleCommand {
     text: string;
@@ -448,7 +449,6 @@ const DANGEROUS: [RegExp, string][] = [
     [/\b((ba|z|da|k)?sh\s+-c|eval)\s+["']?\$\(\s*(curl|wget)\b/, "runs a downloaded script"],
     [/\bsudo\b/, "runs with elevated privileges"],
     [/\bsecurity\s+(find-generic-password|find-internet-password|dump-keychain|export)\b/, "reads secrets from the keychain"],
-    [/\.harness\/(credentials|providers)\.json/, "touches the harness credential store"],
     [/\bgit\s+push\b[^\n]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)/, "force-pushes to a remote"],
     [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)/, "discards uncommitted work"],
     [/\b(crontab\s+-r|launchctl\s+(unload|remove|bootout))\b/, "removes scheduled jobs or system services"],
@@ -536,9 +536,22 @@ function dangerousArgv(argv0: string[]): string | undefined {
     return undefined;
 }
 
+/**
+ * A path pattern for text that `spellings` folded: on a case-insensitive
+ * volume `~/.AWS/credentials` and `~/.harneſſ` name the real thing, and the
+ * spellings are lower-cased, so the pattern ignores case too.
+ */
+function anyCase(re: RegExp): RegExp {
+    return CASE_INSENSITIVE_FS && !re.flags.includes("i") ? new RegExp(re.source, re.flags + "i") : re;
+}
+
+/** Matched in every spelling of the command, like SENSITIVE. */
+const CREDENTIAL_STORE = anyCase(/\.harness\/(credentials|providers)\.json/);
+
 /** Returns a reason if the command matches a known-catastrophic pattern. */
 export function dangerousReason(cmd: string, depth = 0): string | undefined {
     for (const [re, reason] of DANGEROUS) if (re.test(cmd)) return reason;
+    if (spellings(cmd).some((t) => CREDENTIAL_STORE.test(t))) return "touches the harness credential store";
     if (depth > 4) return undefined;
     const a = analyzeCommand(cmd);
     for (const c of a.commands) {
@@ -555,8 +568,9 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
 /** What sensitiveTarget() calls a project's .env file. */
 export const ENV_FILE = "a .env file";
 
-const SENSITIVE: [RegExp, string][] = [
-    [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)\b)([.*?[][\w.*?[\]-]*)?(?=$|[\s'";|&)>])/, ENV_FILE],
+const SENSITIVE = ([
+    // Any suffix (.env.prodüction too); a template only when that's the whole name, as for Read.
+    [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)(?=$|[\s'";|&)>]))([.*?[][^\s'";|&)>/]*)?(?=$|[\s'";|&)>])/, ENV_FILE],
     [/(^|[\s'"=:/~])\.(ssh|aws|gnupg|azure)(\/|\b)|\.kube\/config|\.docker\/config\.json|\.config\/gcloud/, "a credentials directory"],
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
@@ -567,13 +581,19 @@ const SENSITIVE: [RegExp, string][] = [
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
-];
+] satisfies [RegExp, string][]).map(([re, what]): [RegExp, string] => [anyCase(re), what]);
 
 function matchSensitive(text: string, harnessHome?: string): string | undefined {
-    for (const [re, what] of SENSITIVE) if (re.test(text)) return what;
+    // Every spelling counts. The lower-cased one is no wider than the volume, so
+    // `.env.ｅxample`, which only the wider fold makes a template, still asks.
+    const texts = spellings(text);
+    for (const t of texts) for (const [re, what] of SENSITIVE) if (re.test(t)) return what;
     if (harnessHome) {
-        const esc = harnessHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (new RegExp(`(^|[\\s'"=:])${esc}(?=$|[/\\s'";|&)])`).test(text)) return "the harness credential store";
+        for (const h of spellings(harnessHome)) {
+            const esc = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const re = anyCase(new RegExp(`(^|[\\s'"=:])${esc}(?=$|[/\\s'";|&)])`));
+            if (texts.some((t) => re.test(t))) return "the harness credential store";
+        }
     }
     return undefined;
 }
@@ -639,10 +659,54 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     return undefined;
 }
 
-// Paths whose contents configure the harness or git: permissions, hooks, MCP
-// servers, git hooks/fsmonitor. A shell command that isn't read-only and
-// names one asks, like an Edit of the same file would.
-const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+// Paths whose contents configure the harness, the agent CLIs it runs, or git:
+// permissions, hooks, MCP servers, skills, git hooks/fsmonitor. A shell command
+// that isn't read-only and names one asks, like an Edit of the same file would.
+const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+// .claude/ too, but see claudeConfigIn.
+const CLAUDE_DIR = /(^|[\s'"=:/])\.claude(?=$|[/\s'";|&)>])/gi;
+const WORKTREE = /\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/iy;
+
+/**
+ * Could something in the text lead a path back up out of a folder: a `..`, a
+ * pattern that could match one (`.*`), or an expansion? A name starts at a
+ * separator, `=` or `:`, and runs to the next separator. In one pass, so a
+ * long command can't make it slow.
+ */
+function climbs(text: string): boolean {
+    if (/[$`]/.test(text)) return true;
+    for (const chunk of text.split(/[/\s'"]/)) {
+        const lastPattern = Math.max(chunk.lastIndexOf("*"), chunk.lastIndexOf("?"), chunk.lastIndexOf("["));
+        for (let i = 0; i < chunk.length; i++) {
+            if (chunk[i] !== "." || (i > 0 && chunk[i - 1] !== "=" && chunk[i - 1] !== ":")) continue;
+            if (chunk[i + 1] === "." || i < lastPattern) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Does the text name something in a .claude/ folder? Not what's in a Claude
+ * Code worktree (.claude/worktrees/<name>/): those are git checkouts, projects
+ * of their own (see withoutWorktrees in checker.ts), and `cd
+ * .claude/worktrees/x && bun test` isn't about .claude config. Text can't
+ * show where a quoted name ends, so one only counts as a worktree when
+ * nothing in the command could climb back out (after it, or before it, in a
+ * link made to point up: `ln -s ../.. .claude/worktrees/x/up`), and its name
+ * isn't like the config's.
+ */
+function claudeConfigIn(text: string): boolean {
+    let climbing: boolean | undefined;
+    for (const m of text.matchAll(CLAUDE_DIR)) {
+        WORKTREE.lastIndex = m.index + m[0].length;
+        const w = WORKTREE.exec(text);
+        if (!w || (climbing ??= climbs(text))) return true;
+        const name = w[1]!;
+        if (name === "." || name === ".." || spellings(name).some((n) => /^\.(harness|claude|codex|git|mcp\.json)$/.test(n))) return true;
+    }
+    return false;
+}
+
 // `git config` keys that make later read-only git commands run programs.
 const GIT_EXEC_CONFIG = /\bgit\b[^|;&\n]*\bconfig\b[^|;&\n]*\b(core\.(fsmonitor|pager|editor|sshcommand|hookspath|askpass)|diff\.[^\s=]*(external|textconv|command)|filter\.|alias\.|credential\.|gpg\.|sequence\.editor|uploadpack\.|merge\.[^\s=]*driver|include\.|includeif\.)/i;
 
@@ -770,10 +834,12 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: 
 export function configTarget(cmd: string, harnessHome?: string): string | undefined {
     if (isReadOnlyCommand(cmd)) return undefined;
     const unquoted = analyzeCommand(cmd).commands.map((c) => c.argv.join(" ")).join(" ; ");
-    for (const text of [cmd, unquoted]) {
-        if (CONFIG_PATH.test(text)) return "harness or git configuration";
+    // In every spelling: on a case-insensitive volume `.harneſſ/` is `.harness/`.
+    const homes = harnessHome ? spellings(harnessHome) : [];
+    for (const text of [cmd, unquoted].flatMap(spellings)) {
+        if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "harness or git configuration";
         if (GIT_EXEC_CONFIG.test(text)) return "git settings that run programs";
-        if (harnessHome && text.includes(harnessHome)) return "harness configuration";
+        if (homes.some((h) => text.includes(h))) return "harness configuration";
     }
     return undefined;
 }

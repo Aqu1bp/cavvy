@@ -30,7 +30,7 @@ import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./
 import { analyzeCommand, configTarget, dangerousReason, effectiveArgv, ENV_FILE, isReadOnlyCommand, pushesDefaultBranch, sensitiveTarget, suggestBashRules } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, type SandboxKind } from "./sandbox";
 import { isReadOnly } from "../tools/types";
-import { canonical, expandPath, isInside } from "../util/files";
+import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
 
 export type Behavior = "allow" | "ask" | "deny";
@@ -54,13 +54,13 @@ export interface Decision {
 
 const SENSITIVE_HOME = [".ssh", ".aws", ".gnupg", ".kube", ".docker/config.json", ".config/gcloud", ".netrc", ".npmrc", ".pypirc", "Library/Keychains"];
 
-/** macOS and Windows filesystems are case-insensitive by default: `.HARNESS` is `.harness`. */
-const FOLD = process.platform === "darwin" || process.platform === "win32" ? (p: string) => p.toLowerCase() : (p: string) => p;
-
-/** The path as given and with symlinks resolved, case-folded where the filesystem ignores case. */
+/**
+ * The path as given and with symlinks resolved, each in its spellings: on a
+ * case-insensitive volume `.HARNESS` and `.harneſſ` are `.harness`, and
+ * resolving can't show it for a folder that doesn't exist yet.
+ */
 function pathForms(p: string): string[] {
-    const c = canonical(p);
-    return [...new Set([FOLD(p), FOLD(c)])];
+    return [...new Set([p, canonical(p)].flatMap(spellings))];
 }
 
 /** What isHarnessConfig looks for in a path. */
@@ -80,7 +80,7 @@ const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.jso
  */
 function withoutWorktrees(p: string): string {
     return p.replace(/\/\.claude\/worktrees\/([^/]+)(?=\/)/gi, (segment, name: string, at: number) =>
-        !CONFIG_NAMES.has(FOLD(name)) && existsSync(join(p.slice(0, at + segment.length), ".git")) ? "/<worktree>" : segment,
+        !spellings(name).some((n) => CONFIG_NAMES.has(n)) && existsSync(join(p.slice(0, at + segment.length), ".git")) ? "/<worktree>" : segment,
     );
 }
 
@@ -327,13 +327,15 @@ export class PermissionChecker {
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
         // .claude/ and .codex/ configure the agent CLIs the harness can run (hooks, skills, rules).
-        const judged = [...new Set([p, canonical(p)])].map((f) => FOLD(withoutWorktrees(f)));
-        return judged.some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
+        const judged = new Set([p, canonical(p)].map(withoutWorktrees).flatMap(spellings));
+        return [...judged].some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
     }
 
     private isSensitive(p: string): boolean {
-        const home = FOLD(homedir());
-        return pathForms(p).some((f) => SENSITIVE_HOME.some((s) => isInside(f, join(home, FOLD(s)))) || /(^|\/)\.env(?!\.(example|sample|template|dist)$)(\.|$)/.test(f));
+        const secrets = SENSITIVE_HOME.flatMap((s) => spellings(join(homedir(), s)));
+        // Any spelling that's a .env counts: the lower-cased one isn't wider than the volume, so a
+        // name only the wider fold turns into `.env.example` (`.env.ｅxample`) isn't exempt.
+        return pathForms(p).some((f) => secrets.some((s) => isInside(f, s)) || /(^|\/)\.env(?!\.(example|sample|template|dist)$)(\.|$)/.test(f));
     }
 }
 
