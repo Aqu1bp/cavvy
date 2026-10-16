@@ -14,7 +14,20 @@ const REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIR
 /** Bound repository hooks, filters and signing prompts; mutable for isolated tests. */
 export const gitCommitTiming = { commandMs: 120_000, killGraceMs: 1_000 };
 
-async function git(cwd: string, args: string[], opts: { index?: string; input?: string; allowFailure?: boolean; literal?: boolean; hooks?: boolean; author?: Record<string, string> } = {}) {
+interface GitOptions {
+    index?: string;
+    input?: string;
+    allowFailure?: boolean;
+    literal?: boolean;
+    hooks?: boolean;
+    author?: Record<string, string>;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+}
+const cancelled = () => new RpcError("Git commit cancelled because the session is closing.", "git_cancelled");
+
+async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
+    if (opts.signal?.aborted) throw cancelled();
     const env = gitEnv();
     for (const key of REPO_VARS) delete env[key];
     for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) delete env[key];
@@ -38,7 +51,8 @@ async function git(cwd: string, args: string[], opts: { index?: string; input?: 
         }
     };
     let stopping: Promise<void> | undefined;
-    const timeout = setTimeout(() => {
+    const stop = () => {
+        if (stopping) return;
         // Kill descendants too: a hook can outlive git or retain its output pipes.
         signalGroup("SIGTERM");
         stopping = new Promise((done) =>
@@ -47,7 +61,10 @@ async function git(cwd: string, args: string[], opts: { index?: string; input?: 
                 done();
             }, gitCommitTiming.killGraceMs),
         );
-    }, gitCommitTiming.commandMs);
+    };
+    const timeout = setTimeout(stop, opts.timeoutMs ?? gitCommitTiming.commandMs);
+    opts.signal?.addEventListener("abort", stop, { once: true });
+    if (opts.signal?.aborted) stop();
     let out: string,
         err: string,
         code: number;
@@ -57,15 +74,17 @@ async function git(cwd: string, args: string[], opts: { index?: string; input?: 
         await stopping;
     } finally {
         clearTimeout(timeout);
+        opts.signal?.removeEventListener("abort", stop);
     }
+    if (stopping && opts.signal?.aborted) throw cancelled();
     if (stopping) throw new RpcError(`${err}${out}${err || out ? "\n" : ""}Git ${args[0]} timed out; its process group was stopped.`, "git_timeout");
     if (code && !opts.allowFailure) throw new RpcError(err + out || `git ${args[0]} exited with status ${code}`, "git");
     return { out, err, code };
 }
 
 /** Compare entries and all flags, excluding the stat cache that Git may refresh. */
-async function unselectedEntries(root: string, index: string, selected: Set<string>): Promise<string> {
-    const { out } = await git(root, ["ls-files", "--stage", "--debug", "-z"], { index });
+async function unselectedEntries(root: string, index: string, selected: Set<string>, options: GitOptions = {}): Promise<string> {
+    const { out } = await runGit(root, ["ls-files", "--stage", "--debug", "-z"], { ...options, index });
     const entries: string[] = [];
     let pos = 0;
     while (pos < out.length) {
@@ -103,20 +122,37 @@ async function selection(cwd: string, paths: string[]): Promise<GitFileDiff[]> {
     return files;
 }
 
+/** Listing is read-only; cancellation must stop before acquiring the index lock. */
+async function selectForCommit(cwd: string, paths: string[], signal?: AbortSignal): Promise<GitFileDiff[]> {
+    if (!signal) return selection(cwd, paths);
+    if (signal.aborted) throw cancelled();
+    let stop: () => void = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+        stop = () => reject(cancelled());
+        signal.addEventListener("abort", stop, { once: true });
+    });
+    try {
+        return await Promise.race([selection(cwd, paths), aborted]);
+    } finally {
+        signal.removeEventListener("abort", stop);
+    }
+}
+
 /** Merge/rebase commits need their own workflow; this dialog makes ordinary commits. */
-async function checkOperation(root: string) {
+async function checkOperation(root: string, signal?: AbortSignal) {
     for (const name of ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"]) {
-        const path = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", name])).out.trimEnd();
+        const path = (await runGit(root, ["rev-parse", "--path-format=absolute", "--git-path", name], { signal })).out.trimEnd();
         if (await lstat(path).catch(() => undefined)) throw new RpcError(`Cannot commit while a merge, rebase, cherry-pick or revert is in progress (${name}). Finish or abort it first.`, "git");
     }
 }
 
 export async function gitCommit(cwd: string, paths: string[], message: string, options: { expectedHead?: GitCommitHead; signal?: AbortSignal } = {}): Promise<GitCommitInfo> {
+    const git = (root: string, args: string[], opts: GitOptions = {}) => runGit(root, args, { signal: options.signal, ...opts });
     cwd = canonical(cwd);
     if (!message.trim() || message.includes("\0") || Buffer.byteLength(message) > 64 * 1024) throw new RpcError("Enter a commit message (at most 64 KiB, without NUL characters).", "invalid");
-    const files = await selection(cwd, paths);
+    const files = await selectForCommit(cwd, paths, options.signal);
     const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).out.trimEnd();
-    await checkOperation(root);
+    await checkOperation(root, options.signal);
     const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).out.trimEnd();
     const lock = `${index}.lock`;
     const held = await open(lock, "wx").catch((e) => {
@@ -161,9 +197,10 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         const selected = new Set(
             files.flatMap((f) => [f.path, ...(f.from ? [f.from] : [])]).map((p) => relative(root, resolve(cwd, p))),
         );
-        const originalEntries = await unselectedEntries(root, lock, selected);
-        const validateUnselected = async () => {
-            if (await unselectedEntries(root, lock, selected) !== originalEntries) {
+        const originalEntries = await unselectedEntries(root, lock, selected, { signal: options.signal });
+        const validateUnselected = async (recovering = false) => {
+            const opts = recovering ? { timeoutMs: 1000 } : { signal: options.signal };
+            if (await unselectedEntries(root, lock, selected, opts) !== originalEntries) {
                 throw new RpcError("Unchecked index entries or flags changed while preparing the commit. Reopen the dialog.", "git");
             }
         };
@@ -185,8 +222,12 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         // git add's line-ending conversion and core.filemode=false behavior depend
         // on the selected files' existing index entries, not just on HEAD.
         await copyEntries(lock, privateIndex);
-        const sparse = new Set((await git(root, ["ls-files", "-v", "-z"], { index: lock })).out
-            .split("\0").filter((entry) => /^s /i.test(entry)).map((entry) => entry.slice(2)));
+        const sparse = new Set(
+            (await git(root, ["ls-files", "-v", "-z"], { index: lock })).out
+                .split("\0")
+                .filter((entry) => /^s /i.test(entry))
+                .map((entry) => entry.slice(2)),
+        );
         for (const path of selected) {
             const file = files.find((f) => relative(root, resolve(cwd, f.path)) === path);
             const stat = await lstat(join(root, path)).catch(() => undefined);
@@ -231,7 +272,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         // index-info has no stat cache. Refresh only the selected entries so the
         // filter-safe Review listing recognizes clean converted/filtered files.
         if (indexed.length) await git(root, ["add", "--refresh", "--", ...indexed], { index: lock, literal: true, allowFailure: true });
-        await checkOperation(root);
+        await checkOperation(root, options.signal);
         const sign = await git(root, ["config", "--type=bool", "--get", "commit.gpgsign"], { allowFailure: true });
         if (sign.code > 1) throw new RpcError(sign.err + sign.out, "git");
         // commit-tree retains the message verbatim and honors Git's identity,
@@ -256,11 +297,13 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         } catch (e) {
             // A reference-transaction hook runs again AFTER publication. Its
             // timeout cannot undo the commit; finish reconciling the real index.
-            const published = await git(root, ["rev-parse", "--verify", headRef || "HEAD"], { allowFailure: true });
+            const published = await git(root, ["rev-parse", "--verify", headRef || "HEAD"], { allowFailure: true, signal: undefined, timeoutMs: 1000 });
             if (published.out.trim() !== hash) throw e;
         }
         try {
-            await validateUnselected();
+            // Publication may have completed before cancellation. Reconcile using
+            // bounded, hook-free reads even when the caller has been aborted.
+            await validateUnselected(true);
             await rename(lock, index);
             ownsLock = false;
         } catch (e) {
@@ -268,7 +311,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
         }
         // Like git commit, a post-commit hook's exit status cannot undo the commit.
         await hook("post-commit", [], true).catch((e) => {
-            if (!(e instanceof RpcError) || e.code !== "git_timeout") throw e;
+            if (!(e instanceof RpcError) || (e.code !== "git_timeout" && e.code !== "git_cancelled")) throw e;
         });
         return { hash, subject, branch: headRef.replace(/^refs\/heads\//, "") || undefined };
     } finally {
@@ -286,7 +329,7 @@ export const COMMIT_MESSAGE_SYSTEM = "Write a Git commit message for the selecte
 /** Existing review diffs are redacted before their own line budget; redact metadata too. */
 export async function gitCommitPrompt(cwd: string, paths: string[]): Promise<string> {
     const files = await selection(cwd, paths);
-    const recent = await git(cwd, ["log", "-5", "--format=%s"], { allowFailure: true });
+    const recent = await runGit(cwd, ["log", "-5", "--format=%s"], { allowFailure: true });
     const subjects = redact(recent.out).slice(0, 2000);
     let budget = 24_000;
     const diffs: string[] = [];

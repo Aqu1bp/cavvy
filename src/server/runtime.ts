@@ -183,6 +183,8 @@ export class Runtime {
     private switching?: Promise<unknown>;
     /** Reserve this session while its reviewed files are being committed. */
     private committing = false;
+    private commitDone?: Promise<GitCommitInfo>;
+    private commitAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
@@ -1912,10 +1914,14 @@ export class Runtime {
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
         this.checkGitCommit();
         this.committing = true;
+        this.commitAbort = new AbortController();
+        this.commitDone = gitCommit(this.ws.cwd, paths, message, { expectedHead, signal: this.commitAbort.signal });
         try {
-            return await gitCommit(this.ws.cwd, paths, message, { expectedHead });
+            return await this.commitDone;
         } finally {
             this.committing = false;
+            this.commitDone = undefined;
+            this.commitAbort = undefined;
         }
     }
 
@@ -2045,6 +2051,7 @@ export class Runtime {
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
         this.abort?.abort();
+        this.commitAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
         if (this.shellTimer) clearInterval(this.shellTimer);
@@ -2054,7 +2061,15 @@ export class Runtime {
         this.syncSteps(true);
         this.closed = true;
         // Delegated tasks still running stop with the session.
-        const ending = Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
+        // Commit cancellation kills its process group and removes the index lock.
+        // Wait for that bounded cleanup, including reconciliation if HEAD advanced.
+        const commit = this.commitDone?.catch(() => undefined);
+        const ending = Promise.all([
+            this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)),
+            this.agent?.dispose(),
+            killAllShells({ state: this.toolState }),
+            commit,
+        ]);
         try {
             // A turn still running notes how it stopped (the interrupt, what it was retrying) before the file is let go.
             const turn = this.turnDone;
@@ -2068,6 +2083,7 @@ export class Runtime {
             }
             await ending;
         } finally {
+            await commit;
             this.ui.close();
             this.session.release();
         }

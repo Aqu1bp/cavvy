@@ -430,6 +430,56 @@ describe("connecting", () => {
         }
     });
 
+    for (const phase of ["pre-commit", "reference-transaction"]) {
+        test(`stopping the engine during ${phase} cleans up the hook and index lock`, async () => {
+            const { engine, c, cwd, id, rt } = await engineWithSession();
+            const git = commitRepo(cwd);
+            const head = git("rev-parse", "HEAD");
+            const index = readFileSync(join(cwd, ".git", "index"));
+            writeFileSync(join(cwd, "selected.txt"), "new\n");
+            const hook = join(cwd, ".git", "hooks", phase);
+            const guard = phase === "reference-transaction" ? '[ "$1" = committed ] || exit 0\n' : "";
+            writeFileSync(hook, '#!/bin/sh\n' + guard + 'trap "" TERM\necho $$ > .git/commit-hook-pid\nwhile [ ! -e .git/commit-release ]; do sleep 0.02; done\n');
+            chmodSync(hook, 0o755);
+            let pending: Promise<unknown> | undefined;
+            try {
+                await rt.ready;
+                pending = engine.handle(c, "session.gitCommit", { id, paths: ["selected.txt"], message: "interrupted commit" }).catch((e) => e);
+                for (let i = 0; i < 200 && !existsSync(join(cwd, ".git", "commit-hook-pid")); i++) await Bun.sleep(10);
+                expect(existsSync(join(cwd, ".git", "commit-hook-pid"))).toBe(true);
+                const pid = Number(readFileSync(join(cwd, ".git", "commit-hook-pid"), "utf8"));
+                const started = Date.now();
+                await engine.stop();
+                expect(Date.now() - started).toBeLessThan(6500);
+                expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+                const alive = () => {
+                    try {
+                        process.kill(pid, 0);
+                        return true;
+                    } catch (e) {
+                        if ((e as NodeJS.ErrnoException).code === "ESRCH") return false;
+                        throw e;
+                    }
+                };
+                for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(10);
+                expect(alive()).toBe(false);
+                if (phase === "pre-commit") {
+                    expect(await pending).toMatchObject({ code: "git_cancelled" });
+                    expect(git("rev-parse", "HEAD")).toBe(head);
+                    expect(readFileSync(join(cwd, ".git", "index"))).toEqual(index);
+                } else {
+                    expect(await pending).toMatchObject({ subject: "interrupted commit" });
+                    expect(git("show", "HEAD:selected.txt")).toBe("new\n");
+                    expect(git("diff", "--cached")).toBe("");
+                }
+            } finally {
+                writeFileSync(join(cwd, ".git", "commit-release"), "");
+                await pending;
+                await engine.stop();
+            }
+        }, 10_000);
+    }
+
     test("a new chat saves its speed; an older chat without one gets the default without being written to", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id, rt } = await engineWithSession();
