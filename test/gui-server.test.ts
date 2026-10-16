@@ -2197,6 +2197,9 @@ describe("a sub-agent's own sub-agents", () => {
         } finally {
             await engine.stop();
         }
+    }, 30_000);
+});
+
 describe("a project's MCP servers (.mcp.json approval)", () => {
     const FIXTURE = join(import.meta.dir, "fixtures", "mcp-stdio-server.ts");
     /** The fixture MCP server; it leaves its pid in `marker` the moment it starts. */
