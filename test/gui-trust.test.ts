@@ -6,6 +6,7 @@ function dialog(purpose?: "mcp-approval") {
     let request: any = { path: "/project", purpose, then: () => continued++ };
     const decisions: unknown[] = [];
     const TrustDialog = componentCode("TrustDialog", {
+        createUniqueId: () => "trust-title",
         node, Show: "Show", ShieldAlert: "ShieldAlert", Dialog: "Dialog",
         createResource: () => [() => ({ needsTrust: [".mcp.json", ".harness/settings.json"] })],
         trustRequest: () => request,
@@ -44,4 +45,11 @@ test("MCP trust still grants explicit trust, and opening a folder still offers I
     await ignore.props.onClick();
     expect(opening.decisions).toEqual([["/project", false]]);
     expect(opening.continued()).toBe(1);
+});
+
+test("trust dialog is named by its visible title", () => {
+    const d = dialog();
+    const props = elements(d.tree, "Dialog")[0]!.props;
+    expect(props.labelledBy).toBe(elements(d.tree, "h2")[0]!.props.id);
+    expect(elements(d.tree, "h2")[0]!.children.join("")).toBe("Do you trust the files in this folder?");
 });
