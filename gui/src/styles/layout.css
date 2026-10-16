@@ -2006,3 +2006,103 @@ button.strip-ctl[aria-expanded="true"] {
     display: inline-flex;
     gap: 3px;
 }
+
+/* ---- Project scripts (title line) ----------------------------------- */
+
+/* Run the main script | open the menu: one control, split by a hairline. */
+.split {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    border-radius: 8px;
+    transition: background var(--dur-fast);
+}
+
+.split:has(.split-main):hover,
+.split.open:has(.split-main) {
+    background: var(--bg-hover);
+}
+
+.split .split-main {
+    width: auto;
+    max-width: 160px;
+    display: inline-flex;
+    gap: 6px;
+    padding: 0 8px 0 9px;
+    border-radius: 8px 0 0 8px;
+    font-size: 0.893rem;
+    font-weight: 500;
+}
+
+.split .split-more {
+    width: 20px;
+    border-radius: 0 8px 8px 0;
+    position: relative;
+}
+
+.split .split-more::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 1px;
+    background: var(--hairline);
+}
+
+.split .split-main:hover:not(:disabled),
+.split .split-more:hover:not(:disabled),
+.split .split-more[aria-expanded="true"] {
+    background: var(--bg-active);
+}
+
+.split-label {
+    min-width: 0;
+}
+
+.scripts-note {
+    white-space: normal;
+    line-height: 1.45;
+    padding: 4px 8px 8px;
+}
+
+.scripts-note code {
+    font-size: 0.95em;
+}
+
+/* A script: run it by clicking the row; edit, reorder and delete on hover. */
+.script-row {
+    position: relative;
+}
+
+.script-row .menu-desc {
+    margin-top: 1px;
+}
+
+.script-acts {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    align-items: center;
+    gap: 2px;
+}
+
+/* Room for the actions: the command truncates sooner while they show. */
+.script-row:hover .script-run,
+.script-row:focus-within .script-run,
+.script-row.confirming .script-run {
+    background: var(--bg-hover);
+    padding-right: 84px;
+}
+
+.script-row.confirming .script-run {
+    padding-right: 136px;
+}
+
+.script-row:hover .script-acts,
+.script-row:focus-within .script-acts,
+.script-row.confirming .script-acts {
+    display: flex;
+}

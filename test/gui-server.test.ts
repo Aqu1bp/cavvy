@@ -3,7 +3,7 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -12,7 +12,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { AgentRun, Block, InteractionResponse, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, InteractionResponse, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 
 const TOKEN = "test-token-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
@@ -1153,4 +1153,164 @@ describe("terminal WebSocket transport", () => {
             await expect(b.call("terminal.close", { id })).rejects.toThrow("not open");
         } finally { a.close(); b.close(); }
     }, 15_000);
+});
+
+describe("project scripts", () => {
+    // Run in a plain shell with an empty home, as above.
+    const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
+    beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("scripts-home-"); });
+    afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+    const waitFor = async (check: () => boolean, what = "project script") => {
+        const deadline = Date.now() + 8000;
+        while (!check()) { if (Date.now() > deadline) throw new Error(`${what} timed out`); await Bun.sleep(20); }
+    };
+    /** A repository with a linked worktree, both by their real paths. */
+    async function repoWithWorktree() {
+        const { gitArgv, gitEnv } = await import("../src/util/git");
+        const git = (cwd: string, ...args: string[]) => {
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+            if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+        };
+        const base = realpathSync(tempDir("harness-gui-scripts-"));
+        const main = join(base, "repo");
+        const linked = join(base, "repo-wt");
+        mkdirSync(main);
+        git(main, "init", "-b", "main");
+        git(main, "commit", "--allow-empty", "-m", "Initial commit");
+        git(main, "worktree", "add", "-b", "wt", linked);
+        return { main, linked };
+    }
+
+    test("define, edit, reorder and delete over RPC; other windows hear of each change", async () => {
+        const a = await client(); const b = await client();
+        try {
+            const { main, linked } = await repoWithWorktree();
+            expect(await a.call("scripts.list", { cwd: main })).toEqual({ project: main, scripts: [] });
+            const dev = await a.call<ProjectScript>("scripts.save", { cwd: linked, name: " dev ", command: "bun run dev", icon: "play" });
+            expect(dev).toMatchObject({ name: "dev", command: "bun run dev", icon: "play" });
+            await waitFor(() => b.events.some((e) => e.type === "scripts.changed" && e.project === main), "scripts.changed");
+            // Defined in the worktree, listed in the main checkout too.
+            expect((await b.call("scripts.list", { cwd: main })).scripts).toEqual([dev]);
+            const test = await b.call<ProjectScript>("scripts.save", { cwd: main, name: "test", command: "bun test" });
+            const edited = await a.call<ProjectScript>("scripts.save", { cwd: main, id: dev.id, name: "dev", command: "bun run dev --hot", icon: null });
+            expect(edited).toEqual({ id: dev.id, name: "dev", command: "bun run dev --hot" });
+            expect((await a.call("scripts.reorder", { cwd: linked, ids: [test.id, dev.id] })).scripts.map((s: ProjectScript) => s.name)).toEqual(["test", "dev"]);
+            expect(await a.call("scripts.delete", { cwd: main, id: test.id })).toBeNull();
+            expect((await b.call("scripts.list", { cwd: linked })).scripts).toEqual([edited]);
+            // Deleted in one window, edited in the other.
+            await expect(b.call("scripts.save", { cwd: main, id: test.id, name: "test", command: "x" })).rejects.toThrow("no longer exists");
+        } finally { a.close(); b.close(); }
+    });
+
+    test("bad input is rejected with a message the GUI can show", async () => {
+        const c = await client();
+        try {
+            const dir = project();
+            await c.call("scripts.save", { cwd: dir, name: "Lint", command: "eslint ." });
+            await expect(c.call("scripts.save", { cwd: dir, name: "lint", command: "x" })).rejects.toThrow(/already has a script named “Lint”/);
+            await expect(c.call("scripts.save", { cwd: dir, name: "", command: "x" })).rejects.toThrow(/Give the script a name/);
+            await expect(c.call("scripts.save", { cwd: dir, name: "two", command: "echo a\necho b" })).rejects.toThrow(/single line/);
+            await expect(c.call("scripts.save", { cwd: dir, name: "esc", command: "echo \u001b[2J" })).rejects.toThrow(/control characters/);
+            await expect(c.call("scripts.save", { cwd: dir, name: "long", command: "x".repeat(5000) })).rejects.toThrow(/at most 2000/);
+            await expect(c.call("scripts.save", { cwd: dir, name: "icon", command: "x", icon: "rocket" })).rejects.toThrow(/Unknown script icon/);
+            await expect(c.call("scripts.save", { cwd: "relative", name: "a", command: "x" })).rejects.toThrow(/absolute path/);
+            await expect(c.call("scripts.list", { cwd: join(dir, "missing") })).rejects.toThrow(/no longer exists/);
+            await expect(c.call("scripts.reorder", { cwd: dir, ids: [] })).rejects.toThrow(/changed in another window/);
+            expect((await c.call("scripts.list", { cwd: dir })).scripts.map((s: ProjectScript) => s.name)).toEqual(["Lint"]);
+        } finally { c.close(); }
+    });
+
+    test("runs the stored command visibly in a terminal in the session's folder, and leaves the shell open", async () => {
+        const c = await client(); const other = await client();
+        try {
+            const { main, linked } = await repoWithWorktree();
+            const s = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "where", command: "printf '__%s__\\n' ran; pwd" });
+            // Listing and saving never start anything.
+            expect(c.events.some((e) => e.type.startsWith("terminal."))).toBe(false);
+            const id = "script-terminal";
+            const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+            const heard = other.events.length;
+            const result = await c.call("scripts.run", { id, cwd: linked, script: s.id, cols: 90, rows: 24 });
+            await c.call("terminal.arm", { id });
+            expect(result).toMatchObject({ id, script: s });
+            // In the worktree it was run from, not the main checkout where it was defined.
+            await waitFor(() => output().includes(`__ran__\r\n${linked}\r\n`));
+            expect(output()).toContain("printf '__%s__\\n' ran; pwd");
+            await c.call("terminal.write", { id, data: "printf '__%s__\\n' still-open\n" });
+            await waitFor(() => output().includes("__still-open__\r\n"));
+            expect(c.events.some((e) => e.type === "terminal.exit" && e.id === id)).toBe(false);
+            // Only the window that ran it sees its output; it's remembered as the last one run.
+            expect(other.events.some((e) => e.type === "terminal.data")).toBe(false);
+            await waitFor(() => other.events.slice(heard).some((e) => e.type === "scripts.changed" && e.project === main), "last-used broadcast");
+            expect((await other.call("scripts.list", { cwd: main })).lastUsed).toBe(s.id);
+            await c.call("terminal.close", { id });
+        } finally { c.close(); other.close(); }
+    }, 20_000);
+
+    test("a script that doesn't exist, or a folder that's gone, opens no terminal", async () => {
+        const c = await client();
+        try {
+            const dir = project();
+            const s = await c.call<ProjectScript>("scripts.save", { cwd: dir, name: "x", command: "echo x" });
+            await expect(c.call("scripts.run", { id: "no-script", cwd: dir, script: "missing-id", cols: 80, rows: 24 })).rejects.toThrow(/no longer exists/);
+            await expect(c.call("scripts.run", { id: "no-folder", cwd: join(dir, "gone"), script: s.id, cols: 80, rows: 24 })).rejects.toThrow(/no longer exists/);
+            await expect(c.call("terminal.write", { id: "no-script", data: "x" })).rejects.toThrow("not open");
+            await expect(c.call("terminal.write", { id: "no-folder", data: "x" })).rejects.toThrow("not open");
+        } finally { c.close(); }
+    });
+
+    test("a Ctrl+C the window held while the script was starting, sent as soon as it opens, stops it being typed", async () => {
+        const c = await client();
+        try {
+            const dir = project();
+            const s = await c.call<ProjectScript>("scripts.save", { cwd: dir, name: "never", command: "printf '__%s__\\n' typed" });
+            const id = "held-ctrl-c";
+            const output = () => c.events.filter((e) => e.type === "terminal.data" && e.id === id).map((e) => (e as { data: string }).data).join("");
+            await c.call("scripts.run", { id, cwd: dir, script: s.id, cols: 80, rows: 24 });
+            await c.call("terminal.write", { id, data: "\x03" });
+            await c.call("terminal.arm", { id });
+            await Bun.sleep(3400);
+            await c.call("terminal.write", { id, data: "printf '__%s__\\n' mine\n" });
+            await waitFor(() => output().includes("__mine__\r\n"));
+            expect(output()).not.toContain("__typed__");
+            await c.call("terminal.close", { id });
+        } finally { c.close(); }
+    }, 20_000);
+
+    test("running a script in a project with entries this Harness can't use leaves the file as it was", async () => {
+        const c = await client();
+        const file = join(iso.home, "scripts.json");
+        const saved = existsSync(file) ? readFileSync(file, "utf-8") : undefined;
+        try {
+            const dir = realpathSync(project());
+            const text = JSON.stringify({ version: 1, projects: { [dir]: { scripts: [{ id: "good", name: "good", command: "printf '__%s__\\n' good" }, { id: "odd", name: "odd", command: "echo", icon: "rocket", future: true }] } } }, null, 2);
+            writeFileSync(file, text);
+            expect((await c.call("scripts.list", { cwd: dir })).scripts.map((x: ProjectScript) => x.id)).toEqual(["good"]);
+            const id = "kept-run";
+            await c.call("scripts.run", { id, cwd: dir, script: "good", cols: 80, rows: 24 });
+            await c.call("terminal.arm", { id });
+            await waitFor(() => c.events.some((e) => e.type === "terminal.data" && e.id === id && e.data.includes("__good__")));
+            // Remembering it as the last one run is skipped rather than rewriting what it didn't understand.
+            await Bun.sleep(200);
+            expect(readFileSync(file, "utf-8")).toBe(text);
+            await c.call("terminal.close", { id });
+        } finally {
+            if (saved === undefined) rmSync(file, { force: true }); else writeFileSync(file, saved);
+            c.close();
+        }
+    }, 20_000);
+
+    test("respects the terminal limit with a clear message", async () => {
+        const c = await client();
+        const ids = Array.from({ length: 12 }, (_, i) => `limit-${i}`);
+        try {
+            const dir = project();
+            const s = await c.call<ProjectScript>("scripts.save", { cwd: dir, name: "x", command: "true" });
+            for (const id of ids) await c.call("terminal.open", { id, cwd: dir, cols: 80, rows: 24 });
+            await expect(c.call("scripts.run", { id: "one-too-many", cwd: dir, script: s.id, cols: 80, rows: 24 })).rejects.toThrow(/Close a terminal before opening another/);
+        } finally {
+            for (const id of ids) await c.call("terminal.close", { id }).catch(() => {});
+            c.close();
+        }
+    }, 20_000);
 });
