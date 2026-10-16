@@ -35,6 +35,11 @@
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error, like a CLI without it
 // FAKE_LOG_ENV=1     logs its whole environment at start
+// FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
+//                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
+//                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
+//                    Claude Code sends one per request)
+// FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -166,7 +171,7 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
         ...(old ? {} : answering ? { user_message_uuid: answering, user_message_uuids: [answering] } : { user_message_uuid: null, origin: { kind: "task-notification" } }),
         ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: process.env.FAKE_FAST_MODE_END } : {}),
         usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
-        modelUsage: { "claude-test-1": { contextWindow: 200000 } },
+        modelUsage: { [process.env.FAKE_RESOLVED_MODEL ?? "claude-test-1"]: { contextWindow: 200000 } },
         ...extra,
     });
 }
@@ -420,11 +425,24 @@ async function turn(content: any[], uuid?: string) {
     }
     answering = uuid;
     const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario;
-    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+    // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill).
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"] });
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
+    }
+    const rateLimit = () => {
+        for (let i = 0; process.env.FAKE_RATE_LIMIT && i < Number(process.env.FAKE_RATE_LIMIT_REPEAT ?? 1); i++) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT, "utf-8")), session_id: sessionId });
+        // Some requests repeat the rejection without its window or reset time.
+        if (process.env.FAKE_RATE_LIMIT_SPARSE === "1") out({ type: "rate_limit_event", rate_limit_info: { status: "rejected" }, session_id: sessionId });
+        if (process.env.FAKE_RATE_LIMIT_FOLLOWUP) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT_FOLLOWUP, "utf-8")), session_id: sessionId });
+    };
+    if (process.env.FAKE_RATE_LIMIT_LATE !== "1") rateLimit();
+    if (scenario === "rate-limit") {
+        out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "You've hit your limit" }] }, error: "rate_limit", parent_tool_use_id: null, session_id: sessionId });
+        if (process.env.FAKE_RATE_LIMIT_LATE === "1") rateLimit();
+        return result("success", { is_error: true, result: "You've hit your limit" });
     }
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });

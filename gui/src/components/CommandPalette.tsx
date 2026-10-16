@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { Archive, ArrowRight, Bot, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
+import { Archive, ArrowRight, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
 import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
@@ -135,6 +135,7 @@ export function CommandPalette() {
             { id: "panel", section: "Actions", label: "Toggle side panel", hint: `${mod} .`, icon: <PanelRight size={15} />, run: () => togglePanel() },
             { id: "settings", section: "Actions", label: "Settings", hint: `${mod} ,`, icon: <Settings size={15} />, run: () => setSettingsTab("general") },
             { id: "providers", section: "Actions", label: "Add an API key…", keywords: "providers login keys", icon: <Settings size={15} />, run: () => setSettingsTab("providers") },
+            { id: "usage", section: "Actions", label: "Usage and plan limits", keywords: "cost tokens spend limits plan quota", icon: <ChartColumn size={15} />, run: () => setSettingsTab("usage") },
         ];
         if (id()) {
             out.push(
