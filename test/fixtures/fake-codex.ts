@@ -243,6 +243,10 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("item/started", { threadId: child, turnId: childTurn, item: cmd });
             notify("item/commandExecution/outputDelta", { threadId: child, turnId: childTurn, itemId: cmd.id, delta: "working\n" });
             const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
+            if (process.env.FAKE_REVIEW_APPROVE === "1") {
+                notify("item/autoApprovalReview/completed", { threadId: child, turnId: childTurn, reviewId: `rev-${childTurn}`, targetItemId: cmd.id, action: { type: "command", command: cmd.command }, review: { status: "approved", riskLevel: "low", rationale: "The delegated task needs this command." } });
+                notify("guardianWarning", { threadId: child, message: "Automatic approval review approved (risk: low, authorization: high): The delegated task needs this command." });
+            }
             const childDecision = runsItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
             log({ childRan: childDecision === "accept" });
             notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
@@ -284,7 +288,24 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     } else {
         const shown = process.env.FAKE_COMMAND ?? "touch x";
         const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: process.env.FAKE_COMMAND_RAW ?? `/bin/zsh -lc '${process.env.FAKE_COMMAND_SCRIPT ?? shown}'`, cwd: process.env.FAKE_COMMAND_CWD ?? cwd, status: "inProgress", commandActions: [{ type: "unknown", command: shown }], aggregatedOutput: null, exitCode: null };
+        const approve = () => {
+            if (process.env.FAKE_REVIEW_APPROVE !== "1") return;
+            const review = { threadId, turnId, reviewId: `rev-${turnId}`, targetItemId: cmd.id, action: { type: "command", command: shown, cwd: cmd.cwd, source: "shell" } };
+            notify("item/autoApprovalReview/started", { ...review, review: { status: "inProgress" } });
+            if (process.env.FAKE_REVIEW_NO_COMPLETED !== "1") notify("item/autoApprovalReview/completed", { ...review, review: { status: "approved", riskLevel: "low", rationale: process.env.FAKE_REVIEW_RATIONALE ?? "The user requested this local test." } });
+            notify("guardianWarning", { threadId, message: "Automatic approval review approved (risk: low, authorization: high): The user requested this local test." });
+            if (process.env.FAKE_REVIEW_MULTIPLE === "1") {
+                const completed = { ...review, reviewId: `rev-second-${turnId}`, review: { status: "approved", riskLevel: "medium", rationale: "The user also requested cleanup." } };
+                notify("item/autoApprovalReview/completed", completed);
+                notify("item/autoApprovalReview/completed", completed);
+                notify("item/autoApprovalReview/completed", { ...completed, reviewId: "no-target", targetItemId: null });
+                notify("guardianWarning", { threadId, message: "Automatic approval review approved (risk: medium, authorization: high): The user also requested cleanup." });
+                for (const reason of ["A standalone approval.", "Another standalone approval."]) notify("guardianWarning", { threadId, message: `Automatic approval review approved (risk: low, authorization: high): ${reason}` });
+            }
+        };
+        if (process.env.FAKE_REVIEW_TIMING === "before") approve();
         notify("item/started", { threadId, turnId, item: cmd });
+        if (!process.env.FAKE_REVIEW_TIMING) approve();
         // Its own policy: in a workspace-write sandbox with on-request, or never, it just runs it.
         const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
         if (process.env.FAKE_REVIEW_DENY === "1" && policy.approvalsReviewer === "auto_review") {
@@ -323,6 +344,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         log({ ran: decision === "accept", command: shown });
         if (decision === "accept") notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
         else notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
+        if (process.env.FAKE_REVIEW_TIMING === "after") approve();
     }
     spend(threadId, turnId, tokens(120, 20, 30, 5));
     if (decision === "cancel" || t.interrupted) return finish("interrupted");

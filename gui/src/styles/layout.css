@@ -1082,6 +1082,23 @@ a.prow:hover,
     border-right: 1px solid var(--hairline);
 }
 
+.rf-row {
+    display: flex;
+    align-items: center;
+    border-radius: 8px;
+    min-width: 0;
+}
+
+.rf-row > span {
+    display: flex;
+    padding-left: 6px;
+    flex: none;
+}
+
+.rf-row.on {
+    background: var(--bg-active);
+}
+
 .rf {
     display: flex;
     align-items: center;
@@ -1209,6 +1226,10 @@ a.prow:hover,
         border-right: none;
         border-bottom: 1px solid var(--hairline);
         scrollbar-width: none;
+    }
+
+    .rf-row {
+        flex: none;
     }
 
     .rf {

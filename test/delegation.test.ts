@@ -415,7 +415,7 @@ describe("the delegate tools", () => {
             caller: () => caller,
             listings: () => listings,
             projectRoot: () => cwd,
-            checkModel: async (ref) => (ref.startsWith("gemini:") ? { ok: true } : `${ref} isn't set up here.`),
+            checkModel: async (ref) => (ref.startsWith("gemini:") ? { effortLevels: GEMINI.effortLevels } : `${ref} isn't set up here.`),
             claimCall,
             tasks,
         });
@@ -437,7 +437,7 @@ describe("the delegate tools", () => {
         expect(tools.map((t) => t.name)).toEqual(TOOLS);
         const delegate = tools.find((t) => t.name === "delegate")!;
         expect(delegate.inputSchema.required).toEqual(["task", "description"]);
-        expect(Object.keys((delegate.inputSchema as any).properties)).toEqual(["task", "description", "model", "agent", "wait", "timeout_minutes"]);
+        expect(Object.keys((delegate.inputSchema as any).properties)).toEqual(["task", "description", "model", "effort", "agent", "wait", "timeout_minutes"]);
     });
 
     test("delegate runs the task and returns its report", async () => {
@@ -1229,10 +1229,11 @@ describe("Codex as the main agent", () => {
         expect(resumes).toHaveLength(2);
         expect(resumes[0].config).toBeDefined();
         expect(resumes[1].config).toBeUndefined();
-        expect(resumes[1].developerInstructions).toBeUndefined();
+        // Only the sandbox's own note: no delegation instructions.
+        expect(resumes[1].developerInstructions).not.toContain("delegate");
         expect(resumes[1].threadId).toBe("thr-new");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
-        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools; this turn runs without them, preserving MCP restrictions.");
+        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this turn runs without them, preserving MCP restrictions.");
         expect(notices(events).join("\n")).not.toContain("Starting a new one");
 
         const fresh = await makeAgent({ provider: "codex" });
@@ -1269,7 +1270,7 @@ describe("Codex as the main agent", () => {
         expect(await run("go")).toBe("done");
         const thread = received().find((m) => m.method === "thread/start")!.params;
         expect(thread.config).toBeUndefined();
-        expect(thread.developerInstructions).toBeUndefined();
+        expect(thread.developerInstructions).not.toContain("delegate");
     });
 });
 

@@ -600,13 +600,6 @@ button.wrow:hover {
     margin-top: 2px;
 }
 
-.sub-rows {
-    display: flex;
-    flex-direction: column;
-    border-left: 1px solid var(--hairline);
-    padding-left: 6px;
-}
-
 /* ---- Sub-agents, inline ------------------------------------------------ */
 
 .subagents {
