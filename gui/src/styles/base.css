@@ -465,7 +465,7 @@ kbd {
     height: 32px;
 }
 
-/* A project's two letters on a tinted tile. */
+/* Distinct project initials on a stable, high-contrast color. */
 .mg {
     width: 16px;
     height: 16px;
@@ -475,8 +475,8 @@ kbd {
     flex: none;
     font: 700 7.5px/1 var(--font-mono);
     letter-spacing: -0.03em;
-    color: var(--shell);
-    background: color-mix(in srgb, var(--shell) 14%, transparent);
+    color: #fff;
+    background: #515c6c;
 }
 
 .pill {

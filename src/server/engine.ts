@@ -523,6 +523,8 @@ export class Engine {
             updatedAt: rt.lastActive,
             messages: rt.session.messages.length,
             status: rt.status,
+            waitingKind: rt.waitingKind,
+            turnStartedAt: rt.sidebarTurnStartedAt,
             pinned: (store.pinned ?? []).includes(rt.id),
             archived: (store.archived ?? []).includes(rt.id),
             settled: (store.settled ?? []).includes(rt.id),
@@ -546,7 +548,7 @@ export class Engine {
             const live = this.summaryOf(rt);
             out.set(rt.id, { ...live, updatedAt: Math.max(live.updatedAt, disk?.updatedAt ?? 0) });
         }
-        return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+        return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).filter((s, i) => i < limit || s.status === "waiting");
     }
 
     /** What was said in every session (archived ones marked), read from their files; see search.ts. */
@@ -1211,6 +1213,8 @@ export class Engine {
                     await Promise.race([rt.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
                     clearTimeout(timer);
                 }
+                // Search can open a session beyond the sidebar list window.
+                client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
                 return rt.snapshot();
             }
             case "cliSessions.list":
