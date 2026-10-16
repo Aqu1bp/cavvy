@@ -1,19 +1,21 @@
 // Shell sandbox for auto mode. A sandboxed command can write only inside the
-// workspace and the temp directories (never git hooks or git config, or the
-// harness's own config), can't read credential files, has no network beyond
-// localhost, can't signal processes outside the sandbox, and can't reach the
-// usual ways out of one: opening apps, Apple Events, launchd jobs, the
-// keychain, the clipboard and the window server.
+// workspace and the temp directories (never git hooks or git config, the
+// harness's own config, or the agent CLIs' .claude/ and .codex/, except for
+// Claude Code's worktrees in .claude/worktrees/), can't read credential files,
+// has no network beyond localhost, can't signal processes outside the
+// sandbox, and can't reach the usual ways out of one: opening apps, Apple
+// Events, launchd jobs, the keychain, the clipboard and the window server.
 //
 // macOS: sandbox-exec (Seatbelt). Linux: bubblewrap, when it's installed and
 // allowed to create namespaces, and only when turned on (it's untested).
 // Elsewhere there's no sandbox, and auto mode sends commands to its reviewer
 // instead.
 
-import { existsSync, lstatSync, realpathSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { commandsWithDirs, gitSubcommand, readSmallFile } from "./bash-safety";
+import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs } from "./bash-safety";
+import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -22,6 +24,13 @@ export interface SandboxPolicy {
     writable: string[];
     /** Inside those, paths that stay read-only. */
     readOnly: string[];
+    /** The agent CLIs' config folders (.claude/, .codex/): read-only too, except the worktrees in them. */
+    cliConfig?: string[];
+    /**
+     * Git checkouts Claude Code keeps in .claude/worktrees/: projects of their
+     * own, so writable again (their own config is in readOnly).
+     */
+    worktrees?: string[];
     /** Paths commands can't read at all. */
     unreadable: string[];
     /** Git directories: their hooks and config stay read-only, submodules' and worktrees' included. */
@@ -117,6 +126,35 @@ const UNREADABLE_IN_HOME = [
     ".gem/credentials", ".terraform.d/credentials.tfrc.json", ".password-store", ".local/share/keyrings", "Library/Keychains",
 ];
 
+/** A project's own config: the harness's, and the agent CLIs' (hooks, skills, MCP servers, permissions). */
+const PROJECT_CONFIG = [".harness", ".mcp.json"];
+const CLI_CONFIG = [".claude", ".codex"];
+/** Names checker.ts doesn't take for a worktree (see withoutWorktrees there). */
+const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
+
+/** A path as written and, if a symlink leads elsewhere, where it leads: a rule on one alone can be sidestepped through the other. */
+function bothForms(p: string): string[] {
+    return [...new Set([p, real(p)])];
+}
+
+/**
+ * The git checkouts Claude Code keeps in <root>/.claude/worktrees/, taken as
+ * checker.ts's withoutWorktrees takes them: a folder (not a symlink) with a
+ * .git in it, not named like the config. Looked up for each command, so one
+ * made since counts.
+ */
+function claudeWorktrees(root: string): string[] {
+    const dir = join(root, ".claude", "worktrees");
+    try {
+        if (!lstatSync(join(root, ".claude")).isDirectory() || !lstatSync(dir).isDirectory()) return [];
+        return readdirSync(dir)
+            .filter((name) => !spellings(name).some((n) => CONFIG_NAMES.has(n)) && lstatSync(join(dir, name)).isDirectory() && existsSync(join(dir, name, ".git")))
+            .map((name) => real(join(dir, name)));
+    } catch {
+        return [];
+    }
+}
+
 /** What a sandboxed command may touch, for these workspace roots. */
 export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHome: string }): SandboxPolicy {
     const home = real(opts.home ?? homedir());
@@ -125,9 +163,13 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHom
     const git = [...new Set([...ws.map((w) => join(w, ".git")), ...ws.flatMap(gitDirs)])];
     const temp = [...new Set([process.platform === "darwin" ? "/private/tmp" : "/tmp", real(tmpdir())])];
     const harness = real(opts.harnessHome);
+    const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
-        readOnly: [...ws.flatMap((w) => [join(w, ".harness"), join(w, ".mcp.json")]), harness],
+        // A worktree's own config and its .git pointer stay read-only, as in the project around it.
+        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), harness])],
+        cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
+        worktrees,
         unreadable: [...UNREADABLE_IN_HOME.map((p) => join(home, p)), harness],
         gitDirs: git,
     };
@@ -177,7 +219,9 @@ const ESCAPE_SERVICES = [
  */
 export function seatbeltProfile(p: SandboxPolicy): string {
     const subpaths = (list: string[]) => list.map((x) => `(subpath ${sb(x)})`).join(" ");
-    const fixed = [...new Set(p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors))].filter((f) => p.writable.some((w) => isWithin(f, w)));
+    const cli = p.cliConfig ?? [];
+    const worktrees = (p.worktrees ?? []).filter((t) => cli.some((c) => isWithin(t, c)));
+    const fixed = [...new Set([...p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors), ...worktrees])].filter((f) => p.writable.some((w) => isWithin(f, w)));
     return [
         "(version 1)",
         "(allow default)",
@@ -190,12 +234,15 @@ export function seatbeltProfile(p: SandboxPolicy): string {
         // Writes: the workspace and temp dirs, and the null/terminal devices.
         '(deny file-write* (subpath "/"))',
         `(allow file-write* ${subpaths(p.writable)} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))`,
+        // The agent CLIs' config, except the worktrees in it (the rule below protects their own config).
+        ...(cli.length ? [`(deny file-write* ${subpaths(cli)})`] : []),
+        ...(worktrees.length ? [`(allow file-write* ${subpaths(worktrees)})`] : []),
         // Unreadable paths can't be written (or renamed out from under the read rule) either.
         `(deny file-write* ${subpaths([...p.readOnly, ...p.gitDirs.flatMap(gitProtectedPaths), ...p.unreadable])})`,
         // Paths that can't be moved, replaced or repointed, only written inside:
-        // the git dirs and `.git` pointer files, and the writable directories
-        // above them (the workspace roots, say). Moved away, edited and moved
-        // back, they'd get round the rules above.
+        // the git dirs and `.git` pointer files, the writable directories
+        // above them (the workspace roots, say), and the worktrees. Moved away,
+        // edited and moved back, they'd get round the rules above.
         ...(fixed.length ? [`(deny file-write* ${fixed.map((f) => `(literal ${sb(f)})`).join(" ")})`] : []),
         // Submodules (.git/modules/<name>/…) and other worktrees (.git/worktrees/<name>/…)
         // have their own, and a worktree's git dir can't be moved either.
@@ -263,6 +310,9 @@ function hostSocketDirs(): string[] {
 export function bwrapArgs(p: SandboxPolicy): string[] {
     const args = ["--die-with-parent", "--new-session", "--unshare-net", "--unshare-pid", "--unshare-ipc", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"];
     for (const w of p.writable) if (existsSync(w)) args.push("--bind", w, w);
+    // The agent CLIs' config read-only, the worktrees in it bound read-write again on top.
+    for (const c of p.cliConfig ?? []) if (existsSync(c)) args.push("--ro-bind", c, c);
+    for (const t of p.worktrees ?? []) if (existsSync(t)) args.push("--bind", t, t);
     const gits = p.gitDirs.flatMap((g) => [g, ...nestedGitDirs(g)]);
     // Bound onto itself, a git dir is a mount point, which can't be moved or
     // replaced; a `.git` pointer file is bound read-only.
@@ -348,8 +398,10 @@ export interface AccessNeeded {
  */
 export function accessNeeded(cmd: string, cwd?: string): AccessNeeded {
     const out: AccessNeeded = {};
-    for (const { argv, dir, text } of commandsWithDirs(cmd, cwd)) {
-        const prog = (argv[0] ?? "").split("/").pop()!;
+    for (const { programs, dir, text } of commandsWithDirs(cmd, cwd)) for (const argv of programs) {
+        // By the name the program is found by: `NPM install` is npm install on macOS.
+        const names = programNames(argv[0] ?? "");
+        const prog = names.find((n) => NETWORK_PROGRAMS.has(n) || HOST_PROGRAMS.has(n) || Object.hasOwn(HOST_SUBCOMMANDS, n) || Object.hasOwn(NETWORK_SUBCOMMANDS, n) || /^python[\d.]*$/.test(n)) ?? names[0]!;
         const args = argv.slice(1);
         const sub = prog === "git" ? argv[gitSubcommand(argv).index] : args.find((a) => !a.startsWith("-"));
         if (NETWORK_PROGRAMS.has(prog)) {
@@ -421,8 +473,9 @@ export function sandboxCacheEnv(network = false): Record<string, string> {
     return env;
 }
 
-// `/` so a program given by path (/bin/rm) counts too.
-const DELETE_WORD = /(^|[\s;|&(`'"/])(rm|rmdir|unlink|shred|truncate|srm)(?=\s|$|[;|&)`'"])/;
+// `/` so a program given by path (/bin/rm) counts too. In every spelling, case ignored
+// where the volume ignores it (`RM` is rm there).
+const DELETE_WORD = new RegExp(/(^|[\s;|&(`'"/])(rm|rmdir|unlink|shred|truncate|srm)(?=\s|$|[;|&)`'"])/.source, CASE_INSENSITIVE_FS ? "i" : "");
 // Deletion from inline code: python -c, node -e, ruby -e, PowerShell.
 const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rmdir|removedirs)|fs\.(rm|unlink|rmdir)|fs\.promises\.(rm|unlink)|FileUtils\.(rm|rm_r|rm_rf|remove)|Remove-Item)\b/;
 
@@ -433,14 +486,14 @@ const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rm
  * file there (it discards that file's changes) and not when it's a branch.
  */
 export function looksDestructive(cmd: string, cwd?: string): string | undefined {
-    if (DELETE_WORD.test(cmd)) return cmd.match(DELETE_WORD)![2];
+    for (const t of [cmd, ...spellings(cmd)]) if (DELETE_WORD.test(t)) return t.match(DELETE_WORD)![2]!.toLowerCase();
     if (DELETE_CALL.test(cmd)) return "deletes files";
-    for (const { argv, dir } of commandsWithDirs(cmd, cwd)) {
-        const prog = (argv[0] ?? "").split("/").pop()!;
+    for (const { programs, dir } of commandsWithDirs(cmd, cwd)) for (const argv of programs) {
+        const prog = argv[0];
         const args = argv.slice(1);
-        if (prog === "find" && args.some((a) => a === "-delete")) return "find -delete";
-        if (prog === "dd" || prog === "mkfs" || prog === "diskutil") return prog;
-        if (prog !== "git") continue;
+        if (runs(prog, "find") && args.some((a) => a === "-delete")) return "find -delete";
+        for (const p of ["dd", "mkfs", "diskutil"]) if (runs(prog, p)) return p;
+        if (!runs(prog, "git")) continue;
         const { index, dirs } = gitSubcommand(argv);
         const sub = argv[index];
         const rest = argv.slice(index + 1);

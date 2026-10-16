@@ -73,7 +73,7 @@ How it works:
     - `*` stays `*`, and `*(path)` becomes a read and an edit rule.
 
     Where the two still differ:
-    - Claude Code matches Bash rules on the command as written, so `Bash(rm:*)` doesn't catch `/bin/rm …` or `bash -c 'rm …'` as the harness's does. That matters only when Claude Code wouldn't ask anyway: its own auto and bypass modes, or allow rules in your Claude Code settings.
+    - Claude Code matches Bash rules on the command as written, so `Bash(rm:*)` doesn't catch `/bin/rm …`, `env rm …` or `bash -c 'rm …'` as the harness's does. That matters only when Claude Code wouldn't ask anyway: its own auto and bypass modes, or allow rules in your Claude Code settings.
     - Claude Code reads `[…]` in a path as a pattern, where the harness reads it literally.
     - A bare `Bash` ask rule doesn't stop Claude Code's sandbox from approving commands, if you've turned that sandbox on in your Claude Code settings.
 
@@ -118,7 +118,7 @@ The main agent can hand a self-contained task to a model from another provider: 
 - **Harness models** use the `Task` tool, which takes a `model` (`provider:model`). `ListModels` shows the agent types and every model that can run, with how each is billed. Without a model, a sub-agent runs on its agent type's model, else the main agent's.
 - **Claude Code and Codex** keep their own sub-agents for their own models (Claude models, OpenAI models, and the same models through OpenRouter). For other providers' models, the harness gives them an MCP server named `harness` with four tools: `models`, `delegate`, `task_status` and `task_cancel`. They get these only when another provider is set up, and never as sub-agents themselves. `"delegation": false` in settings turns them off. (The same server carries the [secret tools](#asking-for-secrets), which don't depend on delegation.)
 
-A delegated agent works in the same folder, under the same permission mode and rules. Its actions are approved or asked about like the main agent's, and the prompt names it and its model (`Review auth (provider:model)`). Its work shows under the call that started it, and its spend counts toward the session's (billed by its own provider). It can't delegate further. Only one delegated task that can change files runs at a time, and up to four run at once. An `explore` agent is read-only: on Claude Code or Codex, reads and read-only commands run without asking you, and the harness refuses everything else. On Claude Code it runs without its edit tools or any MCP servers. On Codex, the MCP servers in your Codex config are turned off for it, because Codex runs tools set to `approve` there without asking. Servers that come from Codex plugins or apps aren't turned off. If a stopped sub-agent was asking you something, the prompt is withdrawn, and background commands it started are stopped.
+A delegated agent works in the same folder, under the same permission mode and rules. Its actions are approved or asked about like the main agent's, and the prompt names it and its model (`Review auth (provider:model)`). Its work shows under the call that started it, and its spend counts toward the session's (billed by its own provider). It can't delegate further. Only one delegated task that can change files runs at a time, and up to four run at once. An `explore` agent is read-only: on Claude Code or Codex, reads and read-only commands run without asking you, and the harness refuses everything else, tests and builds included. A refusal names the part of the command that isn't read-only, so the agent can drop just that. On Claude Code it runs without its edit tools or any MCP servers. On Codex, the MCP servers in your Codex config are turned off for it, because Codex runs tools set to `approve` there without asking. Servers that come from Codex plugins or apps aren't turned off. If a stopped sub-agent was asking you something, the prompt is withdrawn, and background commands it started are stopped.
 
 `delegate` waits for the result: 10 minutes by default, 60 at most. After that the task keeps running, and `task_status` gets its result. With `wait: false` it returns a task id at once, so several tasks can run together. If a task is still running when the turn ends, its result goes to the CLI with your next message. In `-p` mode there is no next message, so the main agent is told to collect every result before it finishes, and tasks still running when it does are stopped. `esc` stops the delegated tasks still running (whichever model is answering), `/tasks` lists them, and `/tasks stop [id]` stops them. Quitting, `/clear`, `/resume` and `/logout` stop them too. In the desktop app and `harness gui`, each sub-agent shows as a chip above the input while it works ([below](#desktop-app-and-gui)), and a delegated task still running when the turn ends keeps its permission prompts until you answer or stop it.
 
@@ -158,8 +158,8 @@ Model ids are `provider:model`. Wire formats: Anthropic Messages (with prompt ca
 
 Whatever the mode:
 
-- Deny rules always win.
-- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode.
+- Deny rules always win. A deny or ask rule for a command also catches it given by path (`/bin/rm`), behind `env`, `exec`, `nohup`, `nice`, `command`, `timeout`, `xargs` or `sudo`, inside `sh -c '…'`, `eval` and `$(…)`, and, on macOS and Windows, in another case (`RM`), since the shell finds `/bin/rm` for that name there. Allow rules match only the command as written, so `Bash(npm test:*)` doesn't allow `NPM test`.
+- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too).
 - Edits to the harness's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/` and `.codex/` always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.harness/`, `.mcp.json` and `.git` ask.
 
 When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.harness/settings.local.json`), or decline and say what to do instead.
@@ -167,7 +167,7 @@ When a prompt appears you can allow once, allow and don't ask again (saved as a 
 ### Auto mode
 
 - **Sandboxed shell.** Shell commands, read-only ones included, run in a sandbox when the OS has one: Seatbelt (`sandbox-exec`) on macOS. On Linux, bubblewrap is used only when you turn it on with `"sandbox": true`, because it's experimental (see below). Inside the sandbox a command:
-  - can write only in the workspace and the temp directories, and never to `.git/hooks`, git config (submodules' and worktrees' included), `.harness/`, `.mcp.json` or `~/.harness`. It also can't move or repoint the repo's git directory (`.git`, a worktree's `.git` file, `commondir`) or the workspace itself, so it can't plant config that a later unsandboxed git command would run;
+  - can write only in the workspace and the temp directories, and never to `.git/hooks`, git config (submodules' and worktrees' included), `.harness/`, `.mcp.json`, the agent CLIs' `.claude/` and `.codex/`, or `~/.harness`. The git worktrees Claude Code keeps in `.claude/worktrees/<name>/` are projects of their own, so their files can be written, but not their own `.claude/`, `.codex/`, `.harness/`, `.mcp.json` or `.git` file, and a new one can't be made there. It also can't move or repoint the repo's git directory (`.git`, a worktree's `.git` file, `commondir`), those worktrees or the workspace itself, so it can't plant config that a later unsandboxed git command would run;
   - can't read credential files (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, the keychain, `~/.harness` and others);
   - has no network except localhost and the hosts the command lists (below), and no Unix sockets (so no ssh-agent or Docker);
   - can't signal processes it didn't start;
@@ -196,7 +196,7 @@ What the sandbox doesn't cover:
 - On Linux, bubblewrap has no proxy: commands that need the network run outside the sandbox, after review, as before.
 - Linux (bubblewrap, experimental):
   - It has its own network, PID and IPC namespaces. It hides the usual Unix-socket locations (`/run`, X11, tmux, ssh-agent, Docker Desktop, Colima, Lima), but sockets elsewhere stay reachable.
-  - It can only protect paths that exist when the command starts. A `.harness/` or `.mcp.json` that doesn't exist yet can be created, and so can the hooks of a repo created by that same command.
+  - It can only protect paths that exist when the command starts. A `.harness/`, `.mcp.json`, `.claude/` or `.codex/` that doesn't exist yet can be created, and so can the hooks of a repo created by that same command.
   - It has only been tested at the level of the arguments it builds, not on a real Linux machine.
 
 Rules (`/permissions` to edit them):

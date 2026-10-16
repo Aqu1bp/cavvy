@@ -44,7 +44,7 @@ export const BUILTIN_AGENTS: AgentDef[] = [
     },
     {
         name: "explore",
-        description: "Read-only codebase search and investigation",
+        description: "Read-only codebase search and investigation: reads, searches and read-only commands; no edits, tests, builds or scripts",
         prompt: "",
         source: "builtin",
         readOnly: true,

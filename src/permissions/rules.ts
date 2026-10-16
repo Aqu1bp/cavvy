@@ -10,7 +10,7 @@
 
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
-import { analyzeCommand, effectiveArgv, onlySafeAssignments, substitutionBodies } from "./bash-safety";
+import { analyzeCommand, effectiveArgv, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical } from "../util/files";
 
 export interface ParsedRule {
@@ -161,21 +161,39 @@ export function bashRuleMatches(spec: string | undefined, command: string, mode:
 }
 
 /**
- * Deny if ANY part matches: the whole string, each simple command (also with
- * a path-qualified program reduced to its name, so `/bin/rm` hits `rm`), and
+ * The rule's program name in each spelling a program name has (programNames),
+ * for matching it against those. A spelling that would turn the name into a
+ * pattern (fullwidth ＊ or ：) isn't used.
+ */
+function specSpellings(spec: string): string[] {
+    const name = spec.match(/^[^\s*?:]*/)![0];
+    const dir = name.slice(0, name.lastIndexOf("/") + 1);
+    const others = programNames(name).filter((n) => !/[\s*?:/]/.test(n));
+    return [...new Set([spec, ...others.map((n) => dir + n + spec.slice(name.length))])];
+}
+
+/**
+ * Deny if ANY part matches: the whole string, each program a simple command
+ * runs (through `env`, `exec`, `nohup` and other wrappers; with a
+ * path-qualified program reduced to its name, so `/bin/rm` hits `rm`; and in
+ * each spelling the volume finds it by, so on macOS `RM` hits `rm` too), and
  * recursively the bodies of substitutions and `sh -c` / `eval` strings.
  */
 function denyMatches(spec: string, command: string, depth: number): boolean {
     if (matchCommandSpec(spec, command)) return true;
+    const specs = specSpellings(spec);
     for (const c of analyzeCommand(command).commands) {
-        const argv = effectiveArgv(c.argv);
-        if (!argv.length) continue;
-        const base = argv[0]!.split("/").pop()!;
-        if (matchCommandSpec(spec, argv.join(" ")) || matchCommandSpec(spec, [base, ...argv.slice(1)].join(" "))) return true;
-        if (depth < 4) {
-            const ci = argv.findIndex((x) => /^-[a-zA-Z]*c$/.test(x));
-            if (["sh", "bash", "zsh", "dash", "ksh"].includes(base) && ci > 0 && argv[ci + 1] !== undefined && denyMatches(spec, argv[ci + 1]!, depth + 1)) return true;
-            if (base === "eval" && argv.length > 1 && denyMatches(spec, argv.slice(1).join(" "), depth + 1)) return true;
+        for (const { argv } of runLevels(c.argv)) {
+            const rest = argv.slice(1);
+            for (const name of [argv[0]!, ...programNames(argv[0]!)]) {
+                const text = [name, ...rest].join(" ");
+                if (specs.some((s) => matchCommandSpec(s, text))) return true;
+            }
+            if (depth < 4) {
+                const ci = argv.findIndex((x) => /^-[a-zA-Z]*c$/.test(x));
+                if (runs(argv[0], ...SHELLS) && ci > 0 && argv[ci + 1] !== undefined && denyMatches(spec, argv[ci + 1]!, depth + 1)) return true;
+                if (runs(argv[0], "eval") && argv.length > 1 && denyMatches(spec, argv.slice(1).join(" "), depth + 1)) return true;
+            }
         }
     }
     if (depth < 4) for (const body of substitutionBodies(command)) if (denyMatches(spec, body, depth + 1)) return true;
