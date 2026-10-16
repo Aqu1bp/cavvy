@@ -72,8 +72,9 @@ export function parseClaudeRateLimit(info: unknown, at = Date.now()): { limits: 
     }
     if (!status && !windows.length) return undefined;
     const reached = status === "rejected" ? true : status === "allowed" || status === "allowed_warning" ? false : undefined;
-    // The window it's about resets then; failing that, the full ones; not some other window.
-    const lifts = reached ? (resetsAt ?? named?.resetsAt ?? latestReset(windows.filter((w) => w.reached))) : undefined;
+    // Every exhausted window blocks usage, even if the rejection names only one.
+    const blockingResets = [resetsAt, latestReset(windows.filter((w) => w.reached))].filter((t): t is number => t !== undefined);
+    const lifts = reached && blockingResets.length ? Math.max(...blockingResets) : undefined;
     return { limits: { provider: "claude-code", windows, reached, resetsAt: lifts, at }, partial: !listed };
 }
 

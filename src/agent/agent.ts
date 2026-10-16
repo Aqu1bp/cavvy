@@ -1796,8 +1796,8 @@ export class Agent {
         // Fold the child's spend into the parent session's totals.
         let tokens = 0;
         let cost = 0;
-        for (const [m, u] of session.usageByModel) {
-            this.session.recordUsage(m, u.usage, u.cost, u.unknown);
+        for (const u of session.usageRecords) {
+            this.session.recordUsage(u.model, u.usage, u.cost, u.unknown);
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }

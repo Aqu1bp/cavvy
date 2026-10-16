@@ -231,6 +231,8 @@ export function codexFastTier(m: { serviceTiers?: { id: string }[]; additionalSp
 
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
+    /** An update from any session supersedes account reads already in flight. */
+    private limitUpdates = { revision: 0 };
 
     constructor(readonly def: ProviderDef) {}
 
@@ -274,7 +276,7 @@ export class CodexBackend implements AgentBackendClient {
     private labels = new Map<string, string>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = new CodexTurn(this.def, t, this.labels);
+        const turn = new CodexTurn(this.def, t, this.labels, this.limitUpdates);
         this.turns.add(turn);
         try {
             return await turn.run();
@@ -286,7 +288,7 @@ export class CodexBackend implements AgentBackendClient {
     /** Codex's own compaction of the thread. */
     async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
         if (!t.resumeId) return { reason: "done", text: "", actions: [] };
-        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }).run({ compact: true });
+        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }, this.labels, this.limitUpdates).run({ compact: true });
     }
 
     /**
@@ -379,6 +381,7 @@ class CodexTurn {
     private turnsSeen = new Set<string>();
     /** Each thread's token totals as Codex last reported them. */
     private totals = new Map<string, Tokens>();
+    private threadModels = new Map<string, string>();
     private aborted = false;
     private failure?: string;
     private status?: string;
@@ -406,6 +409,7 @@ class CodexTurn {
         private t: BackendTurn,
         /** Sub-agents' labels by thread, kept across turns (the client's). */
         private labels = new Map<string, string>(),
+        private limitUpdates = { revision: 0 },
     ) {}
 
     modeChanged(m: PermissionMode) {
@@ -481,6 +485,7 @@ class CodexTurn {
                 try {
                     const r = await thread("thread/resume", { ...threadParams, threadId: t.resumeId, excludeTurns: true });
                     this.threadId = r?.thread?.id ?? t.resumeId;
+                    if (typeof r?.model === "string") this.threadModels.set(this.threadId!, r.model);
                     tierNow = r?.serviceTier;
                 } catch (e) {
                     // Stopped by esc: the thread is fine and is resumed next time.
@@ -490,6 +495,7 @@ class CodexTurn {
             } else {
                 const r = await thread("thread/start", threadParams);
                 this.threadId = r?.thread?.id;
+                if (this.threadId && typeof r?.model === "string") this.threadModels.set(this.threadId, r.model);
                 tierNow = r?.serviceTier;
                 if (!this.threadId) throw new ProviderError("Codex didn't start a thread");
             }
@@ -553,8 +559,11 @@ class CodexTurn {
 
     /** Ask Codex where the plan stands (account/rateLimits/read); an older Codex without it is left be. */
     private async readLimits() {
+        const revision = this.limitUpdates.revision;
         try {
             const r = await withTimeout(this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex didn't answer account/rateLimits/read");
+            // The response can contain the snapshot from before a newer push arrived.
+            if (revision !== this.limitUpdates.revision) return;
             const parsed = parseCodexRateLimits(r);
             if (parsed) this.noteLimits(parsed);
         } catch {
@@ -602,6 +611,8 @@ class CodexTurn {
 
     private onNotification(method: string, p: any) {
         const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
+        if (method === "thread/started" && typeof p?.thread?.id === "string" && typeof p.thread.model === "string") this.threadModels.set(p.thread.id, p.thread.model);
+        if (method === "model/rerouted" && typeof p?.toModel === "string" && (thread || this.threadId)) this.threadModels.set((thread ?? this.threadId)!, p.toModel);
         if (method === "turn/started" && typeof p.turn?.id === "string") this.turnsSeen.add(p.turn.id);
         if (method === "thread/tokenUsage/updated") return this.onUsage(p, thread);
         // Codex streams its sub-agents' threads (and its reviewer's) on the same connection. Its
@@ -693,6 +704,7 @@ class CodexTurn {
                 this.host.emit({ type: "notice", level: "info", message: `Codex switched models: ${String(p.reason ?? p.toModel ?? "").trim() || "rerouted"}` });
                 break;
             case "account/rateLimits/updated": {
+                this.limitUpdates.revision++;
                 const parsed = parseCodexRateLimits(p, { update: true });
                 if (parsed) this.noteLimits(parsed);
                 const reached = codexReachedType(p?.rateLimits);
@@ -738,6 +750,8 @@ class CodexTurn {
             reasoningTokens: spent.reasoningOutputTokens,
             // A ChatGPT plan isn't billed per token; with an API key the price isn't known here.
             cost: this.billedToPlan ? 0 : undefined,
+            billing: this.billedToPlan ? "plan" : "api",
+            resolvedModel: this.threadModels.has(key) ? `${this.def.id}:${this.threadModels.get(key)}` : undefined,
         };
         const main = !thread || !this.threadId || thread === this.threadId;
         if (main) {

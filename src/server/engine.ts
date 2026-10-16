@@ -262,12 +262,12 @@ export class Engine {
         this.broadcast({ type: "limits", limits: merged });
     }
 
-    cliCommandsReported(provider: string, names: string[]) {
-        this.cliCommandNames.set(provider, new Set(names));
+    cliCommandsReported(provider: string, cwd: string, names: string[]) {
+        this.cliCommandNames.set(`${provider}:${resolve(cwd)}`, new Set(names));
     }
 
-    cliCommands(provider: string | undefined): ReadonlySet<string> {
-        return (provider && this.cliCommandNames.get(provider)) || new Set();
+    cliCommands(provider: string | undefined, cwd: string): ReadonlySet<string> | undefined {
+        return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -1020,7 +1020,7 @@ export class Engine {
         const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
         const own = new Set([...builtin, ...custom].map((c) => c.name));
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
-        const cli = [...this.cliCommands(provider)].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
+        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
         return [...builtin, ...custom, ...cli];
     }
 
@@ -1141,7 +1141,7 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
+                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();

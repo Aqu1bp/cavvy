@@ -16,6 +16,7 @@ import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { PlanMeter } from "./PlanMeter";
 import { contextView } from "../lib/context";
+import { createLifetimeGuard } from "../lib/lifetime";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
@@ -92,6 +93,7 @@ function ContextRing(p: { sessionId: string }) {
 }
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element }) {
+    const whileMounted = createLifetimeGuard();
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
@@ -230,31 +232,29 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const atts = attachments();
         const key = draftKey();
         // Sent later as a message (it looked like an unknown command): clear the box if it still holds just that.
-        const sent = () => {
+        const sent = whileMounted(() => {
             if (draftKey() !== key || text() !== t || attachments() !== atts) return;
             setText("");
             setAttachments([]);
             composerDrafts.delete(key);
             requestAnimationFrame(resize);
-        };
-        const ok = await send(t, atts, { sent });
-        setSending(false);
-        if (!ok) return;
-        if (ok === "command" && atts.length) {
+        });
+        const finish = whileMounted((ok: boolean | "command") => {
+            setSending(false);
+            if (!ok) return;
+            if (ok === "command" && atts.length) { setText(""); setMenu([]); return; }
+            if (t.trim()) {
+                history.push(t);
+                if (history.length > 100) history.shift();
+            }
+            histIdx = -1;
             setText("");
+            setAttachments([]);
+            composerDrafts.delete(draftKey());
             setMenu([]);
-            return;
-        }
-        if (t.trim()) {
-            history.push(t);
-            if (history.length > 100) history.shift();
-        }
-        histIdx = -1;
-        setText("");
-        setAttachments([]);
-        composerDrafts.delete(draftKey());
-        setMenu([]);
-        requestAnimationFrame(resize);
+            requestAnimationFrame(resize);
+        });
+        finish(await send(t, atts, { sent }));
     };
 
     const onKeyDown = (e: KeyboardEvent) => {

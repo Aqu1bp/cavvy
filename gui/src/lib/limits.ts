@@ -61,13 +61,17 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
         const reached = Boolean(w.reached || (w.usedPercent ?? 0) >= 100) && !passed(w.resetsAt);
         return { label: w.label, pct: w.usedPercent, reached, resets: w.resetsAt ? resetLabel(w.resetsAt, now, reached) : undefined };
     });
-    const reached = Boolean(l.reached || windows.some((w) => w.reached)) && !passed(l.resetsAt) && !(l.windows.length && l.windows.every((w) => passed(w.resetsAt)));
+    const reached = windows.some((w) => w.reached) || (Boolean(l.reached) && !passed(l.resetsAt) && !(l.windows.length && l.windows.every((w) => passed(w.resetsAt))));
+    const blockingResets = l.windows.filter((_, i) => windows[i]!.reached).map((w) => w.resetsAt);
+    if (l.reached && !passed(l.resetsAt)) blockingResets.push(l.resetsAt);
+    const knownResets = blockingResets.filter((t): t is number => t !== undefined);
+    const resetsAt = knownResets.length ? Math.max(...knownResets) : undefined;
     const stale = now - l.at > STALE_MS || l.windows.some((w) => passed(w.resetsAt));
     const pcts = windows.map((w) => w.pct).filter((p): p is number => p !== undefined);
     return {
         windows,
         reached,
-        resets: reached && l.resetsAt ? resetLabel(l.resetsAt, now, true) : undefined,
+        resets: reached && resetsAt ? resetLabel(resetsAt, now, true) : undefined,
         asOf: stale ? `as of ${sameDay(l.at, now) ? clock(l.at) : resetLabel(l.at, now, true).replace(/, in .*$/, "")}` : undefined,
         top: pcts.length ? Math.max(...pcts) : undefined,
     };

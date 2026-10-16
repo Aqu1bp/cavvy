@@ -619,6 +619,8 @@ export interface UsageSummary {
     sessions: number;
     /** Records from before usage was dated, placed at their session's last activity. */
     approxDated: number;
+    /** Alias-only records priced using today's model listing rather than a recorded concrete model. */
+    approxPriced?: number;
     /** Why not everything was read (too many sessions, too much to read in time). */
     truncated?: string;
 }
@@ -796,8 +798,8 @@ export interface Methods {
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
-    /** `literal`: send a leading /word as a message. `unknown`: it named no command, so nothing was sent. */
-    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean }; result: { queued: boolean; unknown?: string } };
+    /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
+    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean }; result: { queued: boolean } };
     "session.interrupt": { params: { id: string }; result: null };
     "session.respond": { params: { id: string; interactionId: string; response: InteractionResponse }; result: null };
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };

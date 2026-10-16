@@ -64,6 +64,7 @@ import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./time
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { RpcError } from "./rpc-error";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
@@ -1039,7 +1040,7 @@ export class Runtime {
                 this.engine.limitsReported(e.limits, e.partial);
                 break;
             case "cli_commands":
-                this.engine.cliCommandsReported(e.provider, e.names);
+                this.engine.cliCommandsReported(e.provider, this.ws.cwd, e.names);
                 break;
             case "turn_end":
                 this.closeOpen();
@@ -1511,7 +1512,7 @@ export class Runtime {
     }
 
     /** A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy. */
-    async send(text: string, attachments?: AttachedPart[], literal = false): Promise<{ queued: boolean; unknown?: string }> {
+    async send(text: string, attachments?: AttachedPart[], literal = false): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
         if (this.closed) throw new Error("This session was closed.");
@@ -1523,7 +1524,7 @@ export class Runtime {
         if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
-        if (unknown) return { queued: false, unknown };
+        if (unknown) throw new RpcError(`Unknown command /${unknown}`, "unknown_command");
         if (this.busy) {
             this.queued.push({ id: ++this.queueSeq, text, attachments, literal: literal || undefined });
             this.setState(this.queueState());
@@ -1538,7 +1539,10 @@ export class Runtime {
         const c = slashCommand(text);
         if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name)) return undefined;
         // One the session's agent CLI runs itself (Claude Code's /code-review, a skill).
-        if (this.engine.cliCommands(this.agent?.model.provider).has(c.name)) return undefined;
+        const provider = this.agent?.model.provider;
+        const commands = this.engine.cliCommands(provider, this.ws.cwd);
+        // Until this workspace has reported its skills, let Claude Code resolve them.
+        if ((provider === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
         return c.name;
     }
 

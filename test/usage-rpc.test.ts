@@ -189,9 +189,9 @@ describe("slash commands the server doesn't know", () => {
     test("/nonsense isn't sent to the model; sent as a message, it is", async () => {
         const c = await client();
         const id = await c.create(project());
-        expect(await c.call("session.send", { id, text: "/nonsense please" })).toEqual({ queued: false, unknown: "nonsense" });
+        await expect(c.call("session.send", { id, text: "/nonsense please" })).rejects.toMatchObject({ code: "unknown_command", message: "Unknown command /nonsense" });
         // From an older GUI that doesn't handle it itself, /cost isn't a prompt either.
-        expect(await c.call("session.send", { id, text: "/cost" })).toEqual({ queued: false, unknown: "cost" });
+        await expect(c.call("session.send", { id, text: "/cost" })).rejects.toMatchObject({ code: "unknown_command" });
         await Bun.sleep(100);
         expect(c.view(id).turns).toEqual([]);
         await c.call("session.send", { id, text: "/nonsense please", literal: true });
@@ -242,15 +242,14 @@ describe("Claude Code's own commands", () => {
         try {
             const c = await client();
             const cwd = project();
-            const claude = async () => {
-                const id = await c.create(cwd);
+            const claude = async (dir = cwd) => {
+                const id = await c.create(dir);
                 await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
                 return id;
             };
-            // Before Claude Code has said what it has, it's an unknown command (and offered as a message).
+            // Before this workspace reports its list, Claude Code resolves commands itself.
             const first = await claude();
-            expect(await c.call("session.send", { id: first, text: "/code-review" })).toEqual({ queued: false, unknown: "code-review" });
-            await c.call("session.send", { id: first, text: "hello" });
+            expect(await c.call("session.send", { id: first, text: "/code-review" })).toEqual({ queued: false });
             await c.until(() => done(c.view(first)), 30_000);
 
             const id = await claude();
@@ -261,9 +260,28 @@ describe("Claude Code's own commands", () => {
             expect((await c.call<{ name: string }[]>("commands.list", { cwd, provider: "claude-code" })).map((x) => x.name)).toEqual(expect.arrayContaining(["code-review", "design:ux-copy"]));
             expect((await c.call<{ name: string }[]>("commands.list", { cwd })).map((x) => x.name)).not.toContain("code-review");
 
+            // A second workspace has its own list. Its first command is allowed even
+            // though A already reported a list; its init then replaces only B's list.
+            const cwdB = project();
+            process.env.FAKE_SLASH_COMMANDS = JSON.stringify(["project-b"]);
+            const b = await claude(cwdB);
+            expect(await c.call("session.send", { id: b, text: "/project-b" })).toEqual({ queued: false });
+            await c.until(() => done(c.view(b)), 30_000);
+            expect((await c.call<{ name: string }[]>("commands.list", { cwd: cwdB, provider: "claude-code" })).map((x) => x.name)).toContain("project-b");
+            expect((await c.call<{ name: string }[]>("commands.list", { cwd, provider: "claude-code" })).map((x) => x.name)).toContain("code-review");
+            const newA = await claude();
+            await expect(c.call("session.send", { id: newA, text: "/project-b" })).rejects.toMatchObject({ code: "unknown_command" });
+            await expect(c.call("session.send", { id: b, text: "/code-review" })).rejects.toMatchObject({ code: "unknown_command" });
+            // A known empty list is different from a workspace not initialized yet.
+            process.env.FAKE_SLASH_COMMANDS = "[]";
+            const empty = await claude(project());
+            await c.call("session.send", { id: empty, text: "/first-command" });
+            await c.until(() => done(c.view(empty)), 30_000);
+            await expect(c.call("session.send", { id: empty, text: "/first-command" })).rejects.toMatchObject({ code: "unknown_command" });
+
             // On another model it's still not a command.
             const other = await c.create(cwd);
-            expect(await c.call("session.send", { id: other, text: "/code-review" })).toEqual({ queued: false, unknown: "code-review" });
+            await expect(c.call("session.send", { id: other, text: "/code-review" })).rejects.toMatchObject({ code: "unknown_command" });
             c.close();
         } finally {
             for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];

@@ -141,6 +141,8 @@ export class Session {
     /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
     costUnknown = false;
     usageByModel = new Map<string, { usage: Usage; cost: number; unknown?: boolean }>();
+    /** Ephemeral sub-agents retain individual records so folding preserves model and billing. */
+    readonly usageRecords: { model: string; usage: Usage; cost: number; unknown: boolean }[] = [];
     /** Agent backends' own sessions, by provider. */
     backends = new Map<string, BackendSession>();
     /** How turns of the current history ended, where the messages don't say (see TurnNotice). */
@@ -270,6 +272,7 @@ export class Session {
     /** `unknown`: no price is known for it (`cost` is then 0, which doesn't mean free). */
     recordUsage(model: string, usage: Usage, cost: number, unknown = false) {
         this.accumulate(model, usage, cost, unknown);
+        if (!this.persist) this.usageRecords.push({ model, usage: { ...usage }, cost, unknown });
         this.write({ t: "usage", usage, cost, model, at: Date.now(), ...(unknown ? { unknown: true as const } : {}) });
     }
 

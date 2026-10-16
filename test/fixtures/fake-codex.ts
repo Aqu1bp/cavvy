@@ -102,6 +102,7 @@ function spend(threadId: string, turnId: string, last: Tokens) {
     const total = was ? (Object.fromEntries(Object.entries(was).map(([k, v]) => [k, v + last[k as keyof Tokens]])) as Tokens) : last;
     usageOf.set(threadId, { total, last, turnId });
     if (usageFile) writeFileSync(usageFile, JSON.stringify(Object.fromEntries(usageOf)));
+    if (process.env.FAKE_CODEX_REROUTED) notify("model/rerouted", { threadId, turnId, toModel: process.env.FAKE_CODEX_REROUTED });
     notify("thread/tokenUsage/updated", { threadId, turnId, tokenUsage: { total, last, modelContextWindow: 400000 } });
 }
 /** The thread's usage as it last was, reported again (no new spend). */
@@ -134,6 +135,7 @@ function serverRequest(method: string, params: unknown): Promise<any> {
 }
 
 const notify = (method: string, params: unknown) => out({ method, params });
+let delayedLimits: (() => void) | undefined;
 
 async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }) {
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
@@ -141,6 +143,9 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     const finish = (status: string) => notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
+    // Answer an earlier read after the push, before completing the turn.
+    delayedLimits?.();
+    delayedLimits = undefined;
     if (scenario === "usage-limit") {
         const error = { message: "You've hit your usage limit. Upgrade to Pro or try again later.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
         notify("error", { error, willRetry: false, threadId, turnId });
@@ -424,6 +429,10 @@ async function handle(m: any) {
         }
         case "account/rateLimits/read":
             if (!process.env.FAKE_RATE_LIMITS) return fail(`unknown method ${m.method}`);
+            if (process.env.FAKE_RATE_LIMITS_DELAY === "1") {
+                delayedLimits = () => reply(JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS!, "utf-8")));
+                return;
+            }
             return reply(JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS, "utf-8")));
         default:
             return fail(`unknown method ${m.method}`);

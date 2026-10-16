@@ -140,6 +140,7 @@ export function UsageView() {
                                 Costs are estimates from list prices. On a plan (Claude Code, Codex) nothing is billed per token: those show what the API would have charged
                                 {d().totals.planEquivalent > 0 ? ` (${usd(d().totals.planEquivalent)} of the total)` : ""}. Models without a known price show “unknown”, not $0.
                                 <Show when={d().approxDated}> {d().approxDated} records from before usage was dated are counted at their session's last activity.</Show>
+                                <Show when={d().approxPriced}> {d().approxPriced} records without a concrete model use today's alias mapping; their prices are approximate.</Show>
                                 <Show when={d().truncated}> {d().truncated}</Show>
                             </p>
                         </Show>

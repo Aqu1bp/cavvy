@@ -31,11 +31,12 @@ import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
+import type { PlanLimits } from "../server/protocol";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
 import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
-import { limitNews, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { cliCommandNames } from "../commands/custom";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
@@ -238,6 +239,7 @@ class ClaudeTurn {
     private actions: string[] = [];
     private sessionId?: string;
     private billedToPlan = false;
+    private resolvedModel?: string;
     private contextTokens?: number;
     private aborted = false;
     private failure?: string;
@@ -245,7 +247,7 @@ class ClaudeTurn {
     private signedOut = false;
     /** The turn failed on the plan's usage limit; when that resets (ms), if Claude Code said. */
     private limitHit = false;
-    private limitResetsAt?: number;
+    private limits?: PlanLimits;
     /** This turn said the limit was reached (its error says it again, with when it resets). */
     private reachedNoted = false;
     /** Control requests sent to Claude Code, waiting for its answer. */
@@ -614,6 +616,7 @@ class ClaudeTurn {
                 }
                 // No API key behind it: the turn runs on the user's plan, not per-token billing.
                 this.billedToPlan = m.apiKeySource === "none";
+                if (typeof m.model === "string") this.resolvedModel = m.model;
                 // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
                 if (cliCommandNames(m.slash_commands)) this.host.emit({ type: "cli_commands", provider: this.def.id, names: cliCommandNames(m.slash_commands)! });
                 break;
@@ -896,25 +899,28 @@ class ClaudeTurn {
 
     private onRateLimit(info: Record<string, any>) {
         const parsed = parseClaudeRateLimit(info);
-        if (parsed) this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+        if (parsed) {
+            // A sparse rejection must not forget another window that still blocks this turn.
+            this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
+            this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+        }
         const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
         // Every status counts, so a warning after the window was fine again (or reset) is news again.
         const news = typeof info.status === "string" && limitNews(this.limitSeen, String(info.rateLimitType ?? ""), info.status, w?.resetsAt);
         if (info.status !== "rejected" && info.status !== "allowed_warning") return;
         const which = w ? `${w.label.charAt(0).toLowerCase()}${w.label.slice(1)} ` : "";
         if (info.status === "rejected") {
-            this.limitResetsAt = parsed?.limits.resetsAt;
             // The turn's error (it may have come first) says when, now that it's known.
             if (this.limitHit) this.failure = this.limitFailure();
             if (this.reachedNoted) return;
             this.reachedNoted = true;
-            this.host.emit({ type: "notice", level: "warn", message: `Your Claude ${which}usage limit has been reached. ${resetSentence(this.limitResetsAt, "Claude Code")}` });
+            this.host.emit({ type: "notice", level: "warn", message: `Your Claude ${which}usage limit has been reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
         } else if (news) this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
     }
 
     /** A turn that failed on the plan's limit: when it resets, if Claude Code said. */
     private limitFailure(): string {
-        return `Your Claude usage limit was reached. ${resetSentence(this.limitResetsAt, "Claude Code")} Switch models with /model meanwhile.`;
+        return `Your Claude usage limit was reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")} Switch models with /model meanwhile.`;
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
@@ -933,6 +939,7 @@ class ClaudeTurn {
             // Fast service uses paid credits even on a subscription. A final cooldown
             // must not erase earlier fast spend; the CLI only gives a whole-turn total.
             cost: this.billedToPlan && !this.fastModeObserved ? 0 : spent,
+            billing: this.billedToPlan && !this.fastModeObserved ? "plan" : "api",
         };
         // A turn of Claude Code's own that made no request (a report it passes on from an earlier run): nothing to count.
         const nothing = !ours && !usage.inputTokens && !usage.outputTokens && !usage.cacheReadTokens && !usage.cacheWriteTokens && !spent;
@@ -940,6 +947,10 @@ class ClaudeTurn {
             const mixedPlanCost = this.billedToPlan && this.fastModeObserved && m.fast_mode_state !== "on";
             if (mixedPlanCost) this.host.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
             if (mixedPlanCost) usage.costEstimated = true;
+            const models = Object.keys(m.modelUsage ?? {});
+            // A result can include several models; its init identifies the main one.
+            const served = models.length === 1 ? models[0] : models.find((id) => id === this.resolvedModel);
+            if (served) usage.resolvedModel = `${this.def.id}:${served}`;
             const window = Object.values((m.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).find((x) => typeof x?.contextWindow === "number")?.contextWindow;
             this.host.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });
         }

@@ -100,6 +100,13 @@ describe("Claude Code's rate_limit_event", () => {
         expect(r.limits.resetsAt).toBe(1792156200_000);
     });
 
+    test("a rejection naming five-hour still waits for a full weekly window", () => {
+        const r = parseClaudeRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: 1792156200, unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1792156200 }, seven_day: { utilization: 1, resetsAt: 1792526400 } } }, at)!;
+        expect(r.limits.resetsAt).toBe(1792526400_000);
+        expect(meterOf(r.limits, 1792156200_000 + 1)!.reached).toBe(true);
+        expect(meterOf(r.limits, 1792526400_000 + 1)!.reached).toBe(false);
+    });
+
     test("99.6% used is 99%, not a reached limit", () => {
         const r = parseClaudeRateLimit({ status: "allowed_warning", rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.996, resetsAt: 1792156200 } } }, at)!;
         expect(r.limits.windows[0]).toMatchObject({ usedPercent: 99, reached: undefined });
@@ -283,6 +290,52 @@ const received = () =>
 const soon = () => Date.now() + 125 * 60_000 + 20_000;
 
 describe("a turn that hits the plan's limit says when it resets", () => {
+    test("Claude Code: a partial five-hour rejection keeps the full weekly window's later reset", async () => {
+        const short = Math.round(soon() / 1000);
+        const weekly = short + 3 * 86_400;
+        const detailed = join(bin, "claude-both-reached.json");
+        const partial = join(bin, "claude-five-hour-only.json");
+        writeFileSync(detailed, JSON.stringify({ status: "rejected", rateLimitType: "five_hour", resetsAt: short, unifiedWindows: { five_hour: { utilization: 1, resetsAt: short }, seven_day: { utilization: 1, resetsAt: weekly } } }));
+        writeFileSync(partial, JSON.stringify({ status: "rejected", rateLimitType: "five_hour", resetsAt: short }));
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = detailed;
+        process.env.FAKE_RATE_LIMIT_FOLLOWUP = partial;
+        for (const late of ["0", "1"]) {
+            process.env.FAKE_RATE_LIMIT_LATE = late;
+            const r = await runTurn("claude-code");
+            expect(r.reason).toBe("error");
+            expect(r.limits).toHaveLength(2);
+            expect(r.notices.find((n) => n.startsWith("error:"))).toContain(resetSentence(weekly * 1000, "Claude Code"));
+        }
+    });
+
+    test("Claude Code: a sparse rejection preserves the detailed rejection's reset", async () => {
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = shifted("claude-rejected.json", soon());
+        process.env.FAKE_RATE_LIMIT_SPARSE = "1";
+        for (const late of ["0", "1"]) {
+            process.env.FAKE_RATE_LIMIT_LATE = late;
+            const r = await runTurn("claude-code");
+            expect(r.reason).toBe("error");
+            expect(r.limits).toHaveLength(2);
+            expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)/);
+        }
+    });
+
+    test("Codex: a read answered after a newer update cannot overwrite it", async () => {
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_RATE_LIMITS = join(FIX, "codex-update-normal.json");
+        process.env.FAKE_RATE_LIMITS_DELAY = "1";
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-reached.json", soon());
+        const r = await runTurn("codex");
+        expect(r.reason).toBe("error");
+        expect(received().filter((m) => m.method === "account/rateLimits/read")).toHaveLength(1);
+        // No stale event reaches the engine; the local turn also keeps its reset.
+        expect(r.limits).toHaveLength(1);
+        expect(r.limits[0]!.windows[0]).toMatchObject({ usedPercent: 100, reached: true });
+        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)/);
+    });
+
     test("Claude Code: the time from its rate_limit_event (sent before the error)", async () => {
         const at = soon();
         process.env.FAKE_SCENARIO = "rate-limit";
@@ -550,7 +603,7 @@ describe("usage over 24h, 7d and 30d", () => {
         expect((await usageSummary(30, now)).truncated).toMatch(/too much to read/);
     });
 
-    test("a sub-agent's usage folded into its parent: its recorded cost, or the plan's API-equivalent", async () => {
+    test("legacy folded sub-agent usage keeps its recorded cost without assuming missing billing means a plan", async () => {
         // Folded lines carry the summed tokens and the record's cost, without usage.cost.
         session("s6", [
             { t: "usage", usage: u(1_000, 100), cost: 8, model: "claude-code:claude-opus-5-5", at: now - H },
@@ -560,8 +613,8 @@ describe("usage over 24h, 7d and 30d", () => {
         expect(cents(row(s, "claude-code:claude-opus-5-5").cost)).toBe(8.28); // 8 billed + 0.28 on the plan (s1)
         const codex = row(s, "codex:gpt-6-astra");
         expect(cents(codex.cost)).toBe(1.2); // 0.01×10 + 0.002×50 + 1×1
-        expect(codex.plan).toBe(true);
-        expect(cents(codex.planEquivalent)).toBe(1.2);
+        expect(codex.plan).toBe(false);
+        expect(cents(codex.planEquivalent)).toBe(0);
     });
 
     test("out of time: says so, and the view doesn't call it no usage", async () => {
@@ -609,6 +662,20 @@ describe("the plan meter", () => {
 
     test("stale: as of when it was reported", () => {
         expect(meterOf(limits({ at: now - 20 * 60_000 }), now)!.asOf).toMatch(/^as of /);
+    });
+
+    test("a full window keeps the meter reached beyond an earlier overall reset", () => {
+        const short = now + 60_000;
+        const weekly = now + 4 * 86_400_000;
+        const l = limits({ reached: true, resetsAt: short, windows: [
+            { id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: short, reached: true },
+            { id: "seven_day", label: "Weekly", usedPercent: 100, resetsAt: weekly, reached: true },
+        ] });
+        const m = meterOf(l, short + 1)!;
+        expect(m.reached).toBe(true);
+        expect(m.windows.map((w) => w.reached)).toEqual([false, true]);
+        expect(m.resets).toBe(resetLabel(weekly, short + 1, true));
+        expect(meterOf(l, weekly + 1)!.reached).toBe(false);
     });
 
     test("reached: red, with the reset time and how long", () => {

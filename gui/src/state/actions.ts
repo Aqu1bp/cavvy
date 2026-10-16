@@ -169,17 +169,19 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
                 toast("Choose a project folder first", "warn");
                 return false;
             }
-            // Checked before there's a session, so a typo doesn't start one.
+            // Claude Code skills are workspace-specific; its session guard knows whether a list has arrived.
+            // A known non-Claude default can reject typos before creating a session.
             const name = opts.literal ? undefined : slashName(text);
-            if (name && !(await rpc.call("commands.list", { cwd, provider: app.settings.model?.split(":")[0] })).some((c) => c.name === name)) return unknown(name);
+            const provider = app.settings.model?.split(":")[0];
+            if (name && provider && provider !== "claude-code" && !(await rpc.call("commands.list", { cwd })).some((c) => c.name === name)) return unknown(name);
             const h = await startIn(cwd);
             if (!h) return false;
             id = h.id;
         }
-        const r = await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
-        if (r.unknown) return unknown(r.unknown);
+        await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
         return true;
     } catch (e) {
+        if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
         reportError(e);
         return false;
     }

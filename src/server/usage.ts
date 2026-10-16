@@ -110,6 +110,8 @@ function toRecord(l: any): Omit<UsageRecord, "at" | "approx"> | undefined {
     if (typeof u.cost === "number" && Number.isFinite(u.cost)) usage.cost = u.cost;
     if (u.costEstimated === true) usage.costEstimated = true;
     if (u.fastMode === true) usage.fastMode = true;
+    if (typeof u.resolvedModel === "string" && u.resolvedModel.length <= 300 && u.resolvedModel.startsWith(l.model.split(":")[0] + ":")) usage.resolvedModel = u.resolvedModel;
+    if (u.billing === "plan" || u.billing === "api") usage.billing = u.billing;
     return { model: l.model.slice(0, 300), usage, cost: n(l.cost), unknown: l.unknown === true };
 }
 
@@ -232,11 +234,10 @@ class Prices {
             // sub-agent's usage folded into its parent's file keeps only the record's own cost.
             if (typeof reported === "number" && reported > 0) return { cost: reported, plan: 0 };
             if (reported === undefined && r.cost > 0) return { cost: r.cost, plan: 0 };
-            // On a plan, or (Codex on an API key, a folded sub-agent's) not priced when it was spent:
-            // what the API would charge, labelled as that estimate.
+            // Missing cost means API billing (notably Codex), unless explicitly marked as plan usage.
             const eq = this.apiEquivalent(provider, id, r.usage);
             if (eq === undefined) return undefined;
-            return { cost: eq, plan: eq };
+            return { cost: eq, plan: r.usage.billing === "plan" || (r.usage.billing !== "api" && reported === 0) ? eq : 0 };
         }
         if (typeof reported === "number") return { cost: reported, plan: 0 };
         if (r.cost > 0) return { cost: r.cost, plan: 0 };
@@ -258,6 +259,7 @@ export async function usageSummary(days: UsageDays, now = Date.now()): Promise<U
     const rows = new Map<string, UsageRow & { files: Set<string> }>();
     const sessions = new Set<string>();
     let approxDated = 0;
+    let approxPriced = 0;
     let truncated = listed;
     for (const [i, f] of files.entries()) {
         const out = spent(budget);
@@ -281,8 +283,12 @@ export async function usageSummary(days: UsageDays, now = Date.now()): Promise<U
                 truncated ??= spent(budget);
                 break;
             }
-            cache.set(f.file, (entry = { mtimeMs: f.mtimeMs, size: f.size, records }));
+            entry = { mtimeMs: f.mtimeMs, size: f.size, records };
         }
+        // Map insertion order is recency: even a cache hit refreshes it.
+        cache.delete(f.file);
+        cache.set(f.file, entry);
+        trimUsageCache();
         for (const [n, r] of entry.records.entries()) {
             // A huge file's records take time to add up too.
             const out = n % 10_000 === 9_999 ? spent(budget) : undefined;
@@ -291,12 +297,13 @@ export async function usageSummary(days: UsageDays, now = Date.now()): Promise<U
                 break;
             }
             if (r.at < since || r.at > now) continue;
-            const colon = r.model.indexOf(":");
-            const provider = colon > 0 ? r.model.slice(0, colon) : "unknown";
-            const id = colon > 0 ? r.model.slice(colon + 1) : r.model;
+            const model = r.usage.resolvedModel ?? r.model;
+            const colon = model.indexOf(":");
+            const provider = colon > 0 ? model.slice(0, colon) : "unknown";
+            const id = colon > 0 ? model.slice(colon + 1) : model;
             const kind = prices.provider(provider);
-            let row = rows.get(r.model);
-            if (!row) rows.set(r.model, (row = { provider, providerName: kind.name, model: id, plan: false, sessions: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cost: 0, planEquivalent: 0, unknown: false, files: new Set() }));
+            let row = rows.get(model);
+            if (!row) rows.set(model, (row = { provider, providerName: kind.name, model: id, plan: false, sessions: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cost: 0, planEquivalent: 0, unknown: false, files: new Set() }));
             row.inputTokens += r.usage.inputTokens;
             row.outputTokens += r.usage.outputTokens;
             row.cacheReadTokens += r.usage.cacheReadTokens ?? 0;
@@ -308,17 +315,14 @@ export async function usageSummary(days: UsageDays, now = Date.now()): Promise<U
                 row.planEquivalent += c.plan;
                 if (c.plan) row.plan = true;
             }
-            if (kind.agent && r.usage.cost === 0) row.plan = true;
+            if (kind.agent && (r.usage.billing === "plan" || (r.usage.billing !== "api" && r.usage.cost === 0))) row.plan = true;
             row.files.add(f.file);
             sessions.add(f.file);
             if (r.approx) approxDated++;
+            if (!r.usage.resolvedModel && ((provider === "claude-code" && !id.startsWith("claude-")) || (provider === "codex" && id === "default"))) approxPriced++;
         }
     }
-    // Keep the cache to about what one scan reads.
-    if (cache.size > usageBounds.maxFiles) {
-        const listed = new Set(files.map((f) => f.file));
-        for (const k of cache.keys()) if (!listed.has(k)) cache.delete(k);
-    }
+    trimUsageCache();
     const out = [...rows.values()]
         .map(({ files, ...row }) => ({ ...row, sessions: files.size }))
         .sort((a, b) => b.cost - a.cost || b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens));
@@ -332,7 +336,11 @@ export async function usageSummary(days: UsageDays, now = Date.now()): Promise<U
         totals.planEquivalent += r.planEquivalent;
         totals.unknown ||= r.unknown;
     }
-    return { days, since, rows: out, totals, sessions: sessions.size, approxDated, ...(truncated ? { truncated } : {}) };
+    return { days, since, rows: out, totals, sessions: sessions.size, approxDated, approxPriced, ...(truncated ? { truncated } : {}) };
+}
+
+function trimUsageCache() {
+    while (cache.size > Math.max(0, usageBounds.maxFiles)) cache.delete(cache.keys().next().value!);
 }
 
 /** Forget cached records (tests). */
