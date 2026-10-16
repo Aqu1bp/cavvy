@@ -29,7 +29,7 @@ import { modelRef, parseModelRef, textOf, toolCallsOf, type ImagePart, type Mess
 import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
-import { gitSnapshot } from "../util/git";
+import { gitBranch } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
@@ -273,7 +273,7 @@ export class Runtime {
     }
 
     private initialState(): SessionState {
-        const branch = gitSnapshot(this.ws.cwd)?.branch;
+        const branch = gitBranch(this.ws.cwd);
         return {
             id: this.id,
             cwd: this.ws.cwd,
