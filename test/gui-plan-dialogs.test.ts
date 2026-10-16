@@ -198,6 +198,7 @@ for (const git of [undefined, { main: "/repo", branch: "plan", base: "main" }]) 
             app: { sessions: [], archived: [] },
             setPlanDialog: (request: any) => requests.push(request),
             Popover: (p: any) => p.children,
+            Menu: (p: any) => p.children,
             ClipboardList() {}, FolderGit2() {}, Save() {}, Copy() {}, ArrowUpLeft() {}, GitBranchPlus() {},
         });
         solid.createRoot((dispose: () => void) => {
