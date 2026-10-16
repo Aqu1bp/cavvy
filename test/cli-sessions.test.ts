@@ -13,6 +13,7 @@ const iso = isolate();
 const { listCliSessions, readCliTranscript, findCliSession } = await import("../src/server/cli-sessions");
 const { Engine, RpcError } = await import("../src/server/engine");
 const { Session, findSessionAnywhere, listSessions } = await import("../src/agent/session");
+const { importModel } = await import("../src/server/cli-import");
 const { rewindTargets } = await import("../src/agent/checkpoints");
 const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 const { forgetClient } = await import("../src/providers/models");
@@ -142,6 +143,17 @@ describe("reading the stores", () => {
         const out = JSON.stringify(listCliSessions("claude-code", cwd));
         expect(out).not.toContain(FAKE.anthropic);
         expect(out).toContain("[REDACTED");
+    });
+
+    test("ones already in Harness have a limit of their own, and ones to leave out take no room", () => {
+        const ids = Array.from({ length: 8 }, (_, i) => claudeSession(CLAUDE, { cwd: real, turns: TURNS, mtime: Date.now() - i * 1000 }).id);
+        // Newest first: held, new, hidden, held, new, held, new, held.
+        const kind = ["held", "new", "hidden", "held", "new", "held", "new", "held"] as const;
+        const l = listCliSessions("claude-code", cwd, { limits: { list: 2 }, sort: (id) => kind[ids.indexOf(id)]! });
+        expect(l.sessions.map((s) => ids.indexOf(s.id))).toEqual([1, 4]);
+        expect(l.more).toBe(1);
+        expect(l.held.map((s) => ids.indexOf(s.id))).toEqual([0, 3]);
+        expect(l.moreHeld).toBe(2);
     });
 
     test("the list stops at its limit and says how many more there are", () => {
@@ -358,6 +370,50 @@ describe("importing", () => {
             await e.stop();
             rmSync(join(iso.home, "gui.json"), { force: true });
         }
+    });
+
+    test("Harness's own sub-agent runs aren't offered, nor Codex threads its client started that no session holds", async () => {
+        turnOn();
+        const subClaude = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
+        const subCodex = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "harness_cli" });
+        // From before sub-agent runs were recorded: Harness's client started it, and no session holds it.
+        const orphan = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "harness_cli" });
+        // A Harness session's own Codex thread: Harness's client too, but held, so listed as in Harness.
+        const own = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "harness_cli" });
+        const mine = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS });
+        const parent = Session.create(real);
+        parent.push({ role: "user", content: [{ type: "text", text: "review it" }], meta: { kind: "prompt" } });
+        parent.setBackendSession("codex", own.id, 1);
+        const child = Session.create(real, { persist: false });
+        child.runsFor = parent;
+        child.setBackendSession("claude-code", subClaude.id, 1);
+        child.setBackendSession("codex", subCodex.id, 1);
+        parent.release();
+        const { e, c } = await engine();
+        try {
+            const list = (await e.handle(c, "cliSessions.list", { cwd })) as CliSessionsList;
+            expect(list.sessions.map((s) => [s.id, s.harnessId]).sort()).toEqual([[mine.id, undefined], [own.id, parent.meta.id]].sort());
+            for (const [source, id] of [["claude-code", subClaude.id], ["codex", subCodex.id], ["codex", orphan.id]]) {
+                await expect(e.handle(c, "cliSessions.import", { cwd, source, id })).rejects.toMatchObject({ code: "not_found" });
+            }
+        } finally {
+            await e.stop();
+        }
+    });
+
+    test("the model it ran on is kept: Claude Code's specific alias, not the default that resolves to it today", () => {
+        const listing = (models: { id: string; name: string }[]) => [{ provider: { id: "claude-code" }, models: models.map((m) => ({ provider: "claude-code", ...m })), status: "ok" }] as any;
+        const models = [
+            { id: "default", name: "Default (recommended) (claude-opus-5-5)" },
+            { id: "sonnet", name: "Sonnet (claude-sonnet-5-5)" },
+            { id: "opus", name: "Opus (claude-opus-5-5)" },
+        ];
+        expect(importModel("claude-code", "claude-opus-5-5", listing(models))).toBe("claude-code:opus");
+        expect(importModel("claude-code", "claude-sonnet-5-5", listing(models))).toBe("claude-code:sonnet");
+        // Only the default resolves to it: the default, then. Unknown, or nothing listed: the default.
+        expect(importModel("claude-code", "claude-opus-5-5", listing(models.slice(0, 2)))).toBe("claude-code:default");
+        expect(importModel("claude-code", "claude-haiku-9", listing(models))).toBe("claude-code:default");
+        expect(importModel("codex", "gpt-test", [])).toBe("codex:default");
     });
 
     test("a provider that isn't turned on: listed as off, and import says so", async () => {

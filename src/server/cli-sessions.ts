@@ -78,6 +78,8 @@ export interface CliSessionEntry {
     file: string;
     /** The folder it ran in, as it recorded it. */
     cwd: string;
+    /** The client that started it (Codex's session_meta originator). */
+    originator?: string;
     title: string;
     /** Its own title (Claude Code's custom or generated one, Codex's thread name), not the first prompt. */
     named: boolean;
@@ -94,7 +96,17 @@ export interface CliListing {
     sessions: CliSessionEntry[];
     /** Sessions of this folder not listed (over the limit). */
     more: number;
+    /** Ones already in Harness: listed apart, with a limit of their own, so they don't crowd out the rest. */
+    held: CliSessionEntry[];
+    moreHeld: number;
 }
+
+/**
+ * How a listing treats a session, from its id and the client that started it
+ * (Codex): one to offer, one already in Harness, or one to leave out (a run
+ * of Harness's own sub-agents).
+ */
+export type CliSort = (id: string, originator: string | undefined) => "new" | "held" | "hidden";
 
 // ---------------------------------------------------------------------------
 // Reading files
@@ -205,41 +217,53 @@ function headAndTail(file: string, size: number, limits: CliLimits, each: (v: Re
     if (size > limits.head) readJsonLines(file, Math.max(limits.head, size - limits.head), size, limits.line, (v) => each(v, true));
 }
 
+/** What the first lines say about a session: the folder it ran in, and (Codex) the client that started it. */
+interface Probe {
+    cwd?: string;
+    originator?: string;
+}
+
+/** A string field of a first line too long to parse (Codex's holds its whole system prompt). */
+function fieldOfFirstLine(text: string, key: string): string | undefined {
+    const m = new RegExp(`^\\{[^\\n]*?"${key}"\\s*:\\s*("(?:[^"\\\\\\n]|\\\\.)*")`).exec(text);
+    if (!m) return undefined;
+    try {
+        const v = JSON.parse(m[1]!);
+        return typeof v === "string" && v ? v : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /**
  * The folder a session ran in, from its first lines: a whole line's own `cwd`
  * (Claude Code's entries, Codex's session_meta payload). Only a first line too
- * long for the read (Codex's holds its whole system prompt) is searched as text.
- * A few KB usually do; a pasted image up front takes up to the head.
+ * long for the read is searched as text. A few KB usually do; a pasted image
+ * up front takes up to the head.
  */
-function probeCwd(file: string, size: number, limits: CliLimits): string | undefined {
+function probe(file: string, size: number, limits: CliLimits): Probe {
     for (const bytes of [16 * 1024, limits.head]) {
         const end = Math.min(size, bytes);
-        let found: string | undefined;
+        let found: Probe | undefined;
         let lines = 0;
         readJsonLines(file, 0, end, limits.line, (v) => {
             lines++;
-            const cwd = typeof v.cwd === "string" ? v.cwd : v.type === "session_meta" && typeof v.payload?.cwd === "string" ? v.payload.cwd : undefined;
+            const meta = v.type === "session_meta" && v.payload && typeof v.payload === "object" ? v.payload : undefined;
+            const cwd = typeof v.cwd === "string" ? v.cwd : typeof meta?.cwd === "string" ? meta.cwd : undefined;
             if (cwd) {
-                found = cwd;
+                found = { cwd, originator: typeof meta?.originator === "string" ? meta.originator : undefined };
                 return false;
             }
         });
         if (found) return found;
         if (!lines) {
             const text = headText(file, Math.min(end, 64 * 1024));
-            const m = /^\{[^\n]*?"cwd"\s*:\s*("(?:[^"\\\n]|\\.)*")/.exec(text);
-            if (m) {
-                try {
-                    const v = JSON.parse(m[1]!);
-                    if (typeof v === "string" && v) return v;
-                } catch {
-                    // not a string after all
-                }
-            }
+            const cwd = fieldOfFirstLine(text, "cwd");
+            if (cwd) return { cwd, originator: fieldOfFirstLine(text, "originator") };
         }
         if (end >= size) break;
     }
-    return undefined;
+    return {};
 }
 
 function headText(file: string, bytes: number): string {
@@ -309,31 +333,35 @@ function candidatesFor(source: CliSource, root: string, cwd: string, real: strin
 }
 
 /** Recent sessions of one folder, newest first. `cwd` is compared by real path. */
-export function listCliSessions(source: CliSource, cwd: string, o: { root?: string; limits?: Partial<CliLimits> } = {}): CliListing {
+export function listCliSessions(source: CliSource, cwd: string, o: { root?: string; limits?: Partial<CliLimits>; sort?: CliSort } = {}): CliListing {
     const limits = { ...LIMITS, ...o.limits };
     const root = o.root ?? (source === "claude-code" ? claudeRoot() : codexRoot());
     const cache = new Map<string, string>();
     const real = realFolder(cwd, cache);
     const candidates = candidatesFor(source, root, cwd, real, limits);
     const titles = source === "codex" ? codexTitles(root, limits) : undefined;
-    const sessions: CliSessionEntry[] = [];
-    let more = 0;
+    const out: CliListing = { sessions: [], more: 0, held: [], moreHeld: 0 };
     candidates.forEach((c, i) => {
         if (i >= limits.scan) {
             // Not looked at: Claude Code's are in this folder's own store folder; Codex's could be anyone's.
-            if (source === "claude-code") more++;
+            if (source === "claude-code") out.more++;
             return;
         }
-        const recorded = probeCwd(c.file, c.size, limits);
-        if (!recorded || realFolder(recorded, cache) !== real) return;
-        if (sessions.length >= limits.list) {
-            more++;
+        const p = probe(c.file, c.size, limits);
+        if (!p.cwd || realFolder(p.cwd, cache) !== real) return;
+        const kind = o.sort?.(c.id, p.originator) ?? "new";
+        if (kind === "hidden") return;
+        const list = kind === "held" ? out.held : out.sessions;
+        // Counted without being read: the limit is reached.
+        if (list.length >= limits.list) {
+            if (kind === "held") out.moreHeld++;
+            else out.more++;
             return;
         }
         const e = source === "claude-code" ? claudeEntry(c, limits) : codexEntry(c, limits, titles!);
-        if (e && e.messages > 0) sessions.push(e);
+        if (e && e.messages > 0) list.push(e);
     });
-    return { sessions, more };
+    return out;
 }
 
 /** One session by id, found only among the files a listing of this folder looks at, and only if it ran here. */
@@ -347,8 +375,8 @@ export function findCliSession(source: CliSource, cwd: string, id: string, o: { 
         .slice(0, limits.scan)
         .find((x) => x.id.toLowerCase() === id.toLowerCase());
     if (!c) return undefined;
-    const recorded = probeCwd(c.file, c.size, limits);
-    if (!recorded || realFolder(recorded, cache) !== real) return undefined;
+    const p = probe(c.file, c.size, limits);
+    if (!p.cwd || realFolder(p.cwd, cache) !== real) return undefined;
     const e = source === "claude-code" ? claudeEntry(c, limits) : codexEntry(c, limits, codexTitles(root, limits));
     return e && e.messages > 0 ? e : undefined;
 }
@@ -544,6 +572,7 @@ function codexEntry(c: Candidate, limits: CliLimits, titles: Map<string, string>
     let messages = 0;
     let tailMessages = 0;
     let tailFirst: string | undefined;
+    let originator: string | undefined;
     let sub = false;
     let other = false;
     headAndTail(c.file, c.size, limits, (e, inTail) => {
@@ -551,6 +580,7 @@ function codexEntry(c: Candidate, limits: CliLimits, titles: Map<string, string>
         if (e.type === "session_meta" && p && typeof p === "object") {
             if (typeof p.id === "string" && p.id.toLowerCase() !== c.id.toLowerCase()) other = true;
             if (typeof p.cwd === "string") cwd ??= p.cwd;
+            if (typeof p.originator === "string") originator ??= p.originator;
             startedAt ??= time(p.timestamp) ?? time(e.timestamp);
             if (codexSubAgent(p)) sub = true;
             return;
@@ -576,7 +606,9 @@ function codexEntry(c: Candidate, limits: CliLimits, titles: Map<string, string>
         first ??= tailFirst;
     }
     // The first line (with the folder) can be longer than the head read: the probe found it.
-    cwd ??= probeCwd(c.file, c.size, limits);
+    const p = cwd && originator ? undefined : probe(c.file, c.size, limits);
+    cwd ??= p?.cwd;
+    originator ??= p?.originator;
     if (!cwd || sub || other) return undefined;
     const name = titles.get(c.id.toLowerCase());
     return {
@@ -584,6 +616,7 @@ function codexEntry(c: Candidate, limits: CliLimits, titles: Map<string, string>
         id: c.id,
         file: c.file,
         cwd,
+        ...(originator ? { originator } : {}),
         title: shortTitle(name ?? first ?? "(untitled)"),
         named: Boolean(name),
         startedAt,

@@ -107,7 +107,7 @@ function spawnRpc(providerId: string, cwd: string, onNotification: (method: stri
 }
 
 async function handshake(rpc: Rpc) {
-    await rpc.request("initialize", { clientInfo: { name: `${APP_NAME}_cli`, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
+    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
     rpc.notify("initialized");
 }
 
@@ -199,6 +199,9 @@ function codexPolicyKey(m: PermissionMode): string {
     const p = codexPolicy(m, []);
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
+
+/** Our name to Codex: it records it as the originator of the threads we start. */
+export const CODEX_CLIENT_NAME = `${APP_NAME}_cli`;
 
 const PLAN_NOTE =
     "<system-reminder>\nPlan mode is active: the user wants a plan before anything changes. Research with read-only commands, don't modify files, and reply with your plan. Changes will be refused until the user approves it.\n</system-reminder>";

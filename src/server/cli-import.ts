@@ -9,7 +9,7 @@
 import { lstatSync, readdirSync, realpathSync } from "fs";
 import { join, resolve } from "path";
 import { projectStateDir } from "../config/paths";
-import { cliLinks, Session } from "../agent/session";
+import { cliLinks, Session, type CliLink } from "../agent/session";
 import { defaultModelFrom, type ProviderListing } from "../providers/models";
 import { getProvider } from "../providers/registry";
 import { modelRef, parseModelRef, type AssistantMessage } from "../providers/types";
@@ -21,14 +21,17 @@ export function linkKey(source: string, id: string): string {
     return `${source}:${id.toLowerCase()}`;
 }
 
-const linkCache = new Map<string, { mtimeMs: number; size: number; links: { provider: string; id: string }[] }>();
+const linkCache = new Map<string, { mtimeMs: number; size: number; links: CliLink[] }>();
 
-/**
- * CLI sessions already in Harness, from the session files of these folders:
- * imported ones and ones Harness ran itself on a backend. The newest Harness
- * session wins when several hold the same one.
- */
-export function harnessLinks(folders: string[]): Map<string, string> {
+export interface HarnessLinks {
+    /** CLI sessions a Harness session holds (imported, or run on as its backend): to that session's id. The newest wins. */
+    held: Map<string, string>;
+    /** Ones Harness's sub-agents ran on (Task, delegate): nobody's conversation to pick up. */
+    subagent: Set<string>;
+}
+
+/** CLI sessions Harness already has, from the session files of these folders. */
+export function harnessLinks(folders: string[]): HarnessLinks {
     const dirs = new Set<string>();
     for (const f of folders) {
         dirs.add(projectStateDir(resolve(f)));
@@ -59,11 +62,11 @@ export function harnessLinks(folders: string[]): Map<string, string> {
         }
     }
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const out = new Map<string, string>();
+    const out: HarnessLinks = { held: new Map(), subagent: new Set() };
     for (const f of files) {
         let cached = linkCache.get(f.file);
         if (!cached || cached.mtimeMs !== f.mtimeMs || cached.size !== f.size) {
-            let links: { provider: string; id: string }[] = [];
+            let links: CliLink[] = [];
             try {
                 links = cliLinks(f.file);
             } catch {
@@ -74,7 +77,8 @@ export function harnessLinks(folders: string[]): Map<string, string> {
         }
         for (const l of cached.links) {
             const k = linkKey(l.provider, l.id);
-            if (!out.has(k)) out.set(k, f.id);
+            if (l.kind === "subagent") out.subagent.add(k);
+            else if (!out.held.has(k)) out.held.set(k, f.id);
         }
     }
     return out;
@@ -90,7 +94,9 @@ export function importModel(source: CliSource, cliModel: string | undefined, lis
     const models = listing?.models ?? [];
     if (cliModel) {
         // Claude Code lists aliases ("opus") named with what they resolve to ("Opus (claude-opus-5-5)").
-        const m = models.find((x) => x.id === cliModel) ?? models.find((x) => x.name?.includes(`(${cliModel})`));
+        // "default" resolves to one of them today and maybe another tomorrow: the specific alias keeps the model.
+        const resolves = (x: (typeof models)[number]) => Boolean(x.name?.includes(`(${cliModel})`));
+        const m = models.find((x) => x.id === cliModel) ?? models.find((x) => x.id !== "default" && resolves(x)) ?? models.find(resolves);
         if (m) return modelRef(m);
     }
     const d = models.find((x) => x.id === "default") ?? (listing ? defaultModelFrom([listing]) : undefined);

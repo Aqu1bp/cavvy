@@ -407,11 +407,13 @@ export interface CliSourceInfo {
     enabled: boolean;
     /** Sessions of this folder not listed. */
     more: number;
+    /** Ones already in Harness not listed (they have a limit of their own). */
+    moreInHarness: number;
 }
 
 export interface CliSessionsList {
     sources: CliSourceInfo[];
-    /** Both sources, newest first. */
+    /** Both sources, newest first; ones already in Harness have `harnessId` (and don't count toward the limit). */
     sessions: CliSessionInfo[];
 }
 

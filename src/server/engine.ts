@@ -31,7 +31,8 @@ import { isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
-import { harnessLinks, importModel, linkKey, writeImportedSession } from "./cli-import";
+import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
+import { CODEX_CLIENT_NAME } from "../backends/codex";
 import type {
     CliSessionInfo,
     CliSessionsList,
@@ -68,6 +69,19 @@ export interface EngineOptions {
     unloadAfterMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
     log?: (message: string) => void;
+}
+
+/**
+ * A CLI session in the list: one Harness holds is listed apart; one Harness's
+ * sub-agents ran on is left out, as is a Codex thread started by Harness's
+ * client that no session holds (sub-agent runs from before they were recorded).
+ */
+function sortCliSession(links: HarnessLinks, source: CliSource, id: string, originator: string | undefined): "new" | "held" | "hidden" {
+    const k = linkKey(source, id);
+    if (links.held.has(k)) return "held";
+    if (links.subagent.has(k)) return "hidden";
+    if (source === "codex" && originator === CODEX_CLIENT_NAME) return "hidden";
+    return "new";
 }
 
 /** A CLI session changed this recently may still be open in a terminal. */
@@ -467,10 +481,10 @@ export class Engine {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const now = Date.now();
-        const listings = CLI_SOURCES.map((source) => ({ source, ...listCliSessions(source, p) }));
-        const links = harnessLinks(this.aliasesOf(p, listings.flatMap((l) => l.sessions.map((s) => s.cwd))));
+        const links = harnessLinks(this.aliasesOf(p, []));
+        const listings = CLI_SOURCES.map((source) => ({ source, ...listCliSessions(source, p, { sort: (id, originator) => sortCliSession(links, source, id, originator) }) }));
         const sessions: CliSessionInfo[] = listings
-            .flatMap((l) => l.sessions)
+            .flatMap((l) => [...l.sessions, ...l.held])
             .map((s) => ({
                 source: s.source,
                 id: s.id,
@@ -480,12 +494,12 @@ export class Engine {
                 messages: s.messages,
                 partial: s.partial,
                 ...(s.model ? { model: redact(s.model) } : {}),
-                ...(links.has(linkKey(s.source, s.id)) ? { harnessId: links.get(linkKey(s.source, s.id)) } : {}),
+                ...(links.held.has(linkKey(s.source, s.id)) ? { harnessId: links.held.get(linkKey(s.source, s.id)) } : {}),
                 recent: now - s.updatedAt < RECENT_CLI_MS,
             }))
             .sort((a, b) => b.updatedAt - a.updatedAt);
         return {
-            sources: listings.map((l) => ({ source: l.source, name: getProvider(l.source)?.name ?? l.source, enabled: Boolean(readAgentConfig(l.source)), more: l.more })),
+            sources: listings.map((l) => ({ source: l.source, name: getProvider(l.source)?.name ?? l.source, enabled: Boolean(readAgentConfig(l.source)), more: l.more, moreInHarness: l.moreHeld })),
             sessions,
         };
     }
@@ -537,7 +551,10 @@ export class Engine {
         // Only a session a listing of this folder shows: no path is made from the id.
         const entry = findCliSession(source, p, id);
         if (!entry) throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
-        const existing = harnessLinks(this.aliasesOf(p, [entry.cwd])).get(linkKey(source, entry.id));
+        const links = harnessLinks(this.aliasesOf(p, [entry.cwd]));
+        // A run of Harness's own sub-agents isn't offered, so it isn't imported either.
+        if (sortCliSession(links, source, entry.id, entry.originator) === "hidden") throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
+        const existing = links.held.get(linkKey(source, entry.id));
         if (existing) {
             await this.afterClosing(existing);
             const rt = this.openSession(existing);

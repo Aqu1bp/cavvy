@@ -151,6 +151,8 @@ interface Opts {
     ask?: (req: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>;
     /** Non-interactive, like -p: no one to ask. */
     headless?: boolean;
+    /** Save the session to disk. */
+    persist?: boolean;
 }
 
 async function makeAgent(o: Opts) {
@@ -160,7 +162,7 @@ async function makeAgent(o: Opts) {
     let mode: import("../src/permissions/modes").PermissionMode = "default";
     trust.trustForSession(cwd);
     const client = o.client ?? (await clientFor(o.provider));
-    const session = Session.create(cwd, { persist: false });
+    const session = Session.create(cwd, { persist: o.persist ?? false });
     const agent = new Agent({
         session,
         model: { provider: o.provider, id: "default", ...o.model },
@@ -893,6 +895,23 @@ describe("Claude Code as the main agent", () => {
         // Its report is its answer (its last message), then what it did: not what it said on the way.
         expect(mcpResults()[0].text).toEndWith("\n\nFinished.\n\n[Codex used: Bash(touch x)]");
         expect(mcpResults()[0].text).not.toContain("Running it.");
+    });
+
+    test("the Codex thread a delegated agent ran on is recorded in the session it ran for, not taken for one of the user's", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_CODEX_SCENARIO = "cmd";
+        calls([{ tool: "delegate", args: { task: "Touch x", description: "Touch", model: "codex:gpt-test" } }]);
+        const { run, session } = await makeAgent({ provider: "claude-code", persist: true });
+        try {
+            expect(await run("go")).toBe("done");
+            const { cliLinks } = await import("../src/agent/session");
+            const links = cliLinks(session.path);
+            expect(links.filter((l) => l.kind === "subagent")).toEqual([{ provider: "codex", id: "thr-new", kind: "subagent" }]);
+            // The parent's own Claude Code session is its backend, as before.
+            expect(links.some((l) => l.kind === "backend" && l.provider === "claude-code")).toBe(true);
+        } finally {
+            session.release();
+        }
     });
 
     test("a delegated Codex agent whose model marks its messages reports the ones it marks as its answer", async () => {

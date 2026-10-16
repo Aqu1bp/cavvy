@@ -82,7 +82,9 @@ type Line =
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
     | { t: "backend"; provider: string; id: string | null; synced?: number }
     /** This session was brought in from a Claude Code or Codex session (the first messages). */
-    | ({ t: "import" } & ImportRecord);
+    | ({ t: "import" } & ImportRecord)
+    /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
+    | { t: "subagent"; provider: string; id: string };
 
 /**
  * Where an imported session came from. It stays in the file for good, so the
@@ -143,6 +145,13 @@ export class Session {
     notices: TurnNotice[] = [];
     /** The Claude Code or Codex session this one was imported from. */
     imported?: ImportRecord;
+    /**
+     * The session a sub-agent runs for. Its own isn't saved, so the backend
+     * sessions it starts are recorded in that one: they're Harness's, not
+     * conversations to pick up from the CLI.
+     */
+    runsFor?: Session;
+    private subagentRuns = new Set<string>();
     private file: string;
     private persist: boolean;
 
@@ -276,8 +285,18 @@ export class Session {
     setBackendSession(provider: string, id: string, synced: number) {
         const cur = this.backends.get(provider);
         if (cur?.id === id && cur.synced === synced) return;
+        if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
         this.backends.set(provider, { id, synced });
         this.write({ t: "backend", provider, id, synced });
+    }
+
+    /** A sub-agent's backend session (passed up to the session that's saved). */
+    recordSubagentRun(provider: string, id: string) {
+        const k = `${provider}:${id}`;
+        if (this.subagentRuns.has(k)) return;
+        this.subagentRuns.add(k);
+        this.write({ t: "subagent", provider, id });
+        this.runsFor?.recordSubagentRun(provider, id);
     }
 
     forgetBackendSession(provider: string) {
@@ -673,7 +692,7 @@ function sessionHead(file: string): SessionHead {
         let wanted: boolean | undefined;
         const decide = () => {
             const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import)"/.test(prefix);
+            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import|subagent)"/.test(prefix);
             if (!wanted) parts = [Buffer.from(prefix, "latin1")];
         };
         for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
@@ -738,14 +757,21 @@ function readHeadLine(raw: string, head: SessionHead) {
     }
 }
 
+export interface CliLink {
+    provider: string;
+    id: string;
+    /** Imported from it, ran on it, or one of its sub-agents ran on it. */
+    kind: "import" | "backend" | "subagent";
+}
+
 /**
  * The Claude Code and Codex sessions a session file is tied to: the one it was
- * imported from, and every backend session it ran on (an id can change when a
- * resume fails). Only those records are parsed; other lines are skipped as
+ * imported from, every backend session it ran on (an id can change when a
+ * resume fails), and the ones its sub-agents ran on. Only those records are parsed; other lines are skipped as
  * they stream past.
  */
-export function cliLinks(file: string): { provider: string; id: string }[] {
-    const out: { provider: string; id: string }[] = [];
+export function cliLinks(file: string): CliLink[] {
+    const out: CliLink[] = [];
     const fd = openSync(file, "r");
     try {
         const chunk = Buffer.alloc(CHUNK_BYTES);
@@ -762,7 +788,7 @@ export function cliLinks(file: string): { provider: string; id: string }[] {
                     len += piece.length;
                     if (len >= PREFIX_BYTES || nl >= 0) {
                         const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-                        wanted = /^\{"t":"(import|backend)"/.test(prefix) && len < 64 * 1024;
+                        wanted = /^\{"t":"(import|backend|subagent)"/.test(prefix) && len < 64 * 1024;
                         if (!wanted) parts = [];
                     }
                 }
@@ -770,8 +796,9 @@ export function cliLinks(file: string): { provider: string; id: string }[] {
                 if (wanted) {
                     try {
                         const l = JSON.parse(Buffer.concat(parts).toString("utf-8")) as Line;
-                        if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") out.push({ provider: l.source, id: l.id });
-                        else if (l.t === "backend" && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id });
+                        if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") out.push({ provider: l.source, id: l.id, kind: "import" });
+                        else if (l.t === "backend" && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id, kind: "backend" });
+                        else if (l.t === "subagent" && typeof l.provider === "string" && typeof l.id === "string" && l.id) out.push({ provider: l.provider, id: l.id, kind: "subagent" });
                     } catch {
                         // torn line
                     }

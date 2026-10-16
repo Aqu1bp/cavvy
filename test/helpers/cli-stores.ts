@@ -58,7 +58,7 @@ export function claudeSession(root: string, o: { cwd: string; folderOf?: string;
 }
 
 /** A Codex rollout file (and its title in session_index.jsonl, when given). */
-export function codexSession(root: string, o: { cwd: string; id?: string; turns: FixtureTurn[]; title?: string; model?: string; day?: string; mtime?: number; subAgent?: boolean }): { id: string; file: string } {
+export function codexSession(root: string, o: { cwd: string; id?: string; turns: FixtureTurn[]; title?: string; model?: string; day?: string; mtime?: number; subAgent?: boolean; originator?: string }): { id: string; file: string } {
     const id = o.id ?? randomUUID();
     const day = o.day ?? "2026/10/14";
     const dir = join(root, "sessions", ...day.split("/"));
@@ -68,7 +68,7 @@ export function codexSession(root: string, o: { cwd: string; id?: string; turns:
     const ts = () => new Date((t += 1000)).toISOString();
     const rows: unknown[] = [
         // Its first line holds the whole system prompt: longer than the probe reads.
-        { timestamp: ts(), type: "session_meta", payload: { session_id: id, id, timestamp: ts(), cwd: o.cwd, originator: "codex_cli_rs", cli_version: "0.163.0", source: o.subAgent ? { subagent: { thread_spawn: {} } } : "cli", model_provider: "openai", base_instructions: { text: "You are Codex. ".repeat(3000) } } },
+        { timestamp: ts(), type: "session_meta", payload: { session_id: id, id, timestamp: ts(), cwd: o.cwd, originator: o.originator ?? "codex_cli_rs", cli_version: "0.163.0", source: o.subAgent ? { subagent: { thread_spawn: {} } } : "cli", model_provider: "openai", base_instructions: { text: "You are Codex. ".repeat(3000) } } },
         { timestamp: ts(), type: "response_item", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "<permissions instructions>sandboxed</permissions instructions>" }] } },
         { timestamp: ts(), type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `<environment_context>\n  <cwd>${o.cwd}</cwd>\n</environment_context>` }] } },
         { timestamp: ts(), type: "turn_context", payload: { turn_id: "t0", cwd: o.cwd, model: o.model ?? "gpt-test" } },
