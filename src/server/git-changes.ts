@@ -15,6 +15,7 @@ import { constants, type Stats } from "fs";
 import type { BigIntStats } from "fs";
 import { lstat, open, readlink } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "path";
+import type { TurnSnapshots } from "../agent/turn-snapshots";
 import { canonical } from "../agent/checkpoints";
 import { gitArgv, gitEnv } from "../util/git";
 import { redact } from "../util/redact";
@@ -48,7 +49,7 @@ const SYMLINK = "120000";
 
 const REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"];
 
-interface GitOut {
+export interface GitOut {
     code: number;
     out: Buffer;
     /** Output stopped at maxBytes (and git with it). */
@@ -85,18 +86,30 @@ async function drain(stream: ReadableStream<Uint8Array>, max: number, skim = fal
 const tooLong = () => new RpcError("Looking for changes took too long in this folder.", "timeout");
 
 /** One git call: argv only, a timeout (no later than the request's deadline), and no more than `maxBytes` of output. */
-async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string>; deadline?: number } = {}): Promise<GitOut> {
-    const left = Math.min(GIT_TIMEOUT_MS, (o.deadline ?? Infinity) - Date.now());
-    if (left <= 0) throw tooLong();
+export function gitEnvironment(o: { env?: Record<string, string>; privateEnv?: Record<string, string> } = {}): Record<string, string> {
     const env: Record<string, string> = { ...gitEnv(), ...o.env };
     // Where the repository is comes from cwd alone, not from a variable the server happened to inherit.
     for (const k of REPO_VARS) delete env[k];
+    // Only the snapshot owner supplies these, after inherited repository overrides are removed.
+    if (o.privateEnv) {
+        // Diagnostics may write arbitrary inherited trace paths or look like
+        // incomplete-listing warnings. Private snapshots never inherit them.
+        for (const k of Object.keys(env)) if (k.startsWith("GIT_TRACE")) delete env[k];
+        Object.assign(env, o.privateEnv);
+    }
     // No lazy fetches: in a partial clone, reading a missing object would otherwise reach out
     // to the promisor remote (and run its transport). And no transport at all, so nothing can
     // be fetched (and no ssh command run) even where git predates GIT_NO_LAZY_FETCH: listing
     // protocols allows only those, and this one doesn't exist.
     env.GIT_NO_LAZY_FETCH = "1";
     env.GIT_ALLOW_PROTOCOL = "harness-none";
+    return env;
+}
+
+export async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string>; privateEnv?: Record<string, string>; deadline?: number } = {}): Promise<GitOut> {
+    const left = Math.min(GIT_TIMEOUT_MS, (o.deadline ?? Infinity) - Date.now());
+    if (left <= 0) throw tooLong();
+    const env = gitEnvironment(o);
     const proc = Bun.spawn(gitArgv(args), {
         cwd,
         env,
@@ -161,7 +174,7 @@ async function listRefs(root: string, deadline: number): Promise<Refs> {
 // ---------------------------------------------------------------------------
 // The two sides
 
-interface Entry {
+export interface Entry {
     mode: string;
     oid: string;
     /** Blob size: known for tree entries and files on disk. */
@@ -179,12 +192,12 @@ interface IndexEntry extends Entry {
     tag: string;
 }
 
-function parseTree(buf: Buffer): Map<string, Entry> {
+export function parseTree(buf: Buffer): Map<string, Entry> {
     const out = new Map<string, Entry>();
     for (const rec of records(buf)) {
         const m = /^(\d{6}) \w+ ([0-9a-f]+) +(\S+)\t/.exec(rec);
         if (!m) continue;
-        out.set(rec.slice(m[0].length), { mode: m[1]!, oid: m[2]!, size: m[3] === "-" ? undefined : Number(m[3]) });
+        out.set(rec.slice(m[0].length), { mode: m[1]!, oid: m[2]!, size: /^\d+$/.test(m[3]!) ? Number(m[3]) : undefined });
     }
     return out;
 }
@@ -202,7 +215,7 @@ function parseIndex(buf: Buffer): Map<string, IndexEntry> {
 }
 
 /** Blob ids by content, so files on disk can be compared with trees without asking git. */
-function blobId(data: Uint8Array, algo: Algo): string {
+export function blobId(data: Uint8Array, algo: Algo): string {
     const h = new Bun.CryptoHasher(algo);
     h.update(`blob ${data.length}\0`);
     h.update(data);
@@ -221,7 +234,7 @@ const OPEN_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBL
  * A regular file's bytes, opened without following a link and checked to
  * still be a regular file (a FIFO would block). undefined when it can't be read.
  */
-async function readRegular(abs: string, max: number): Promise<{ buf?: Buffer; size: number } | undefined> {
+export async function readRegular(abs: string, max: number): Promise<{ buf?: Buffer; size: number } | undefined> {
     const fh = await open(abs, OPEN_FLAGS).catch(() => undefined);
     if (!fh) return undefined;
     try {
@@ -382,7 +395,7 @@ async function fileId(abs: string, st: Stats, algo: Algo, inTime: () => void): P
 }
 
 /** What the working tree holds at one path: never through a symlinked folder, never following a link. */
-class WorkTree {
+export class WorkTree {
     private dirs = new Map<string, Promise<boolean>>();
     constructor(
         readonly root: string,
@@ -397,17 +410,21 @@ class WorkTree {
      * A folder swapped for a link between this check and the read isn't caught; only a
      * process already running as the user could do that, and it could read the file itself.
      */
-    private inside(rel: string): Promise<boolean> {
+    private inside(rel: string, strict = false): Promise<boolean> {
         const i = rel.lastIndexOf("/");
         if (i < 0) return Promise.resolve(true);
         const dir = rel.slice(0, i);
-        let ok = this.dirs.get(dir);
+        const key = `${strict}:${dir}`;
+        let ok = this.dirs.get(key);
         if (!ok) {
             ok = lstat(join(this.root, dir)).then(
-                (st) => st.isDirectory() && this.inside(dir),
-                () => false,
+                (st) => st.isDirectory() && this.inside(dir, strict),
+                (e: NodeJS.ErrnoException) => {
+                    if (strict && e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e;
+                    return false;
+                },
             );
-            this.dirs.set(dir, ok);
+            this.dirs.set(key, ok);
         }
         return ok;
     }
@@ -419,9 +436,13 @@ class WorkTree {
         return st?.isFile() ? st : undefined;
     }
 
-    async stat(rel: string): Promise<Stats | undefined> {
-        if (!(await this.inside(rel))) return undefined;
-        return lstat(join(this.root, rel)).catch(() => undefined);
+    async stat(rel: string, strict = false): Promise<Stats | undefined> {
+        if (!(await this.inside(rel, strict))) return undefined;
+        return lstat(join(this.root, rel)).catch((e: NodeJS.ErrnoException) => {
+            // Snapshots must distinguish deletion from a path they cannot read.
+            if (strict && e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e;
+            return undefined;
+        });
     }
 
     /** The path as an entry (mode and blob id), or null when nothing comparable is there. */
@@ -591,8 +612,16 @@ function boolConfig(v: string | undefined, fallback: boolean): boolean {
 /** Walks under way, so a pane and a panel asking at once share one, and one asking mid-walk gets the next. */
 const inflight = new Map<string, Slot<GitChangesInfo>>();
 
-export function gitChanges(cwd: string, req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
-    return coalesce(inflight, JSON.stringify([cwd, req.scope, req.base, req.path]), () => collect(cwd, req));
+export function gitChanges(cwd: string, req: { scope: GitScope; base?: string; path?: string; turnId?: number }, snapshots?: TurnSnapshots): Promise<GitChangesInfo> {
+    return coalesce(inflight, JSON.stringify([cwd, snapshots?.dir, req.scope, req.base, req.path, req.turnId]), async () => {
+        if (req.scope === "turn" || req.scope === "last-turn") {
+            if (snapshots) return snapshots.changes(req);
+            const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+            return { ...notRepo(req.scope, "No snapshot was recorded for this turn."), repo: top.code === 0, incomplete: true, snapshotAvailable: false, notes: ["No snapshot was recorded for this turn."] };
+        }
+        const result = await collect(cwd, req);
+        return { ...result, turns: snapshots?.list().map(({ id, prompt, startedAt, endedAt }) => ({ id, prompt, startedAt, endedAt })) };
+    });
 }
 
 function notRepo(scope: GitScope, reason: string): GitChangesInfo {
@@ -955,10 +984,10 @@ export async function findRenames(changes: Change[], wt: WorkTree, hashUntracked
 }
 
 /** Old contents for the listed files, as raw blobs: `cat-file --batch` without --filters runs no filter. */
-async function blobs(root: string, oids: string[], deadline: number): Promise<Map<string, Buffer>> {
+export async function blobs(root: string, oids: string[], deadline: number, privateEnv?: Record<string, string>): Promise<Map<string, Buffer>> {
     const out = new Map<string, Buffer>();
     if (!oids.length) return out;
-    const r = await git(root, ["cat-file", "--batch"], { input: oids.join("\n") + "\n", maxBytes: MAX_REPLY_BYTES + oids.length * 100, deadline });
+    const r = await git(root, ["cat-file", "--batch"], { input: oids.join("\n") + "\n", maxBytes: MAX_REPLY_BYTES + oids.length * 100, deadline, privateEnv });
     const buf = r.out;
     let pos = 0;
     while (pos < buf.length) {
@@ -991,14 +1020,15 @@ export interface RenderContext {
     /** The index's blob for a path: auto conversion leaves a file git has with CRLFs alone. */
     indexOid: (path: string) => string | undefined;
     indexEols?: Map<string, boolean>;
+    readBlobs?: (oids: string[], deadline: number) => Promise<Map<string, Buffer>>;
 }
 
-export async function render(listed: Change[], { root, wt, shown, single, deadline, eolOf, indexOid, indexEols = new Map<string, boolean>() }: RenderContext): Promise<GitFileDiff[]> {
+export async function render(listed: Change[], { root, wt, shown, single, deadline, eolOf, indexOid, indexEols = new Map<string, boolean>(), readBlobs }: RenderContext): Promise<GitFileDiff[]> {
     const wanted = new Map<string, number>();
     const readable = (e?: Entry): e is Entry => !!e && (isFileMode(e.mode) || e.mode === SYMLINK) && (e.size ?? 0) <= MAX_DIFF_INPUT;
     for (const c of listed) {
         if (readable(c.old)) wanted.set(c.old.oid, c.old.size ?? 0);
-        if (c.indexed && readable(c.now)) wanted.set(c.now.oid, 0);
+        if (c.indexed && readable(c.now)) wanted.set(c.now.oid, c.now.size ?? wanted.get(c.now.oid) ?? 0);
         const ix = indexOid(c.path);
         if (ix && eolOf(c.path) === "auto" && !wanted.has(ix)) wanted.set(ix, 0);
     }
@@ -1011,7 +1041,7 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         take.push(oid);
     }
     // Out of time, the old sides are left for each file's own request.
-    const olds = await blobs(root, take, deadline).catch((e) => {
+    const olds = await (readBlobs ? readBlobs(take, deadline) : blobs(root, take, deadline)).catch((e) => {
         if (e instanceof RpcError && e.code === "timeout") return new Map<string, Buffer>();
         throw e;
     });

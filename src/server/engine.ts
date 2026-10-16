@@ -30,7 +30,7 @@ import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
-import { gitRoot, gitSnapshot } from "../util/git";
+import { gitRoot, gitBranch } from "../util/git";
 import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
@@ -411,7 +411,7 @@ export class Engine {
             exists,
             trusted: trusted || (!found.length && exists),
             needsTrust: trusted || this.declined.has(p) ? [] : found,
-            branch: git ? gitSnapshot(p)?.branch : undefined,
+            branch: git ? gitBranch(p) : undefined,
             git,
             openedAt: readStore().recent?.find((r) => r.path === p)?.at,
         };
@@ -1333,11 +1333,13 @@ export class Engine {
             case "session.changes":
                 return this.runtime(p.id).changes();
             case "session.gitChanges": {
-                if (p.scope !== "uncommitted" && p.scope !== "branch") throw new RpcError("scope must be uncommitted or branch", "invalid");
+                if (!["uncommitted", "branch", "last-turn", "turn"].includes(p.scope)) throw new RpcError("Unknown changes scope", "invalid");
+                if (p.turnId !== undefined && (!Number.isSafeInteger(p.turnId) || p.turnId < 0)) throw new RpcError("turnId must be a checkpoint id", "invalid");
+                if (p.scope === "turn" && p.turnId === undefined) throw new RpcError("turnId is required for a turn scope", "invalid");
                 // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
-                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path });
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId });
             }
             case "session.gitCommit":
             case "session.gitCommitMessage": {

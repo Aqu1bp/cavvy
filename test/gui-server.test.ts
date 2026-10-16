@@ -15,6 +15,7 @@ const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 import type { AgentEvent } from "../src/agent/agent";
+import type { SnapshotTurn } from "../src/agent/turn-snapshots";
 
 const TOKEN = "test-token-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
@@ -28,6 +29,20 @@ function project(): string {
     const dir = createDemoProject(tempDir("harness-gui-proj-"), { git: false });
     projects.push(dir);
     return dir;
+}
+
+async function snapshotRepo(cwd: string) {
+    const { gitArgv, gitEnv } = await import("../src/util/git");
+    const env = gitEnv();
+    for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+    const init = Bun.spawnSync(gitArgv(["init", "-q", "-b", "main"]), { cwd, env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdout: "pipe", stderr: "pipe" });
+    expect(init.exitCode).toBe(0);
+}
+
+async function snapshotRecords(id: string): Promise<SnapshotTurn[]> {
+    const { findSessionAnywhere } = await import("../src/agent/session");
+    const file = join(dirname(findSessionAnywhere(id)!), "file-history", id, "turn-snapshots.jsonl");
+    return readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 }
 
 function commitRepo(cwd: string) {
@@ -265,6 +280,165 @@ describe("connecting", () => {
         for (let i = 0; i < 200 && !rt.idle; i++) await Bun.sleep(50);
         expect(rt.idle).toBe(true);
     }
+
+    test("live and reopened snapshot cards keep steered turn ids and include external writes in the badge", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        try {
+            const { gitArgv, gitEnv } = await import("../src/util/git");
+            const env = gitEnv();
+            for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+            const init = Bun.spawnSync(gitArgv(["init", "-q", "-b", "main"]), { cwd, env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdout: "pipe", stderr: "pipe" });
+            expect(init.exitCode).toBe(0);
+            await engine.handle(c, "projects.trust", { path: cwd, trust: true });
+            rt.session.setTitle("Snapshot test");
+            let calls = 0;
+            rt.agent!.setModel(rt.model!, { stream: async () => {
+                if (++calls === 1) {
+                    writeFileSync(join(cwd, "first.txt"), "first change\n");
+                    expect((await rt.send("and make the second change")).queued).toBe(true);
+                    return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "tool_use", content: [{ type: "tool_call", id: "snapshot-glob", name: "Glob", input: { pattern: "*.txt" } }] };
+                }
+                writeFileSync(join(cwd, "second.txt"), "second change\n");
+                return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "end_turn", content: [{ type: "text", text: "Done" }] };
+            } } as any);
+            await rt.startTurn("make the first change");
+            const live = rt.snapshot();
+            const promptTurns = live.turns.filter((t) => t.prompt);
+            expect(promptTurns.map((t) => t.prompt!.text)).toEqual(["make the first change", "and make the second change"]);
+            const snapshotIds = promptTurns.map((t) => t.snapshotId);
+            expect(snapshotIds.every((n) => Number.isSafeInteger(n))).toBe(true);
+            expect(new Set(snapshotIds).size).toBe(2);
+            expect(live.state.filesChanged).toBe(2);
+            expect((await rt.gitChanges({ scope: "turn", turnId: snapshotIds[0] })).files.map((f) => f.path)).toEqual(["first.txt"]);
+            expect((await rt.gitChanges({ scope: "last-turn" })).files.map((f) => f.path)).toEqual(["second.txt"]);
+
+            await engine.handle(c, "session.close", { id });
+            const reopened = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
+            expect(reopened.turns.filter((t) => t.prompt).map((t) => t.snapshotId)).toEqual(snapshotIds);
+            expect(reopened.state.filesChanged).toBe(2);
+            const resumed = engine.runtimes.get(id)!;
+            await resumed.agent?.dispose();
+            resumed.agent = undefined;
+            resumed.model = undefined;
+            expect((await resumed.gitChanges({ scope: "turn", turnId: snapshotIds[0] })).files.map((f) => f.path)).toEqual(["first.txt"]);
+        } finally { await engine.stop(); }
+    });
+
+    for (const noAgent of [false, true]) test(`closing ${noAgent ? "a review-only" : "a normal"} session reloads snapshots written by another process before reopening`, async () => {
+        const { Session } = await import("../src/agent/session");
+        const { FileHistory } = await import("../src/agent/checkpoints");
+        const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const answer = () => ({ role: "assistant" as const, provider: "mock", model: "mock-opus", stopReason: "end_turn" as const, content: [{ type: "text" as const, text: "Done" }] });
+        try {
+            await snapshotRepo(cwd);
+            await engine.handle(c, "projects.trust", { path: cwd, trust: true });
+            rt.session.setTitle("Snapshot handoff");
+            rt.agent!.setModel(rt.model!, { stream: async () => {
+                writeFileSync(join(cwd, "first.txt"), "first change\n");
+                return answer();
+            } } as any);
+            await rt.startTurn("the GUI turn");
+            const firstId = rt.snapshot().turns.at(-1)!.snapshotId!;
+            const original = TurnSnapshots.for(rt.session, cwd);
+            if (noAgent) {
+                await rt.agent!.dispose();
+                rt.agent = undefined;
+            }
+            await engine.handle(c, "session.close", { id });
+            // Wait until the normal close has released ownership, as another process must.
+            await (engine as any).closing.get(id);
+            expect(engine.runtimes.has(id)).toBe(false);
+            // A late turn-finally callback reads the badge after close; it must not revive the recorder.
+            (rt as any).filesChanged();
+            expect(TurnSnapshots.for(rt.session, cwd)).toBe(original);
+            const elsewhere = Session.load(rt.session.path);
+            let externalId: number;
+            try {
+                const history = FileHistory.for(elsewhere)!;
+                externalId = history.begin();
+                // A separate process has its own in-memory snapshot store.
+                const snapshots = new TurnSnapshots(history.dir, cwd);
+                await snapshots.begin(externalId, "the terminal turn");
+                elsewhere.push({ role: "user", content: [{ type: "text", text: "the terminal turn" }], meta: { kind: "prompt", checkpoint: externalId } });
+                writeFileSync(join(cwd, "external.txt"), "written while the GUI was closed\n");
+                elsewhere.push(answer());
+                await snapshots.end();
+            } finally { elsewhere.release(); }
+            const reopened = await engine.handle(c, "session.open", { id }) as SessionSnapshot;
+            expect(reopened.turns.filter((t) => t.prompt).map((t) => t.snapshotId)).toEqual([firstId, externalId]);
+            const resumed = engine.runtimes.get(id)!;
+            for (const scope of ["turn", "last-turn"] as const) {
+                const changes = await resumed.gitChanges({ scope, turnId: externalId });
+                expect(changes).toMatchObject({ turnId: externalId, snapshotAvailable: true, incomplete: false });
+                expect(changes.files.map((f) => f.path)).toEqual(["external.txt"]);
+            }
+            await resumed.ready;
+            resumed.agent!.setModel(resumed.model!, { stream: async () => {
+                writeFileSync(join(cwd, "third.txt"), "back in the GUI\n");
+                return answer();
+            } } as any);
+            await resumed.startTurn("another GUI turn");
+            const thirdId = resumed.snapshot().turns.at(-1)!.snapshotId!;
+            expect(thirdId).toBeGreaterThan(externalId);
+            expect((await resumed.gitChanges({ scope: "last-turn" })).files.map((f) => f.path)).toEqual(["third.txt"]);
+            expect((await resumed.gitChanges({ scope: "turn", turnId: externalId })).files.map((f) => f.path)).toEqual(["external.txt"]);
+        } finally { await engine.stop(); }
+    });
+
+    test("a steered turn cut off during close keeps its start and the preceding turn's completed diff", async () => {
+        const { closeTiming } = await import("../src/server/runtime");
+        const { Engine } = await import("../src/server/engine");
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const restart = new Engine();
+        const next = { subs: new Set<string>(), send() {} };
+        restart.clients.add(next);
+        const saved = closeTiming.turnMs;
+        closeTiming.turnMs = 20;
+        let release!: () => void;
+        const waiting = new Promise<void>((resolve) => { release = resolve; });
+        let calls = 0;
+        let run: Promise<void> | undefined;
+        try {
+            await snapshotRepo(cwd);
+            await engine.handle(c, "projects.trust", { path: cwd, trust: true });
+            rt.session.setTitle("Interrupted steering snapshots");
+            rt.agent!.setModel(rt.model!, { stream: async () => {
+                if (++calls === 1) {
+                    writeFileSync(join(cwd, "first.txt"), "first change\n");
+                    await rt.send("then the second change");
+                    return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "tool_use", content: [{ type: "tool_call", id: "cutoff-glob", name: "Glob", input: { pattern: "*.txt" } }] };
+                }
+                writeFileSync(join(cwd, "second.txt"), "unfinished change\n");
+                await waiting;
+                return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "end_turn", content: [{ type: "text", text: "Late reply" }] };
+            } } as any);
+            run = rt.startTurn("make the first change");
+            for (let i = 0; i < 200 && calls < 2; i++) await Bun.sleep(10);
+            expect(calls).toBe(2);
+            await engine.stop();
+            const reopened = await restart.handle(next, "session.open", { id }) as SessionSnapshot;
+            const turns = reopened.turns.filter((t) => t.prompt);
+            expect(turns.map((t) => [t.prompt!.text, t.status])).toEqual([["make the first change", "done"], ["then the second change", "aborted"]]);
+            expect(turns[1]!.snapshotId).toBeGreaterThan(turns[0]!.snapshotId!);
+            const resumed = restart.runtimes.get(id)!;
+            expect((await resumed.gitChanges({ scope: "turn", turnId: turns[0]!.snapshotId })).files.map((f) => f.path)).toEqual(["first.txt"]);
+            expect(await resumed.gitChanges({ scope: "last-turn" })).toMatchObject({ turnId: turns[1]!.snapshotId, incomplete: true, snapshotAvailable: false, files: [] });
+            const records = await snapshotRecords(id);
+            expect(records.filter((r) => r.id === turns[1]!.snapshotId)).toHaveLength(1);
+            expect(records.at(-1)!.start.tree).toBeString();
+            expect(records.at(-1)!.end).toBeUndefined();
+            release();
+            await run;
+            expect(await snapshotRecords(id)).toEqual(records);
+        } finally {
+            release();
+            await run;
+            closeTiming.turnMs = saved;
+            await restart.stop();
+            await engine.stop();
+        }
+    });
 
     test("commit RPCs validate requests and refuse busy and untrusted sessions", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();
@@ -711,7 +885,10 @@ describe("connecting", () => {
     test("a turn still stopping when the server stops has its interrupt noted for it, once", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { closeTiming } = await import("../src/server/runtime");
-        const { engine, c, id, rt } = await engineWithSession();
+        const { Engine } = await import("../src/server/engine");
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        await snapshotRepo(cwd);
+        await engine.handle(c, "projects.trust", { path: cwd, trust: true });
         rt.ws.settings.permissions = { allow: ["Bash"] };
         // Closing outlasts the command, which stops 2s after SIGTERM (SIGKILL).
         rt.ws.settings.hooks = { SessionEnd: [{ command: "sleep 3" }] };
@@ -733,6 +910,25 @@ describe("connecting", () => {
             expect(last.meta.kind).toBe("tool_results");
             expect(last.content[0]).toMatchObject({ type: "tool_result", toolName: "Bash", isError: true });
             expect(last.content.at(-1).text).toBe("[Request interrupted by user for tool use]");
+            // The late run has settled, but cutoff did not invent a closing snapshot.
+            await whenIdle(rt);
+            const checkpoint = msgs[0].meta.checkpoint;
+            const records = await snapshotRecords(id);
+            expect(records).toHaveLength(1);
+            expect(records[0]!.id).toBe(checkpoint);
+            expect(records[0]!.start.tree).toBeString();
+            expect(records[0]!.end).toBeUndefined();
+            const resumed = new Engine();
+            const next = { subs: new Set<string>(), send() {} };
+            resumed.clients.add(next);
+            try {
+                const view = await resumed.handle(next, "session.open", { id }) as SessionSnapshot;
+                expect(view.turns.at(-1)).toMatchObject({ status: "aborted", snapshotId: checkpoint });
+                const changes = await resumed.runtimes.get(id)!.gitChanges({ scope: "turn", turnId: checkpoint });
+                expect(changes).toMatchObject({ incomplete: true, snapshotAvailable: false, files: [] });
+                expect(changes.notes?.join(" ")).toContain("without a closing snapshot");
+            } finally { await resumed.stop(); }
+            expect(await snapshotRecords(id)).toEqual(records);
         } finally {
             closeTiming.turnMs = saved;
         }
@@ -2091,10 +2287,15 @@ describe("reopening a Claude Code session", () => {
     const shown = (t: Turn) => t.blocks.filter((b) => b.t !== "notice").map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t));
 
     /** A Claude Code turn under way in a server of its own, part way: it wrote a file, and a command of it is running. */
-    async function partWay(port: number) {
+    async function partWay(port: number, git = false) {
         const c = new Client(TOKEN, {}, port);
         await c.opened();
-        const id = await c.open("session.create", { cwd: project(), mode: "acceptEdits" });
+        const cwd = project();
+        if (git) {
+            await snapshotRepo(cwd);
+            await c.call("projects.trust", { path: cwd, trust: true });
+        }
+        const id = await c.open("session.create", { cwd, mode: "acceptEdits" });
         await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
         await c.call("session.send", { id, text: "write it, then wait" });
         await c.until(id, working, 20_000);
@@ -2159,8 +2360,14 @@ describe("reopening a Claude Code session", () => {
         try {
             const first = await child.stdout.getReader().read();
             const { port } = JSON.parse(new TextDecoder().decode(first.value).split("\n")[0]!);
-            const { c, id } = await partWay(port);
+            const { c, id } = await partWay(port, true);
             const was = structuredClone(c.view(id));
+            const checkpoint = (await history(id))[0].meta.checkpoint;
+            const records = await snapshotRecords(id);
+            expect(records).toHaveLength(1);
+            expect(records[0]!.id).toBe(checkpoint);
+            expect(records[0]!.start.tree).toBeString();
+            expect(records[0]!.end).toBeUndefined();
             // What it shows is in the log within a moment, not only once the turn ends.
             await Bun.sleep(200);
             // Its record says which prompt it's of.
@@ -2179,6 +2386,10 @@ describe("reopening a Claude Code session", () => {
                 const c2 = new Client(TOKEN, {}, again.port);
                 await c2.opened();
                 await c2.open("session.open", { id });
+                expect(c2.view(id).turns[0]).toMatchObject({ status: "aborted", snapshotId: checkpoint });
+                const changes = await c2.call("session.gitChanges", { id, scope: "turn", turnId: checkpoint });
+                expect(changes).toMatchObject({ incomplete: true, snapshotAvailable: false, files: [] });
+                expect(changes.notes.join(" ")).toContain("without a closing snapshot");
                 await c2.call("session.send", { id, text: "and now?" });
                 await c2.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
                 const started = logged(log).find((l) => l.argv?.includes("--resume"));
@@ -2186,6 +2397,13 @@ describe("reopening a Claude Code session", () => {
                 expect(sentPrompts(log).at(-1)).toContain("was cut off");
                 // What other models are given is the history, which says so already.
                 expect(JSON.stringify((await history(id)).at(-2))).not.toContain("was cut off");
+                const turns = c2.view(id).turns.filter((t) => t.prompt);
+                expect(turns[0]).toMatchObject({ status: "aborted", snapshotId: checkpoint });
+                expect(turns[1]!.snapshotId).toBeGreaterThan(checkpoint);
+                const continued = await snapshotRecords(id);
+                expect(continued.filter((r) => r.id === checkpoint)).toEqual(records);
+                expect(continued.at(-1)).toMatchObject({ id: turns[1]!.snapshotId });
+                expect(continued.at(-1)!.end?.tree).toBeString();
                 c2.close();
             } finally {
                 await again.stop();

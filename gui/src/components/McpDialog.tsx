@@ -8,6 +8,7 @@ import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from 
 import { AlertTriangle, Plug, ShieldAlert } from "lucide-solid";
 import type { McpListInfo, McpServerInfo } from "@shared/protocol";
 import { app, handleFor, reportError, requestTrust, rpc, toast } from "../state/app";
+import { sessionReadReady } from "../state/changes";
 import { mcpOpen, setMcpOpen } from "../state/ui";
 import { tildify } from "../lib/format";
 import { SessionRequestGate } from "../lib/session-request-gate";
@@ -43,7 +44,8 @@ export function McpDialog() {
             const result = await rpc.call("session.mcp", { id: request.id });
             if (request.current()) setList(result);
         } catch (e) {
-            if (request.current()) reportError(e);
+            const h = handle();
+            if (request.current() && h && sessionReadReady(h)) reportError(e);
         }
     };
     createEffect(
@@ -63,6 +65,20 @@ export function McpDialog() {
             () => app.activeId,
             (active) => {
                 if (mcpOpen() && active !== id()) close();
+            },
+            { defer: true },
+        ),
+    );
+    // Watch readiness independently of opening the dialog, which already loads once.
+    const readReady = createMemo(() => {
+        const h = handleFor(app.activeId);
+        return h && sessionReadReady(h);
+    });
+    createEffect(
+        on(
+            readReady,
+            (ready) => {
+                if (ready && mcpOpen() && !list()) void load();
             },
             { defer: true },
         ),

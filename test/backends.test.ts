@@ -3,7 +3,7 @@
 // Nothing here runs the real CLIs or touches the network.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
@@ -18,6 +18,8 @@ const { isAgentBackend } = await import("../src/backends/types");
 const { checkAgentCli } = await import("../src/backends/index");
 const { applyHunks, codexPolicy, changePreview } = await import("../src/backends/codex");
 const trust = await import("../src/config/trust");
+const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
+const { loadSettings } = await import("../src/config/settings");
 const { claudeRule, claudePermissions } = await import("../src/backends/claude-code");
 const { untrustedArgs, requestedPaths, elicitationForm } = await import("../src/backends/codex");
 const { deniedWithin } = await import("../src/permissions/rules");
@@ -62,7 +64,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -80,6 +82,8 @@ interface Opts {
     model?: Partial<ModelInfo>;
     mode?: PermissionMode;
     settings?: any;
+    approvedMcpServers?: () => import("../src/mcp/manager").ApprovedMcpServers;
+    readOnly?: boolean;
     ask?: (req: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>;
     ui?: any;
     /** The user trusts the folder (otherwise it's only trusted implicitly, as a folder with nothing to protect is). */
@@ -105,6 +109,8 @@ async function makeAgent(o: Opts) {
         model: { provider: o.provider, id: "default", ...o.model },
         client,
         settings: () => settings,
+        approvedMcpServers: o.approvedMcpServers,
+        readOnly: o.readOnly,
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -508,6 +514,54 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(await done).toBe("aborted");
         expect(Date.now() - t).toBeLessThan(stopTiming.interruptMs);
         expect(subEnds(events)).toEqual(["aborted"]);
+    });
+
+    test("esc waits for a queued start snapshot before ending a background turn", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const ac = new AbortController();
+        const session = Session.create(cwd, { system: "test" });
+        let waiting = false;
+        let sent = false;
+        let capturing = false;
+        let finished = false;
+        let ended = false;
+        let release!: () => void;
+        const capture = new Promise<void>((resolve) => (release = resolve));
+        const a = await makeAgent({
+            provider: "claude-code",
+            session,
+            drainQueued: () => {
+                if (!waiting || sent) return [];
+                sent = true;
+                return ["and check the tests"];
+            },
+        });
+        a.agent.options.trusted = () => true;
+        a.agent.turnSnapshots!.begin = async (_id, prompt) => {
+            if (prompt !== "and check the tests") return;
+            capturing = true;
+            await capture;
+        };
+        a.agent.turnSnapshots!.end = async () => { ended = true; };
+        const done = a.run("map the auth module", ac.signal).finally(() => { finished = true; });
+        try {
+            while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            waiting = true;
+            while (!capturing) await Bun.sleep(10);
+            ac.abort();
+            await Bun.sleep(150);
+            expect(finished).toBe(false);
+            expect(ended).toBe(false);
+            release();
+            expect(await done).toBe("aborted");
+            expect(ended).toBe(true);
+            expect(userTexts()).not.toContain("and check the tests");
+        } finally {
+            ac.abort();
+            release();
+            await done;
+            session.release();
+        }
     });
 
     test("a message the user sends while it waits goes to Claude Code in the same run", async () => {
@@ -1533,6 +1587,245 @@ describe("fast mode backend wiring", () => {
             }
         });
     }
+});
+
+
+describe("Claude Code project MCP settings", () => {
+    test("trusted turns retain native user MCP while passing project approval names only", async () => {
+        const { McpManager } = await import("../src/mcp/manager");
+        const cfg = { command: "unused", env: { PRIVATE: "not-in-argv" } };
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: cfg, pending: cfg } }));
+        saveApproval(cwd, "approved", mcpFingerprint(cfg, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        const { run } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("hello")).toBe("done");
+        const argv = starts()[0].argv;
+        expect(argv).not.toContain("--strict-mcp-config");
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1])).toMatchObject({ enabledMcpjsonServers: ["approved"], disabledMcpjsonServers: ["harness", "pending"] });
+        expect(JSON.stringify(argv)).not.toContain("not-in-argv");
+        expect(received().some((m) => m.request?.subtype === "mcp_set_servers")).toBe(false);
+    });
+});
+
+describe("Claude Code MCP approval boundary", () => {
+    const payloads = () => received().filter((m) => m.request?.subtype === "mcp_set_servers").map((m) => m.request.servers);
+    const sentinel = "private-env-sentinel-123";
+    const config = () => ({ command: "unused", args: ["./server.js"], env: { SENTINEL: sentinel } });
+    const settingsFor = (start: any) => JSON.parse(start.argv[start.argv.indexOf("--settings") + 1]);
+
+    for (const trusted of [false, true]) for (const readOnly of [false, true]) {
+        test(`strict MCP for trusted=${trusted}, readOnly=${readOnly}, with no manager`, async () => {
+            const { run } = await makeAgent({ provider: "claude-code", trusted, readOnly });
+            await run("hello");
+            expect(starts()[0].argv).toContain("--strict-mcp-config");
+            expect(payloads()).toEqual([]);
+        });
+    }
+
+    for (const [trusted, readOnly] of [[false, false], [false, true], [true, true]] as const) {
+        test(`a populated manager cannot bypass strict MCP for trusted=${trusted}, readOnly=${readOnly}`, async () => {
+            const { McpManager } = await import("../src/mcp/manager");
+            writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
+            saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+            const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+            manager.load();
+            const { run } = await makeAgent({ provider: "claude-code", trusted, readOnly, approvedMcpServers: () => manager.approvedServers() });
+            expect(await run("hello")).toBe("done");
+            expect(starts()[0].argv).toContain("--strict-mcp-config");
+            if (!trusted) expect(starts()[0].argv).toEqual(expect.arrayContaining(["--setting-sources", "user"]));
+            expect(settingsFor(starts()[0]).enabledMcpjsonServers).toBeUndefined();
+            expect(payloads()).toEqual([]);
+        });
+    }
+
+    for (const cause of ["missing manager", "malformed file", "ancestor file"]) {
+        test(`${cause} falls back with one static warning`, async () => {
+            const parent = tempDir("backend-mcp-scope-");
+            cwd = join(parent, "workspace");
+            mkdirSync(cwd);
+            if (cause === "malformed file") writeFileSync(join(cwd, ".mcp.json"), sentinel);
+            if (cause === "ancestor file") writeFileSync(join(parent, ".mcp.json"), JSON.stringify({ mcpServers: { unknown: config() } }));
+            const { run, events } = await makeAgent({
+                provider: "claude-code", trusted: true,
+                approvedMcpServers: cause === "missing manager" ? undefined : () => ({ cwd, servers: {} }),
+            });
+            expect(await run("hello")).toBe("done");
+            expect(starts()[0].argv).toContain("--strict-mcp-config");
+            expect(payloads()).toEqual([]);
+            const warnings = notices(events).filter((n) => n.startsWith("warn:"));
+            expect(warnings).toHaveLength(1);
+            expect(warnings[0]).toContain("strict MCP isolation");
+            expect(JSON.stringify(events)).not.toContain(sentinel);
+        });
+    }
+
+    test("an add-dir project's MCP configuration does not restrict native servers", async () => {
+        const extra = tempDir("backend-extra-mcp-");
+        writeFileSync(join(extra, ".mcp.json"), JSON.stringify({ mcpServers: { unseen: config() } }));
+        const { run } = await makeAgent({
+            provider: "claude-code", trusted: true,
+            settings: { permissions: { additionalDirectories: [extra] } },
+            approvedMcpServers: () => ({ cwd, servers: {} }),
+        });
+        expect(await run("hello")).toBe("done");
+        expect(starts()[0].argv).toEqual(expect.arrayContaining(["--add-dir", extra]));
+        expect(starts()[0].argv).not.toContain("--strict-mcp-config");
+        expect(settingsFor(starts()[0])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness"] });
+    });
+
+    test("only unchanged project approvals reach settings, and changes apply next turn", async () => {
+        const { McpManager } = await import("../src/mcp/manager");
+        const cfg = config();
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
+            approved: cfg, pending: cfg, rejected: cfg, disabled: { ...cfg, disabled: true },
+            same__name: cfg, shadowed: cfg, harness: cfg,
+        } }));
+        const settings = {
+            mcpServers: { settings: cfg, same_name: cfg, shadowed: cfg },
+            approvedMcpjsonServers: Object.fromEntries(["approved", "disabled", "same__name", "shadowed", "harness"].map((name) => [name, mcpFingerprint(cfg, cwd)])),
+            disabledMcpjsonServers: ["rejected"],
+        };
+        const manager = new McpManager(cwd, () => settings, true);
+        manager.load();
+        const { run, events, session } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("hello")).toBe("done");
+        expect(settingsFor(starts()[0])).toMatchObject({
+            enabledMcpjsonServers: ["approved"],
+            disabledMcpjsonServers: ["disabled", "harness", "pending", "rejected", "same__name", "shadowed"],
+        });
+        expect(starts()[0].argv).not.toContain("--strict-mcp-config");
+        expect(payloads()).toEqual([]);
+        expect(JSON.stringify(starts())).not.toContain(sentinel);
+        expect(JSON.stringify(events)).not.toContain(sentinel);
+        expect(JSON.stringify(session.messages)).not.toContain(sentinel);
+        settings.approvedMcpjsonServers.pending = mcpFingerprint(cfg, cwd);
+        manager.load();
+        expect(await run("again")).toBe("done");
+        expect(settingsFor(starts()[1]).enabledMcpjsonServers).toEqual(["approved", "pending"]);
+    });
+
+    test("a changed definition is disabled through reload until its new fingerprint is approved", async () => {
+        const { McpManager } = await import("../src/mcp/manager");
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
+        saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        const { run } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => manager.approvedServers() });
+        expect(await run("hello")).toBe("done");
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: { ...config(), command: "changed" } } }));
+        expect(await run("again")).toBe("done");
+        expect(settingsFor(starts()[1])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"] });
+        manager.load();
+        expect(await run("reloaded")).toBe("done");
+        expect(settingsFor(starts()[2])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"] });
+        saveApproval(cwd, "approved", mcpFingerprint({ ...config(), command: "changed" }, cwd));
+        manager.load();
+        expect(await run("approved again")).toBe("done");
+        expect(settingsFor(starts()[3]).enabledMcpjsonServers).toEqual(["approved"]);
+    });
+
+    test("a throwing manager fails closed without echoing its error", async () => {
+        const { run, events } = await makeAgent({
+            provider: "claude-code", trusted: true,
+            approvedMcpServers: () => {
+                throw new Error(sentinel);
+            },
+        });
+        expect(await run("hello")).toBe("done");
+        expect(starts()[0].argv).toContain("--strict-mcp-config");
+        expect(payloads()).toEqual([]);
+        expect(notices(events).filter((n) => n.startsWith("warn:"))).toHaveLength(1);
+        expect(JSON.stringify(events)).not.toContain(sentinel);
+    });
+
+    test("approved project servers do not enter the attach wait", async () => {
+        const { McpManager } = await import("../src/mcp/manager");
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
+        saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        process.env.FAKE_MCP_REFUSE = "hang";
+        try {
+            const { run, events } = await makeAgent({ provider: "claude-code", trusted: true, approvedMcpServers: () => manager.approvedServers() });
+            expect(await run("hello")).toBe("done");
+            expect(payloads()).toEqual([]);
+            expect(notices(events).some((n) => n.includes("timed out"))).toBe(false);
+        } finally {
+            delete process.env.FAKE_MCP_REFUSE;
+        }
+    });
+
+    for (const ending of ["normal", "failed", "aborted"]) test(`project definition secrets stay out of argv and transcripts when ${ending}`, async () => {
+        const { McpManager } = await import("../src/mcp/manager");
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: config() } }));
+        saveApproval(cwd, "approved", mcpFingerprint(config(), cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        process.env.FAKE_SCENARIO = ending === "aborted" ? "hang" : "write";
+        if (ending === "failed") process.env.FAKE_CRASH_ON_SECOND = "1";
+        const ac = new AbortController();
+        const { run, events, session } = await makeAgent({ provider: "claude-code", trusted: true, queued: ending === "failed" ? [["again"]] : [], approvedMcpServers: () => manager.approvedServers() });
+        const done = run("hello", ac.signal);
+        if (ending === "aborted") {
+            while (!events.some((e) => e.type === "tool_start")) await Bun.sleep(10);
+            ac.abort();
+        }
+        expect(await done).toBe(ending === "failed" ? "error" : ending === "aborted" ? "aborted" : "done");
+        expect(payloads()).toEqual([]);
+        for (const start of starts()) {
+            expect(start.argv).not.toContain("--strict-mcp-config");
+            expect(start.argv).not.toContain("--mcp-config");
+            expect(JSON.stringify(start.argv)).not.toContain(sentinel);
+        }
+        expect(JSON.stringify(events)).not.toContain(sentinel);
+        expect(JSON.stringify(session.messages)).not.toContain(sentinel);
+    });
+});
+
+
+describe("Codex project MCP boundary", () => {
+    test("trusted threads disable project servers, including project modifications to user servers", async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ personal: { command: "personal" }, shared: { command: "original" } });
+        process.env.FAKE_PROJECT_MCP = JSON.stringify({ project: { command: "hostile" }, shared: { env: { OVERRIDE: "hostile" } }, "dotted.name": { command: "hostile" } });
+        const { run } = await makeAgent({ provider: "codex", trusted: true });
+        await run("hello");
+        expect(received().find((m) => m.method === "config/read").params).toEqual({ cwd, includeLayers: true });
+        const config = received().find((m) => m.method === "thread/start").params.config;
+        expect(config).toEqual({ mcp_servers: { project: { enabled: false }, shared: { enabled: false }, "dotted.name": { enabled: false } } });
+        await run("resume");
+        expect(received().find((m) => m.method === "thread/resume").params.config).toEqual(config);
+    });
+
+    for (const layers of [
+        [],
+        [{ name: { type: "unknown" }, config: { mcp_servers: { personal: {} } } }],
+        [{ name: { type: "project" }, config: { mcp_servers: { personal: {} } }, disabledReason: {} }],
+    ]) test(`incomplete provenance disables servers in thread start and resume: ${JSON.stringify(layers)}`, async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ personal: { command: "personal" } });
+        process.env.FAKE_CONFIG_LAYERS = JSON.stringify(layers);
+        const { run, events } = await makeAgent({ provider: "codex", trusted: true });
+        expect(await run("hello")).toBe("done");
+        expect(await run("resume")).toBe("done");
+        for (const method of ["thread/start", "thread/resume"]) {
+            expect(received().find((m) => m.method === method).params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });
+        }
+        expect(notices(events).join("\n")).toContain("all configured MCP servers are disabled");
+    });
+
+    test("missing provenance disables all configured servers, and a failed read prevents the turn", async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ personal: { command: "personal" } });
+        process.env.FAKE_NO_CONFIG_LAYERS = "1";
+        const { run, events } = await makeAgent({ provider: "codex", trusted: true });
+        await run("hello");
+        expect(received().find((m) => m.method === "thread/start").params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });
+        expect(notices(events).join("\n")).toContain("all configured MCP servers are disabled");
+        rmSync(LOG, { force: true });
+        process.env.FAKE_NO_CONFIG_READ = "1";
+        const second = await makeAgent({ provider: "codex", trusted: true });
+        expect(await second.run("hello")).toBe("error");
+        expect(received().some((m) => m.method === "thread/start")).toBe(false);
+    });
 });
 
 describe("attachments", () => {

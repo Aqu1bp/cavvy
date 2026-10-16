@@ -129,8 +129,8 @@ export function openAgents(agentId?: string) {
 }
 
 /** The docked review pane, on a file and a view when given (else the view last used). */
-export function openReview(path?: string, scope?: ReviewScope) {
-    setReview({ path, scope });
+export function openReview(path?: string, scope?: ReviewScope, turnId?: number) {
+    setReview({ path, scope, turnId });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */
@@ -157,7 +157,7 @@ export async function exportSession(id: string) {
  * screen's project. A /word that names no command isn't sent (false keeps it
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; to?: { id?: string; cwd?: string } } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
@@ -165,11 +165,13 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
         const to = { id, cwd };
-        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => {
-            if (!ok) return;
+        // The toast stays, with its action, until the send succeeds.
+        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: async () => {
+            // A failure is shown once, in this toast, with its retry.
+            if (!(await send(text, attachments, { literal: true, to, throwErrors: true }))) return false;
             if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
             opts.sent?.();
-        }) });
+        } });
         return false;
     };
     try {
@@ -192,6 +194,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
+        if (opts.throwErrors) throw e;
         reportError(e);
         return false;
     }
@@ -311,7 +314,17 @@ export async function deleteSession(id: string) {
     } catch (e) {
         return reportError(e);
     }
-    toast("Session deleted", "info", { label: "Undo", run: () => void rpc.call("session.restore", { id }).catch(reportError) }, UNDO_DELETE_MS);
+    toast(
+        "Session deleted",
+        "info",
+        {
+            label: "Undo",
+            run: async () => {
+                await rpc.call("session.restore", { id });
+            },
+        },
+        UNDO_DELETE_MS,
+    );
 }
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */
@@ -332,9 +345,26 @@ export function gitCommitMessage(id: string, paths: string[]) {
 }
 
 export async function archive(id: string, archived: boolean) {
-    await rpc.call("session.archive", { id, archived }).catch(reportError);
+    try {
+        await rpc.call("session.archive", { id, archived });
+    } catch (e) {
+        reportError(e);
+        return false;
+    }
     if (archived && app.activeId === id) newSession(app.homeCwd);
-    toast(archived ? "Session archived" : "Session restored", "info", archived ? { label: "Undo", run: () => void archive(id, false) } : undefined);
+    toast(
+        archived ? "Session archived" : "Session restored",
+        "info",
+        archived
+            ? {
+                  label: "Undo",
+                  run: async () => {
+                      await rpc.call("session.archive", { id, archived: false });
+                  },
+              }
+            : undefined,
+    );
+    return true;
 }
 
 export function togglePanel() {
@@ -413,7 +443,9 @@ export async function openInEditor(path: string, line?: number, o: { col?: numbe
         if (code === "no_editor" || code === "not_installed")
             return toast(code === "no_editor" ? "No editor chosen yet. Pick one under Settings → General → Open files with." : (e as Error).message, "warn", {
                 label: "Settings",
-                run: () => setSettingsTab("general"),
+                run: () => {
+                    setSettingsTab("general");
+                },
             });
         reportError(e);
     }

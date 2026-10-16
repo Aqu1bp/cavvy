@@ -48,6 +48,13 @@ function startError(st: ServerState): string | undefined {
     return headerClash(st.config);
 }
 
+/** Servers allowed by mayStart(); definitions remain exactly as load() read and checked them for approval. */
+export interface ApprovedMcpServers {
+    cwd: string;
+    /** `fingerprint`: what load() approved, so a consumer can check that the definition still resolves to it. */
+    servers: Record<string, Pick<ServerState, "config" | "source"> & { fingerprint?: string }>;
+}
+
 const MAX_OUTPUT = 40_000;
 /** Bounds for list(): how many servers, and roughly how many characters of description. */
 const MAX_LISTED = 100;
@@ -209,6 +216,29 @@ export class McpManager {
 
     private summary(): string {
         return JSON.stringify([...this.servers.values()].map((s) => [s.name, s.source, s.status, s.tools.length, s.error, s.approval?.state, s.approval?.reason]));
+    }
+
+    /** Start permission, independent of connection status except "disable for this session"; copy the raw approved config without resolving or masking it. */
+    approvedServers(): ApprovedMcpServers {
+        // Approvals as saved now: another Harness process may have revoked one (or blanket approval) since load().
+        let still: (st: ServerState) => boolean;
+        try {
+            const settings = this.reloadSettings ? loadSettings(this.cwd, { trusted: this.trusted }) : this.settings();
+            const userTrusted = trustedByUser(this.cwd);
+            still = (st) => {
+                if (st.source !== "project") return true;
+                const now = approvalOf(st.name, st.config, settings, this.cwd, userTrusted);
+                return now.state === "approved" && now.fingerprint === st.approval?.fingerprint;
+            };
+        } catch {
+            still = (st) => st.source !== "project";
+        }
+        return {
+            cwd: this.cwd,
+            servers: Object.fromEntries([...this.servers.values()]
+                .filter((s) => mayStart(s) && s.status !== "disabled" && still(s))
+                .map((s) => [s.name, { config: structuredClone(s.config), source: s.source, ...(s.approval ? { fingerprint: s.approval.fingerprint } : {}) }])),
+        };
     }
 
     async startAll(signal?: AbortSignal) {

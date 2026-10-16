@@ -33,7 +33,7 @@
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
-// FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error, like a CLI without it
+// FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
 // FAKE_LOG_ENV=1     logs its whole environment at start
 // FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
 //                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
@@ -556,11 +556,14 @@ for await (const chunk of Bun.stdin.stream()) {
                     },
                 });
             } else if (sub === "mcp_set_servers") {
+                if (process.env.FAKE_MCP_REFUSE === "hang") continue;
+                if (process.env.FAKE_MCP_REFUSE === "exit") process.exit(3);
                 if (process.env.FAKE_MCP_REFUSE === "1") {
                     out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "Unsupported control request subtype: mcp_set_servers" } });
                     continue;
                 }
-                // Like the CLI: connect to each, then answer.
+                // Like the CLI: replace the dynamic delegation set, connect, then answer.
+                mcpServers.clear();
                 const errors: Record<string, string> = {};
                 for (const [name, cfg] of Object.entries<any>(m.request.servers ?? {})) {
                     if (cfg.type !== "http") continue;

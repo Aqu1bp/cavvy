@@ -75,8 +75,7 @@ export function environmentBlock(cwd: string, model: ModelInfo, includeGit = tru
                 `Current branch: ${g.branch ?? "(detached)"}`,
                 ...(g.mainBranch ? [`Main branch (usually the PR target): ${g.mainBranch}`] : []),
                 "",
-                "Status:",
-                g.status,
+                ...(g.status === undefined ? [`Git status was not read: ${g.statusSkipped}.`] : ["Status:", g.status]),
                 ...(g.recentCommits ? ["", "Recent commits:", g.recentCommits] : []),
             );
         }

@@ -216,9 +216,11 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
 
     const agent = new Agent({
         session,
+        trusted: () => o.trusted,
         model,
         client,
         settings: () => settings,
+        approvedMcpServers: () => mcp.approvedServers(),
         checker,
         classifier: new AutoClassifier(complete),
         tools,

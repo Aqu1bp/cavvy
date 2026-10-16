@@ -513,9 +513,11 @@ export class App {
         void this.agent?.dispose();
         this.agent = new Agent({
             session: this.session,
+            trusted: () => this.init.trusted,
             model: this.model,
             client: this.client,
             settings: () => this.settings,
+            approvedMcpServers: () => this.mcp.approvedServers(),
             checker: this.checker,
             classifier: this.classifier,
             tools: () => this.tools(),

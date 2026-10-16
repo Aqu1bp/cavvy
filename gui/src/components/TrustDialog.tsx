@@ -1,14 +1,18 @@
 import { createResource, Show } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
-import { reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
+import { app, reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
 import { trustAndContinue } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 
 /** Opening a folder, or explicitly trusting an already open folder for MCP approval. */
 export function TrustDialog() {
     const [info] = createResource(
-        () => trustRequest()?.path,
-        (path) => rpc.call("projects.inspect", { path }),
+        () => app.conn === "open" && trustRequest()?.path,
+        (path) =>
+            rpc.call("projects.inspect", { path }).catch((e) => {
+                if (app.conn === "open") reportError(e);
+                return undefined;
+            }),
     );
     const forMcp = () => trustRequest()?.purpose === "mcp-approval";
     const cancel = () => setTrustRequest(undefined);
