@@ -20,7 +20,7 @@ function panel() {
     const calls: { method: string; params: any }[] = [];
     const notices: { text: string; kind: string }[] = [];
     const app = { conn: "open" };
-    const terminalActions: { runScript?: (cwd: string, script: Script, setup?: Setup) => void } = {};
+    const terminalActions: { loginAccount?: (provider: string, accountId: string, name: string) => void; runScript?: (cwd: string, script: Script, setup?: Setup) => void } = {};
     let opened = false;
     let onInput: ((data: string) => void) | undefined;
     let response: (method: string) => Promise<unknown> = async () => ({});
@@ -51,7 +51,7 @@ function panel() {
             return [read, (next: any) => { value = typeof next === "function" ? next(value) : next; }];
         },
         createEffect() {}, on() {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
-        app, terminalActions, setupObscured, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
+        app, terminalActions, setupObscured, setSettingsTab, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
         prefs: { terminalHeight: 260 }, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
         terminalShortcut: "Ctrl+`", toast: (text: string, kind: string) => notices.push({ text, kind }),
         rpc: {
@@ -108,6 +108,8 @@ test("a setup tab sends its ticket once and restarting gives a plain shell", asy
     await flush();
     expect(p.calls.map((call) => call.method)).toEqual(["scripts.run", "terminal.arm"]);
     expect(p.calls[0]!.params).toMatchObject({ cwd: "/project/feature", script: script.id, setup: setup.ticket });
+    expect(p.calls[0]!.params.login).toBeUndefined();
+    expect(p.calls[0]!.params.env).toBeUndefined();
     const firstId = p.calls[0]!.params.id;
     screen.restart();
     await flush();
@@ -115,6 +117,26 @@ test("a setup tab sends its ticket once and restarting gives a plain shell", asy
     expect(p.calls[2]!.params.id).not.toBe(firstId);
     expect(p.calls[2]!.params).not.toHaveProperty("setup");
     expect(p.calls[2]!.params).not.toHaveProperty("script");
+    expect(p.calls[2]!.params.login).toBeUndefined();
+    expect(p.calls[2]!.params.env).toBeUndefined();
+});
+
+test("login tabs retain their account on restart without attaching it to setup tabs", async () => {
+    const p = panel();
+    const login = { provider: "codex", accountId: "personal", name: "Personal" };
+    p.terminalActions.loginAccount!(login.provider, login.accountId, login.name);
+    const screen = p.screen(p.tabs()[0]);
+    await flush();
+    expect(p.calls[0]).toMatchObject({ method: "terminal.open", params: { login } });
+    screen.restart();
+    await flush();
+    expect(p.calls[1]).toMatchObject({ method: "terminal.open", params: { login } });
+    p.run();
+    p.screen(p.tabs()[1]);
+    await flush();
+    expect(p.calls[2]).toMatchObject({ method: "scripts.run", params: { setup: setup.ticket } });
+    expect(p.calls[2]!.params.login).toBeUndefined();
+    expect(p.tabs()[1].login).toBeUndefined();
 });
 
 test("manual script clicks still run without a setup ticket", async () => {

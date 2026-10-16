@@ -36,6 +36,79 @@ function lines(file: string): any[] {
 }
 
 describe("Session persistence", () => {
+    test("account selections survive reopen and invalidate only their provider's native thread", () => {
+        const s = Session.create(project());
+        s.setModel("codex:default");
+        s.setFastMode(true);
+        s.push(user("Earlier conversation"));
+        s.setBackendSession("codex", "old-home-thread", 1);
+        s.setBackendSession("claude-code", "claude-session", 1);
+        expect(s.setAccount("codex", "personal")).toBe(true);
+        expect(s.setAccount("codex", "personal")).toBe(false);
+        expect(s.backends.has("codex")).toBe(false);
+        expect(s.backends.has("claude-code")).toBe(true);
+        s.release();
+        const reopened = Session.load(s.path);
+        expect(reopened.accountId("codex")).toBe("personal");
+        expect(reopened.accountId("claude-code")).toBe("default");
+        expect(reopened.backends.has("codex")).toBe(false);
+        expect(reopened.model).toBe("codex:default");
+        expect(reopened.fastMode).toBe(true);
+        expect(reopened.messages).toEqual(s.messages);
+        reopened.release();
+    });
+
+    test("forks preserve account selections and conversation without sharing native threads", () => {
+        const original = Session.create(project(), { persist: false, system: "system" });
+        original.setAccount("codex", "personal");
+        original.setAccount("claude-code", "work");
+        original.setModel("codex:default");
+        original.setFastMode(true);
+        original.push(user("Earlier conversation"));
+        original.setBackendSession("codex", "original-thread", 1);
+        const fork = original.fork();
+        expect(fork.meta.id).not.toBe(original.meta.id);
+        expect(fork.messages).toEqual(original.messages);
+        expect(fork.messages[0]).not.toBe(original.messages[0]);
+        expect(fork.accounts).toEqual(original.accounts);
+        expect(fork.model).toBe(original.model);
+        expect(fork.fastMode).toBe(true);
+        expect(fork.backends.size).toBe(0);
+        fork.release();
+        const reopened = Session.load(fork.path);
+        expect(reopened.accountId("codex")).toBe("personal");
+        expect(reopened.accountId("claude-code")).toBe("work");
+        expect(reopened.backends.size).toBe(0);
+        reopened.release();
+    });
+
+    test("resume bindings survive reload and reject a different folder even when the account id is unchanged", () => {
+        const s = Session.create(project());
+        s.setAccount("codex", "personal");
+        s.push(user("prior"));
+        s.setBackendSession("codex", "bound-thread", 1, "/tmp/original-home");
+        s.release();
+        const loaded = Session.load(s.path);
+        expect(loaded.backendSession("codex", "/tmp/original-home")?.id).toBe("bound-thread");
+        expect(loaded.backendSession("codex", "/tmp/replacement-home")).toBeUndefined();
+        expect(loaded.backends.has("codex")).toBe(false);
+        loaded.release();
+        const reopened = Session.load(s.path);
+        expect(reopened.backends.has("codex")).toBe(false);
+        reopened.release();
+    });
+
+    test("legacy sessions keep Default without rewriting their selection", () => {
+        const s = Session.create(project());
+        s.push(user("legacy"));
+        s.release();
+        const loaded = Session.load(s.path);
+        expect(loaded.accountId("codex")).toBe("default");
+        expect(loaded.accountId("claude-code")).toBe("default");
+        expect(lines(s.path).some((l) => l.t === "account")).toBe(false);
+        loaded.release();
+    });
+
     test("no file until the first message; earlier records are buffered and flushed in order", () => {
         const s = Session.create(project(), { system: "frozen system prompt" });
         expect(s.meta.id).toMatch(/^\d{8}-\d{6}-[0-9a-f]{6}$/);

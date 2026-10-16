@@ -155,7 +155,7 @@ export class Terminals {
     private shells = new Map<string, Shell>();
 
     /** `input` is typed into the new shell, as if by hand, once it's armed and reading a command (see Typist). */
-    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string } = {}) {
+    open(owner: Owner, id: string, cwd: string, cols: unknown, rows: unknown, opts: { input?: string; command?: { argv: string[]; env: Record<string, string> }; onExit?: () => void } = {}) {
         const size = terminalSize(cols, rows);
         if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.shells.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
         if (this.shells.size >= 48 || [...this.shells.values()].filter((s) => s.owner === owner).length >= 12) throw new RpcError("Close a terminal before opening another (12 per window, across projects)", "limit");
@@ -191,7 +191,7 @@ export class Terminals {
         } });
         let proc: ReturnType<typeof Bun.spawn>;
         try {
-            proc = Bun.spawn([shell, "-il"], { cwd, env: terminalEnv(), terminal, detached: true });
+            proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(), ...opts.command.env } : terminalEnv(), terminal, detached: true });
         } catch (e) {
             terminal.close();
             throw e;
@@ -200,6 +200,7 @@ export class Terminals {
         entry = shellEntry;
         this.shells.set(id, shellEntry);
         void proc.exited.then((exitCode) => {
+            opts.onExit?.();
             if (this.shells.get(id) !== shellEntry) return;
             pending += decoder.decode();
             flush();

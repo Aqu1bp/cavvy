@@ -38,7 +38,7 @@ export const [terminalOpen, setTerminalOpen] = createSignal(false);
 export interface SetupRun { ticket: string; label: string; command: string }
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
-export const terminalActions: { runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void } = {};
+export const terminalActions: { loginAccount?: (provider: string, accountId: string, name: string) => void; runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void } = {};
 
 /** The find bar over the conversation (⌘F), what it looks for, and a bump to take focus again. */
 export const [findOpen, setFindOpen] = createSignal(false);
