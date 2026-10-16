@@ -197,3 +197,24 @@ test("recursive copies and archives cannot read a folder containing a named acco
     ]) expect({ command, blocked: accountTarget(command, outside) }).toEqual({ command, blocked: true });
     expect(accountTarget("cp source.ts /tmp/copy", outside)).toBe(false);
 });
+
+test("copy destinations and archive outputs do not recursively read account ancestors", () => {
+    const project = join(outside, "project");
+    mkdirSync(join(project, "src"), { recursive: true });
+    for (const command of [
+        "cp -r src ..", "rsync -a src ../", "scp -r src ..", "ditto src ..", "rclone copy src ..",
+        "cp -r -t .. src", "cp -rt.. src", "cp -r --target-directory .. src", "cp -r --target-directory=.. src",
+        "cp -r src --target-directory=..", "cp -r -- src ..", "cp -r src .. -v", "rsync -a src ../ --verbose",
+        "tar -cf .. src", "tar cf .. src", "tar -cf.. src", "tar --create --file=.. src", "zip -r .. src",
+    ]) expect({ command, blocked: accountTarget(command, project) }).toEqual({ command, blocked: false });
+    for (const command of [
+        "cp -r .. src", "rsync -a ../ src", "scp -r .. src", "ditto .. src", "rclone copy .. src",
+        "cp -r -t src ..", "cp -r --target-directory=src ..", "cp -r src .. /tmp/copy",
+        "cp -r src .. --target-dir=/tmp/copy", "cp -r src .. --target-dir /tmp/copy",
+        "rclone cat ..", "rclone ls ..", "rsync -a --port 123 ..", "rsync -a src .. --list-only",
+        "tar -cf copy.tar ..", "tar cf copy.tar ..", "tar -cfcopy.tar ..", "tar --create --file=copy.tar ..", "zip -r copy.zip ..",
+        "cp -r src ../personal", "rsync -a src ../personal/", "scp -r src ../personal", "ditto src ../personal", "rclone copy src ../personal",
+        "cp -rt../personal src", "cp -r --target-directory=../personal src",
+        "tar -cf../personal/copy.tar src", "tar --create --file=../personal/copy.tar src", "zip -r ../personal/copy.zip src",
+    ]) expect({ command, blocked: accountTarget(command, project) }).toEqual({ command, blocked: true });
+});

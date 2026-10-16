@@ -1329,17 +1329,96 @@ function accountRecursiveRead(program: string, args: string[]): boolean {
         || (program === "cp" && args.some((a) => ["--recursive", "--archive"].includes(a)));
 }
 
-/** Copy/archive exclusion patterns are not paths, even when they look like cwd globs. */
-function accountCopyPaths(args: string[]): string[] {
-    const paths: string[] = [];
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i]!;
-        if (a === "--") { paths.push(...args.slice(i + 1)); break; }
-        if (/^--(exclude|include)(=|$)/.test(a)) {
-            if (!a.includes("=")) i++;
-        } else paths.push(a);
+/** Preserve wrapper operands and expose attached file-option values to path checks. */
+function accountWrapperPaths(argv: string[]): string[] {
+    const paths = [...argv];
+    const w = wrapperOf(argv[0]);
+    const file = runs(argv[0], "xargs") ? { short: "a", long: "arg-file" }
+        : runs(argv[0], "time") ? { short: "o", long: "output" } : undefined;
+    if (!w || !file) return paths;
+    for (let i = 1; i < argv.length; i++) {
+        const a = argv[i]!;
+        if (a === "--" || !a.startsWith("-")) break;
+        if (a.startsWith("--")) {
+            const eq = a.indexOf("=");
+            const name = a.slice(2, eq < 0 ? undefined : eq);
+            if (w.long?.some((l) => l.startsWith(name))) {
+                const value = eq < 0 ? argv[++i] : a.slice(eq + 1);
+                if (file.long.startsWith(name) && value !== undefined) paths.push(value);
+            }
+        } else for (let k = 1; k < a.length; k++) {
+            const ch = a[k]!;
+            if (w.attached?.includes(ch)) break;
+            if (!w.short.includes(ch)) continue;
+            const value = k + 1 < a.length ? a.slice(k + 1) : argv[++i];
+            if (ch === file.short && value !== undefined) paths.push(value);
+            break;
+        }
     }
     return paths;
+}
+
+/** Copy/archive sources recurse; destinations and archive files only touch their own paths. */
+function accountCopyPaths(program: string, args: string[]): { paths: string[]; outputs: string[] } {
+    const paths: string[] = [];
+    const outputs: string[] = [];
+    const operands: number[] = [];
+    const rcloneCopy = program === "rclone" && ["copy", "copyto", "sync", "move", "moveto"].includes(args[0] ?? "");
+    const copy = ["cp", "rsync", "scp", "ditto"].includes(program) || rcloneCopy;
+    const short = program === "cp" ? "tS" : program === "rsync" ? "efBT" : program === "scp" ? "cDFiJloPS"
+        : program === "tar" ? "fCbTX" : program === "zip" ? "bntP" : "";
+    const flags = program === "cp" ? "abdfHiILlnPpRrsTuvxZ" : program === "rsync" ? "0468aAbcCdDEghHiklKLmnNoOpPqrRsStuUvWxXyz"
+        : program === "scp" ? "346ABCOpqRrsTv" : program === "ditto" ? "vVX" : program === "rclone" ? "Pqv"
+        : program === "zip" ? "rRqv09jmuFSXy" : "";
+    const long = new Set(["exclude", "include", "exclude-from", "include-from", "filter", "files-from", "rsh", "suffix", "target-directory", "file", "directory", "block-size", "temp-dir", "backup-dir", "compress-level", "bwlimit", "max-size", "min-size"]);
+    const longFlags = new Set(["recursive", "archive", "verbose", "quiet", "force", "no-clobber", "no-target-directory", "dry-run", "progress", "delete", "checksum", "list-only"]);
+    let target = false;
+    let end = false;
+    let uncertain = false;
+    const value = (name: string, v: string | undefined) => {
+        if (v === undefined) return;
+        if ((program === "cp" && ["t", "target-directory"].includes(name)) || (program === "tar" && ["f", "file"].includes(name))) {
+            outputs.push(v);
+            if (program === "cp") target = true;
+        } else if (!["exclude", "include"].includes(name)) paths.push(v);
+    };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (rcloneCopy && i === 0) continue;
+        if (!end && a === "--") { end = true; continue; }
+        const traditionalTar = !end && program === "tar" && i === 0 && /^[a-zA-Z]+$/.test(a);
+        if (!end && a.startsWith("--")) {
+            const eq = a.indexOf("=");
+            const name = a.slice(2, eq < 0 ? undefined : eq);
+            const matches = [...long, ...longFlags].filter((n) => n.startsWith(name));
+            const option = long.has(name) || longFlags.has(name) ? name : matches.length === 1 ? matches[0]! : name;
+            if (long.has(option)) value(option, eq < 0 ? args[++i] : a.slice(eq + 1));
+            else {
+                if (!longFlags.has(option)) uncertain = true;
+                paths.push(a);
+            }
+        } else if (!end && ((a.startsWith("-") && a !== "-") || traditionalTar)) {
+            paths.push(traditionalTar ? "-" + a : a);
+            for (let k = traditionalTar ? 0 : 1; k < a.length; k++) {
+                const ch = a[k]!;
+                if (!short.includes(ch)) {
+                    if (!flags.includes(ch)) uncertain = true;
+                    continue;
+                }
+                value(ch, traditionalTar || k + 1 === a.length ? args[++i] : a.slice(k + 1));
+                if (!traditionalTar) break;
+            }
+        } else {
+            operands.push(paths.length);
+            paths.push(a);
+        }
+    }
+    // Unknown options may consume a word that looks like a source. Do not then
+    // demote the only real source to a destination (e.g. a one-path rsync listing).
+    const output = uncertain ? undefined : program === "zip" ? operands[0]
+        : copy && !target && !args.includes("--list-only") && operands.length >= 2 ? operands.at(-1) : undefined;
+    if (output !== undefined) outputs.push(...paths.splice(output, 1));
+    return { paths, outputs };
 }
 
 /** A later stage can turn a name-only listing into reads or execution. */
@@ -1377,17 +1456,21 @@ export function accountTarget(cmd: string, cwd: string): boolean {
         const levels = runLevels(c.argv);
         const argv = effectiveArgv(levels.at(-1)?.argv ?? c.argv);
         // Wrappers can open files of their own (xargs -a, time -o). Keep their operands.
-        const wrappers = levels.flatMap((l, i) => i + 1 < levels.length ? l.argv.slice(0, Math.max(1, l.argv.length - levels[i + 1]!.argv.length)) : []);
+        const wrappers = levels.flatMap((l, i) => i + 1 < levels.length
+            ? accountWrapperPaths(l.argv.slice(0, Math.max(1, l.argv.length - levels[i + 1]!.argv.length)))
+            : wrapperOf(l.argv[0]) ? accountWrapperPaths(l.argv) : []);
         const program = programNames(argv[0] ?? "").at(-1)!;
         const search = /^(rg|grep|egrep|fgrep|ag|ack|find|fd|ls|tree)$/.test(program);
         const args = argv.slice(1);
         const parsed = search ? accountSearchArgs(program, args) : undefined;
         const recursive = accountRecursiveRead(program, args);
-        const operands = parsed?.paths ?? (recursive ? accountCopyPaths(args) : args);
+        const copied = recursive ? accountCopyPaths(program, args) : undefined;
+        const operands = parsed?.paths ?? copied?.paths ?? args;
+        const direct = [...wrappers, ...(parsed?.files ?? []), ...(copied?.outputs ?? [])];
         const flags = parsed?.flags ?? args;
         // Inspect embedded paths too (python -c 'open("/private/account/auth.json")').
         // Search patterns and option values are not filesystem operands.
-        const texts = (parsed || recursive ? [...wrappers, ...operands, ...(parsed?.files ?? [])] : [c.text, ...argv]).flatMap(spellings);
+        const texts = (parsed || recursive ? [...direct, ...operands] : [c.text, ...argv]).flatMap(spellings);
         if ([...folders, ...files].some((f) => texts.some((t) => t.includes(f)))) return true;
         const executes = program === "find" ? args.some((a) => /^-(exec|execdir|ok|okdir|delete)$/.test(a))
             : program === "fd" ? flags.some((a) => /^-[xX]$|^--exec(?:-batch)?$/.test(a))
@@ -1400,7 +1483,7 @@ export function accountTarget(cmd: string, cwd: string): boolean {
         for (const word of operands) {
             if (dirs.some((d) => touches(word, d, search || contents, contents, namesOnly))) return true;
         }
-        for (const word of [...wrappers, ...(parsed?.files ?? [])]) {
+        for (const word of direct) {
             if (dirs.some((d) => touches(word, d))) return true;
         }
         if (analysis.redirects.some((p) => dirs.some((d) => touches(p, d)))) return true;

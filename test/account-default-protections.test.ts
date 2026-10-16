@@ -113,6 +113,22 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
                 expect(accountTarget(`${wrapper} .codex/auth.json grep x /tmp/public`, home)).toBe(true);
                 expect(accountTarget(`${wrapper} .codex/config.toml grep x /tmp/public`, home)).toBe(false);
             }
+            for (const wrapper of [
+                "xargs -a auth.json", "xargs -aauth.json", "xargs -0aauth.json", "xargs --arg-file=auth.json",
+                "time -o auth.json", "time -oauth.json", "time -aoauth.json", "time --output=auth.json",
+                "env nohup xargs --arg-file=auth.json", "time --output=public.txt xargs -aauth.json",
+            ]) {
+                const command = `${wrapper} grep foo /tmp/public`;
+                expect({ command, blocked: accountTarget(command, join(home, ".codex")) }).toEqual({ command, blocked: true });
+                expect(accountTarget(command.replaceAll("auth.json", "config.toml"), join(home, ".codex"))).toBe(false);
+            }
+            for (const wrapper of ["xargs -Iauth.json", "xargs --delimiter=auth.json", "time -fauth.json", "time --format=auth.json", "nohup"]) {
+                expect(accountTarget(`${wrapper} grep foo /tmp/public`, join(home, ".codex"))).toBe(false);
+            }
+            for (const command of ["xargs -a auth.json", "xargs -aauth.json", "xargs --arg-file=auth.json"]) {
+                expect(accountTarget(command, join(home, ".codex"))).toBe(true);
+                expect(accountTarget(command.replaceAll("auth.json", "config.toml"), join(home, ".codex"))).toBe(false);
+            }
             if (CASE_INSENSITIVE_FS) {
                 for (const command of ["/usr/bin/GREP -r . .codex", "ENV GREP -r . .codex", "NICE -n 5 RG token .codex"]) expect(accountTarget(command, home)).toBe(true);
             }
