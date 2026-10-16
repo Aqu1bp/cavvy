@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { duration } from "../../gui/src/lib/format";
+import { duration, turnDuration } from "../../gui/src/lib/format";
 
 // Compile the actual turn and activity grouping; replace only leaf widgets and
 // the DOM boundary. The real Solid renderer maintains child order and removal.
@@ -12,7 +12,7 @@ const grouping = activity.slice(activity.indexOf("export function groupBlocks"),
 const [clock, setClock] = solid.createSignal(61_000);
 const stub = () => node("widget");
 const scope = {
-    duration, now: clock, prefs: { showThinking: false }, findReveal: () => undefined,
+    duration, turnDuration, now: clock, prefs: { showThinking: false }, findReveal: () => undefined,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub,
     Brain: stub, ChevronRight: stub, SquareTerminal: stub, Info: stub, AlertCircle: stub, AlertTriangle: stub,
 };
@@ -20,8 +20,10 @@ const TurnView = component(grouping + source.replace(/^import .*;\n/gm, ""), "Tu
 const [turn, setTurn] = solid.createSignal<any>({ id: "turn", status: "running", startedAt: 1000, blocks: [] });
 const [state, setState] = solid.createSignal<any>({ id: "session", busy: true, interactions: [], activity: { label: "Thinking", since: 50_000 } });
 const [last, setLast] = solid.createSignal(true);
+let keepWorkOpen = false;
+const openChanges: boolean[] = [];
 const root = node("root");
-const dispose = renderer.render(() => TurnView({ get turn() { return turn(); }, get state() { return state(); }, get last() { return last(); } }), root);
+const dispose = renderer.render(() => TurnView({ get turn() { return turn(); }, get state() { return state(); }, get last() { return last(); }, keepWorkOpen: () => keepWorkOpen, onWorkOpen: (open: boolean) => openChanges.push(open) }), root);
 const hasClass = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
 const heads = () => all(root).filter((n) => hasClass(n, "live-head"));
 const blocks = (value: any[]) => setTurn({ ...turn(), blocks: value });
@@ -73,4 +75,23 @@ try {
     setLast(true);
     setTurn({ ...turn(), status: "done", archived: true });
     assert.equal(heads().length, 0, "completion removes the live row");
+    const logs = () => all(root).filter((n) => hasClass(n, "worklog"));
+    assert.equal(logs().length, 0, "completion at the bottom still folds work");
+    keepWorkOpen = true;
+    setTurn({ ...turn(), status: "running" });
+    assert.equal(logs().length, 1);
+    const readingLog = logs()[0];
+    setTurn({ ...turn(), status: "done", endedAt: 1341 });
+    assert.equal(logs().length, 1, "completion away from bottom keeps the reader's work mounted");
+    assert.equal(logs()[0], readingLog, "completion preserves mounted work and its nested disclosure state");
+    assert.equal(openChanges.at(-1), true, "retained log is remembered for session restoration");
+    const fold = all(root).find((n) => hasClass(n, "fold"))!;
+    assert.ok(text(fold).includes("Worked for 0s"));
+    fold.props.onClick({ currentTarget: fold });
+    assert.equal(logs().length, 0, "retained work can still be folded manually");
+    assert.equal(openChanges.at(-1), false);
+    keepWorkOpen = false;
+    setTurn({ ...turn(), status: "running" });
+    setTurn({ ...turn(), status: "done" });
+    assert.equal(logs().length, 0, "subsequent completion at bottom still folds");
 } finally { dispose(); }

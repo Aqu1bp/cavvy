@@ -2,18 +2,34 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown } from "lucide-solid";
 import { toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
+import { prefs } from "../state/prefs";
+import { anchoredTop, atBottom, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { TurnView } from "./TurnView";
 import { rewindTarget } from "./RewindDialog";
 import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
 
-const PAGE = 40;
-
 export function Transcript(p: { handle: SessionHandle }) {
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
-    const [stick, setStick] = createSignal(true);
-    const [shown, setShown] = createSignal(PAGE);
+    // SessionView is keyed by handle; save on disposal, restore on the next mount.
+    const id = p.handle.id;
+    const saved = transcriptPositions.get(id);
+    const openWork = new Set(saved?.openWork);
+    const [stick, setStick] = createSignal(saved?.bottom ?? true);
+    const [shown, setShown] = createSignal(restoredShown(p.handle.view.turns.map((t) => t.id), saved));
+    let reading = saved?.anchor;
+    let ready = false;
+    let frame = 0;
+    const afterLayout = (fn: () => void) => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+            fn();
+            // A send or search may supersede the initial restoration frame.
+            ready = true;
+            reading = capture();
+        });
+    };
     const turns = () => p.handle.view.turns;
     const visible = createMemo(() => {
         const t = turns();
@@ -23,32 +39,74 @@ export function Transcript(p: { handle: SessionHandle }) {
 
     const toBottom = (smooth = false) => {
         if (!scroller) return;
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth && prefs.motion !== "instant" && !matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "instant" });
+    };
+
+    const capture = (): ScrollAnchor | undefined => {
+        if (!scroller || !content) return;
+        const top = scroller.getBoundingClientRect().top;
+        const turn = [...content.querySelectorAll<HTMLElement>("[data-turn]")].find((el) => el.getBoundingClientRect().bottom > top);
+        if (!turn) return;
+        // A block anchor also survives replacing the live head with a work-log toggle.
+        const part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom > top);
+        return {
+            turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - top,
+            part: part?.dataset.find ?? (part ? `worklog:${[...turn.querySelectorAll(".worklog")].indexOf(part)}` : undefined),
+            partOffset: part ? part.getBoundingClientRect().top - top : undefined,
+        };
+    };
+    const restore = () => {
+        if (!scroller || !content || !reading) return;
+        const turn = content.querySelector<HTMLElement>(`[data-turn="${CSS.escape(reading.turnId)}"]`);
+        if (!turn) return;
+        const part = reading.part?.startsWith("worklog:")
+            ? turn.querySelectorAll<HTMLElement>(".worklog")[Number(reading.part.slice(8))]
+            : reading.part ? turn.querySelector<HTMLElement>(`[data-find="${CSS.escape(reading.part)}"]`) : undefined;
+        const el = part ?? turn;
+        const next = anchoredTop(scroller.scrollTop, el.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+            part && reading.partOffset !== undefined ? reading.partOffset : reading.offset);
+        // A no-op write would cancel an in-flight smooth Jump to latest.
+        if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
     };
 
     onMount(() => {
         if (!scroller || !content) return;
-        // Whatever makes the content taller (a streamed token, an opened row), follow it while at the bottom.
         const ro = new ResizeObserver(() => {
+            if (!ready) return;
             if (stick()) toBottom();
+            else restore();
         });
         ro.observe(content);
         onCleanup(() => ro.disconnect());
-        requestAnimationFrame(() => toBottom());
+        afterLayout(() => {
+            if (stick()) toBottom();
+            else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
+        });
+    });
+    onCleanup(() => {
+        cancelAnimationFrame(frame);
+        // A running log can finish while this keyed view is unmounted.
+        if (!stick()) for (const turn of visible()) if (turn.status === "running") openWork.add(turn.id);
+        transcriptPositions.set(id, {
+            shown: shown(), bottom: stick(), top: (ready ? scroller?.scrollTop : saved?.top) ?? 0,
+            anchor: reading, openWork: [...openWork],
+        });
     });
 
-    // A different session: start at its end.
-    createEffect(
-        on(
-            () => p.handle.id,
-            () => {
-                setShown(PAGE);
-                setStick(true);
-                requestAnimationFrame(() => toBottom());
-            },
-            { defer: true },
-        ),
-    );
+    const earlier = () => {
+        reading = capture();
+        setStick(false);
+        setShown((n) => n + PAGE);
+        // Solid has inserted the page synchronously; compensate before paint.
+        restore();
+    };
+    const toggleWork = (el: HTMLElement, toggle: () => void) => {
+        const top = el.getBoundingClientRect().top;
+        setStick(false);
+        toggle();
+        if (scroller) scroller.scrollTop = anchoredTop(scroller.scrollTop, el.getBoundingClientRect().top, top);
+        reading = capture();
+    };
 
     // Sending a prompt jumps back down.
     createEffect(
@@ -57,22 +115,23 @@ export function Transcript(p: { handle: SessionHandle }) {
             (n, prev) => {
                 if (prev !== undefined && n > prev && turns()[n - 1]?.prompt) {
                     setStick(true);
-                    requestAnimationFrame(() => toBottom(true));
+                    afterLayout(() => toBottom(true));
                 }
             },
         ),
     );
 
     const onScroll = () => {
-        if (!scroller) return;
-        const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-        setStick(gap < 64);
+        if (!scroller || !ready) return;
+        setStick(atBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight));
+        reading = capture();
     };
 
     /** Draws the pages down to this turn and stops following the end, to show something in it. */
     const show = (turnId: string) => {
         const i = turns().findIndex((t) => t.id === turnId);
         if (i < 0) return;
+        reading = undefined; // Explicit navigation owns the next position.
         const need = turns().length - i;
         if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
         setStick(false);
@@ -91,10 +150,11 @@ export function Transcript(p: { handle: SessionHandle }) {
             setAnchor({ turnId: turn.id, role: j.role });
             setFindQuery(j.query);
             openFind();
-            requestAnimationFrame(() => {
+            afterLayout(() => {
                 const el = content?.querySelector<HTMLElement>(`[data-turn="${CSS.escape(turn.id)}"]`);
                 if (!el || !scroller) return;
                 scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+                reading = capture();
                 el.classList.remove("flash");
                 void el.offsetWidth;
                 el.classList.add("flash");
@@ -114,16 +174,17 @@ export function Transcript(p: { handle: SessionHandle }) {
             <div class="transcript" ref={scroller} onScroll={onScroll} aria-label="Conversation">
                 <div class="transcript-col" ref={content}>
                     <Show when={hidden()}>
-                        <button class="earlier" onClick={() => setShown((n) => n + PAGE)}>
+                        <button class="earlier" onClick={earlier}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
-                    <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} />}</For>
+                    <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind}
+                        workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} />}</For>
                     <div class="transcript-end" />
                 </div>
             </div>
             <Show when={findOpen()}>
-                <FindBar turns={turns} scroller={() => scroller} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} />
+                <FindBar turns={turns} scroller={() => scroller} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={() => { reading = capture(); }} />
             </Show>
             <Show when={!stick()}>
                 <button class="jump" onClick={() => { setStick(true); toBottom(true); }}>
