@@ -5,17 +5,13 @@ import type { CliSessionInfo, EditorInfo, EffortLevel, InteractionResponse, Perm
 import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
+import { toWire, type Attachment } from "../lib/attachments";
 import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { prefs, setPrefs } from "./prefs";
 import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
-export interface Attachment {
-    name: string;
-    mediaType: string;
-    data: string;
-    preview: string;
-}
+export type { Attachment } from "../lib/attachments";
 
 /** Back to the home screen to start a new session (optionally in another project). */
 export function newSession(cwd?: string) {
@@ -149,10 +145,10 @@ export async function exportSession(id: string) {
 }
 
 /** Send from the composer: to the open session, or a new one in the home screen's project. */
-export async function send(text: string, attachments: Attachment[] = []): Promise<boolean> {
-    const images = attachments.map((a) => ({ mediaType: a.mediaType, data: a.data }));
+export async function send(text: string, attachments: Attachment[] = []): Promise<boolean | "command"> {
     let id = app.activeId;
-    if (text.startsWith("/") && clientCommand(id, text)) return true;
+    // Done here, without sending: what's attached stays in the box.
+    if (text.startsWith("/") && clientCommand(id, text)) return "command";
     try {
         if (!id) {
             const cwd = app.homeCwd;
@@ -164,7 +160,7 @@ export async function send(text: string, attachments: Attachment[] = []): Promis
             if (!h) return false;
             id = h.id;
         }
-        await rpc.call("session.send", { id, text, images: images.length ? images : undefined });
+        await rpc.call("session.send", { id, text, ...toWire(attachments) });
         return true;
     } catch (e) {
         reportError(e);

@@ -5,7 +5,7 @@
 // sends it the prompt, shows what it does and answers its permission prompts.
 
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
-import type { ImagePart, ModelInfo, ProviderClient, Usage } from "../providers/types";
+import type { ImagePart, ModelInfo, PdfPart, ProviderClient, Usage } from "../providers/types";
 import type { PermissionMode } from "../permissions/modes";
 import type { Effort } from "../config/settings";
 import type { ToolDisplay } from "../tools/types";
@@ -85,6 +85,8 @@ export interface BackendHost {
 export interface BackendTurn {
     prompt: string;
     images: ImagePart[];
+    /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
+    documents?: PdfPart[];
     cwd: string;
     model: ModelInfo;
     mode: PermissionMode;

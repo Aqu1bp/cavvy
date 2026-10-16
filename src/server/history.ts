@@ -10,6 +10,7 @@ import { dirname, join } from "path";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
 import { textOf, toolCallsOf } from "../providers/types";
 import { redactedJson } from "../util/redact";
+import { attachedPrompt } from "./attachments";
 import { fileDiff, trimInput, truncateText } from "./diffs";
 import type { AgentRun, Block, EffortLevel, FileDiff, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
@@ -515,10 +516,9 @@ export function replay(o: ReplayInput): Turn[] {
                     }
                     return;
                 }
-                const images = m.content.filter((p) => p.type === "image").length;
                 const rec = o.ui.turn(si, index);
                 const imported = Boolean(m.meta?.imported);
-                const t = start({ text: promptText(m), ...(images ? { images } : {}), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at);
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at);
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;

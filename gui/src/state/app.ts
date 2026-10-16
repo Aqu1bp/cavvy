@@ -4,7 +4,7 @@
 
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
-import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary } from "@shared/protocol";
+import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri } from "../lib/platform";
@@ -120,6 +120,7 @@ export function isUnread(s: SessionSummary): boolean {
 export interface Draft {
     text: string;
     images?: { mediaType: string; data: string }[];
+    files?: WireFile[];
 }
 
 export interface SessionHandle {
@@ -162,7 +163,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
         const [draft, setDraft] = createSignal<Draft | undefined>();
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
-        const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])] } : d));
+        const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])], files: [...(prev.files ?? []), ...(d.files ?? [])] } : d));
         return { id, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
@@ -378,7 +379,7 @@ function onEvent(ev: ServerEvent) {
             if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
-            handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images });
+            handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files });
             return;
         case "toast":
             toast(ev.message, ev.level);

@@ -95,7 +95,7 @@ export function maskKey(key: string): string {
 }
 
 /**
- * Fields that must be stored byte for byte: image bytes, and signed or
+ * Fields that must be stored byte for byte: image and PDF bytes, and signed or
  * encrypted reasoning that providers verify on replay. Matched by the shape
  * of the object holding them, so a tool input's own `data` field is still redacted.
  */
@@ -103,7 +103,7 @@ function opaque(holder: { type?: unknown } | undefined, key: string): boolean {
     const t = holder?.type;
     switch (key) {
         case "data":
-            return t === "image" || t === "base64" || t === "redacted_thinking";
+            return t === "image" || t === "base64" || t === "redacted_thinking" || (t === "file" && (holder as { kind?: unknown }).kind === "pdf");
         case "signature":
         case "redactedData":
         case "thinking":

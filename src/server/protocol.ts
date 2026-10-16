@@ -7,6 +7,41 @@
 
 export const PROTOCOL_VERSION = 1;
 
+/**
+ * What a message can carry besides images. The composer refuses a file over
+ * these before sending; the server checks every one again. The total keeps a
+ * message's base64 (4/3 of the bytes, about 27 MB) well inside the
+ * WebSocket's 48 MB, and a PDF stays under the request size Anthropic takes
+ * (32 MB) even resent with the rest of the conversation.
+ */
+export const ATTACH_LIMITS = {
+    textBytes: 512 * 1024,
+    pdfBytes: 10 * 1024 * 1024,
+    files: 10,
+    totalBytes: 20 * 1024 * 1024,
+    nameChars: 120,
+};
+
+/** A paste longer than this (characters or lines) becomes a "Pasted text" attachment instead of filling the box. */
+export const LONG_PASTE = { chars: 4000, lines: 80 };
+
+/** A file as it travels: its bytes and the name it was given. The server decides what it is. */
+export interface WireFile {
+    name: string;
+    data: string /* base64 */;
+    /** Pasted into the box rather than a file. */
+    pasted?: boolean;
+}
+
+/** What a prompt shows of an attached file: never its contents. */
+export interface FileChip {
+    name: string;
+    kind: "text" | "pdf";
+    size: number;
+    lines?: number;
+    pasted?: boolean;
+}
+
 export type PermissionModeId = "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type ToolCategoryId = "read" | "edit" | "execute" | "network" | "meta" | "mcp";
@@ -184,6 +219,7 @@ export type TurnStatus = "running" | "done" | "aborted" | "error" | "denied" | "
 export interface TurnPrompt {
     text: string;
     images?: number;
+    files?: FileChip[];
     /** Started by a slash command (/init, /review, custom commands). */
     command?: boolean;
     /** Position of the prompt in the session's messages, when it can be rewound to. */
@@ -275,6 +311,7 @@ export interface ModelSummary {
     pricing?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
     pricingEstimated?: boolean;
     supportsImages?: boolean;
+    supportsPdf?: boolean;
     supportsReasoning?: boolean;
     effortLevels?: EffortLevel[];
     supportsFastMode?: boolean;
@@ -326,6 +363,8 @@ export interface SessionState {
     queued: string[];
     /** Each queued message's id, in the same order (for session.dequeue). */
     queueIds: number[];
+    /** What each queued message carries besides its text ("report.log, 1 image"), "" for nothing. */
+    queuedAttached?: string[];
     interactions: Interaction[];
     mcp: McpStatus[];
     /** Files this session's edit tools changed (the Changes panel). */
@@ -628,7 +667,7 @@ export type ServerEvent =
     | { type: "notify"; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
-    | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[] }
+    | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
     | { type: "models.changed" }
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
     | { type: "scripts.changed"; project: string };
@@ -671,7 +710,7 @@ export interface Methods {
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
-    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[] }; result: { queued: boolean } };
+    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }; result: { queued: boolean } };
     "session.interrupt": { params: { id: string }; result: null };
     "session.respond": { params: { id: string; interactionId: string; response: InteractionResponse }; result: null };
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
@@ -696,8 +735,8 @@ export interface Methods {
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };
     "session.export": { params: { id: string }; result: { markdown: string } };
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
-    /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images too. */
-    "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[] } };
+    /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
+    "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "models.list": { params: { refresh?: boolean }; result: ProviderModels[] };
     "providers.list": { params: Record<string, never>; result: ProviderInfo[] };
     /** `model`: the default model it set, when there was none yet. */

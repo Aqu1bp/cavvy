@@ -9,6 +9,7 @@ import { apiFastModeInfo } from "./fast-mode";
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
+import { fileAsText, frameName, readsPdf } from "./files";
 import { httpError } from "./openai-compat";
 import {
     ProviderError,
@@ -62,7 +63,7 @@ function sanitizeCallId(id: string): string {
     return s || "call";
 }
 
-export function toResponsesInput(messages: Message[], def: ProviderDef, modelId: string): Json[] {
+export function toResponsesInput(messages: Message[], def: ProviderDef, modelId: string, pdf = true): Json[] {
     const out: Json[] = [];
     for (const msg of messages) {
         if (msg.role === "user") {
@@ -79,6 +80,7 @@ export function toResponsesInput(messages: Message[], def: ProviderDef, modelId:
             for (const p of msg.content) {
                 if (p.type === "text" && p.text) parts.push({ type: "input_text", text: p.text });
                 else if (p.type === "image") parts.push({ type: "input_image", image_url: `data:${p.mediaType};base64,${p.data}`, detail: "auto" });
+                else if (p.type === "file") parts.push(p.kind === "pdf" && pdf ? { type: "input_file", filename: frameName(p.name), file_data: `data:application/pdf;base64,${p.data}` } : { type: "input_text", text: fileAsText(p) });
             }
             if (parts.length) out.push({ type: "message", role: "user", content: parts });
             continue;
@@ -126,7 +128,7 @@ export class OpenAIResponsesProvider implements ProviderClient {
             model: m.id,
             store: false,
             stream: true,
-            input: toResponsesInput(req.messages, def, m.id),
+            input: toResponsesInput(req.messages, def, m.id, readsPdf(req.model)),
         };
         // Left out, the project's own tier applies (auto); "default" would override it, so only fast is asked for.
         if (req.fastMode && m.supportsFastMode && def.id === "openai" && apiFastModeInfo(def.id, m.id, this.base).supportsFastMode) body.service_tier = "fast";

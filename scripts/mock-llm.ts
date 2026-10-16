@@ -200,6 +200,8 @@ export function startMockLlm(o: MockOptions = {}) {
     let calls = 0;
     /** Each completion asked for: the model, and what it was for. */
     const requests: { model: string; kind: "title" | "summary" | "turn" }[] = [];
+    /** The latest requests' bodies as they arrived, for tests that check what the model was sent. */
+    const bodies: Json[] = [];
     const server = Bun.serve({
         hostname: "127.0.0.1",
         port: o.port ?? 0,
@@ -209,6 +211,8 @@ export function startMockLlm(o: MockOptions = {}) {
             if (url.pathname.endsWith("/models")) return Response.json({ data: MODELS });
             if (!url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 });
             const body = (await req.json()) as Json;
+            bodies.push(body);
+            if (bodies.length > 50) bodies.shift();
             const messages: Json[] = body.messages ?? [];
             const system = String(messages.find((m) => m.role === "system")?.content ?? "");
             // The prompt that started this turn and how many tool rounds have happened since.
@@ -289,7 +293,7 @@ export function startMockLlm(o: MockOptions = {}) {
             return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
         },
     });
-    return { url: `http://127.0.0.1:${server.port}/v1`, port: server.port, requests, stop: () => server.stop(true) };
+    return { url: `http://127.0.0.1:${server.port}/v1`, port: server.port, requests, bodies, stop: () => server.stop(true) };
 }
 
 if (import.meta.main) {

@@ -1,5 +1,6 @@
 import type { Message, UserMessage } from "../providers/types";
 import { truncateMiddle } from "../util/files";
+import { framedText } from "../providers/files";
 
 export const COMPACT_PROMPT = `Your task is to write a detailed summary of the conversation so far. The summary replaces the conversation history, so it must preserve everything needed to continue the work without losing context.
 
@@ -61,6 +62,8 @@ function renderForTranscript(m: Message): string {
         else if (p.type === "tool_call") out.push(`[called ${p.name}: ${truncateMiddle(JSON.stringify(p.input), 600)}]`);
         else if (p.type === "tool_result") out.push(`[${p.isError ? "error from" : "result of"} ${p.toolName}: ${truncateMiddle(p.content, 1500)}]`);
         else if (p.type === "image") out.push("[image]");
+        // Framed here too, so a file can't pass for the transcript's own lines.
+        else if (p.type === "file") out.push(p.kind === "text" ? framedText({ ...p, text: truncateMiddle(p.text, 4000) }) : `[attached PDF ${p.name}]`);
     }
     if (!out.length) return "";
     const results = m.content.every((p) => p.type === "tool_result");
@@ -92,6 +95,8 @@ export function estimateTokens(messages: Message[]): number {
             else if (p.type === "tool_call") chars += JSON.stringify(p.input).length + 50;
             else if (p.type === "thinking") chars += p.text.length;
             else if (p.type === "image") chars += 6000;
+            // A PDF's pages are read as text and images: a rough guess from its size.
+            else if (p.type === "file") chars += p.kind === "text" ? p.text.length + 300 : Math.max(6000, Math.round(p.size / 6));
         }
     }
     return Math.ceil(chars / 3.5);

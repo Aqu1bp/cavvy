@@ -25,12 +25,15 @@ import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarge
 import { costOf } from "../providers/pricing";
 import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { modelRef, parseModelRef, textOf, toolCallsOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
+import { attachmentsNote, readsPdf } from "../providers/files";
+import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitSnapshot } from "../util/git";
 import { redact, lineRedactor } from "../util/redact";
+import { attachedLabel, attachedPrompt } from "./attachments";
+import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
@@ -70,7 +73,7 @@ interface Pending {
 interface Queued {
     id: number;
     text: string;
-    images?: ImagePart[];
+    attachments?: AttachedPart[];
 }
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
@@ -127,6 +130,7 @@ export function modelSummary(m: ModelInfo): ModelSummary {
         pricing: m.pricing,
         pricingEstimated: m.pricingEstimated,
         supportsImages: m.supportsImages,
+        supportsPdf: readsPdf(m),
         supportsReasoning: m.supportsReasoning,
         effortLevels: m.effortLevels,
         supportsFastMode: m.supportsFastMode,
@@ -296,6 +300,7 @@ export class Runtime {
             todos: this.toolState.todos.map((t) => ({ ...t })),
             queued: [],
             queueIds: [],
+            queuedAttached: [],
             interactions: [],
             mcp: this.ws.mcpStatus(),
             filesChanged: this.filesChanged(),
@@ -1428,8 +1433,8 @@ export class Runtime {
     // Prompts
 
     private drainQueued(): string[] {
-        // Messages with images wait for their own turn.
-        const take = this.queued.filter((q) => !q.images?.length && !q.text.startsWith("/") && !q.text.startsWith("!"));
+        // Messages with images or files wait for their own turn.
+        const take = this.queued.filter((q) => !q.attachments?.length && !q.text.startsWith("/") && !q.text.startsWith("!"));
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.setState(this.queueState());
@@ -1457,37 +1462,38 @@ export class Runtime {
     }
 
     /** A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy. */
-    async send(text: string, images?: ImagePart[]): Promise<{ queued: boolean }> {
+    async send(text: string, attachments?: AttachedPart[]): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
         if (this.closed) throw new Error("This session was closed.");
         const trimmed = text.trim();
-        if (!trimmed && !images?.length) return { queued: false };
+        if (!trimmed && !attachments?.length) return { queued: false };
+        if (attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
         if (this.busy) {
-            this.queued.push({ id: ++this.queueSeq, text, images });
+            this.queued.push({ id: ++this.queueSeq, text, attachments });
             this.setState(this.queueState());
             return { queued: true };
         }
-        void this.dispatch(text, images).catch((e) => this.notice(redact((e as Error).message), "error"));
+        void this.dispatch(text, attachments).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
     }
 
-    private async dispatch(text: string, images?: ImagePart[]) {
+    private async dispatch(text: string, attachments?: AttachedPart[]) {
         const trimmed = text.trim();
-        if (trimmed.startsWith("!") && !images?.length) return this.runUserShell(trimmed.slice(1).trim());
+        if (trimmed.startsWith("!") && !attachments?.length) return this.runUserShell(trimmed.slice(1).trim());
         if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
             const [, name = "", args = ""] = trimmed.match(/^\/(\S+)\s*([\s\S]*)$/) ?? [];
             const cmd = name.toLowerCase();
             if (cmd === "compact") return void (await this.compact(args.trim() || undefined));
-            if (cmd === "init") return this.startTurn(INIT_PROMPT, { display: "/init", kind: "command" });
-            if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command" });
+            if (cmd === "init") return this.startTurn(INIT_PROMPT, { display: "/init", kind: "command", attachments });
+            if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command", attachments });
             const custom = this.ws.commands.find((c) => c.name === cmd);
-            if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command" });
+            if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
         }
-        return this.startTurn(text, { images });
+        return this.startTurn(text, { attachments });
     }
 
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; images?: ImagePart[] } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[] } = {}) {
         if (!this.agent) {
             await this.ready.catch(() => undefined);
             if (this.closed) return;
@@ -1506,7 +1512,7 @@ export class Runtime {
         const index = this.session.messages.length;
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...(opts.images?.length ? { images: opts.images.length } : {}), ...(opts.kind === "command" ? { command: true } : {}), index },
+            prompt: { text: display, ...attachedPrompt(opts.attachments), ...(opts.kind === "command" ? { command: true } : {}), index },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -1529,16 +1535,18 @@ export class Runtime {
         try {
             if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
             if (ac.signal.aborted) {
-                this.engine.draft(this, display);
+                this.engine.draft(this, display, opts.attachments);
                 reason = "aborted";
                 this.endTurn("aborted");
             } else {
                 const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
                 const { parts, attached } = expandMentions(text, this.toolState, roots);
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
-                if (opts.images?.length) {
-                    if (this.model?.supportsImages === false) this.notice(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
-                    parts.push(...opts.images);
+                if (opts.attachments?.length) {
+                    if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) this.notice(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
+                    // Checked when it was sent; the model may have changed while it waited in the queue.
+                    if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) this.notice(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
+                    parts.push(...opts.attachments);
                 }
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind });
             }
@@ -1574,20 +1582,20 @@ export class Runtime {
         const next = this.queued.shift();
         if (!next) return;
         this.setState(this.queueState());
-        await this.dispatch(next.text, next.images).catch((e) => this.notice(redact((e as Error).message), "error"));
+        await this.dispatch(next.text, next.attachments).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
     /** After an interrupt, unsent messages go back to the input box instead of running. */
     private returnQueued() {
         if (!this.queued.length) return;
         const text = this.queued.map((q) => q.text).filter((t) => t.trim()).join("\n\n");
-        this.engine.draft(this, text, this.queued.flatMap((q) => q.images ?? []));
+        this.engine.draft(this, text, this.queued.flatMap((q) => q.attachments ?? []));
         this.queued = [];
         this.setState(this.queueState());
     }
 
     private queueState() {
-        return { queued: this.queued.map((q) => q.text), queueIds: this.queued.map((q) => q.id) };
+        return { queued: this.queued.map((q) => q.text), queueIds: this.queued.map((q) => q.id), queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)) };
     }
 
     /** Out of the queue, by its id (a message the queue has moved past isn't there any more). */
@@ -1904,7 +1912,8 @@ export class Runtime {
                     continue;
                 }
                 const t = promptText(msg);
-                if (t) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", t, "");
+                const note = attachmentsNote(msg.content);
+                if (t || note) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", ...(t ? [t] : []), ...(note ? [`*${note}*`] : []), "");
             } else {
                 const t = textOf(msg).trim();
                 if (t) out.push("## Assistant", "", t, "");

@@ -187,7 +187,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined);
         this.turns.add(turn);
         try {
-            return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } }))]);
+            const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
+            return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })), ...documents]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();

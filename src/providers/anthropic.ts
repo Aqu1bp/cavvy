@@ -27,6 +27,7 @@ import {
 import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS } from "./anthropic-models";
 import type { Effort } from "../config/settings";
 import { plainErrorText } from "../util/html";
+import { fileAsText, readsPdf } from "./files";
 
 type BetaParams = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type BetaMessageParam = Anthropic.Beta.Messages.BetaMessageParam;
@@ -182,7 +183,7 @@ export class AnthropicProvider implements ProviderClient {
             model: m.id,
             max_tokens: maxOut,
             system: req.system ? [{ type: "text", text: req.system, ...(req.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}) }] : undefined,
-            messages: toAnthropicMessages(req.messages, stripThinking),
+            messages: toAnthropicMessages(req.messages, stripThinking, readsPdf(req.model)),
             tools: tools.length ? tools : undefined,
             stream: true,
         };
@@ -382,7 +383,7 @@ function toProviderError(e: unknown): ProviderError {
 // ---------------------------------------------------------------------------
 // Conversion: neutral transcript -> Anthropic messages. Deterministic.
 
-export function toAnthropicMessages(messages: Message[], stripThinking = false): BetaMessageParam[] {
+export function toAnthropicMessages(messages: Message[], stripThinking = false, pdf = true): BetaMessageParam[] {
     const out: BetaMessageParam[] = [];
     for (const msg of messages) {
         if (msg.role === "user") {
@@ -392,6 +393,9 @@ export function toAnthropicMessages(messages: Message[], stripThinking = false):
                     if (p.text) content.push({ type: "text", text: p.text });
                 } else if (p.type === "image") {
                     content.push({ type: "image", source: { type: "base64", media_type: p.mediaType as "image/png", data: p.data } });
+                } else if (p.type === "file") {
+                    if (p.kind === "pdf" && pdf) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: p.data } });
+                    else content.push({ type: "text", text: fileAsText(p) });
                 } else if (p.type === "tool_result") {
                     const inner: (Anthropic.Beta.Messages.BetaTextBlockParam | Anthropic.Beta.Messages.BetaImageBlockParam)[] = [];
                     inner.push({ type: "text", text: p.content || "(no output)" });
