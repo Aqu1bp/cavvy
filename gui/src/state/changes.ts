@@ -2,10 +2,15 @@ import { createResource, createSignal } from "solid-js";
 import type { ChangesInfo, GitChangesInfo, GitScope } from "@shared/protocol";
 import { coalesce, type Slot } from "@shared/coalesce";
 import type { SessionHandle } from "./app";
-import { reportError, rpc } from "./app";
+import { app, reportError, rpc } from "./app";
 
 /** The review pane's views: what git says changed, or only what Harness's edit tools did. */
 export type ReviewScope = GitScope | "harness";
+
+/** A socket opens before its sessions reopen; keep resources paused until adoption. */
+export function sessionReadReady(handle: SessionHandle): boolean {
+    return app.conn === "open" && handle.ready();
+}
 
 /** Visible work that can still edit the folder; the server also enforces idle. */
 export function commitUnavailable(handle: SessionHandle | undefined): string | undefined {
@@ -18,8 +23,12 @@ export function commitUnavailable(handle: SessionHandle | undefined): string | u
 /** What the agent's edit tools changed in a session; fetched again as edits land and when a turn ends. */
 export function useChanges(handle: () => SessionHandle) {
     return createResource(
-        () => ({ id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy }),
-        async ({ id }) => rpc.call("session.changes", { id }).catch((e): ChangesInfo => (reportError(e), { files: [], added: 0, removed: 0, tracked: true })),
+        () => sessionReadReady(handle()) && { id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy },
+        async ({ id }) =>
+            rpc.call("session.changes", { id }).catch((e): ChangesInfo => {
+                if (sessionReadReady(handle())) reportError(e);
+                return { files: [], added: 0, removed: 0, tracked: true };
+            }),
     );
 }
 
@@ -69,7 +78,7 @@ export function changedOutside(): number {
 /** Git's view of a session's folder; fetched again as edits land, when a turn starts or ends, and on changedOutside(). */
 export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope = () => "uncommitted", base: () => string | undefined = () => undefined, turnId: () => number | undefined = () => undefined) {
     return createResource(
-        () => ({ id: handle().id, scope: scope(), base: base(), turnId: turnId(), n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() }),
+        () => sessionReadReady(handle()) && { id: handle().id, scope: scope(), base: base(), turnId: turnId(), n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() },
         ({ id, scope, base, turnId }) => fetchGitChanges(id, scope, base, undefined, turnId),
     );
 }

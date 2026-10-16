@@ -1717,7 +1717,10 @@ button.strip-ctl[aria-expanded="true"] {
 .toasts {
     position: fixed;
     right: 20px;
-    bottom: 20px;
+    top: 60px;
+    /* The two-toast limit fits two 52px rows and an 8px gap without scrolling. */
+    max-height: 112px;
+    width: min(440px, calc(100vw - 40px));
     z-index: 80;
     display: flex;
     flex-direction: column;
@@ -1726,13 +1729,27 @@ button.strip-ctl[aria-expanded="true"] {
     pointer-events: none;
 }
 
+.toast-region {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-end;
+    max-width: 100%;
+}
+
+.toast-region:empty {
+    display: none;
+}
+
 .toast {
+    flex: none;
     pointer-events: auto;
     display: flex;
     align-items: center;
     gap: 10px;
-    max-width: 440px;
-    padding: 11px 10px 11px 15px;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 8px 10px;
     border-radius: 14px;
     background: var(--bg-elev);
     box-shadow: var(--shadow-float);
@@ -1758,9 +1775,21 @@ button.strip-ctl[aria-expanded="true"] {
 }
 
 .toast-msg {
+    display: -webkit-box;
     flex: 1;
     min-width: 0;
+    overflow: hidden;
     overflow-wrap: anywhere;
+    line-height: 18px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.toast-count,
+.toast .link-btn,
+.toast .icon-btn {
+    flex: none;
+    white-space: nowrap;
 }
 
 

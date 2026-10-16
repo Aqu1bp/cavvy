@@ -1,10 +1,10 @@
 import { createEffect, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
-import { app, attentionCount, dismissToast, handleFor, toasts, type SessionHandle } from "./state/app";
+import { app, attentionCount, dismissToast, handleFor, pauseToast, rpc, runToastAction, toast, toasts, type Toast, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
-import { isMod, isTauri, isTerminalToggle, os } from "./lib/platform";
+import { copyText, isMod, isTauri, isTerminalToggle, os } from "./lib/platform";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -26,38 +26,73 @@ import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { CommitDialog } from "./components/CommitDialog";
 import { Logo, Spinner } from "./components/ui/bits";
 
+function ToastItem(p: { toast: Toast }) {
+    const t = () => p.toast;
+    onCleanup(() => {
+        // Failed actions move to the alert region, replacing their old DOM node.
+        pauseToast(t().id, "hover", false);
+        pauseToast(t().id, "focus", false);
+    });
+    return (
+        <div
+            class={`toast ${t().level}`}
+            onPointerEnter={() => pauseToast(t().id, "hover", true)}
+            onPointerLeave={() => pauseToast(t().id, "hover", false)}
+            onFocusIn={() => pauseToast(t().id, "focus", true)}
+            onFocusOut={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) pauseToast(t().id, "focus", false);
+            }}
+        >
+            <Switch fallback={<Info size={15} />}>
+                <Match when={t().level === "error"}>
+                    <AlertCircle size={15} />
+                </Match>
+                <Match when={t().level === "success"}>
+                    <CheckCircle2 size={15} />
+                </Match>
+            </Switch>
+            <span class="toast-msg" title={t().message}>
+                {t().message}
+            </span>
+            <Show when={t().count > 1}>
+                <span class="toast-count">({t().count} times)</span>
+            </Show>
+            <Show when={t().action}>
+                <button
+                    class="link-btn"
+                    disabled={t().running}
+                    onClick={() => void runToastAction(t().id)}
+                >
+                    {t().action!.label}
+                </button>
+            </Show>
+            <Show when={t().level === "error"}>
+                <button
+                    class="link-btn"
+                    onClick={async () => {
+                        const copied = await copyText(t().message);
+                        toast(copied ? "Copied error" : "Couldn't copy error", copied ? "success" : "info");
+                    }}
+                >
+                    Copy
+                </button>
+            </Show>
+            <button class="icon-btn" onClick={() => dismissToast(t().id)} aria-label="Dismiss">
+                <X size={13} />
+            </button>
+        </div>
+    );
+}
+
 function Toasts() {
     return (
-        <div class="toasts" role="status" aria-live="polite">
-            <For each={toasts}>
-                {(t) => (
-                    <div class={`toast ${t.level}`}>
-                        <Switch fallback={<Info size={15} />}>
-                            <Match when={t.level === "error"}>
-                                <AlertCircle size={15} />
-                            </Match>
-                            <Match when={t.level === "success"}>
-                                <CheckCircle2 size={15} />
-                            </Match>
-                        </Switch>
-                        <span class="toast-msg">{t.message}</span>
-                        <Show when={t.action}>
-                            <button
-                                class="link-btn"
-                                onClick={() => {
-                                    t.action!.run();
-                                    dismissToast(t.id);
-                                }}
-                            >
-                                {t.action!.label}
-                            </button>
-                        </Show>
-                        <button class="icon-btn" onClick={() => dismissToast(t.id)} aria-label="Dismiss">
-                            <X size={13} />
-                        </button>
-                    </div>
-                )}
-            </For>
+        <div class="toasts">
+            <div class="toast-region" role="alert" aria-live="assertive" aria-relevant="additions text">
+                <For each={toasts.filter((t) => t.level === "error")}>{(t) => <ToastItem toast={t} />}</For>
+            </div>
+            <div class="toast-region" role="status" aria-live="polite" aria-relevant="additions text">
+                <For each={toasts.filter((t) => t.level !== "error")}>{(t) => <ToastItem toast={t} />}</For>
+            </div>
         </div>
     );
 }
@@ -87,6 +122,9 @@ function Disconnected() {
                     <p class="muted">{isTauri ? "The background process stopped. Quit and reopen the app." : "Is `harness gui` still running? Still trying to reconnect…"}</p>
                 </Match>
             </Switch>
+            <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
+                Reconnect now
+            </button>
         </div>
     );
 }
@@ -106,7 +144,6 @@ function SessionView(p: { handle: SessionHandle }) {
     return (
         <>
             <Header handle={p.handle} />
-            <Reconnecting />
             <div ref={stage} class={`stage ${panel() ? "with-panel" : ""}`}>
                 <Transcript handle={p.handle} />
                 <div class="composer-dock" ref={dock}>
@@ -124,11 +161,21 @@ function SessionView(p: { handle: SessionHandle }) {
 
 function Reconnecting() {
     return (
-        <Show when={app.conn !== "open"}>
-            <div class="banner">
-                <Spinner size={12} /> Reconnecting…
-            </div>
-        </Show>
+        <>
+            <Show when={app.conn !== "open"}>
+                <div class="banner" role="status">
+                    <Spinner size={12} /> Not connected · Reconnecting…
+                    <button class="link-btn" onClick={() => rpc.reconnectNow()}>
+                        Reconnect now
+                    </button>
+                </div>
+            </Show>
+            <Show when={app.conn === "open" && app.slowRequest}>
+                <div class="banner" role="status">
+                    The server is taking a while…
+                </div>
+            </Show>
+        </>
     );
 }
 
@@ -205,11 +252,11 @@ export function App() {
                     </Show>
                 </Show>
                 <main class="main">
+                    <Reconnecting />
                     <Switch
                         fallback={
                             <>
                                 <Header />
-                                <Reconnecting />
                                 <Home />
                             </>
                         }

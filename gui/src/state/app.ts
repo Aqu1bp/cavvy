@@ -12,7 +12,8 @@ import { prefs } from "./prefs";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
-import { toastMs } from "../lib/toasts";
+import { repeatedToast, ToastLifetime, toastMs, type Toast, type ToastAction } from "../lib/toasts";
+export type { Toast } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
 import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
 import { composerDrafts } from "../lib/composer-draft";
@@ -23,24 +24,104 @@ rpc.retriesCredentials = isTauri;
 // ---------------------------------------------------------------------------
 // Toasts
 
-export interface Toast {
-    id: number;
-    level: "info" | "warn" | "error" | "success";
-    message: string;
-    action?: { label: string; run: () => void };
-}
-
+// Two wrapped rows fit above Home's input even in a 600px-tall window.
+const MAX_TOASTS = 2;
+const MAX_QUEUED_TOASTS = 10;
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
+const toastTimers = new Map<number, { life: ToastLifetime; duration: number; message: string; timer?: ReturnType<typeof setTimeout> }>();
+const toastQueue: (Toast & { duration: number })[] = [];
 
-export function toast(message: string, level: Toast["level"] = "info", action?: Toast["action"], ms?: number) {
-    const id = ++toastId;
-    setToasts((t) => [...t.slice(-3), { id, level, message, action }]);
-    setTimeout(() => dismissToast(id), toastMs(level, ms));
+function showQueuedToasts() {
+    while (toasts.length < MAX_TOASTS && toastQueue.length) {
+        const { duration, ...item } = toastQueue.shift()!;
+        // Waiting in the queue uses none of the toast's visible lifetime.
+        const life = new ToastLifetime(duration, performance.now());
+        if (document.hidden) life.pause("hidden", performance.now());
+        toastTimers.set(item.id, { life, duration, message: item.message });
+        setToasts((t) => [...t, item]);
+        scheduleToast(item.id);
+    }
+}
+
+function scheduleToast(id: number) {
+    const entry = toastTimers.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    if (!entry.life.paused) entry.timer = setTimeout(() => dismissToast(id), entry.life.remaining(performance.now()));
+}
+
+export function pauseToast(id: number, reason: "hover" | "focus" | "hidden", paused: boolean) {
+    const entry = toastTimers.get(id);
+    if (!entry) return;
+    if (paused) entry.life.pause(reason, performance.now());
+    else entry.life.resume(reason, performance.now());
+    scheduleToast(id);
+}
+
+export function toast(message: string, level: Toast["level"] = "info", action?: ToastAction, ms?: number) {
+    const existing = repeatedToast(toasts, message, level, action);
+    if (existing) {
+        const index = toasts.findIndex((t) => t.id === existing.id);
+        setToasts(index, "count", existing.count + 1);
+        toastTimers.get(existing.id)?.life.restart(toastMs(level, ms), performance.now());
+        scheduleToast(existing.id);
+        return;
+    }
+    const waiting = repeatedToast(toastQueue, message, level, action);
+    if (waiting) {
+        waiting.count++;
+        return;
+    }
+    toastQueue.push({ id: ++toastId, level, message, count: 1, action, duration: toastMs(level, ms) });
+    if (toasts.length >= MAX_TOASTS) {
+        const idle = toasts.find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
+        if (idle) dismissToast(idle.id);
+    }
+    showQueuedToasts();
+    while (toastQueue.length > MAX_QUEUED_TOASTS) {
+        const oldest = toastQueue.findIndex((t) => !t.action);
+        // Recovery actions take precedence over the queue limit when none can be dropped.
+        if (oldest < 0) break;
+        toastQueue.splice(oldest, 1);
+    }
 }
 
 export function dismissToast(id: number) {
+    clearTimeout(toastTimers.get(id)?.timer);
+    toastTimers.delete(id);
     setToasts((t) => t.filter((x) => x.id !== id));
+    showQueuedToasts();
+}
+
+export async function runToastAction(id: number) {
+    const item = toasts.find((t) => t.id === id);
+    const entry = toastTimers.get(id);
+    if (!item?.action || item.running || !entry) return;
+    setToasts((t) => t.id === id, "running", true);
+    entry.life.pause("action", performance.now());
+    scheduleToast(id);
+    try {
+        if ((await item.action.run()) !== false) {
+            dismissToast(id);
+            return;
+        }
+        throw new RpcError("Action failed. Try again.");
+    } catch (e) {
+        if (!toasts.some((t) => t.id === id)) {
+            reportError(e);
+            return;
+        }
+        // A separate error toast could evict another failed Undo under the two-row cap.
+        const message = e instanceof Error ? e.message : String(e);
+        setToasts((t) => t.id === id, { level: "error", message: `${entry.message}: ${message}` });
+    } finally {
+        // A failed action gets its full visible lifetime again, never an automatic retry.
+        entry.life.restart(entry.duration, performance.now());
+        entry.life.resume("action", performance.now());
+        setToasts((t) => t.id === id, "running", false);
+        scheduleToast(id);
+    }
 }
 
 export function reportError(e: unknown) {
@@ -53,6 +134,7 @@ export function reportError(e: unknown) {
 
 export interface AppState {
     conn: ConnectionState;
+    slowRequest: boolean;
     hello?: HelloResult;
     sessions: SessionSummary[];
     archived: SessionSummary[];
@@ -86,6 +168,7 @@ function loadSeen(): Record<string, number> {
 
 export const [app, setApp] = createStore<AppState>({
     conn: "connecting",
+    slowRequest: false,
     sessions: [],
     archived: [],
     models: [],
@@ -129,6 +212,9 @@ export interface Draft {
 
 export interface SessionHandle {
     id: string;
+    /** Reads can resume only after this handle's session has been opened on the server. */
+    ready: () => boolean;
+    setReady: (ready: boolean) => void;
     view: SessionView;
     set: SetStoreFunction<SessionView>;
     seq: number;
@@ -158,17 +244,21 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     sessionPresent(id);
     const existing = handles.get(id);
     if (existing) {
-        existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
         existing.seq = snap.seq;
         existing.queue = [];
+        batch(() => {
+            existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
+            existing.setReady(true);
+        });
         return existing;
     }
     const h = createRoot(() => {
         const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
         const [draft, setDraft] = createSignal<Draft | undefined>();
+        const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
         const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])], files: [...(prev.files ?? []), ...(d.files ?? [])] } : d));
-        return { id, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
+        return { id, ready, setReady, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
     trim();
@@ -431,12 +521,17 @@ function onEvent(ev: ServerEvent) {
     }
 }
 
-let connectedOnce = false;
-
 export function start() {
+    document.addEventListener("visibilitychange", () => {
+        for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
+    });
+    rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
     rpc.onState((s) => {
-        setApp("conn", s);
+        batch(() => {
+            if (s !== "open") for (const h of handles.values()) h.setReady(false);
+            setApp("conn", s);
+        });
         if (s !== "open") return;
         void (async () => {
             try {
@@ -445,8 +540,7 @@ export function start() {
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
-                if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
-                connectedOnce = true;
+                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();
             } catch (e) {

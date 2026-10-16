@@ -1,4 +1,4 @@
-import { createEffect, createResource, createSignal, For, on, Show } from "solid-js";
+import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { AlertTriangle, FileMinus2, FilePen, History } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast } from "../state/app";
@@ -31,9 +31,17 @@ export function RewindDialog() {
     const [busy, setBusy] = createSignal(false);
     /** Files changed outside Harness: restoring them needs a second, explicit click. */
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
+    createEffect(() => {
+        // Reconnect reopens sessions later; a plan against the old view is no longer safe.
+        if (rewindOpen() && app.conn !== "open") setRewindOpen(false);
+    });
     const [targets, { refetch }] = createResource(
-        () => (rewindOpen() && id() ? id() : undefined),
-        (sid) => rpc.call("session.rewindTargets", { id: sid }),
+        () => (app.conn === "open" && rewindOpen() && id() ? id() : undefined),
+        (sid) =>
+            rpc.call("session.rewindTargets", { id: sid }).catch((e) => {
+                if (app.conn === "open") reportError(e);
+                return [];
+            }),
     );
     createEffect(
         on(rewindOpen, (open) => {
@@ -57,15 +65,22 @@ export function RewindDialog() {
         ),
     );
     createEffect(
-        on(chosen, async (index) => {
+        on([chosen, () => app.conn === "open", id, rewindOpen], ([index, connected, sid, open]) => {
+            let current = true;
+            onCleanup(() => {
+                current = false;
+            });
             setPlan(undefined);
             setConfirming(undefined);
-            if (index === undefined || !id()) return;
-            try {
-                setPlan(await rpc.call("session.rewindPlan", { id: id()!, index }));
-            } catch (e) {
-                reportError(e);
-            }
+            if (index === undefined || !sid || !connected || !open) return;
+            void rpc.call("session.rewindPlan", { id: sid, index }).then(
+                (value) => {
+                    if (current) setPlan(value);
+                },
+                (e) => {
+                    if (current) reportError(e);
+                },
+            );
         }),
     );
     const close = () => setRewindOpen(false);

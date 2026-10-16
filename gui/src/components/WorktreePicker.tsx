@@ -14,7 +14,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const [removing, setRemoving] = createSignal<RemoveWorktreeRequest>();
     let anchor: HTMLButtonElement | undefined;
     const [listing] = createResource(
-        () => open() && p.cwd,
+        () => app.conn === "open" && open() && p.cwd,
         async (path): Promise<{ worktrees: WorktreeInfo[]; error?: string }> => {
             try { return { worktrees: await rpc.call("projects.worktrees", { path }) }; }
             catch (e) { return { worktrees: [], error: e instanceof Error ? e.message : String(e) }; }
