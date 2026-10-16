@@ -71,6 +71,8 @@ export interface Settings {
     webSearch?: "auto" | "anthropic" | "brave" | "tavily" | "duckduckgo" | "off";
     /** Bash tool default timeout in ms. */
     bashTimeout?: number;
+    /** Claude Code's shell/Monitor grace after an answer; agents keep their own limit. */
+    claudeCode?: { backgroundWaitSec?: number };
     /**
      * Servers from the project's .mcp.json the user approved: name -> a keyed
      * hash of what it runs (src/mcp/approval.ts). Any change asks again.
