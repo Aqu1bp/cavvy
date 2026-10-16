@@ -488,7 +488,9 @@ export function replay(o: ReplayInput): Turn[] {
         const noticesBefore = (index: number) => {
             while (notices.length && notices[0]!.index <= index) {
                 const n = notices.shift()!;
-                const t = ensure();
+                // A notice can be the first block after compaction; it still needs a
+                // position for search, even when flushed after the last message.
+                const t = ensure(n.index);
                 t.blocks.push({ t: "notice", id: o.newId(), level: n.level, text: n.text });
                 if (n.level === "error" && t.status === "done") t.status = "error";
             }

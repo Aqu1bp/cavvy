@@ -130,6 +130,71 @@ describe("searching session files", () => {
         expect(turnFor(s.file, 1, 2)?.prompt?.text).toBe("india next prompt");
     });
 
+    test("persisted notices don't count as messages or move search hits across turns", async () => {
+        const notice = (index: number, text: string): Rec => ({ t: "notice", index, level: "error", text, at: 1234 });
+        const s = write([
+            prompt("notice-map initial prompt"),
+            notice(1, "notice-map initial error"),
+            prompt("notice-map tool prompt"),
+            toolCall("notice-map-tool"),
+            results("notice-map-tool", "output", "notice-map steering"),
+            reply("notice-map steered reply"),
+            notice(5, "notice-map steering error"),
+            prompt("notice-map removed prompt"),
+            reply("notice-map removed reply"),
+            notice(7, "notice-map removed error"),
+            { t: "rewind", count: 5 },
+            prompt("notice-map replacement prompt", { meta: { kind: "command", display: "/notice-map" } }),
+            reply("notice-map replacement reply"),
+            notice(7, "notice-map replacement error"),
+            { t: "compact", summary: "notice-map compact summary" },
+            { t: "msg", m: { role: "user", content: [{ type: "text", text: "summary" }], meta: { kind: "summary" } } },
+            prompt("notice-map current prompt"),
+            notice(2, "notice-map current error"),
+            reply("notice-map current reply"),
+        ]);
+        for (const [query, seg, index, promptText, error] of [
+            ["notice-map steered reply", 0, 4, "notice-map steering", "notice-map steering error"],
+            ["notice-map replacement reply", 0, 6, "/notice-map", "notice-map replacement error"],
+            ["notice-map current reply", 1, 2, "notice-map current prompt", "notice-map current error"],
+        ] as const) {
+            const h = (await searchSessions(query)).hits[0]!;
+            expect(h).toMatchObject({ id: s.id, seg, index, role: "assistant" });
+            const turn = turnFor(s.file, h.seg, h.index)!;
+            expect(turn.prompt?.text).toBe(promptText);
+            expect(turn.blocks.some((b) => b.t === "text" && b.text === query)).toBe(true);
+            expect(turn.blocks.some((b) => b.t === "notice" && b.text === error)).toBe(true);
+        }
+        expect((await searchSessions("notice-map removed")).hits).toHaveLength(0);
+        expect((await searchSessions("notice-map initial error")).hits).toHaveLength(0);
+        const segments = readSegments(s.file);
+        expect(segments.map((s) => s.messages.length)).toEqual([7, 3]);
+        expect(segments[0]!.notices?.map((n) => n.text)).toEqual(["notice-map initial error", "notice-map steering error", "notice-map replacement error"]);
+        expect(turnFor(s.file, 0, 0)?.blocks.some((b) => b.t === "notice" && b.text === "notice-map initial error")).toBe(true);
+    });
+
+    test("a notice-created turn has a position, including an empty segment and a later continuation", async () => {
+        const s = write([
+            prompt("notice-position before compaction"),
+            { t: "compact", summary: "Summary before a failed continuation." },
+            { t: "msg", m: { role: "user", content: [{ type: "text", text: "summary" }], meta: { kind: "summary" } } },
+            { t: "notice", index: 1, level: "error", text: "notice-position failed continuation", at: 1234 },
+        ]);
+        const failed = turnFor(s.file, 1, 1)!;
+        expect(failed.pos).toEqual({ seg: 1, index: 1 });
+        expect(failed.blocks).toContainEqual(expect.objectContaining({ t: "notice", text: "notice-position failed continuation" }));
+        appendFileSync(s.file, JSON.stringify(reply("notice-position resumed reply")) + "\n");
+        const hit = (await searchSessions("notice-position resumed reply")).hits[0]!;
+        expect(hit).toMatchObject({ id: s.id, seg: 1, index: 1 });
+        const resumed = turnFor(s.file, hit.seg, hit.index)!;
+        expect(resumed.pos).toEqual({ seg: 1, index: 1 });
+        expect(resumed.blocks.some((b) => b.t === "text" && b.text === "notice-position resumed reply")).toBe(true);
+        appendFileSync(s.file, JSON.stringify({ t: "compact", summary: "Empty segment." }) + "\n" + JSON.stringify({ t: "notice", index: 0, level: "error", text: "notice-position empty segment", at: 2345 }) + "\n");
+        const empty = turnFor(s.file, 2, 0)!;
+        expect(empty.pos).toEqual({ seg: 2, index: 0 });
+        expect(empty.blocks).toContainEqual(expect.objectContaining({ t: "notice", text: "notice-position empty segment" }));
+    });
+
     test("a long line a crash cut short isn't counted, as replay skips it", async () => {
         const torn = JSON.stringify(image("QUJD".repeat(1_300_000), "torn"));
         expect(torn.endsWith("}}}")).toBe(true);
