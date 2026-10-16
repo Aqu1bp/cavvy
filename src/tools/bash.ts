@@ -256,7 +256,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have,
         // or the shell stopped before the end of the script (errexit, a failed special builtin): then it's not
         // the last command's 1. The line after the command records the cwd, so a cwd means it got there.
-        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command) : undefined;
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command, env) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
         else if (search) {

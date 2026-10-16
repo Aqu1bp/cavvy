@@ -18,8 +18,16 @@ export interface SimpleCommand {
      * and other descriptors (`>&3`) all count.
      */
     redirectMayFail?: true;
-    /** Indexes of the words that start with an unquoted `*`, `?` or `[`: their expansion can be anything, `-v` too. */
+    /**
+     * Indexes of the words with a glob whose first character isn't known: it starts with the
+     * unquoted `*`, `?` or `[` (after nothing but empty quotes, `""*`) or with an expansion
+     * (`$e*`, with e empty). Their expansion can be anything, `-v` too.
+     */
     globStart?: number[];
+    /** Indexes of the words with a `$` expansion in them (not in single quotes): what they'll be isn't known. */
+    expands?: number[];
+    /** Indexes of the words with an unquoted `*`, `?` or `[` anywhere: they can become any number of words. */
+    globbed?: number[];
 }
 
 export interface CommandAnalysis {
@@ -110,26 +118,42 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     let heredoc = false;
     /** A command that's only redirections (`2>/dev/null 1>&9`): it has a status of its own, though no words. */
     let bareRedirect = false;
-    let wordGlobStart = false;
+    /** What the word starts with so far: nothing yet, a known character, or a glob or expansion. */
+    let wordLead: "none" | "known" | "unknown" = "none";
+    const lead = (unknown: boolean) => {
+        if (wordLead === "none") wordLead = unknown ? "unknown" : "known";
+    };
     let globStart: number[] = [];
+    let wordExpands = false;
+    let expands: number[] = [];
+    let wordGlobbed = false;
+    let globbed: number[] = [];
+    /** `$` at `i` starts an expansion (`$x`, `${x}`, `$1`, `$?`), not a literal dollar (`a$`, `$ `). */
+    const expansionAt = (i: number) => cmd[i] === "$" && /[A-Za-z_{0-9?#@*!$=~^+-]/.test(cmd[i + 1] ?? "");
 
     const endWord = () => {
         if (wordStarted) {
-            if (wordGlobStart) globStart.push(argv.length);
+            if (wordGlobbed && wordLead === "unknown") globStart.push(argv.length);
+            if (wordExpands) expands.push(argv.length);
+            if (wordGlobbed) globbed.push(argv.length);
             argv.push(word);
         }
         word = "";
         wordStarted = false;
         wordQuoted = false;
-        wordGlobStart = false;
+        wordLead = "none";
+        wordExpands = false;
+        wordGlobbed = false;
     };
     const endCommand = (op?: string) => {
         endWord();
         if (argv.length) {
-            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(redirectMayFail ? { redirectMayFail: true as const } : {}), ...(globStart.length ? { globStart } : {}) });
+            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(redirectMayFail ? { redirectMayFail: true as const } : {}), ...(globStart.length ? { globStart } : {}), ...(expands.length ? { expands } : {}), ...(globbed.length ? { globbed } : {}) });
             lastOp = op;
         } else if (/[<>]/.test(text)) bareRedirect = true;
         globStart = [];
+        expands = [];
+        globbed = [];
         argv = [];
         text = "";
         redirectMayFail = false;
@@ -140,12 +164,16 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         const n = cmd[i + 1];
         if (quote === "'") {
             if (c === "'") quote = null;
-            else word += c;
+            else {
+                lead(false);
+                word += c;
+            }
             text += c;
             continue;
         }
         if (quote === '"') {
             if (c === "\\" && n !== undefined) {
+                lead(false);
                 word += n;
                 text += c + n;
                 i++;
@@ -155,6 +183,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             else {
                 if (c === "`" || (c === "$" && n === "(")) hasSubstitution = true;
                 if (c === "$" && (n === "[" || (n === "{" && !plainBraceParam(cmd, i)))) unsafeExpansion = true;
+                if (expansionAt(i)) wordExpands = true;
+                lead(expansionAt(i));
                 word += c;
             }
             text += c;
@@ -165,6 +195,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 i++;
                 continue;
             }
+            lead(false);
             word += n;
             wordStarted = true;
             wordQuoted = true;
@@ -177,6 +208,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         // and the command is never read-only.
         if (c === "$" && n === "'") {
             const [decoded, end] = ansiC(cmd, i + 2);
+            if (decoded) lead(false);
             word += decoded;
             wordStarted = true;
             wordQuoted = true;
@@ -275,7 +307,9 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             text += c;
             continue;
         }
-        if (!wordStarted && (c === "*" || c === "?" || c === "[")) wordGlobStart = true;
+        if (c === "*" || c === "?" || c === "[") wordGlobbed = true;
+        if (expansionAt(i)) wordExpands = true;
+        lead(c === "*" || c === "?" || c === "[" || expansionAt(i));
         word += c;
         wordStarted = true;
         text += c;
@@ -541,12 +575,36 @@ export function isReadOnlyCommand(cmd: string): boolean {
     for (const [i, c] of a.commands.entries()) {
         if (effectiveArgv(c.argv).length) continue;
         for (const assignment of c.argv) {
+            if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(assignment)) continue;
             const name = assignment.slice(0, assignment.indexOf("="));
             const use = new RegExp(`\\$[{=~^#+]*${name}(?![A-Za-z0-9_])`);
             if (a.commands.slice(i + 1).some((d) => d.argv.some((w) => use.test(w)))) return false;
         }
     }
+    if (a.commands.some(globTurnsUnsafe)) return false;
     return a.commands.every((c) => isReadOnlySimple(c.argv));
+}
+
+/** Read-only whatever options or operands they're given (none runs a program or writes a file). */
+const GLOB_SAFE = new Set(["cat", "head", "tail", "wc", "ls", "echo", "printf", "stat", "du", "df", "grep", "egrep", "fgrep", "cut", "tr", "diff", "cmp", "comm", "nl", "column", "basename", "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "sha1sum", "hexdump", "od", "strings", "test", "[", "true", "false", "which", "whereis", "type", "sleep", "seq", "expr", "cd", "pwd"]);
+
+/**
+ * The read-only checks see the words as written, but a glob becomes the
+ * names it matches: a file named `-Osh` makes `git grep -l x *` run sh, one
+ * named `-i.txt` makes `sed -n p *` edit in place, and `uniq src/*` writes
+ * to its second match. A glob that could start with `-` (it's first, after
+ * an expansion or empty quotes, or after a `-`: `--open*`), before any `--`,
+ * is fine only for programs no option makes unsafe; uniq and xxd take no
+ * glob at all (a second operand is their output file).
+ */
+function globTurnsUnsafe(c: SimpleCommand): boolean {
+    if (!c.globbed?.length) return false;
+    const words = effectiveArgv(c.argv);
+    const base = (words[0] ?? "").split("/").pop()!;
+    if (base === "uniq" || base === "xxd") return true;
+    if (GLOB_SAFE.has(base)) return false;
+    const end = c.argv.indexOf("--");
+    return c.globbed.some((i) => (end < 0 || i < end) && (c.globStart?.includes(i) || c.argv[i]!.startsWith("-")));
 }
 
 // Not zgrep: it exits 1 for errors of its own (macOS: "Illegal seek" on a bad stream).
@@ -626,7 +684,10 @@ function plainSearch(args: string[], o: SearchOptions): boolean {
             const ch = a[k]!;
             if (/[0-9]/.test(ch)) continue;
             if (o.valued.includes(ch)) {
-                const value = k + 1 < a.length ? a.slice(k + 1) : args[++i];
+                // A count (-A, -B, -C, -m) only takes the next word when it's a number: BSD grep's -C
+                // takes its own only in the same word, so in `-C -v` the -v is an option.
+                const count = "ABCm".includes(ch);
+                const value = k + 1 < a.length ? a.slice(k + 1) : !count || /^\d+$/.test(args[i + 1] ?? "") ? args[++i] : undefined;
                 if (ch === "m" && value !== undefined && Number(value) === 0) return false;
                 break;
             }
@@ -652,7 +713,7 @@ function plainSearch(args: string[], o: SearchOptions): boolean {
  *   and with no here-document, whose lines aren't commands.
  * `piped`: other commands feed it, and their failures don't show in its status.
  */
-export function finalSearch(cmd: string): { name: string; piped: boolean } | undefined {
+export function finalSearch(cmd: string, env: Record<string, string | undefined> = process.env): { name: string; piped: boolean } | undefined {
     const a = analyzeCommand(cmd);
     if (a.unparsable || a.hasSubstitution || a.unsafeExpansion || a.heredoc || a.bareRedirect || SHELL_SYNTAX.test(cmd) || !a.commands.length) return undefined;
     if (a.trailing !== undefined && a.trailing !== ";" && a.trailing !== "\n") return undefined;
@@ -666,9 +727,21 @@ export function finalSearch(cmd: string): { name: string; piped: boolean } | und
     // ggrep is GNU grep.
     if (!isReadOnlySimple(name === "ggrep" ? [argv[0]!.replace(/[^/]*$/, "grep"), ...argv.slice(1)] : argv)) return undefined;
     // Its words are what it gets: none may expand to an option (`grep $o x f`, or `grep x *` with a file named -v).
-    if (argv.slice(1).some((w) => w.includes("$")) || a.commands[last]!.globStart?.length) return undefined;
+    if (a.commands[last]!.expands?.length || a.commands[last]!.globStart?.length) return undefined;
     // Only options known to leave status 1 meaning "no match" (not -v, -L, git's --not, decompressing, -m 0).
-    if (!plainSearch(name === "git grep" ? argv.slice(gitSubcommand(argv).index + 1) : argv.slice(1), SEARCH_OPTIONS[name === "git grep" ? "git" : name === "rg" ? "rg" : "grep"]!)) return undefined;
+    const kind = name === "git grep" ? "git" : name === "rg" ? "rg" : "grep";
+    const args = name === "git grep" ? argv.slice(gitSubcommand(argv).index + 1) : argv.slice(1);
+    if (!plainSearch(args, SEARCH_OPTIONS[kind]!)) return undefined;
+    // Options from the environment count too: BSD grep reads GREP_OPTIONS, rg its config file (one per
+    // line) unless told --no-config. A relative config path is the shell's cwd's, which isn't known here.
+    if (kind === "grep" && env.GREP_OPTIONS?.trim() && !plainSearch(env.GREP_OPTIONS.trim().split(/\s+/), SEARCH_OPTIONS.grep!)) return undefined;
+    const end = args.indexOf("--");
+    if (kind === "rg" && env.RIPGREP_CONFIG_PATH && !(end < 0 ? args : args.slice(0, end)).includes("--no-config")) {
+        // All of it, or not at all: options past what's read would go unseen.
+        const config = env.RIPGREP_CONFIG_PATH.startsWith("/") ? readSmallFile(env.RIPGREP_CONFIG_PATH, 65537) : undefined;
+        if (config === undefined || Buffer.byteLength(config) > 65536) return undefined;
+        if (!plainSearch(config.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")), SEARCH_OPTIONS.rg!)) return undefined;
+    }
     for (const [i, c] of a.commands.entries()) {
         if (!onlySafeAssignments(c.argv)) return undefined;
         if (i === last) continue;
@@ -676,7 +749,8 @@ export function finalSearch(cmd: string): { name: string; piped: boolean } | und
         const words = effectiveArgv(c.argv);
         const command = words.find((w) => !w.startsWith("-")) ?? "";
         // A command name that's an expansion can be any builtin (`$X 1` with X=exit).
-        if (SHELL_COMMANDS.has(command) || command.includes("$") || c.globStart?.includes(c.argv.length - words.length + words.indexOf(command))) return undefined;
+        const at = c.argv.length - words.length + words.indexOf(command);
+        if (SHELL_COMMANDS.has(command) || c.expands?.includes(at) || c.globStart?.includes(at)) return undefined;
     }
     // The pipeline it ends, and what comes before that.
     let first = last;

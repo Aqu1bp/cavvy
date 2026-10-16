@@ -96,11 +96,11 @@ describe("deny rules reach hidden and qualified commands", () => {
 });
 
 describe("read-only classification", () => {
-    for (const cmd of ["git -c core.pager=x log", "git -p log", "git --exec-path=/tmp status", "git grep -Oevil foo", "git grep --open=sh -l . -- x.sh", "git grep --op=evil foo", "git grep -1Oevil foo", "git grep -n1Oevil foo", "NO_COLOR=-O/usr/bin/false; git grep $NO_COLOR name -- package.json", "X=-delete; find . $X", "LC_ALL=--open=sh; git grep ${LC_ALL} x", "git reflog expire --all", "git remote update", "env", "man -P ./x ls", "less f", "go env -w GOFLAGS=x", "go vet -vettool=./x ./...", "hostname evil", "/tmp/bin/ls"]) {
+    for (const cmd of ["git -c core.pager=x log", "git -p log", "git --exec-path=/tmp status", "git grep -Oevil foo", "git grep --open=sh -l . -- x.sh", "git grep --op=evil foo", "git grep -1Oevil foo", "git grep -n1Oevil foo", "NO_COLOR=-O/usr/bin/false; git grep $NO_COLOR name -- package.json", "X=-delete; find . $X", "LC_ALL=--open=sh; git grep ${LC_ALL} x", "git grep -l -e marker *", "sed -n 1p *.txt", "rg x *", "find *", "uniq src/*.txt", "xxd a src/*", 'git grep -l -e marker ""*', "git grep -l -e marker ''*", "git grep -l -e marker $E*", 'git grep -l -e marker "$E"*', "git grep -l x -*", "git grep -l x --open*", 'sed -n 1p ""*', "git reflog expire --all", "git remote update", "env", "man -P ./x ls", "less f", "go env -w GOFLAGS=x", "go vet -vettool=./x ./...", "hostname evil", "/tmp/bin/ls"]) {
         if (cmd === "env") test(`"env" alone is read-only`, () => expect(isReadOnlyCommand(cmd)).toBe(true));
         else test(`${JSON.stringify(cmd)} is not read-only`, () => expect(isReadOnlyCommand(cmd)).toBe(false));
     }
-    for (const cmd of ["/bin/ls -la", "/usr/bin/git status", "git -C sub log -1", "git --no-pager diff", "git grep --or -e a -e b", "LC_ALL=C; ls $HOME", "echo $HOME", "git remote -v", "git config --get user.name", "rg --version", "echo hi >&2", "ls 2>&-", "sed -n '/start/,/end/p' f", "sed -n 's/a/b/gp' f"]) {
+    for (const cmd of ["/bin/ls -la", "/usr/bin/git status", "git -C sub log -1", "git --no-pager diff", "git grep --or -e a -e b", "LC_ALL=C; ls $HOME", "echo $HOME", "cat *.md", "ls -la *", "grep -rn x *", "git grep -l -e marker -- *", "git log -- *.ts", "sed -n 1p src/*.txt", "head -5 '*'", "git grep -l x ./*", "git grep -l x src/*.ts", 'cat ""*', "git remote -v", "git config --get user.name", "rg --version", "echo hi >&2", "ls 2>&-", "sed -n '/start/,/end/p' f", "sed -n 's/a/b/gp' f"]) {
         test(`${JSON.stringify(cmd)} is read-only`, () => expect(isReadOnlyCommand(cmd)).toBe(true));
     }
 });

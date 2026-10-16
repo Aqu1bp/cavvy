@@ -465,12 +465,40 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["rg -n --type ts -g '*.ts' -i foo", "rg"],
         ["git grep -n -e foo -- src", "git grep"],
         ["grep --color=always -E 'a|b' f", "grep"],
+        // A literal $ isn't an expansion; BSD grep's -C takes its count only in the same word.
+        ["grep -n 'foo$' f", "grep"],
+        ["grep -n \"foo$\" f", "grep"],
+        ["grep -C -v x f", undefined],
+        ["grep -C 2 x f", "grep"],
         ["grep x /dev/null 2>&- >/dev/stderr", undefined],
         ["grep x /dev/null 2>/dev/null 1>&- >/dev/stdout", undefined],
         ["s\"\"et -e; false; grep x /dev/null", undefined],
     ])("%p: %p", async (cmd, want) => {
         const { finalSearch } = await import("../src/permissions/bash-safety");
         expect(finalSearch(cmd)?.name).toBe(want as string | undefined);
+    });
+
+    test("options from the environment count: GREP_OPTIONS, rg's config file", async () => {
+        const { finalSearch } = await import("../src/permissions/bash-safety");
+        expect(finalSearch("grep x f", { GREP_OPTIONS: "-v" })).toBeUndefined();
+        expect(finalSearch("grep x f", { GREP_OPTIONS: "-i --color=auto" })?.name).toBe("grep");
+        const dir = realpathSync(tempDir());
+        writeFileSync(join(dir, "inverted"), "# mine\n--smart-case\n--invert-match\n");
+        writeFileSync(join(dir, "plain"), "# mine\n--smart-case\n--hidden\n");
+        expect(finalSearch("rg x", { RIPGREP_CONFIG_PATH: join(dir, "inverted") })).toBeUndefined();
+        expect(finalSearch("rg x", { RIPGREP_CONFIG_PATH: join(dir, "missing") })).toBeUndefined();
+        expect(finalSearch("rg x", { RIPGREP_CONFIG_PATH: join(dir, "plain") })?.name).toBe("rg");
+        expect(finalSearch("rg x", {})?.name).toBe("rg");
+        // --no-config: the file isn't read. A relative path is the shell's cwd's; a file too long to read whole could hide one.
+        expect(finalSearch("rg --no-config x", { RIPGREP_CONFIG_PATH: join(dir, "inverted") })?.name).toBe("rg");
+        expect(finalSearch("rg x -- --no-config", { RIPGREP_CONFIG_PATH: join(dir, "inverted") })).toBeUndefined();
+        expect(finalSearch("rg x", { RIPGREP_CONFIG_PATH: "plain" })).toBeUndefined();
+        writeFileSync(join(dir, "long"), "--hidden\n".repeat(8000) + "--invert-match\n");
+        expect(finalSearch("rg x", { RIPGREP_CONFIG_PATH: join(dir, "long") })).toBeUndefined();
+        // A glob after empty quotes or an expansion starts the word all the same (a file named -v).
+        expect(finalSearch('grep -e x ""*')).toBeUndefined();
+        expect(finalSearch("grep -e x ''*")).toBeUndefined();
+        expect(finalSearch("grep -e x $E*")).toBeUndefined();
     });
 
     test("says when other commands feed it", async () => {
@@ -480,12 +508,28 @@ describe("a last grep that finds nothing isn't an error", () => {
         expect(finalSearch("ls; grep x f")?.piped).toBe(false);
     });
 
-    const bash = async (command: string, files: Record<string, string> = {}) => {
+    const bash = async (command: string, files: Record<string, string> = {}, env?: Record<string, string>) => {
         const { BashTool } = await import("../src/tools/bash");
         const cwd = realpathSync(tempDir());
         for (const [name, text] of Object.entries(files)) writeFileSync(join(cwd, name), text);
-        return BashTool.run({ command }, { state: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, settings: {}, signal: new AbortController().signal } as any);
+        return BashTool.run({ command }, { state: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, settings: env ? { env } : {}, signal: new AbortController().signal } as any);
     };
+
+    test("a search the environment inverted isn't taken for no matches", async () => {
+        const conf = join(realpathSync(tempDir()), "rgrc");
+        writeFileSync(conf, "--invert-match\n");
+        for (const [command, env] of [
+            ["grep . f", { GREP_OPTIONS: "--invert-match" }],
+            ["rg . f", { RIPGREP_CONFIG_PATH: conf }],
+        ] as const) {
+            const r = await bash(command, { f: "every line matches\n" }, env);
+            expect(r.content).toContain("Exit code: 1");
+            expect(r.isError).toBe(true);
+        }
+        // Told not to read it, rg's 1 is its own again.
+        const plain = await bash("rg --no-config nomatch f", { f: "x\n" }, { RIPGREP_CONFIG_PATH: conf });
+        expect(plain.isError).toBe(false);
+    });
 
     test("the output stays the result, and says what exit 1 means", async () => {
         const r = await bash("echo useful output; grep -q nomatch /dev/null");
