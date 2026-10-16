@@ -747,16 +747,21 @@ describe("Bash", () => {
             "cp x .claude/worktrees/.harness/settings.json",
             "cp x .claude/worktrees/*/settings.json",
             `cp x ".claude/worktrees/feature/"'..'"/settings.json"`,
+            `cp x ".claude/worktrees/feature name/../../settings.json"`, // a quoted name with a space in it
+            "cp x .claude/worktrees/feature/$UP/settings.json",
+            "cp x .claude/worktrees/feature/.*/.*/settings.json",
+            "cp x .claude/worktrees/outer/.claude/settings.json",
         ]) {
             const d = check(T("Bash"), bash(cmd));
             expect([cmd, d.behavior]).toEqual([cmd, "ask"]);
             expect(d.reason).toMatch(/harness or git configuration/);
         }
-        for (const cmd of ["bun test .claude/worktrees/feature/test", `bun test ${join(W, ".claude", "worktrees", "fix-x")}`, "cp x .claude/worktrees/feature/src/a.ts"]) {
+        for (const cmd of ["bun test .claude/worktrees/feature/test", `bun test ${join(W, ".claude", "worktrees", "fix-x")}`, "cp x .claude/worktrees/feature/src/a.ts", "cp x .claude/worktrees/outer/.claude/worktrees/inner/src/a.ts"]) {
             expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "allow"]);
         }
         const { configTarget } = await import("../src/permissions/bash-safety");
         expect(configTarget("cd .claude/worktrees/feature && bun test")).toBeUndefined();
+        expect(configTarget("cd .claude/worktrees/feature && cp x ../../settings.json")).toBeDefined();
     });
 });
 

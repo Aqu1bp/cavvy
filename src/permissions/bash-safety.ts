@@ -662,20 +662,34 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
 // Paths whose contents configure the harness, the agent CLIs it runs, or git:
 // permissions, hooks, MCP servers, skills, git hooks/fsmonitor. A shell command
 // that isn't read-only and names one asks, like an Edit of the same file would.
-const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.claude|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+// .claude/ too, but see claudeConfigIn.
+const CLAUDE_DIR = /(^|[\s'"=:/])\.claude(?=$|[/\s'";|&)>])/gi;
+const WORKTREE = /^\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/i;
+/** What could lead a path back up out of a folder: a `..`, a pattern that could match one (`.*`), or an expansion. */
+const CLIMBS = /(^|[/\s'"=:])\.(\.|[^/\s'"]*[*?[])|[$`]/;
 
 /**
- * The command with each `.claude/worktrees/<name>` put aside: Claude Code keeps
- * git checkouts there, projects of their own (see withoutWorktrees in
- * checker.ts), and `cd .claude/worktrees/x && bun test` isn't about .claude
- * config. Not a name like the config's or one with shell patterns or
- * expansions in it, and not a path that climbs back out with `..`.
+ * Does the text name something in a .claude/ folder? Not what's in a Claude
+ * Code worktree (.claude/worktrees/<name>/): those are git checkouts, projects
+ * of their own (see withoutWorktrees in checker.ts), and `cd
+ * .claude/worktrees/x && bun test` isn't about .claude config. Text can't
+ * show where a quoted name ends, so one only counts as a worktree when
+ * nothing after it in the command could climb back out, and its name isn't
+ * like the config's.
  */
-function withoutWorktreePaths(text: string): string {
-    return text.replace(/\.claude\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)((?:\/[^\s'";|&)>]*)?)/gi, (whole, name: string, rest: string) =>
-        name === "." || name === ".." || spellings(name).some((n) => /^\.(harness|claude|codex|git|mcp\.json)$/.test(n)) || /\/\.\.(\/|$)/.test(rest) ? whole : `<worktree>${rest}`,
-    );
+function claudeConfigIn(text: string): boolean {
+    for (const m of text.matchAll(CLAUDE_DIR)) {
+        const after = text.slice(m.index + m[0].length);
+        const w = after.match(WORKTREE);
+        if (!w) return true;
+        const name = w[1]!;
+        if (name === "." || name === ".." || spellings(name).some((n) => /^\.(harness|claude|codex|git|mcp\.json)$/.test(n))) return true;
+        if (CLIMBS.test(after.slice(w[0].length))) return true;
+    }
+    return false;
 }
+
 // `git config` keys that make later read-only git commands run programs.
 const GIT_EXEC_CONFIG = /\bgit\b[^|;&\n]*\bconfig\b[^|;&\n]*\b(core\.(fsmonitor|pager|editor|sshcommand|hookspath|askpass)|diff\.[^\s=]*(external|textconv|command)|filter\.|alias\.|credential\.|gpg\.|sequence\.editor|uploadpack\.|merge\.[^\s=]*driver|include\.|includeif\.)/i;
 
@@ -806,7 +820,7 @@ export function configTarget(cmd: string, harnessHome?: string): string | undefi
     // In every spelling: on a case-insensitive volume `.harneſſ/` is `.harness/`.
     const homes = harnessHome ? spellings(harnessHome) : [];
     for (const text of [cmd, unquoted].flatMap(spellings)) {
-        if (CONFIG_PATH.test(withoutWorktreePaths(text))) return "harness or git configuration";
+        if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "harness or git configuration";
         if (GIT_EXEC_CONFIG.test(text)) return "git settings that run programs";
         if (homes.some((h) => text.includes(h))) return "harness configuration";
     }
