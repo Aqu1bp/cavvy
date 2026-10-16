@@ -12,6 +12,7 @@ import { parseSse } from "../providers/sse";
 import { APP_NAME, APP_VERSION } from "../config/paths";
 import type { McpServerConfig } from "../config/settings";
 import { childEnv } from "../tools/bash";
+import { serverCwd } from "./approval";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -78,9 +79,10 @@ class StdioTransport implements Transport {
     onNotification?: (method: string, params: Json) => void;
     onExit?: () => void;
 
-    constructor(cfg: McpServerConfig, cwd: string) {
+    /** `runCwd`: the folder, already resolved (by McpManager.start, which checked the approval for it). */
+    constructor(cfg: McpServerConfig, runCwd: string) {
         this.proc = spawn(cfg.command!, cfg.args ?? [], {
-            cwd: cfg.cwd ?? cwd,
+            cwd: runCwd,
             env: { ...childEnv(), ...(cfg.env ?? {}) },
             stdio: ["pipe", "pipe", "pipe"],
         });
@@ -301,7 +303,7 @@ class HttpTransport implements Transport {
                 if (typeof msg.method === "string" && (msg.id === undefined || msg.id === null)) this.onNotification?.(msg.method, msg.params ?? {});
                 else if (typeof msg.method === "string" && this.era !== "modern") {
                     // legacy server request on the stream: answer ping, refuse the rest
-                    void this.postRaw(msg.method === "ping" ? { jsonrpc: "2.0", id: msg.id, result: {} } : { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "Method not found" } });
+                    void this.postRaw(msg.method === "ping" ? { jsonrpc: "2.0", id: msg.id, result: {} } : { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "Method not found" } }, signal);
                 }
             }
             throw new McpError(`${this.name}: stream closed before the response`, -1);
@@ -352,6 +354,8 @@ class HttpTransport implements Transport {
 
 export class McpClient {
     private t: Transport;
+    /** Aborted by close(): every request this client makes ends with it, and none starts after. */
+    private life = new AbortController();
     era: "modern" | "legacy" = "legacy";
     protocolVersion = MODERN_VERSION;
     serverInfo?: { name?: string; version?: string };
@@ -362,14 +366,19 @@ export class McpClient {
     onToolsChanged?: () => void;
     onExit?: () => void;
 
+    /**
+     * `cwd` is the project folder. `runCwd`, when given, is the folder a stdio
+     * server runs in, resolved once by the caller; otherwise it's resolved here.
+     */
     constructor(
         readonly name: string,
         private cfg: McpServerConfig,
         cwd: string,
+        runCwd?: string,
     ) {
         if (cfg.url) this.t = new HttpTransport(cfg, name);
         else if (cfg.command) {
-            const st = new StdioTransport(cfg, cwd);
+            const st = new StdioTransport(cfg, runCwd ?? serverCwd(cfg, cwd));
             st.onExit = () => this.onExit?.();
             this.t = st;
         } else throw new McpError(`MCP server "${name}" needs a "command" or a "url"`);
@@ -380,6 +389,16 @@ export class McpClient {
 
     get isHttp(): boolean {
         return Boolean(this.cfg.url);
+    }
+
+    get closed(): boolean {
+        return this.life.signal.aborted;
+    }
+
+    /** The caller's signal joined with this client's lifetime; throws once it's closed, so nothing more is sent. */
+    private live(signal?: AbortSignal): AbortSignal {
+        if (this.closed) throw new McpError(`MCP server "${this.name}" was closed`);
+        return signal ? AbortSignal.any([signal, this.life.signal]) : this.life.signal;
     }
 
     stderrTail(): string {
@@ -398,7 +417,8 @@ export class McpClient {
         return this.era === "modern" ? { ...p, _meta: this.meta() } : p;
     }
 
-    async connect(signal?: AbortSignal): Promise<void> {
+    async connect(outer?: AbortSignal): Promise<void> {
+        const signal = this.live(outer);
         this.t.era = "modern";
         let modern = false;
         try {
@@ -416,7 +436,8 @@ export class McpClient {
                 this.serverInfo = r._meta?.["io.modelcontextprotocol/serverInfo"];
             }
         } catch (e) {
-            if (signal?.aborted) throw e;
+            // Closed (rejected, revoked) while discovering: no falling back to the legacy handshake.
+            if (signal.aborted) throw this.closed ? new McpError(`MCP server "${this.name}" was closed`) : e;
             const err = e as McpError;
             if (err.code !== undefined && MODERN_ERRORS.has(err.code)) {
                 const supported = (err.data as { supported?: string[] } | undefined)?.supported ?? [];
@@ -428,6 +449,7 @@ export class McpClient {
             if (err.code === 401) throw err;
         }
 
+        this.live(outer);
         if (modern) {
             this.era = "modern";
             this.t.era = "modern";
@@ -435,6 +457,7 @@ export class McpClient {
         }
 
         // Legacy handshake.
+        this.live(outer);
         this.era = "legacy";
         this.t.era = "legacy";
         const init = await this.t.request(
@@ -451,8 +474,9 @@ export class McpClient {
         if (this.t instanceof HttpTransport) this.t.legacyVersion = v;
         this.serverInfo = init.serverInfo;
         this.instructions = init.instructions;
+        this.live(outer);
         await this.t.notify("notifications/initialized", undefined, signal);
-        if (signal?.aborted) {
+        if (signal.aborted) {
             await this.close();
             throw new McpError("aborted");
         }
@@ -462,7 +486,7 @@ export class McpClient {
         const out: McpTool[] = [];
         let cursor: string | undefined;
         for (let page = 0; page < 50; page++) {
-            const r = await this.t.request("tools/list", this.params(cursor !== undefined ? { cursor } : {}), { signal, timeoutMs: 30_000 });
+            const r = await this.t.request("tools/list", this.params(cursor !== undefined ? { cursor } : {}), { signal: this.live(signal), timeoutMs: 30_000 });
             for (const tool of (r.tools ?? []) as McpTool[]) {
                 if (!tool?.name) continue;
                 if (this.isHttp && this.era === "modern") {
@@ -489,7 +513,7 @@ export class McpClient {
                 headers[`Mcp-Param-${header}`] = headerValue(typeof v === "string" ? v : String(v));
             }
         }
-        const r = await this.t.request("tools/call", this.params({ name, arguments: args }), { signal, timeoutMs, headers });
+        const r = await this.t.request("tools/call", this.params({ name, arguments: args }), { signal: this.live(signal), timeoutMs, headers });
         const rt = r.resultType;
         if (rt !== undefined && rt !== "complete") {
             if (rt === "input_required") throw new McpError("the server asked for extra input (sampling/elicitation), which this client doesn't support");
@@ -499,6 +523,7 @@ export class McpClient {
     }
 
     async close() {
+        this.life.abort();
         await this.t.close().catch(() => {});
     }
 }

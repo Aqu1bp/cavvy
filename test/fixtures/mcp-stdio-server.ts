@@ -13,8 +13,19 @@
 //              MCP_FIXTURE_SUPPORTED (comma separated); otherwise legacy.
 // MCP_FIXTURE_IGNORE_EOF=1     keep running after stdin closes.
 // MCP_FIXTURE_IGNORE_SIGTERM=1 ignore SIGTERM (only SIGKILL stops it).
+// MCP_FIXTURE_MARKER=<file>    append the process id to that file as soon as
+//                              it starts (tests that check a server never ran).
+// MCP_FIXTURE_FAIL_IF=<file>   exit with status 1 at once while that file exists.
+// MCP_FIXTURE_STDERR_ENV=<var> print that variable's value to stderr first.
 
-import { writeSync } from "fs";
+import { appendFileSync, existsSync, writeSync } from "fs";
+
+if (process.env.MCP_FIXTURE_MARKER) appendFileSync(process.env.MCP_FIXTURE_MARKER, `${process.pid}\n`);
+if (process.env.MCP_FIXTURE_STDERR_ENV) writeSync(2, `${process.env[process.env.MCP_FIXTURE_STDERR_ENV] ?? ""}\n`);
+if (process.env.MCP_FIXTURE_FAIL_IF && existsSync(process.env.MCP_FIXTURE_FAIL_IF)) {
+    writeSync(2, "fixture told to fail\n");
+    process.exit(1);
+}
 
 type Json = Record<string, any>;
 

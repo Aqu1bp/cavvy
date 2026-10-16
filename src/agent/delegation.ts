@@ -355,7 +355,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                     description: { type: "string", description: "Short (3-6 word) summary of the task" },
                     model: { type: "string", description: "provider:model from the models tool (needed unless the agent type has its own model)" },
                     effort: { type: "string", description: "Reasoning effort, one the model supports (default: the session's, where the model has it)" },
-                    agent: { type: "string", description: 'Agent type from the models tool: "general-purpose" (default), "explore" (read-only), or a custom one' },
+                    agent: { type: "string", description: 'Agent type from the models tool: "general-purpose" (default), "explore" (read-only: it can\'t run tests, builds or scripts either), or a custom one' },
                     wait: { type: "boolean", description: "Wait for the result (default true)" },
                     timeout_minutes: { type: "number", description: `How long to wait for the result (default ${DELEGATION_LIMITS.defaultWaitMs / 60_000}, at most ${DELEGATION_LIMITS.maxWaitMs / 60_000})` },
                 },

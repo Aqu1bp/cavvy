@@ -3,7 +3,7 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -12,7 +12,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { AgentRun, Block, CliSessionsList, InteractionResponse, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 import type { AgentEvent } from "../src/agent/agent";
 
 const TOKEN = "test-token-0123456789";
@@ -46,11 +46,14 @@ class Client {
     private waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
     views = new Map<string, { state: SessionState; turns: Turn[]; agents: AgentRun[]; seq: number }>();
     events: ServerEvent[] = [];
+    /** Every message as it came off the wire (to check what never reaches a client). */
+    raw: string[] = [];
     private listeners = new Set<() => void>();
 
     constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port) {
         this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`], headers } as any);
         this.ws.onmessage = (m) => {
+            this.raw.push(String(m.data));
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
                 const ev = msg.event as ServerEvent;
@@ -2194,5 +2197,206 @@ describe("a sub-agent's own sub-agents", () => {
         } finally {
             await engine.stop();
         }
+describe("a project's MCP servers (.mcp.json approval)", () => {
+    const FIXTURE = join(import.meta.dir, "fixtures", "mcp-stdio-server.ts");
+    /** The fixture MCP server; it leaves its pid in `marker` the moment it starts. */
+    const fx = (marker: string, env: Record<string, string> = {}) => ({ command: process.execPath, args: ["--no-env-file", FIXTURE], env: { MCP_FIXTURE_ERA: "legacy", MCP_FIXTURE_MARKER: marker, ...env } });
+    const writeMcp = (dir: string, servers: Record<string, unknown>) => writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: servers }));
+    const srvOf = (v: { state: SessionState }, name = "srv"): McpStatus | undefined => v.state.mcp.find((m) => m.name === name);
+    const starts = (marker: string) => (existsSync(marker) ? readFileSync(marker, "utf-8").trim().split("\n").length : 0);
+    const alive = (pid: number) => {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    const until = async (cond: () => boolean, ms = 5000) => {
+        for (const end = Date.now() + ms; Date.now() < end && !cond(); ) await Bun.sleep(25);
+        return cond();
+    };
+
+    async function mcpProject(servers: (dir: string) => Record<string, unknown>, trust = true) {
+        const dir = project();
+        writeMcp(dir, servers(dir));
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust });
+        const id = await c.open("session.create", { cwd: dir });
+        return { dir, c, id, marker: join(dir, "started") };
+    }
+
+    test("the card shows what will run; approving it connects live, in every session of the folder", async () => {
+        const { dir, c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const c2 = await client();
+        const id2 = await c2.open("session.create", { cwd: dir });
+
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(true);
+        expect(list.savedIn).toBe(join(dir, ".harness", "settings.local.json"));
+        expect(list.meaning).toContain("Harness's own models");
+        const card = list.servers.find((s) => s.name === "srv")!;
+        expect(card).toMatchObject({ source: "project", status: "needs-approval", transport: "stdio", command: process.execPath, args: ["--no-env-file", FIXTURE], cwd: realpathSync(dir), envNames: ["MCP_FIXTURE_ERA", "MCP_FIXTURE_MARKER"], declaredIn: join(dir, ".mcp.json"), approval: { state: "needs-approval", reason: "new" } });
+
+        // A fingerprint that isn't what the card showed approves nothing, and says what would run now.
+        const stale = await c.call<{ approved: boolean; list: McpListInfo }>("session.mcpApprove", { id, name: "srv", fingerprint: "v1:" + "0".repeat(64) });
+        expect(stale.approved).toBe(false);
+        expect(stale.list.servers[0]!.fingerprint).toBe(card.fingerprint);
+        await expect(c.call("session.mcpApprove", { id, name: "nope", fingerprint: card.fingerprint })).rejects.toMatchObject({ code: "unknown" });
+        await Bun.sleep(300);
+        expect(existsSync(marker)).toBe(false);
+
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && srvOf(v)!.tools > 0);
+        await c2.until(id2, (v) => srvOf(v)?.status === "connected");
+        expect(srvOf(c.view(id))!.approval).toEqual({ state: "approved" });
+        expect(JSON.parse(readFileSync(join(dir, ".harness", "settings.local.json"), "utf-8")).approvedMcpjsonServers.srv).toBe(card.fingerprint);
+        c.close();
+        c2.close();
+    }, 20_000);
+
+    test("reject keeps it off; it can be approved later through the same card", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const after = await c.call<McpListInfo>("session.mcpReject", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "disabled", approval: { state: "rejected" } });
+        await c.until(id, (v) => srvOf(v)?.approval?.state === "rejected");
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: after.servers[0]!.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        c.close();
+    }, 20_000);
+
+    test("revoke stops it (the process goes) and it asks again", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        const card = (await c.call<McpListInfo>("session.mcp", { id, name: "srv" })).servers[0]!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        const pid = Number(readFileSync(marker, "utf-8").trim());
+        expect(alive(pid)).toBe(true);
+        const after = await c.call<McpListInfo>("session.mcpRevoke", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "needs-approval" });
+        expect(await until(() => !alive(pid))).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        await expect(c.call("session.mcpRevoke", { id, name: "srv" })).rejects.toMatchObject({ code: "not_needed" });
+        c.close();
+    }, 20_000);
+
+    test("reconnect brings a failed server back; after its command changes, reconnecting asks again instead", async () => {
+        const { dir, c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_FAIL_IF: join(d, "fail") }) }));
+        writeFileSync(join(dir, "fail"), "");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        const failedError = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!.error!;
+        expect(failedError).toContain("fixture told to fail");
+        // Line breaks stay line breaks in an error (commands and args show them as ⟨U+000A⟩).
+        expect(failedError).toContain("\n");
+        expect(failedError).not.toContain("⟨U+000A⟩");
+
+        rmSync(join(dir, "fail"));
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        const pid = Number(readFileSync(marker, "utf-8").trim().split("\n").pop());
+
+        const ran = starts(marker);
+        const changed = fx(marker, { MCP_FIXTURE_FAIL_IF: join(dir, "fail") });
+        writeMcp(dir, { srv: { ...changed, args: [...changed.args, "--changed"] } });
+        const after = await c.call<McpListInfo>("session.mcpReconnect", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "needs-approval", approval: { state: "needs-approval", reason: "changed" } });
+        expect(after.servers[0]!.why).toContain("changed since you approved it");
+        await c.until(id, (v) => srvOf(v)?.approval?.reason === "changed");
+        expect(await until(() => !alive(pid))).toBe(true);
+        await Bun.sleep(300);
+        expect(starts(marker)).toBe(ran);
+
+        // A new session in the folder sees the same.
+        const c2 = await client();
+        const id2 = await c2.open("session.create", { cwd: dir });
+        expect(srvOf(c2.view(id2))?.status).toBe("needs-approval");
+        c.close();
+        c2.close();
+    }, 20_000);
+
+    test("a folder trusted only for having had nothing to protect: approving asks for the user's trust first", async () => {
+        // Nothing to protect when the session opens, so it's trusted for this run only.
+        const dir = project();
+        const c = await client();
+        const id = await c.open("session.create", { cwd: dir });
+        expect(c.view(id).state.trusted).toBe(true);
+        const marker = join(dir, "started");
+        writeMcp(dir, { srv: fx(marker) });
+
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(true);
+        expect(list.userTrusted).toBe(false);
+        const card = list.servers.find((s) => s.name === "srv")!;
+        expect(card.status).toBe("needs-approval");
+        await expect(c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint })).rejects.toMatchObject({ code: "needs_trust" });
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+        expect(existsSync(join(dir, ".harness", "settings.local.json"))).toBe(false);
+
+        // The existing trust flow works for a workspace already trusted in that weaker sense.
+        await c.call("projects.trust", { path: dir, trust: true });
+        const after = await c.call<McpListInfo>("session.mcp", { id });
+        expect(after.userTrusted).toBe(true);
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: after.servers.find((s) => s.name === "srv")!.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        c.close();
+    }, 20_000);
+
+    test("an untrusted folder: nothing from .mcp.json is read, starts, or can be approved", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }), false);
+        expect(c.view(id).state.trusted).toBe(false);
+        expect(srvOf(c.view(id))).toBeUndefined();
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(false);
+        expect(list.servers.find((s) => s.name === "srv")).toBeUndefined();
+        const fp = "v1:" + "0".repeat(64);
+        await expect(c.call("session.mcpApprove", { id, name: "srv", fingerprint: fp })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpReject", { id, name: "srv" })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpRevoke", { id, name: "srv" })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpReconnect", { id, name: "srv" })).rejects.toMatchObject({ code: "unknown" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+        c.close();
+    }, 20_000);
+
+    test("an env value never reaches the client: not in results, events or state, nor anything saved", async () => {
+        const SENTINEL = "sentinel-env-value-" + Math.random().toString(36).slice(2);
+        const { dir, c, id } = await mcpProject((d) => {
+            const base = fx(join(d, "started"), { SENTINEL_TOKEN: SENTINEL, MCP_FIXTURE_STDERR_ENV: "SENTINEL_TOKEN", MCP_FIXTURE_FAIL_IF: join(d, ".mcp.json") });
+            return { srv: { ...base, args: [...base.args, `--token=${SENTINEL}`] } };
+        });
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.servers[0]!.masked).toBe(true);
+        expect(list.servers[0]!.envNames).toContain("SENTINEL_TOKEN");
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: list.servers[0]!.fingerprint });
+        // It prints the value to stderr and exits: the error shown is masked.
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        const failed = (await c.call<McpListInfo>("session.mcp", { id, name: "srv" })).servers[0]!;
+        expect(failed.error).toContain("[REDACTED env SENTINEL_TOKEN]");
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        await c.call("session.send", { id, text: "explain the layout" });
+        await c.until(id, done);
+        await c.call("session.mcpRevoke", { id, name: "srv" });
+        await c.call("session.mcpReject", { id, name: "srv" });
+
+        expect(c.raw.length).toBeGreaterThan(5);
+        for (const m of c.raw) expect(m).not.toContain(SENTINEL);
+        // Nor the local settings (only a keyed hash), the session's transcript, or anything else in the harness home.
+        const files = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? files(join(d, f)) : [join(d, f)]));
+        for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
+        c.close();
     }, 30_000);
 });

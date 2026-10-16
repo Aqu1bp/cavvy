@@ -35,7 +35,7 @@ import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
-import { isReadOnlyCommand } from "../permissions/bash-safety";
+import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
@@ -250,11 +250,15 @@ function isContextOverflow(e: unknown): boolean {
     return (err?.status === 400 || err?.status === 413 || err?.status === undefined) && /prompt is too long|context.{0,20}(length|window|limit)|maximum context|too many (input )?tokens|input (is )?too long|exceeds the context|exceeds the maximum number of tokens/i.test(msg);
 }
 
-/** What a read-only agent hears when it tries to change something: for a command, which ones do run. */
-function readOnlyRefusal(toolName: string): string {
-    return toolName === "Bash"
-        ? "This is a read-only agent: only read-only commands run (plain commands such as cat, rg, wc or git log, and pipes of them; no loops, subshells, $(…) or > redirects). Report what should be changed instead."
-        : "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+/**
+ * What a read-only agent hears when it tries to change something. For a
+ * command: what in it isn't read-only (so it doesn't send the same command
+ * again), and which ones do run.
+ */
+function readOnlyRefusal(toolName: string, command?: string, why?: string): string {
+    if (toolName !== "Bash") return "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+    const what = why ?? (command !== undefined ? notReadOnly(command) : undefined);
+    return `This is a read-only agent, and ${what ?? "this command isn't read-only"}. Only read-only commands run: plain commands such as cat, rg, wc or git log, and pipes of them, with no loops, subshells, $(…) or > redirects. Tests, builds and scripts don't run either. Leave out or replace just that part, or report what should be run or changed instead.`;
 }
 
 /** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
@@ -1325,7 +1329,7 @@ export class Agent {
         // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
         if (this.o.readOnly) {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
-            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name), stop: false };
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
@@ -1522,7 +1526,7 @@ export class Agent {
         // Read-only agents (explore) never change anything.
         if (this.o.readOnly) {
             const writes = tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || tool.category === "mcp" && !isReadOnly(tool, input);
-            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name)) };
+            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
         }
 
         const settings = this.o.settings();
@@ -1851,7 +1855,7 @@ export function backendActionsNote(name: string, actions: string[], maxChars = A
 }
 
 const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: another agent gave you one self-contained task. Complete it, then reply with a final report. The other agent sees only your last message, so make it complete: findings, file paths with line numbers, what you changed (if anything), and anything left unresolved. Don't commit, push or make changes outside the task's scope.`;
-const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files; changes will be refused. Report what should be changed instead.";
+const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files, and don't run tests, builds or scripts; those will be refused. Report what should be changed or run instead.";
 
 /** Stands in for a backend tool the harness has no tool of its own for (rules still match its name). */
 function backendTool(name: string, title?: string): Tool<any> {

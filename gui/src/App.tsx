@@ -19,6 +19,7 @@ import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsNav, SettingsPage } from "./components/Settings";
 import { RewindDialog } from "./components/RewindDialog";
+import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
@@ -228,6 +229,7 @@ export function App() {
             </Show>
             <CommandPalette />
             <RewindDialog />
+            <McpDialog />
             <FolderPicker />
             <TrustDialog />
             <DeleteSessionDialog />
