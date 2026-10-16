@@ -10,7 +10,7 @@ import { activate, app, createSession, handleFor, importCliSession, markSeen, re
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
 export type { Attachment } from "../lib/attachments";
 
@@ -86,6 +86,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
             return true;
         case "rewind":
             if (id) setRewindOpen(true);
+            return true;
+        case "mcp":
+            if (id) setMcpOpen({ focus: args.trim() || undefined });
             return true;
         case "settings":
         case "config":

@@ -3,7 +3,7 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -13,7 +13,8 @@ const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
-import type { AgentRun, Block, CliSessionsList, InteractionResponse, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentEvent } from "../src/agent/agent";
 
 const TOKEN = "test-token-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
@@ -62,11 +63,14 @@ class Client {
     private waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
     views = new Map<string, { state: SessionState; turns: Turn[]; agents: AgentRun[]; seq: number }>();
     events: ServerEvent[] = [];
+    /** Every message as it came off the wire (to check what never reaches a client). */
+    raw: string[] = [];
     private listeners = new Set<() => void>();
 
     constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port) {
         this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`], headers } as any);
         this.ws.onmessage = (m) => {
+            this.raw.push(String(m.data));
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
                 const ev = msg.event as ServerEvent;
@@ -822,6 +826,8 @@ describe("sessions", () => {
         const write = await c.answer(id, { kind: "permission", choice: "yes" });
         expect(write.kind === "permission" && write.heading).toBe("Create a file");
         expect(write.kind === "permission" && write.diff?.status).toBe("added");
+        // The session's own agent asks: the notification needs no name.
+        expect(c.events.flatMap((e) => (e.type === "notify" && e.kind === "permission" ? [e.body] : []))[0]).toBe("Wants to create a file");
         const edit = await c.answer(id, { kind: "permission", choice: "yes" });
         expect(edit.kind === "permission" && edit.diff?.added).toBeGreaterThan(0);
         const bash = await c.answer(id, { kind: "permission", choice: "yes" });
@@ -1405,6 +1411,103 @@ describe("sub-agents", () => {
         }
     }, 45_000);
 
+    test("a delegated Codex task's own sub-agent is an agent of its own under the task: its steps, its report, asking as itself", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const claude = fakeClaude();
+        const codex = fakeCodex();
+        saveAgentConfig("claude-code", { path: claude });
+        saveAgentConfig("codex", { path: codex });
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_CODEX_SCENARIO = "subagent";
+        process.env.FAKE_MCP_CALLS = JSON.stringify([{ tool: "delegate", args: { task: "Count the files in src.", description: "Count", model: "codex:gpt-test" } }]);
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "count the files" });
+            // Its sub-agent's command asks (Manual mode): as that sub-agent, under the task, and it's the one waiting.
+            let during: unknown;
+            const ask = await c.answer(id, { kind: "permission", choice: "yes" }, () => {
+                during = c.view(id).agents.map((a) => [a.description, a.status]);
+            });
+            await c.until(id, done, 30_000);
+            const v = c.view(id);
+            expect(v.agents.map((a) => a.description)).toEqual(["Count", "Count the files"]);
+            const [task, sub] = v.agents as [AgentRun, AgentRun];
+            expect([task.taskId, task.model, task.status, task.parentId]).toEqual(["task-1", "codex:gpt-test", "done", undefined]);
+            // Shown under the task's call to it, on the task's model, with what it did and what it answered.
+            expect([sub.parentId, sub.turnId, sub.model, sub.status, sub.taskId, sub.report]).toEqual([task.id, task.turnId, "codex:gpt-test", "done", undefined, "CHILD_REPORT: 2 files."]);
+            expect(task.blocks.some((b) => b.id === sub.id && b.t === "tool" && b.agent)).toBe(true);
+            expect(sub.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            expect(sub.toolCount).toBe(1);
+            expect(sub.tokens).toBe(5050);
+            // The task's own steps don't take in its sub-agent's.
+            expect(task.blocks.flatMap((b) => (b.t === "tool" ? [b.name] : []))).toEqual(["Task", "wait"]);
+            // Its call's row in the turn opens it; the row doesn't carry its steps over again with each one.
+            const patches = c.events.flatMap((e) => (e.type === "session.ops" ? e.ops : [])).filter((o) => o.op === "block.patch" && o.blockId === task.id);
+            expect(patches.length).toBeGreaterThan(0);
+            expect(patches.some((o) => o.op === "block.patch" && "sub" in o.patch)).toBe(false);
+            expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(["Bash", "Count (codex:gpt-test) › Count the files", sub.id]);
+            expect(during).toEqual([
+                ["Count", "running"],
+                ["Count the files", "waiting"],
+            ]);
+            // The notification says who asks.
+            const note = c.events.find((e) => e.type === "notify" && e.kind === "permission");
+            expect(note?.type === "notify" && note.body).toBe('Sub-agent "Count (codex:gpt-test) › Count the files" wants to run a shell command');
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CODEX_SCENARIO;
+            delete process.env.FAKE_MCP_CALLS;
+            removeAgentConfig("claude-code");
+            removeAgentConfig("codex");
+        }
+    }, 45_000);
+
+    test("a delegated Codex task's own sub-agent asking after the turn is over keeps asking, as the task does", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const claude = fakeClaude();
+        const codex = fakeCodex();
+        saveAgentConfig("claude-code", { path: claude });
+        saveAgentConfig("codex", { path: codex });
+        process.env.FAKE_SCENARIO = "mcp";
+        process.env.FAKE_CODEX_SCENARIO = "subagent";
+        // In the background, then a while waiting on it: the sub-agent asks during Claude Code's turn, which ends while it goes on.
+        process.env.FAKE_MCP_CALLS = JSON.stringify([
+            { tool: "delegate", args: { task: "Count the files in src.", description: "Count", model: "codex:gpt-test", wait: false } },
+            { tool: "task_status", args: { task_id: "task-1", wait_seconds: 2 } },
+        ]);
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.send", { id, text: "count the files" });
+            await c.until(id, (v) => done(v) && v.state.interactions.length > 0, 20_000);
+            await Bun.sleep(200);
+            const v = c.view(id);
+            expect(v.state.status).toBe("waiting");
+            const sub = v.agents.find((a) => a.parentId)!;
+            const ask = v.state.interactions[0]!;
+            expect(ask.kind === "permission" && [ask.agentId, sub.status]).toEqual([sub.id, "waiting"]);
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, (x) => x.agents.length === 2 && x.agents.every((a) => a.status === "done"), 20_000);
+            expect(c.view(id).agents.map((a) => [a.description, a.report?.split("\n")[0]])).toEqual([
+                ["Count", "Finished."],
+                ["Count the files", "CHILD_REPORT: 2 files."],
+            ]);
+            c.close();
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_CODEX_SCENARIO;
+            delete process.env.FAKE_MCP_CALLS;
+            removeAgentConfig("claude-code");
+            removeAgentConfig("codex");
+        }
+    }, 45_000);
+
     /** A turn on the fake Claude Code in a scenario; the session's view once it's over. */
     async function claudeCodeTurn(scenario: string) {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
@@ -1646,6 +1749,8 @@ describe("sub-agents", () => {
             const ask = v.state.interactions[0]!;
             expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(["Write", "Write a note (mock:mock-haiku)", v.agents[0]!.id]);
             expect(v.agents[0]!.activity).toBe("Waiting for approval");
+            // Its notification says who asks: not the session's own agent.
+            expect(c.events.flatMap((e) => (e.type === "notify" && e.kind === "permission" ? [e.body] : []))).toEqual(['Sub-agent "Write a note (mock:mock-haiku)" wants to create a file']);
 
             expect(await c.call("session.stopAgent", { id, agentId: v.agents[0]!.id })).toEqual({ stopped: 1 });
             await c.until(id, (x) => x.state.interactions.length === 0 && x.agents[0]?.status === "stopped", 10_000);
@@ -2261,4 +2366,332 @@ describe("project scripts", () => {
             c.close();
         }
     }, 20_000);
+});
+
+describe("notes to the model on what changed", () => {
+    async function freshSession() {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({});
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        const snap = (await engine.handle(c, "session.create", { cwd: project() })) as SessionSnapshot;
+        const id = snap.state.id;
+        const rt = engine.runtimes.get(id)!;
+        // The mock model, whatever earlier tests left as the default.
+        await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+        /** The prompt as the model got it: its text and the notes that went with it. */
+        const send = async (text: string) => {
+            await engine.handle(c, "session.send", { id, text });
+            const sent = () => rt.session.messages.find((m) => m.role === "user" && m.meta?.kind === "prompt" && m.meta.display === text);
+            for (let i = 0; i < 200 && !(sent() && rt.idle); i++) await Bun.sleep(50);
+            expect(rt.idle).toBe(true);
+            return sent()!.content.flatMap((p) => (p.type === "text" ? [p.text] : []));
+        };
+        return { engine, c, id, rt, send };
+    }
+
+    test("a model and mode picked before the first prompt are where the session starts: no switch to tell of then, only after", async () => {
+        const { engine, c, id, send } = await freshSession();
+        try {
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
+            await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
+            expect(await send("first prompt")).toEqual(["first prompt"]);
+            // Once the conversation is going, a switch is news.
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+            await engine.handle(c, "session.setMode", { id, mode: "default" });
+            const second = (await send("second prompt")).join("\n");
+            expect(second).toContain("The user switched the model to");
+            expect(second).toContain("The user switched the permission mode to");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("plan mode picked before the first prompt is still said: the model has to know it may only plan", async () => {
+        const { engine, c, id, send } = await freshSession();
+        try {
+            await engine.handle(c, "session.setMode", { id, mode: "plan" });
+            // Picked again (the GUI lets you), it's still said.
+            await engine.handle(c, "session.setMode", { id, mode: "plan" });
+            expect((await send("first prompt")).join("\n")).toContain("Plan mode is now active.");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("plan mode picked and left again before the first prompt leaves nothing to tell, whatever the mode is next", async () => {
+        const { engine, c, id, send } = await freshSession();
+        try {
+            // Back to where it was, then straight from plan mode to another.
+            for (const mode of ["plan", "default", "plan", "acceptEdits"]) await engine.handle(c, "session.setMode", { id, mode });
+            expect(await send("first prompt")).toEqual(["first prompt"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("after a rewind to the first prompt, a switch before resending takes back what the rewind queued: it starts afresh", async () => {
+        const { engine, c, id, rt, send } = await freshSession();
+        try {
+            await send("first prompt");
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
+            const plan = (await engine.handle(c, "session.rewindPlan", { id, index: 0 })) as { planId: string };
+            await engine.handle(c, "session.rewind", { id, index: 0, planId: plan.planId, code: false, conversation: true });
+            expect(rt.session.messages).toEqual([]);
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-sonnet", persist: false });
+            await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
+            expect(await send("again")).toEqual(["again"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+});
+
+describe("a sub-agent's own sub-agents", () => {
+    test("a rewind that keeps a sub-agent keeps its own sub-agent with it", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({});
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        try {
+            const snap = (await engine.handle(c, "session.create", { cwd: project() })) as SessionSnapshot;
+            const id = snap.state.id;
+            const rt = engine.runtimes.get(id)!;
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+            const idle = async () => {
+                for (let i = 0; i < 200 && !(rt.idle && !rt.busy); i++) await Bun.sleep(50);
+                expect(rt.idle).toBe(true);
+            };
+            await engine.handle(c, "session.send", { id, text: "Use agents to review the auth module and its tests" });
+            for (let i = 0; i < 200 && rt.snapshot().agents.length < 2; i++) await Bun.sleep(50);
+            await idle();
+            const auth = rt.snapshot().agents.find((a) => a.description === "Map the auth module")!;
+            // As a sub-agent on Codex shows its own: a Task in its activity, then what that one does.
+            const emit = (e: AgentEvent) => rt.agent!.options.host.emit({ type: "subagent", parentId: auth.id, label: "Map the auth module", event: e });
+            emit({ type: "tool_start", call: { type: "tool_call", id: "inner-1", name: "Task", input: { description: "Check the tests", prompt: "" } }, title: "Task(Check the tests)" });
+            const inner = (e: AgentEvent) => emit({ type: "subagent", parentId: "inner-1", label: "Check the tests", event: e });
+            inner({ type: "text", text: "Two tests." });
+            inner({ type: "turn_end", reason: "done" });
+            expect(rt.snapshot().agents.map((a) => [a.description, a.parentId])).toContainEqual(["Check the tests", auth.id]);
+            await engine.handle(c, "session.send", { id, text: "and now?" });
+            for (let i = 0; i < 200 && rt.snapshot().turns.filter((t) => t.prompt).length < 2; i++) await Bun.sleep(50);
+            await idle();
+            const targets = (await engine.handle(c, "session.rewindTargets", { id })) as { index: number; text: string }[];
+            expect(targets[0]!.text).toBe("and now?");
+            const plan = (await engine.handle(c, "session.rewindPlan", { id, index: targets[0]!.index })) as { planId: string };
+            await engine.handle(c, "session.rewind", { id, index: targets[0]!.index, planId: plan.planId, code: false, conversation: true });
+            const v = rt.snapshot();
+            const kept = v.agents.find((a) => a.id === auth.id)!;
+            const sub = v.agents.find((a) => a.id === "inner-1");
+            // Still under it, in its turn (with that turn's new id), with what it did.
+            expect([sub?.parentId, sub?.turnId, sub?.status, sub?.report]).toEqual([auth.id, kept.turnId, "done", "Two tests."]);
+            expect(v.turns.some((t) => t.id === kept.turnId)).toBe(true);
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
+});
+
+describe("a project's MCP servers (.mcp.json approval)", () => {
+    const FIXTURE = join(import.meta.dir, "fixtures", "mcp-stdio-server.ts");
+    /** The fixture MCP server; it leaves its pid in `marker` the moment it starts. */
+    const fx = (marker: string, env: Record<string, string> = {}) => ({ command: process.execPath, args: ["--no-env-file", FIXTURE], env: { MCP_FIXTURE_ERA: "legacy", MCP_FIXTURE_MARKER: marker, ...env } });
+    const writeMcp = (dir: string, servers: Record<string, unknown>) => writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: servers }));
+    const srvOf = (v: { state: SessionState }, name = "srv"): McpStatus | undefined => v.state.mcp.find((m) => m.name === name);
+    const starts = (marker: string) => (existsSync(marker) ? readFileSync(marker, "utf-8").trim().split("\n").length : 0);
+    const alive = (pid: number) => {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    const until = async (cond: () => boolean, ms = 5000) => {
+        for (const end = Date.now() + ms; Date.now() < end && !cond(); ) await Bun.sleep(25);
+        return cond();
+    };
+
+    async function mcpProject(servers: (dir: string) => Record<string, unknown>, trust = true) {
+        const dir = project();
+        writeMcp(dir, servers(dir));
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust });
+        const id = await c.open("session.create", { cwd: dir });
+        return { dir, c, id, marker: join(dir, "started") };
+    }
+
+    test("the card shows what will run; approving it connects live, in every session of the folder", async () => {
+        const { dir, c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const c2 = await client();
+        const id2 = await c2.open("session.create", { cwd: dir });
+
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(true);
+        expect(list.savedIn).toBe(join(dir, ".harness", "settings.local.json"));
+        expect(list.meaning).toContain("Harness's own models");
+        const card = list.servers.find((s) => s.name === "srv")!;
+        expect(card).toMatchObject({ source: "project", status: "needs-approval", transport: "stdio", command: process.execPath, args: ["--no-env-file", FIXTURE], cwd: realpathSync(dir), envNames: ["MCP_FIXTURE_ERA", "MCP_FIXTURE_MARKER"], declaredIn: join(dir, ".mcp.json"), approval: { state: "needs-approval", reason: "new" } });
+
+        // A fingerprint that isn't what the card showed approves nothing, and says what would run now.
+        const stale = await c.call<{ approved: boolean; list: McpListInfo }>("session.mcpApprove", { id, name: "srv", fingerprint: "v1:" + "0".repeat(64) });
+        expect(stale.approved).toBe(false);
+        expect(stale.list.servers[0]!.fingerprint).toBe(card.fingerprint);
+        await expect(c.call("session.mcpApprove", { id, name: "nope", fingerprint: card.fingerprint })).rejects.toMatchObject({ code: "unknown" });
+        await Bun.sleep(300);
+        expect(existsSync(marker)).toBe(false);
+
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && srvOf(v)!.tools > 0);
+        await c2.until(id2, (v) => srvOf(v)?.status === "connected");
+        expect(srvOf(c.view(id))!.approval).toEqual({ state: "approved" });
+        expect(JSON.parse(readFileSync(join(dir, ".harness", "settings.local.json"), "utf-8")).approvedMcpjsonServers.srv).toBe(card.fingerprint);
+        c.close();
+        c2.close();
+    }, 20_000);
+
+    test("reject keeps it off; it can be approved later through the same card", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const after = await c.call<McpListInfo>("session.mcpReject", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "disabled", approval: { state: "rejected" } });
+        await c.until(id, (v) => srvOf(v)?.approval?.state === "rejected");
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: after.servers[0]!.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        c.close();
+    }, 20_000);
+
+    test("revoke stops it (the process goes) and it asks again", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }));
+        const card = (await c.call<McpListInfo>("session.mcp", { id, name: "srv" })).servers[0]!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        const pid = Number(readFileSync(marker, "utf-8").trim());
+        expect(alive(pid)).toBe(true);
+        const after = await c.call<McpListInfo>("session.mcpRevoke", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "needs-approval" });
+        expect(await until(() => !alive(pid))).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        await expect(c.call("session.mcpRevoke", { id, name: "srv" })).rejects.toMatchObject({ code: "not_needed" });
+        c.close();
+    }, 20_000);
+
+    test("reconnect brings a failed server back; after its command changes, reconnecting asks again instead", async () => {
+        const { dir, c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_FAIL_IF: join(d, "fail") }) }));
+        writeFileSync(join(dir, "fail"), "");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        const failedError = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!.error!;
+        expect(failedError).toContain("fixture told to fail");
+        // Line breaks stay line breaks in an error (commands and args show them as ⟨U+000A⟩).
+        expect(failedError).toContain("\n");
+        expect(failedError).not.toContain("⟨U+000A⟩");
+
+        rmSync(join(dir, "fail"));
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        const pid = Number(readFileSync(marker, "utf-8").trim().split("\n").pop());
+
+        const ran = starts(marker);
+        const changed = fx(marker, { MCP_FIXTURE_FAIL_IF: join(dir, "fail") });
+        writeMcp(dir, { srv: { ...changed, args: [...changed.args, "--changed"] } });
+        const after = await c.call<McpListInfo>("session.mcpReconnect", { id, name: "srv" });
+        expect(after.servers[0]).toMatchObject({ status: "needs-approval", approval: { state: "needs-approval", reason: "changed" } });
+        expect(after.servers[0]!.why).toContain("changed since you approved it");
+        await c.until(id, (v) => srvOf(v)?.approval?.reason === "changed");
+        expect(await until(() => !alive(pid))).toBe(true);
+        await Bun.sleep(300);
+        expect(starts(marker)).toBe(ran);
+
+        // A new session in the folder sees the same.
+        const c2 = await client();
+        const id2 = await c2.open("session.create", { cwd: dir });
+        expect(srvOf(c2.view(id2))?.status).toBe("needs-approval");
+        c.close();
+        c2.close();
+    }, 20_000);
+
+    test("a folder trusted only for having had nothing to protect: approving asks for the user's trust first", async () => {
+        // Nothing to protect when the session opens, so it's trusted for this run only.
+        const dir = project();
+        const c = await client();
+        const id = await c.open("session.create", { cwd: dir });
+        expect(c.view(id).state.trusted).toBe(true);
+        const marker = join(dir, "started");
+        writeMcp(dir, { srv: fx(marker) });
+
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(true);
+        expect(list.userTrusted).toBe(false);
+        const card = list.servers.find((s) => s.name === "srv")!;
+        expect(card.status).toBe("needs-approval");
+        await expect(c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint })).rejects.toMatchObject({ code: "needs_trust" });
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+        expect(existsSync(join(dir, ".harness", "settings.local.json"))).toBe(false);
+
+        // The existing trust flow works for a workspace already trusted in that weaker sense.
+        await c.call("projects.trust", { path: dir, trust: true });
+        const after = await c.call<McpListInfo>("session.mcp", { id });
+        expect(after.userTrusted).toBe(true);
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: after.servers.find((s) => s.name === "srv")!.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        c.close();
+    }, 20_000);
+
+    test("an untrusted folder: nothing from .mcp.json is read, starts, or can be approved", async () => {
+        const { c, id, marker } = await mcpProject((d) => ({ srv: fx(join(d, "started")) }), false);
+        expect(c.view(id).state.trusted).toBe(false);
+        expect(srvOf(c.view(id))).toBeUndefined();
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(false);
+        expect(list.servers.find((s) => s.name === "srv")).toBeUndefined();
+        const fp = "v1:" + "0".repeat(64);
+        await expect(c.call("session.mcpApprove", { id, name: "srv", fingerprint: fp })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpReject", { id, name: "srv" })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpRevoke", { id, name: "srv" })).rejects.toMatchObject({ code: "untrusted" });
+        await expect(c.call("session.mcpReconnect", { id, name: "srv" })).rejects.toMatchObject({ code: "unknown" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+        c.close();
+    }, 20_000);
+
+    test("an env value never reaches the client: not in results, events or state, nor anything saved", async () => {
+        const SENTINEL = "sentinel-env-value-" + Math.random().toString(36).slice(2);
+        const { dir, c, id } = await mcpProject((d) => {
+            const base = fx(join(d, "started"), { SENTINEL_TOKEN: SENTINEL, MCP_FIXTURE_STDERR_ENV: "SENTINEL_TOKEN", MCP_FIXTURE_FAIL_IF: join(d, ".mcp.json") });
+            return { srv: { ...base, args: [...base.args, `--token=${SENTINEL}`] } };
+        });
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.servers[0]!.masked).toBe(true);
+        expect(list.servers[0]!.envNames).toContain("SENTINEL_TOKEN");
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: list.servers[0]!.fingerprint });
+        // It prints the value to stderr and exits: the error shown is masked.
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        const failed = (await c.call<McpListInfo>("session.mcp", { id, name: "srv" })).servers[0]!;
+        expect(failed.error).toContain("[REDACTED env SENTINEL_TOKEN]");
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await c.until(id, (v) => srvOf(v)?.status === "failed");
+        await c.call("session.send", { id, text: "explain the layout" });
+        await c.until(id, done);
+        await c.call("session.mcpRevoke", { id, name: "srv" });
+        await c.call("session.mcpReject", { id, name: "srv" });
+
+        expect(c.raw.length).toBeGreaterThan(5);
+        for (const m of c.raw) expect(m).not.toContain(SENTINEL);
+        // Nor the local settings (only a keyed hash), the session's transcript, or anything else in the harness home.
+        const files = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? files(join(d, f)) : [join(d, f)]));
+        for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
+        c.close();
+    }, 30_000);
 });

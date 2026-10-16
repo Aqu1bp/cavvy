@@ -57,7 +57,6 @@ import type {
     SessionOp,
     SessionSnapshot,
     SessionState,
-    SubagentInfo,
     ToolBlock,
     ToolCategoryId,
     Turn,
@@ -201,7 +200,6 @@ export class Runtime {
     private responseBlocks: string[] = [];
     /** Tool call id -> the turn its block is in. */
     private toolTurn = new Map<string, string>();
-    private subs = new Map<string, SubagentInfo>();
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
     private agentLabels = new Map<string, string>();
     private agentText = new Map<string, string>();
@@ -287,6 +285,11 @@ export class Runtime {
 
     bypassAllowed(): boolean {
         return this.engine.bypassAllowed(this.ws.cwd);
+    }
+
+    /** The model has heard from this session: a switch now is news to it. Before, it's where the session starts. */
+    private get conversationStarted(): boolean {
+        return this.session.messages.length > 0 || Boolean(this.agent?.busy) || (this.agent?.delegatedTasks ?? []).some((t) => t.status === "running");
     }
 
     private initialState(): SessionState {
@@ -636,7 +639,8 @@ export class Runtime {
         let info = this.engine.listings.find((l) => l.provider.id === parsed.provider)?.models.find((m) => m.id === parsed.id) ?? resolveModelInfo(ref);
         if (!info) return false;
         if (!info.contextWindow && def.kind !== "anthropic") info = (await lookupModel(ref).catch(() => undefined)) ?? info;
-        const prev = this.model;
+        // The model it was on, if the conversation has begun (none to tell of before the first prompt).
+        const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
         this.client = client;
         this.classifier.setComplete((system, prompt, signal, o) => this.complete(system, prompt, signal, o));
@@ -645,6 +649,8 @@ export class Runtime {
             this.agent.setModel(info, client);
             this.agent.options.nativeWebSearch = this.nativeSearch();
             if (prev) this.agent.noteModelChange(modelRef(prev), info);
+            // Before it, a note still queued (one a rewind to the start kept) would be about another model.
+            else this.agent.dropStateNote("model");
         }
         if (opts.persist) {
             try {
@@ -830,7 +836,12 @@ export class Runtime {
         }
         const from = this.mode;
         this.mode = m;
-        if (!opts.fromAgent && this.agent) this.agent.noteModeChange(from, m);
+        if (!opts.fromAgent && this.agent && from !== m) {
+            // Before the first prompt only plan mode is news: the model has to know it may only plan. Any other
+            // mode is where the session starts, so a note still queued (of plan mode, or one a rewind to the start kept) goes.
+            if (!this.conversationStarted) this.agent.dropStateNote("mode");
+            if (this.conversationStarted || m === "plan") this.agent.noteModeChange(from, m);
+        }
         this.setState({ mode: m, bypassAllowed: this.bypassAllowed() });
         this.recordState();
         return true;
@@ -1116,32 +1127,21 @@ export class Runtime {
         this.recordState();
     }
 
+    // What it does shows on its own (an AgentRun): the call's row opens it, so the row carries none of it.
     private subagentEvent(parentId: string, label: string, e: AgentEvent) {
+        if (e.type === "subagent") return this.nestedAgentEvent(parentId, e);
         this.trackAgent(parentId, label, e);
-        const turnId = this.toolTurn.get(parentId);
-        if (!turnId) return;
-        let sub = this.subs.get(parentId);
-        if (!sub) this.subs.set(parentId, (sub = { label, tools: [], toolCount: 0, tokens: 0, startedAt: Date.now() }));
-        let changed = false;
-        if (e.type === "tool_start") {
-            sub.toolCount++;
-            sub.tools.push({ t: "tool", id: e.call.id, name: e.call.name, title: e.title, category: e.tool?.category as ToolCategoryId | undefined, status: "running", startedAt: Date.now() });
-            if (sub.tools.length > 6) sub.tools.shift();
-            changed = true;
-        } else if (e.type === "tool_end") {
-            const t = sub.tools.find((x) => x.id === e.call.id);
-            if (t) {
-                if (e.title) t.title = e.title;
-                t.status = /^The user declined/.test(e.result.content) ? "denied" : e.result.isError ? "error" : "ok";
-                t.summary = e.result.display?.summary;
-                t.durationMs = e.durationMs;
-                changed = true;
-            }
-        } else if (e.type === "usage") {
-            sub.tokens += e.usage.inputTokens + e.usage.outputTokens + (e.usage.cacheReadTokens ?? 0);
-            changed = true;
-        }
-        if (changed) this.patchBlock(parentId, { sub: structuredClone(sub) }, turnId);
+    }
+
+    /**
+     * What a sub-agent's own sub-agent does (a delegated Codex task's spawn,
+     * say): an agent of its own, under its parent, from the call in the
+     * parent's activity that started it. Its label (the parent's, then its
+     * own) is the one its permission prompts come with.
+     */
+    private nestedAgentEvent(parentId: string, e: Extract<AgentEvent, { type: "subagent" }>): void {
+        if (e.event.type === "subagent") return this.nestedAgentEvent(e.parentId, e.event);
+        this.trackAgent(e.parentId, e.label, e.event, parentId);
     }
 
     // -----------------------------------------------------------------------
@@ -1151,19 +1151,34 @@ export class Runtime {
         this.op({ op: "agent.patch", id, patch });
     }
 
-    private trackAgent(id: string, label: string, e: AgentEvent) {
-        let a = this.view.agents.find((x) => x.id === id);
-        if (!a || a.replayed) {
+    /** A sub-agent's run, from its call: in a turn, or (a sub-agent's own) in its parent's activity, on its parent's model unless the call names one. */
+    private startAgent(id: string, parent?: string): AgentRun | undefined {
+        const own = this.model && modelRef(this.model);
+        if (parent === undefined) {
             const turnId = this.toolTurn.get(id);
             const call = turnId ? this.blockIn(turnId, id) : undefined;
-            if (!turnId || call?.t !== "tool") return;
-            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, this.model && modelRef(this.model)), startedAt: Date.now() } });
-            a = this.view.agents.find((x) => x.id === id)!;
+            if (!turnId || call?.t !== "tool") return undefined;
+            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, own), startedAt: Date.now() } });
+        } else {
+            const p = this.view.agents.find((x) => x.id === parent);
+            const call = p?.blocks.find((b) => b.id === id);
+            if (!p || call?.t !== "tool") return undefined;
+            const run = agentFromCall(call, p.turnId, own);
+            this.op({ op: "agent", agent: { ...run, parentId: p.id, model: run.model ?? p.model, startedAt: Date.now() } });
+        }
+        return this.view.agents.find((x) => x.id === id);
+    }
+
+    private trackAgent(id: string, label: string, e: AgentEvent, parent?: string) {
+        let a = this.view.agents.find((x) => x.id === id);
+        if (!a || a.replayed) {
+            a = this.startAgent(id, parent);
+            if (!a) return;
         }
         this.agentLabels.set(id, label);
         if (!a.taskId) {
             const task = this.agent?.delegatedTasks.find((t) => t.callId === id);
-            if (task) this.agentPatch(id, { taskId: task.id, ...(a.model || !this.model || task.model === modelRef(this.model) ? {} : { model: task.model }) });
+            if (task) this.agentPatch(id, { taskId: task.id, effort: task.effort, ...(a.model || !this.model || task.model === modelRef(this.model) ? {} : { model: task.model }) });
         }
         // A new turn of one that had ended (Codex's, messaged after it answered): it's running again, and its next answer is its report.
         if (e.type === "request_start" && a.endedAt !== undefined && a.status !== "running" && a.status !== "waiting") {
@@ -1211,6 +1226,9 @@ export class Runtime {
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
+                // Its own sub-agent's call: the result is that one's report, as a Task's in a turn is (one still working only says it started).
+                const sub = e.call.name === "Task" ? this.view.agents.find((x) => x.id === e.call.id && x.parentId === id) : undefined;
+                if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(sub.id, { report: redact(withoutActionsNote(e.result.content)) });
                 break;
             }
             case "notice":
@@ -1305,7 +1323,9 @@ export class Runtime {
             this.setStatus("waiting");
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
             const kind = interaction.kind;
-            this.engine.notify(this, kind, kind === "permission" ? `Wants to ${interaction.heading.toLowerCase()}` : kind === "question" ? interaction.question : "Plan ready for your review");
+            // A sub-agent's request says whose it is: the session's own agent didn't ask.
+            const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
+            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${interaction.heading.toLowerCase()}` : kind === "question" ? interaction.question : "Plan ready for your review");
         });
     }
 
@@ -1338,11 +1358,19 @@ export class Runtime {
         p.resolve(r);
     }
 
+    /** The sub-agent itself, or for a sub-agent's own, the one at the top it runs under (a delegated task, say). */
+    private outermost(agentId: string): AgentRun | undefined {
+        let a = this.view.agents.find((x) => x.id === agentId);
+        for (let depth = 0; a?.parentId && depth < 8; depth++) a = this.view.agents.find((x) => x.id === a!.parentId);
+        return a;
+    }
+
     /** Answer what's pending with nothing. At a turn's end, a delegated task still running keeps asking: it outlives the turn. */
     private cancelInteractions(opts: { keepDelegated?: boolean } = {}) {
         for (const [id, p] of [...this.pending]) {
             const agentId = p.interaction.kind === "permission" ? p.interaction.agentId : undefined;
-            const agent = agentId ? this.view.agents.find((a) => a.id === agentId) : undefined;
+            // A delegated task's own sub-agent asks for the task.
+            const agent = agentId ? this.outermost(agentId) : undefined;
             if (opts.keepDelegated && agent?.taskId && (agent.status === "running" || agent.status === "waiting")) continue;
             this.settle(id, undefined);
         }
@@ -1893,6 +1921,11 @@ export class Runtime {
             if (live && this.backendTurns.has(live.turnId)) this.backendTurns.set(r.turnId, this.segment);
             return live ? { ...live, turnId: r.turnId } : r;
         });
+        // And the ones each kept one started of its own (its call is in that one's activity), in its turn.
+        for (const a of this.view.agents) {
+            const up = a.parentId ? agents.find((x) => x.id === a.parentId && !x.replayed) : undefined;
+            if (up && !agents.some((x) => x.id === a.id)) agents.push({ ...a, turnId: up.turnId });
+        }
         this.op({ op: "reset", turns, agents });
     }
 

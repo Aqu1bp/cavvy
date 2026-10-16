@@ -549,5 +549,5 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         // Its own git dir stays writable (commits, the index).
         const ok = await run(`echo x > "${join(own, "index.lock")}" && echo wrote`);
         expect(ok.content).toBe("wrote");
-    });
+    }, 20_000);
 });

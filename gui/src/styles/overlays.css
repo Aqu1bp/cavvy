@@ -529,6 +529,102 @@
     margin-top: 10px;
 }
 
+/* ---- MCP servers dialog ---- */
+
+.mcp-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-subtle);
+}
+
+.mcp-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.mcp-card .dialog-actions {
+    margin-top: 4px;
+}
+
+.mcp-facts {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 14px;
+    font-size: 0.857rem;
+}
+
+.mcp-fact-label {
+    color: var(--fg-muted);
+}
+
+.mcp-fact {
+    min-width: 0;
+}
+
+.mcp-val,
+.mcp-arg {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Each argument boxed on its own, so its spaces and quotes show. */
+.mcp-arg {
+    display: inline-block;
+    max-width: 100%;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+}
+
+.mcp-args {
+    margin: 0;
+    padding-left: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.mcp-names {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+
+.mcp-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.mcp-note.warn {
+    color: var(--warning);
+}
+
+.mcp-note svg {
+    flex: none;
+    margin-top: 2px;
+}
+
+.mcp-error {
+    color: var(--danger);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 160px;
+    overflow-y: auto;
+}
+
 /* ---- Labelled form fields (the project script dialog) --------------- */
 
 .script-field {

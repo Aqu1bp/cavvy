@@ -5,6 +5,8 @@
 // Requests:  client -> { id, method, params }      server -> { id, result } | { id, error }
 // Events:    server -> { event }                   (session timelines, sidebar updates, notifications)
 
+import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
+
 export const PROTOCOL_VERSION = 1;
 
 /**
@@ -139,6 +141,7 @@ export interface ToolBlock {
     /** Who approved it without asking: "sandboxed", "hook", or the auto-mode reviewer's reason. */
     approval?: string;
     sandboxed?: boolean;
+    /** No longer sent: what a sub-agent does is its AgentRun's, which the call's row opens. */
     sub?: SubagentInfo;
     /** It runs a sub-agent: a Task call, or a task Claude Code or Codex delegated to another model. */
     agent?: boolean;
@@ -155,11 +158,14 @@ export interface AgentRun {
     turnId: string;
     /** A delegated task's id (task-1): what stops it. Task sub-agents stop with the turn. */
     taskId?: string;
+    /** A sub-agent's own sub-agent (a delegated Codex task's, say): the agent whose activity has the call that started it. */
+    parentId?: string;
     description: string;
     /** "general-purpose", "explore", or a custom agent type. */
     agentType: string;
     /** provider:model, when it isn't the session's own. */
     model?: string;
+    effort?: EffortLevel;
     /** The instructions it was given (cut when long). */
     prompt?: string;
     status: "running" | "waiting" | "done" | "failed" | "stopped";
@@ -345,11 +351,15 @@ export type SessionStatus = "idle" | "running" | "waiting" | "error";
 
 export interface McpStatus {
     name: string;
-    status: "pending" | "connecting" | "connected" | "failed" | "disabled" | "needs-approval";
+    status: McpServerStatus;
     tools: number;
     error?: string;
     source: "settings" | "project";
+    /** A project server's approval (no fingerprint: session.mcp has that). */
+    approval?: McpApprovalInfo;
 }
+
+export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 export interface SessionState {
     id: string;
@@ -817,6 +827,18 @@ export interface Methods {
     "commands.list": { params: { cwd: string }; result: CommandInfo[] };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
+    /**
+     * The session's folder's MCP servers, read again from settings and
+     * .mcp.json (so what the terminal's /mcp did shows), each with what it
+     * runs. With `name`, just that one, in full.
+     */
+    "session.mcp": { params: { id: string; name?: string }; result: McpListInfo };
+    /** Approve a project server for exactly the configuration `fingerprint` names. If it changed since, nothing is saved: `approved` is false, with the fresh list. */
+    "session.mcpApprove": { params: { id: string; name: string; fingerprint: string }; result: { approved: boolean; list: McpListInfo } };
+    "session.mcpReject": { params: { id: string; name: string }; result: McpListInfo };
+    "session.mcpRevoke": { params: { id: string; name: string }; result: McpListInfo };
+    /** Read its configuration again and start it afresh, if it may run (a changed .mcp.json server asks again instead). */
+    "session.mcpReconnect": { params: { id: string; name: string }; result: McpListInfo };
 }
 
 export type Method = keyof Methods;
