@@ -1,8 +1,9 @@
 // All reports come from fake CLI protocols; no provider requests or signed-in homes.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { componentCode, elements, node } from "./gui-component-harness";
 import type { AgentEvent } from "../src/agent/agent";
 import type { BackendTurn } from "../src/backends/types";
 import type { AccountInfo, PlanLimits, ServerEvent } from "../src/server/protocol";
@@ -15,7 +16,7 @@ const { mergeLimits, parseClaudeRateLimit, parseCodexRateLimits } = await import
 const { Engine } = await import("../src/server/engine");
 const { planLimitKey } = await import("../src/server/protocol");
 const { meterOf, limitAlternatives } = await import("../gui/src/lib/limits");
-const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR"];
+const keys = ["FAKE_SCENARIO", "FAKE_CLAUDE_LIMIT_INFO", "FAKE_CODEX_LIMIT_UPDATE", "FAKE_CODEX_LIMIT_READ", "FAKE_LIMIT_ERROR", "FAKE_RATE_LIMITS", "FAKE_RATE_LIMITS_RELEASE", "FAKE_LOG"];
 const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
 for (const provider of ["claude-code", "codex"]) {
     const binary = join(root, provider);
@@ -129,7 +130,7 @@ test("Claude warning deduplication does not suppress another account's notice", 
     for (const accountId of ["personal", "personal", "work"]) {
         const events: AgentEvent[] = [];
         await backend.runTurn(turn("claude-code", accountId, events));
-        notices.push(events.filter((e) => e.type === "notice" && /close to the usage limit/.test(e.message)).map((e) => e.message));
+        notices.push(events.filter((e) => e.type === "notice" && /close to the .*usage limit/.test(e.message)).map((e) => e.message));
     }
     expect(notices.map((n) => n.length)).toEqual([1, 0, 1]);
     expect(notices[0]![0]).toContain("Personal");
@@ -153,4 +154,54 @@ test("removing metadata clears the server and GUI meter before the id can be reu
     const clearing = events.filter((e) => e.type === "limits" && e.limits.accountId === "discarded").at(-1)!;
     expect(clearing.type === "limits" && meterOf(clearing.limits, Date.now())).toBeUndefined();
     await engine.stop();
+});
+
+
+test("a newer Codex read on another account does not suppress a delayed account snapshot", async () => {
+    const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "codex")!);
+    const personal: AgentEvent[] = [];
+    const work: AgentEvent[] = [];
+    const release = join(root, "release-personal-limits");
+    const log = join(root, "personal-read.log");
+    process.env.FAKE_RATE_LIMITS = join(import.meta.dir, "fixtures", "limits", "codex-update-normal.json");
+    process.env.FAKE_RATE_LIMITS_RELEASE = release;
+    process.env.FAKE_LOG = log;
+    const older = backend.runTurn(turn("codex", "personal", personal));
+    try {
+        const deadline = Date.now() + 3000;
+        while (!(existsSync(log) && readFileSync(log, "utf8").includes('"method":"account/rateLimits/read"')) && Date.now() < deadline) await Bun.sleep(5);
+        expect(existsSync(log) && readFileSync(log, "utf8").includes('"method":"account/rateLimits/read"')).toBe(true);
+        delete process.env.FAKE_RATE_LIMITS_RELEASE;
+        delete process.env.FAKE_LOG;
+        process.env.FAKE_RATE_LIMITS = join(import.meta.dir, "fixtures", "limits", "codex-update-reached.json");
+        expect((await backend.runTurn(turn("codex", "work", work))).reason).toBe("done");
+        expect(work.filter((e) => e.type === "limits")).toHaveLength(1);
+    } finally {
+        writeFileSync(release, "release");
+        await older;
+    }
+    const reports = personal.filter((e) => e.type === "limits");
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.limits).toMatchObject({ provider: "codex", accountId: "personal" });
+    expect(work.find((e) => e.type === "limits")!.limits).toMatchObject({ provider: "codex", accountId: "work", reached: true });
+});
+
+
+test("PlanMeter starts on Home's default account and uses an open session's own account", () => {
+    const providers = [{ id: "codex", name: "Codex", agentCli: { plan: "ChatGPT plan", defaultAccount: "work", accounts: [{ id: "personal", name: "Personal" }, { id: "work", name: "Work" }] } }];
+    const limits = Object.fromEntries([report("codex", "personal", 80), report("codex", "work", 20)].map((l) => [planLimitKey(l.provider, l.accountId), l]));
+    let settingsTab: string | undefined;
+    const PlanMeter = componentCode("PlanMeter", {
+        app: { providers, limits }, handleFor: () => ({ view: { state: { model: { provider: "codex" }, accounts: { codex: "personal" } } } }),
+        planLimitKey, meterOf, limitAlternatives, windowLine: (w: { pct: number }) => `${w.pct}%`,
+        now: () => Date.now(), createMemo: (fn: () => unknown) => { const value = fn(); return () => value; },
+        createSignal: (value: unknown) => [() => value, () => {}], createEffect: () => {}, onCleanup: () => {},
+        node, Show: "Show", For: "For", Popover: "Popover", setSettingsTab: (tab: string) => { settingsTab = tab; },
+    });
+    const home = elements(PlanMeter({ provider: "codex" }), "button");
+    expect(home[0]!.props["aria-label"]).toBe("ChatGPT plan · Work usage: 20%");
+    home.find((b) => b.children.includes("Usage"))!.props.onClick();
+    expect(settingsTab).toBe("usage");
+    const session = elements(PlanMeter({ sessionId: "session" }), "button");
+    expect(session[0]!.props["aria-label"]).toBe("ChatGPT plan · Personal usage: 80%");
 });

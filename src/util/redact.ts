@@ -6,6 +6,12 @@
 import { APP_NAME } from "../config/paths";
 
 const exact = new Map<string, { label: string; prefix?: Uint32Array }>();
+let revision = 0;
+
+/** Cached, shortened text must be rebuilt when the secrets used to redact it change. */
+export function redactionVersion(): number {
+    return revision;
+}
 
 const PATTERNS: [RegExp, string][] = [
     [/sk-ant-(?:api|admin|oat|sid)\d{0,2}-[A-Za-z0-9_-]{20,}/g, "anthropic-key"],
@@ -24,6 +30,7 @@ const PATTERNS: [RegExp, string][] = [
 
 export function registerSecret(value: string | undefined, label = "secret") {
     if (!value || value.length < 8) return;
+    if (exact.get(value)?.label === label) return;
     const prefix = new Uint32Array(value.length);
     for (let i = 1, j = 0; i < value.length; i++) {
         while (j && value[i] !== value[j]) j = prefix[j - 1]!;
@@ -33,10 +40,11 @@ export function registerSecret(value: string | undefined, label = "secret") {
     // A proper prefix equal to a suffix means occurrences can overlap. Keep its
     // failure table so repetitive inputs take linear time even for very long values.
     exact.set(value, { label, prefix: prefix[value.length - 1] ? prefix : undefined });
+    revision++;
 }
 
 export function unregisterSecret(value: string | undefined) {
-    if (value) exact.delete(value);
+    if (value && exact.delete(value)) revision++;
 }
 
 export function knownSecrets(): string[] {

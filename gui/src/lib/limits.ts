@@ -1,7 +1,7 @@
-// What the account's plan meter says: plain functions of the
+// What the plan meter and the Usage view say: plain functions of the
 // server's data and the time (no DOM, so they're tested from test/).
 
-import type { AccountInfo, PlanLimits } from "@shared/protocol";
+import type { AccountInfo, PlanLimits, UsageRow, UsageSummary } from "@shared/protocol";
 
 /** Older than this, a report is shown with "as of" its time. */
 export const STALE_MS = 15 * 60_000;
@@ -85,4 +85,31 @@ export function windowLine(w: MeterWindow): string {
 /** Only a fresh CLI status can offer a usable alternative; no identity enters the transcript. */
 export function limitAlternatives(accounts: AccountInfo[], accountId: string): AccountInfo[] {
     return accounts.filter((a) => a.id !== accountId && a.signedIn === true);
+}
+
+export function usd(n: number): string {
+    if (n === 0) return "$0.00";
+    if (n < 0.01) return "<$0.01";
+    if (n < 1000) return `$${n.toFixed(2)}`;
+    return `$${Math.round(n).toLocaleString()}`;
+}
+
+/** A row's or the total's cost: "unknown" when none of it had a price, "$X + unknown" when part didn't. Never "$0" for unpriced usage. */
+export function costText(r: Pick<UsageRow, "cost" | "unknown">): string {
+    if (!r.unknown) return usd(r.cost);
+    return r.cost > 0 ? `${usd(r.cost)} + unknown` : "unknown";
+}
+
+/** Tokens in: what wasn't read from the cache (cache writes are new input). */
+export function tokensIn(r: Pick<UsageRow, "inputTokens" | "cacheWriteTokens">): number {
+    return r.inputTokens + r.cacheWriteTokens;
+}
+
+/** What the Usage view says when there are no rows: not "no usage" when it didn't get to read everything. */
+export function emptyText(s: Pick<UsageSummary, "days" | "truncated">): string {
+    return s.truncated ? `Nothing read yet: ${s.truncated}` : `No usage in the last ${rangeLabel(s.days)}.`;
+}
+
+export function rangeLabel(days: UsageSummary["days"]): string {
+    return days === 1 ? "24 hours" : `${days} days`;
 }

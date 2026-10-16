@@ -7,6 +7,7 @@
 import { createHash } from "crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
+import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
 import { textOf, toolCallsOf } from "../providers/types";
 import { redactedJson } from "../util/redact";
@@ -309,6 +310,7 @@ export function agentFromCall(b: ToolBlock, turnId: string, ownModel?: string): 
         description: text(i.description) ?? b.title,
         agentType: text(i.subagent_type) ?? text(i.agent) ?? "general-purpose",
         model: model && model !== ownModel ? model : undefined,
+        effort: EFFORT_LEVELS.includes(i.effort as Effort) ? i.effort as Effort : undefined,
         prompt: text(i.prompt) ?? text(i.task),
         status: "running",
         startedAt: b.startedAt ?? Date.now(),
@@ -357,9 +359,7 @@ export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map
             if (b.t !== "tool") continue;
             const rec = recorded?.get(b.id);
             if (rec) {
-                // Nothing of it runs any more, and there's no task to stop.
-                const live = rec.status === "running" || rec.status === "waiting";
-                out.push({ ...rec, turnId: t.id, taskId: undefined, activity: undefined, replayed: true, blocks: rec.blocks.map(ended), ...(live ? { status: "stopped", endedAt: rec.endedAt ?? t.endedAt } : {}) });
+                out.push(restoredAgent(rec, t));
                 continue;
             }
             if (!b.agent) continue;
@@ -368,7 +368,19 @@ export function agentsFromTurns(turns: Turn[], ownModel?: string, recorded?: Map
             out.push({ ...agentFromCall(b, t.id, ownModel), status, startedAt, ...(b.durationMs !== undefined && startedAt ? { endedAt: startedAt + b.durationMs } : {}), report: b.output && withoutActionsNote(b.output), replayed: true });
         }
     }
+    // A sub-agent's own (a delegated Codex task's) has its call in that one's steps, not in a turn: it comes back with it.
+    for (let i = 0; i < out.length && recorded; i++) {
+        const up = out[i]!;
+        const turn = turns.find((t) => t.id === up.turnId)!;
+        for (const rec of recorded.values()) if (rec.parentId === up.id && !out.some((a) => a.id === rec.id)) out.push(restoredAgent(rec, turn));
+    }
     return out;
+}
+
+/** A logged sub-agent as it comes back: nothing of it runs any more, and there's no task to stop. */
+function restoredAgent(rec: AgentRun, t: Turn): AgentRun {
+    const live = rec.status === "running" || rec.status === "waiting";
+    return { ...rec, turnId: t.id, taskId: undefined, activity: undefined, replayed: true, blocks: rec.blocks.map(ended), ...(live ? { status: "stopped", endedAt: rec.endedAt ?? t.endedAt } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -463,15 +475,17 @@ export function replay(o: ReplayInput): Turn[] {
         const archived = si < segs.length - 1;
         let turn: Turn | undefined;
         const tools = new Map<string, ToolBlock>();
-        const start = (prompt: Turn["prompt"], at?: number) => {
+        const start = (prompt: Turn["prompt"], at?: number, index?: number) => {
             if (turn && turn.status === "running") turn.status = "done";
-            turn = { id: o.newId(), prompt, blocks: [], status: "done", startedAt: at, ...(archived ? { archived } : {}) };
+            turn = { id: o.newId(), prompt, blocks: [], status: "done", startedAt: at, ...(archived ? { archived } : {}), ...(index !== undefined ? { pos: { seg: si, index } } : {}) };
             turns.push(turn);
             return turn;
         };
-        const ensure = () => turn ?? start(undefined);
+        // A turn no prompt started (a reply carrying on after a compaction) still has its place.
+        const ensure = (index: number) => turn ?? start(undefined, undefined, index);
         if (si > 0) {
-            const t = start(undefined);
+            // Before any prompt of its segment: what a search finds there leads here.
+            const t = start(undefined, undefined, -1);
             t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false });
             turn = undefined;
         }
@@ -486,7 +500,9 @@ export function replay(o: ReplayInput): Turn[] {
         const noticesBefore = (index: number) => {
             while (notices.length && notices[0]!.index <= index) {
                 const n = notices.shift()!;
-                const t = ensure();
+                // A notice can be the first block after compaction; it still needs a
+                // position for search, even when flushed after the last message.
+                const t = ensure(n.index);
                 t.blocks.push({ t: "notice", id: o.newId(), level: n.level, text: n.text });
                 if (n.level === "error" && t.status === "done") t.status = "error";
             }
@@ -499,7 +515,7 @@ export function replay(o: ReplayInput): Turn[] {
                 const kind = m.meta?.kind ?? "prompt";
                 if (kind === "summary" || kind === "reminder") return;
                 if (kind === "interrupt") {
-                    const t = ensure();
+                    const t = ensure(index);
                     t.status = "aborted";
                     for (const b of t.blocks) if (b.t === "tool" && b.status === "running") b.status = "error";
                     return;
@@ -509,7 +525,7 @@ export function replay(o: ReplayInput): Turn[] {
                         if (p.type === "tool_result") applyResult(tools.get(p.toolCallId), p, o.ui);
                         else if (p.type === "text" && p.text.startsWith(STEERING)) {
                             const rec = o.ui.turn(si, index);
-                            const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at);
+                            const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at, index);
                             if (rec?.end) t.endedAt = rec.end;
                             if (rec?.status && rec.status !== "running") t.status = rec.status;
                         }
@@ -518,7 +534,7 @@ export function replay(o: ReplayInput): Turn[] {
                 }
                 const rec = o.ui.turn(si, index);
                 const imported = Boolean(m.meta?.imported);
-                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at);
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at, index);
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;
@@ -529,7 +545,7 @@ export function replay(o: ReplayInput): Turn[] {
                 }
                 return;
             }
-            const t = ensure();
+            const t = ensure(index);
             const backend = getProvider(m.provider ?? "")?.kind === "agent";
             if (backend && shown.has(t)) return;
             for (const p of m.content) {
@@ -575,7 +591,7 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     else if (b.status === "ok") b.summary = derivedSummary(b, p.content);
     if (rec?.durationMs !== undefined) b.durationMs = rec.durationMs;
     if (rec?.approval) b.approval = rec.approval;
-    if (rec?.sandboxed) b.sandboxed = true;
+    if (rec?.sandboxed !== undefined) b.sandboxed = rec.sandboxed;
     if (p.images?.length || rec?.images) b.images = p.images?.length ?? rec?.images;
 }
 

@@ -78,8 +78,8 @@ type Line =
     | { t: "title"; title: string }
     | { t: "compact"; summary: string }
     | { t: "rewind"; count: number }
-    /** unknown: no price was known for this usage, so cost (0) leaves it out. */
-    | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true }
+    /** unknown: no price was known; at: when spent (ms), absent in older records. */
+    | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
     | { t: "backend"; provider: string; id: string | null; synced?: number; folder?: string }
@@ -145,6 +145,8 @@ export class Session {
     /** Some usage had no known price, so `cost` leaves it out (it isn't free). */
     costUnknown = false;
     usageByModel = new Map<string, { usage: Usage; cost: number; unknown?: boolean }>();
+    /** Ephemeral sub-agents retain individual records so folding preserves model and billing. */
+    readonly usageRecords: { model: string; usage: Usage; cost: number; unknown: boolean }[] = [];
     /** Agent backends' own sessions, by provider. */
     backends = new Map<string, BackendSession>();
     /** The home that owns each native thread, separate from the public resume map. */
@@ -306,7 +308,8 @@ export class Session {
     /** `unknown`: no price is known for it (`cost` is then 0, which doesn't mean free). */
     recordUsage(model: string, usage: Usage, cost: number, unknown = false) {
         this.accumulate(model, usage, cost, unknown);
-        this.write({ t: "usage", usage, cost, model, ...(unknown ? { unknown: true as const } : {}) });
+        if (!this.persist) this.usageRecords.push({ model, usage: { ...usage }, cost, unknown });
+        this.write({ t: "usage", usage, cost, model, at: Date.now(), ...(unknown ? { unknown: true as const } : {}) });
     }
 
     private accumulate(model: string, usage: Usage, cost: number, unknown: boolean) {

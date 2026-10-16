@@ -5,6 +5,8 @@
 // Requests:  client -> { id, method, params }      server -> { id, result } | { id, error }
 // Events:    server -> { event }                   (session timelines, sidebar updates, notifications)
 
+import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
+
 export const PROTOCOL_VERSION = 1;
 
 /**
@@ -139,6 +141,7 @@ export interface ToolBlock {
     /** Who approved it without asking: "sandboxed", "hook", or the auto-mode reviewer's reason. */
     approval?: string;
     sandboxed?: boolean;
+    /** No longer sent: what a sub-agent does is its AgentRun's, which the call's row opens. */
     sub?: SubagentInfo;
     /** It runs a sub-agent: a Task call, or a task Claude Code or Codex delegated to another model. */
     agent?: boolean;
@@ -155,11 +158,14 @@ export interface AgentRun {
     turnId: string;
     /** A delegated task's id (task-1): what stops it. Task sub-agents stop with the turn. */
     taskId?: string;
+    /** A sub-agent's own sub-agent (a delegated Codex task's, say): the agent whose activity has the call that started it. */
+    parentId?: string;
     description: string;
     /** "general-purpose", "explore", or a custom agent type. */
     agentType: string;
     /** provider:model, when it isn't the session's own. */
     model?: string;
+    effort?: EffortLevel;
     /** The instructions it was given (cut when long). */
     prompt?: string;
     status: "running" | "waiting" | "done" | "failed" | "stopped";
@@ -240,6 +246,12 @@ export interface Turn {
     archived?: boolean;
     /** From a Claude Code or Codex session started elsewhere: shown, can't be rewound to. */
     imported?: boolean;
+    /**
+     * Where the message that started it sits in the session file: its segment
+     * (compactions before it) and position there. Kept after a compaction, unlike
+     * prompt.index; a search hit finds its turn by it.
+     */
+    pos?: { seg: number; index: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -345,11 +357,15 @@ export type SessionStatus = "idle" | "running" | "waiting" | "error";
 
 export interface McpStatus {
     name: string;
-    status: "pending" | "connecting" | "connected" | "failed" | "disabled" | "needs-approval";
+    status: McpServerStatus;
     tools: number;
     error?: string;
     source: "settings" | "project";
+    /** A project server's approval (no fingerprint: session.mcp has that). */
+    approval?: McpApprovalInfo;
 }
+
+export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 export interface SessionState {
     accounts?: Record<string, string>;
@@ -476,6 +492,52 @@ export interface CliSessionsList {
     sessions: CliSessionInfo[];
 }
 
+/** A message that matched a search of every session's text. */
+export interface SessionSearchHit {
+    id: string;
+    title: string;
+    cwd: string;
+    projectName: string;
+    archived: boolean;
+    /** The segment (compactions before it) and position of the matched message, as Turn.pos has them. */
+    seg: number;
+    index: number;
+    role: "user" | "assistant";
+    /** A short stretch of the message around the match, redacted. */
+    snippet: string;
+    /** Where the match is in the snippet (absent when redaction swallowed it). */
+    match?: [number, number];
+    /** When the matched message's turn started, or the session's last change when that isn't known. */
+    at: number;
+}
+
+/**
+ * Lower case that keeps every position where it was ("İ" stays as it is
+ * rather than turning into two characters) and doesn't depend on the letters
+ * around it, so where a match is found in the folded text is where it is in
+ * the original. Server search and the GUI's find bar both match with it.
+ */
+export function foldCase(s: string): string {
+    let l = s.toLowerCase();
+    if (l.length !== s.length) {
+        l = "";
+        for (const ch of s) {
+            const x = ch.toLowerCase();
+            l += x.length === ch.length ? x : ch;
+        }
+    }
+    // Σ lowers to ς at the end of a word and σ elsewhere: "ΟΣ" in "ΟΣΑ" must still match.
+    return l.includes("ς") ? l.replace(/ς/g, "σ") : l;
+}
+
+export interface SessionSearchResult {
+    hits: SessionSearchHit[];
+    /** The time or size budget ran out before every session was read. */
+    partial: boolean;
+    /** A newer search from the same window replaced this one; its hits are dropped. */
+    stale?: boolean;
+}
+
 export interface ProjectInfo {
     path: string;
     name: string;
@@ -565,24 +627,6 @@ export interface ProviderModels {
     models: ModelSummary[];
 }
 
-/** Plan windows reported by the CLI; no identity or credential data. */
-export interface LimitWindow {
-    id: string;
-    label: string;
-    usedPercent?: number;
-    resetsAt?: number;
-    reached?: boolean;
-}
-
-export interface PlanLimits {
-    provider: string;
-    accountId: string;
-    windows: LimitWindow[];
-    reached?: boolean;
-    resetsAt?: number;
-    at: number;
-}
-
 /** Account ids are local metadata, independent of a CLI's private account identity. */
 export const planLimitKey = (provider: string, accountId = "default") => JSON.stringify([provider, accountId]);
 
@@ -591,6 +635,75 @@ export interface CommandInfo {
     description: string;
     args?: string;
     custom?: boolean;
+}
+
+/** One window of a plan's usage limits (five hours, a week), as an agent CLI reported it. */
+export interface LimitWindow {
+    /** Stable key: Claude Code's window name (five_hour), Codex's limit and slot (codex:primary). */
+    id: string;
+    /** "5-hour", "Weekly". */
+    label: string;
+    /** 0-100; absent when the CLI didn't say. */
+    usedPercent?: number;
+    /** When it resets (ms since the epoch), when known. */
+    resetsAt?: number;
+    reached?: boolean;
+}
+
+/** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
+export interface PlanLimits {
+    provider: string;
+    /** Local account id; omitted reports belong to the default account. */
+    accountId?: string;
+    windows: LimitWindow[];
+    /** The CLI said a limit is reached (true) or that it isn't (false); absent when it didn't say. */
+    reached?: boolean;
+    /** When the reached limit resets (ms), when known. */
+    resetsAt?: number;
+    /** When it was reported (ms). */
+    at: number;
+}
+
+/** The ranges the Usage view offers, in days. */
+export const USAGE_DAYS = [1, 7, 30] as const;
+export type UsageDays = (typeof USAGE_DAYS)[number];
+
+/** Tokens and cost of one provider's model over the range. */
+export interface UsageRow {
+    provider: string;
+    providerName: string;
+    /** The model id within the provider. */
+    model: string;
+    /** On a subscription (an agent CLI on its plan): the cost is what the API would have charged. */
+    plan: boolean;
+    sessions: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    /** USD, estimated from list prices (or as the provider reported it); the known part only. */
+    cost: number;
+    /** API-equivalent USD for usage covered by a plan (included in cost). */
+    planEquivalent: number;
+    /** Some of it had no known price: cost leaves that out (it isn't free). */
+    unknown: boolean;
+}
+
+export interface UsageSummary {
+    days: UsageDays;
+    /** Start of the range (ms). */
+    since: number;
+    rows: UsageRow[];
+    /** The rows added up (sessions apart: one can use several models). */
+    totals: Pick<UsageRow, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cost" | "planEquivalent" | "unknown">;
+    /** Sessions with any usage in the range. */
+    sessions: number;
+    /** Records from before usage was dated, placed at their session's last activity. */
+    approxDated: number;
+    /** Alias-only records priced using today's model listing rather than a recorded concrete model. */
+    approxPriced?: number;
+    /** Why not everything was read (too many sessions, too much to read in time). */
+    truncated?: string;
 }
 
 export interface RewindTargetInfo {
@@ -654,6 +767,24 @@ export interface GitChangesInfo extends ChangesInfo {
     /** Changed files not listed; `moreAtLeast` when even the count was cut short. */
     more: number;
     moreAtLeast?: boolean;
+}
+
+export interface GitCommitHead {
+    branch?: string;
+    detached: boolean;
+    /** Full commit SHA, required for a detached HEAD snapshot. */
+    sha?: string;
+}
+
+export interface GitCommitInfo {
+    hash: string;
+    subject: string;
+    branch?: string;
+}
+
+export interface GitCommitMessageInfo {
+    message: string;
+    model: string;
 }
 
 export interface GuiSettings {
@@ -725,6 +856,7 @@ export type ServerEvent =
     | { type: "models.changed" }
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
     | { type: "scripts.changed"; project: string }
+    /** An agent CLI reported where the user's plan stands. */
     | { type: "limits"; limits: PlanLimits };
 
 // ---------------------------------------------------------------------------
@@ -762,10 +894,13 @@ export interface Methods {
     /** Opens terminal `id` in `cwd`; the stored script's command is typed into it once the window arms it (terminal.arm) and the shell is reading. */
     "scripts.run": { params: { id: string; cwd: string; script: string; cols: number; rows: number }; result: { id: string; cwd: string; script: ProjectScript } };
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
+    /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
+    "sessions.search": { params: { query: string; limit?: number; archived?: boolean }; result: SessionSearchResult };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
-    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }; result: { queued: boolean } };
+    /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
+    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean }; result: { queued: boolean } };
     "session.interrupt": { params: { id: string }; result: null };
     "session.respond": { params: { id: string; interactionId: string; response: InteractionResponse }; result: null };
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
@@ -780,6 +915,8 @@ export interface Methods {
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string }; result: GitChangesInfo };
+    "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
+    "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     "session.archive": { params: { id: string; archived: boolean }; result: null };
     "session.settle": { params: { id: string; settled: boolean }; result: null };
@@ -836,10 +973,26 @@ export interface Methods {
     "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
-    "commands.list": { params: { cwd: string }; result: CommandInfo[] };
-    "limits.get": { params: Record<string, never>; result: PlanLimits[] };
+    /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
+    "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
+    /** The agent CLIs' plan limits known so far (since the server started). */
+    "limits.get": { params: Record<string, never>; result: PlanLimits[] };
+    /** Tokens and cost per provider and model, from the session transcripts. */
+    "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
+    /**
+     * The session's folder's MCP servers, read again from settings and
+     * .mcp.json (so what the terminal's /mcp did shows), each with what it
+     * runs. With `name`, just that one, in full.
+     */
+    "session.mcp": { params: { id: string; name?: string }; result: McpListInfo };
+    /** Approve a project server for exactly the configuration `fingerprint` names. If it changed since, nothing is saved: `approved` is false, with the fresh list. */
+    "session.mcpApprove": { params: { id: string; name: string; fingerprint: string }; result: { approved: boolean; list: McpListInfo } };
+    "session.mcpReject": { params: { id: string; name: string }; result: McpListInfo };
+    "session.mcpRevoke": { params: { id: string; name: string }; result: McpListInfo };
+    /** Read its configuration again and start it afresh, if it may run (a changed .mcp.json server asks again instead). */
+    "session.mcpReconnect": { params: { id: string; name: string }; result: McpListInfo };
 }
 
 export type Method = keyof Methods;

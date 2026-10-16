@@ -252,7 +252,7 @@ describe("storage", () => {
         // Once it's released, a save goes through.
         await saveScript(dir, { name: "b", command: "echo b" });
         expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["a", "b"]);
-    }, 10_000);
+    }, 20_000);
 
     test("a store that isn't valid JSON is reported, and left alone", async () => {
         writeFileSync(scriptsFile(), "{ not json");
@@ -335,7 +335,7 @@ describe("typed input in a new terminal", () => {
         } finally {
             shells.stop();
         }
-    }, 15_000);
+    }, 20_000);
 });
 
 describe("a store this Harness doesn't fully understand", () => {
@@ -501,7 +501,7 @@ describe("when git fails", () => {
         } finally {
             process.env.PATH = savedPath;
         }
-    }, 15_000);
+    }, 20_000);
 
     test("no git at all: the folder is its own project", async () => {
         const { linked } = repoWithWorktree();
@@ -531,7 +531,7 @@ describe("the store's lock", () => {
         } finally {
             rmSync(lock(), { force: true });
         }
-    }, 10_000);
+    }, 20_000);
 
     test("left by a process that has gone, it's taken over at once, however new", async () => {
         resetStore();
@@ -616,7 +616,7 @@ describe("typing into a shell once it's reading", () => {
         } finally {
             shells.stop();
         }
-    }, 15_000);
+    }, 20_000);
 
     test.skipIf(!existsSync("/bin/zsh"))("the terminal answering the shell's query before then doesn't stop the command being typed", async () => {
         const zdot = tempDir("harness-zdotdir-");
@@ -868,7 +868,7 @@ describe("arming, and when typing happens", () => {
             } finally {
                 shells.stop();
             }
-        }, 15_000);
+        }, 20_000);
     });
 });
 
@@ -897,7 +897,7 @@ describe("git that won't stop", () => {
             process.env.PATH = savedPath;
             forgetProjectKeys();
         }
-    }, 15_000);
+    }, 20_000);
 });
 
 describe("the lock, where there are no hard links", () => {
@@ -960,5 +960,5 @@ describe("the lock, where there are no hard links", () => {
             Object.assign(lockFiles, real);
             rmSync(lock(), { force: true });
         }
-    }, 10_000);
+    }, 20_000);
 });

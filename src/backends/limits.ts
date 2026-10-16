@@ -156,7 +156,7 @@ function limitResetsAt(windows: LimitWindow[]): number | undefined {
  * full window (or, with none to show for it, its reset time) says so.
  */
 export function mergeLimits(prev: PlanLimits | undefined, next: PlanLimits, partial: boolean): PlanLimits {
-    if (!prev || !partial || prev.provider !== next.provider || prev.accountId !== next.accountId) return next;
+    if (!prev || !partial || prev.provider !== next.provider || (prev.accountId ?? "default") !== (next.accountId ?? "default")) return next;
     const windows = prev.windows.map((w) => {
         const n = next.windows.find((n) => n.id === w.id);
         if (!n) return w;

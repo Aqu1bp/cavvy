@@ -1084,11 +1084,66 @@
     text-overflow: ellipsis;
 }
 
-/* The active account's quota, independent of the conversation's context size. */
+/* ---- Plan meter: the agent CLI's plan limits, beside the context ring ------ */
+
+.plan-meter {
+    width: auto;
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 0.821rem;
+    color: var(--fg-muted);
+}
+
+.plan-gauge {
+    width: 18px;
+    height: 5px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--bg-active);
+}
+
+.plan-gauge > span {
+    display: block;
+    height: 100%;
+    background: var(--fg-muted);
+}
+
+.plan-meter.warn .plan-gauge > span {
+    background: var(--warning);
+}
+
+.plan-meter.danger {
+    color: var(--danger);
+}
+
+.plan-meter.danger .plan-gauge > span {
+    background: var(--danger);
+}
+
+.plan-asof {
+    font-weight: 400;
+    color: var(--fg-subtle);
+}
+
+.plan-reached {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-radius: var(--radius-xs);
+    background: var(--danger-soft);
+    color: var(--danger);
+    font-size: 0.857rem;
+    font-weight: 500;
+}
+
+.plan-window + .plan-window {
+    margin-top: 10px;
+}
+
+.plan-resets {
+    margin-top: 4px;
+    font-size: 0.786rem;
+    color: var(--fg-muted);
+}
+
 .account-plan-meter { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.plan-meter { gap: 6px; font-size: 11px; }
-.plan-meter.danger { color: var(--danger); }
-.plan-gauge { width: 22px; height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; }
-.plan-gauge > span { display: block; height: 100%; background: currentColor; }
-.plan-window { margin: 12px 0; }
-.plan-account-hint { color: var(--muted); font-size: 11px; }
+.plan-account-hint { color: var(--fg-muted); font-size: 11px; }

@@ -1,6 +1,6 @@
 // The session's side card: where it works (folder, branch, changes), and
-// only what's live besides: the plan, running shells, secrets it holds, MCP
-// servers that failed, and its sub-agents. Sections with nothing to say aren't drawn.
+// only what's live besides: the plan, running shells, secrets it holds, MCP servers
+// that failed or ask for approval, and its sub-agents. Empty sections aren't drawn.
 
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
@@ -8,6 +8,8 @@ import type { AgentRun } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
 import { newSession, openAgents, openReview, stopAgent } from "../state/actions";
+import { setMcpOpen } from "../state/ui";
+import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { useChanges, useGitChanges } from "../state/changes";
 import { canReveal, copyText, revealPath } from "../lib/platform";
 import { duration, plural, tildify } from "../lib/format";
@@ -52,6 +54,9 @@ function Workspace(p: { handle: SessionHandle }) {
                 </button>
                 <button class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
                     <SquarePen size={14} /> New session in {st().projectName}
+                </button>
+                <button class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
+                    <Plug size={14} /> MCP servers
                 </button>
             </Popover>
             <Show when={st().branch}>
@@ -150,52 +155,63 @@ function Secrets(p: { handle: SessionHandle }) {
     );
 }
 
-/** Healthy servers stay out of the way; one that failed shows with why. */
+/** Healthy servers stay out of the way; one that failed or asks for approval shows, and opens the full list. */
 function Mcp(p: { handle: SessionHandle }) {
-    const broken = () => p.handle.view.state.mcp.filter((m) => m.status === "failed" || m.status === "needs-approval");
+    const flagged = () => p.handle.view.state.mcp.filter(needsAttention);
     return (
-        <Show when={broken().length}>
+        <Show when={flagged().length}>
             <div class="sec">
                 <div class="sh">MCP</div>
-                <For each={broken()}>
+                <For each={flagged()}>
                     {(m) => (
                         <>
-                            <span class="prow lock" title={m.error}>
+                            <button class="prow" title={m.status === "failed" ? m.error : "Review what it runs"} onClick={() => setMcpOpen({ focus: m.name })}>
                                 <Plug size={16} />
-                                <span class="truncate grow">{m.name}</span>
-                                <span class={`meta ${m.status === "failed" ? "tone-err" : "tone-warn"}`}>{m.status === "failed" ? "Failed" : "Needs approval"}</span>
-                            </span>
+                                <span class="truncate grow">{shownName(m.name)}</span>
+                                <span class={`meta tone-${statusLabel(m).tone}`}>{statusLabel(m).text}</span>
+                            </button>
                             <Show when={m.error}>
                                 <div class="panel-error">{m.error}</div>
                             </Show>
                         </>
                     )}
                 </For>
+                <button class="prow" onClick={() => setMcpOpen({})}>
+                    <span class="mcp-spacer" aria-hidden="true" />
+                    <span class="grow meta">All MCP servers</span>
+                    <ChevronRight size={14} />
+                </button>
             </div>
         </Show>
     );
 }
 
-function AgentRow(p: { handle: SessionHandle; a: AgentRun }) {
+function AgentRow(p: { handle: SessionHandle; a: AgentRun; depth?: number }) {
     const waiting = () => p.a.status === "waiting";
     const stoppable = () => live(p.a) && Boolean(p.a.taskId);
+    // Its own sub-agents (a delegated Codex task's) are under it, a step in.
+    const own = () => ((p.depth ?? 0) < 8 ? p.handle.view.agents.filter((x) => x.parentId === p.a.id) : []);
+    const depth = () => p.depth ?? 0;
     return (
-        <div class={`prow ${stoppable() ? "swap" : ""} agent-row`}>
-            <button class="agent-hit" onClick={() => openAgents(p.a.id)} title={waiting() ? "It's asking you something in the composer" : p.a.description} aria-label={p.a.description || "Sub-agent"} />
-            <span class="lic">
-                <Bot size={16} />
-                <span class={`nd st-${p.a.status}`} />
-            </span>
-            <span class="lt truncate grow">{p.a.description || "Sub-agent"}</span>
-            <span class={`meta ${waiting() ? "tone-warn" : p.a.status === "failed" ? "tone-err" : ""}`}>{waiting() ? "Needs you" : p.a.status === "failed" ? "Failed" : p.a.status === "stopped" ? "Stopped" : ran(p.a)}</span>
-            <Show when={stoppable()}>
-                <button class="act hb sm stop" title="Stop sub-agent" aria-label="Stop sub-agent" onClick={() => void stopAgent(p.handle.id, p.a.id)}>
-                    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-                        <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
-                    </svg>
-                </button>
-            </Show>
-        </div>
+        <>
+            <div class={`prow ${stoppable() ? "swap" : ""} agent-row`} style={depth() ? { "padding-left": `${10 + Math.min(depth(), 4) * 16}px` } : undefined}>
+                <button class="agent-hit" onClick={() => openAgents(p.a.id)} title={waiting() ? "It's asking you something in the composer" : p.a.description} aria-label={p.a.description || "Sub-agent"} />
+                <span class="lic">
+                    <Bot size={16} />
+                    <span class={`nd st-${p.a.status}`} />
+                </span>
+                <span class="lt truncate grow">{p.a.description || "Sub-agent"}</span>
+                <span class={`meta ${waiting() ? "tone-warn" : p.a.status === "failed" ? "tone-err" : ""}`}>{waiting() ? "Needs you" : p.a.status === "failed" ? "Failed" : p.a.status === "stopped" ? "Stopped" : ran(p.a)}</span>
+                <Show when={stoppable()}>
+                    <button class="act hb sm stop" title="Stop sub-agent" aria-label="Stop sub-agent" onClick={() => void stopAgent(p.handle.id, p.a.id)}>
+                        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                            <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
+                        </svg>
+                    </button>
+                </Show>
+            </div>
+            <For each={own()}>{(x) => <AgentRow handle={p.handle} a={x} depth={depth() + 1} />}</For>
+        </>
     );
 }
 
@@ -203,16 +219,21 @@ function AgentRow(p: { handle: SessionHandle; a: AgentRun }) {
 function Lineage(p: { handle: SessionHandle }) {
     const [showPrev, setShowPrev] = createSignal(false);
     const agents = () => p.handle.view.agents;
-    const current = createMemo(() => agents().filter(live));
-    const previous = createMemo(() => agents().filter((a) => !live(a)).reverse());
-    const failed = () => previous().filter((a) => a.status === "failed").length;
-    const waiting = () => current().filter((a) => a.status === "waiting").length;
+    // A sub-agent's own are listed under it; the counts take in every one.
+    const top = createMemo(() => agents().filter((a) => !a.parentId || !agents().some((x) => x.id === a.parentId)));
+    const current = createMemo(() => top().filter(live));
+    const previous = createMemo(() => top().filter((a) => !live(a)).reverse());
+    /** It and the ones under it. */
+    const withOwn = (a: AgentRun, depth = 0): AgentRun[] => [a, ...(depth < 8 ? agents().filter((x) => x.parentId === a.id).flatMap((x) => withOwn(x, depth + 1)) : [])];
+    const failed = () => previous().flatMap((a) => withOwn(a)).filter((a) => a.status === "failed").length;
+    const running = () => agents().filter(live).length;
+    const waiting = () => agents().filter((a) => a.status === "waiting").length;
     return (
         <Show when={agents().length}>
             <div class="sec">
                 <div class="sh">
                     Lineage
-                    <Show when={current().length}>· {waiting() ? `${waiting()} needs you` : `${current().length} running`}</Show>
+                    <Show when={running()}>· {waiting() ? `${waiting()} needs you` : `${running()} running`}</Show>
                 </div>
                 <For each={current()}>{(a) => <AgentRow handle={p.handle} a={a} />}</For>
                 <Show when={previous().length}>

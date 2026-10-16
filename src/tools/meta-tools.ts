@@ -163,7 +163,7 @@ export const TaskTool: Tool<{ description: string; prompt: string; subagent_type
 
 Agent types:
 - "general-purpose": full tool access (subject to the same permissions) for multi-step research or implementation.
-- "explore": read-only (Read, Glob, Grep, LS, WebFetch, WebSearch) for searching a codebase broadly and reporting findings.
+- "explore": read-only (Read, Glob, Grep, LS, WebFetch, WebSearch, and read-only shell commands; no edits, tests, builds or scripts) for searching a codebase broadly and reporting findings.
 - Custom agents defined in .harness/agents/*.md are also available by name.
 
 Models: a sub-agent runs on your model unless its agent type sets one or you pass model. That can be any model set up in this harness, from any provider (API models, and Claude Code or Codex when they're turned on): for a second opinion, a review, or a task another model is better at. Call ListModels to see the agent types and models.

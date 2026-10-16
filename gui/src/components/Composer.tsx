@@ -1,10 +1,10 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
-import { app, composerDrafts, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
-import { interrupt, send, setMode, type Attachment } from "../state/actions";
+import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
+import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
+import { contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
 import { cost, tokens } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
 import { EffortMenu, FastModeToggle, ModelPicker } from "./ModelPicker";
@@ -15,6 +15,9 @@ import { Ring } from "./ui/bits";
 import { PlanMeter } from "./PlanMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
+import { contextView } from "../lib/context";
+import { createLifetimeGuard } from "../lib/lifetime";
+import { createComposerDraft } from "../lib/composer-draft";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
@@ -25,21 +28,22 @@ const history: string[] = [];
 function ContextRing(p: { sessionId: string }) {
     let btn: HTMLButtonElement | undefined;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
-    const [open, setOpen] = createSignal(false);
+    // Shared so /context can open it.
+    const [open, setOpen] = [contextCardOpen, setContextCardOpen];
     const st = () => handleFor(p.sessionId)?.view.state;
-    const win = () => st()?.model?.contextWindow;
-    const pct = () => (st() && win() ? st()!.contextTokens / win()! : 0);
+    const view = () => contextView(st(), open());
+    const pct = () => view().pct ?? 0;
     const show = () => (clearTimeout(closeTimer), setOpen(true));
     const hide = () => (closeTimer = setTimeout(() => setOpen(false), 160));
     onCleanup(() => clearTimeout(closeTimer));
     return (
-        <Show when={st() && win()}>
+        <Show when={view().ring}>
             <button
                 ref={btn}
                 class="hb ctx-ring"
                 aria-haspopup="dialog"
                 aria-expanded={open()}
-                aria-label={`Context: ${Math.round(pct() * 100)}% used`}
+                aria-label={view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(pct() * 100)}% used`}
                 onMouseEnter={show}
                 onMouseLeave={hide}
                 onClick={() => setOpen(!open())}
@@ -50,14 +54,16 @@ function ContextRing(p: { sessionId: string }) {
                 <div onMouseEnter={show} onMouseLeave={hide}>
                     <div class="ctx-label">Context window</div>
                     <div class="ctx-line">
-                        <span class="num">
-                            {tokens(st()!.contextTokens)} of {tokens(win()!)} tokens
-                        </span>
-                        <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
+                        <span class="num">{view().line}</span>
+                        <Show when={view().pct !== undefined}>
+                            <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
+                        </Show>
                     </div>
-                    <div class="ctx-bar">
-                        <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
-                    </div>
+                    <Show when={view().pct !== undefined}>
+                        <div class="ctx-bar">
+                            <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
+                        </div>
+                    </Show>
                     <div class="ctx-grid">
                         <span>Spent</span>
                         <span class="num" title={st()!.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>
@@ -88,11 +94,13 @@ function ContextRing(p: { sessionId: string }) {
 }
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element }) {
+    const whileMounted = createLifetimeGuard();
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
-    const [text, setText] = createSignal("");
-    const [attachments, setAttachments] = createSignal<Attachment[]>([]);
+    const draftKey = () => p.sessionId ?? "home";
+    const draft = createComposerDraft(draftKey, wasDeleted);
+    const { text, setText, attachments, setAttachments } = draft;
     const [menu, setMenu] = createSignal<MenuItem[]>([]);
     const [menuSel, setMenuSel] = createSignal(0);
     const [menuDismissedFor, setMenuDismissedFor] = createSignal<string>();
@@ -108,30 +116,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
     const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
     const shell = () => text().startsWith("!");
-    const draftKey = () => p.sessionId ?? "home";
-
     const resize = () => {
         if (!ta) return;
         ta.style.height = "auto";
         ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
     };
 
-    // Per-session drafts. Each session gets its own input box (it's made again
-    // when another session is shown), so the draft is kept when it goes away.
-    const keepDraft = (key: string) => {
-        if (!wasDeleted(key) && (text().trim() || attachments().length)) composerDrafts.set(key, { text: text(), attachments: attachments() });
-        else composerDrafts.delete(key);
-    };
-    createEffect(
-        on(draftKey, (key, prev) => {
-            if (prev !== undefined) keepDraft(prev);
-            const d = composerDrafts.get(key);
-            setText(d?.text ?? "");
-            setAttachments(d?.attachments ?? []);
-            requestAnimationFrame(resize);
-        }),
-    );
-    onCleanup(() => keepDraft(draftKey()));
+    createEffect(on([draftKey, text], () => requestAnimationFrame(resize)));
     // What the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();
@@ -151,9 +142,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     });
     createEffect(
         on(
-            () => st()?.cwd ?? app.homeCwd,
-            (cwd) => {
-                if (cwd) void rpc.call("commands.list", { cwd }).then((c) => (commands = c)).catch(() => undefined);
+            [() => st()?.cwd ?? app.homeCwd, () => st()?.model?.provider],
+            ([cwd, provider]) => {
+                let current = true;
+                onCleanup(() => { current = false; });
+                commands = [];
+                // A reply from the previous project or provider must not replace this menu.
+                if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => { if (current) commands = c; }).catch(() => undefined);
             },
         ),
     );
@@ -223,25 +218,30 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const t = text();
         if (!canSend() || sending()) return;
         setSending(true);
-        const atts = attachments();
-        const ok = await send(t, atts);
-        setSending(false);
-        if (!ok) return;
-        if (ok === "command" && atts.length) {
-            setText("");
+        const submitted = draft.capture();
+        const { attachments: atts } = submitted.draft;
+        // A toast retry may finish after Home has unmounted too.
+        const resizeAfterSend = whileMounted(() => requestAnimationFrame(resize));
+        const sent = () => {
+            draft.clearSent(submitted);
+            resizeAfterSend();
+        };
+        const finish = whileMounted((ok: boolean | "command") => {
+            setSending(false);
+            if (!ok) return;
+            histIdx = -1;
             setMenu([]);
-            return;
+            requestAnimationFrame(resize);
+        });
+        const ok = await send(t, atts, { sent });
+        if (ok) {
+            draft.clearSent(submitted, ok === "command");
+            if (t.trim() && (ok === true || !atts.length)) {
+                history.push(t);
+                if (history.length > 100) history.shift();
+            }
         }
-        if (t.trim()) {
-            history.push(t);
-            if (history.length > 100) history.shift();
-        }
-        histIdx = -1;
-        setText("");
-        setAttachments([]);
-        composerDrafts.delete(draftKey());
-        setMenu([]);
-        requestAnimationFrame(resize);
+        finish(ok);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -501,8 +501,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="hb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
+                    <PlanMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show when={p.sessionId}>
-                        <PlanMeter sessionId={p.sessionId!} />
                         <ContextRing sessionId={p.sessionId!} />
                     </Show>
                     <Show

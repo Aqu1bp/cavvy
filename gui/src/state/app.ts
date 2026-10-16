@@ -15,7 +15,8 @@ import { mayCreateFiles } from "../lib/pathcache";
 import { paths } from "./filelinks";
 import { toastMs } from "../lib/toasts";
 import { afterFailedReopen } from "../lib/reopen";
-import type { Attachment } from "./actions";
+import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
+import { composerDrafts } from "../lib/composer-draft";
 
 export const rpc = new Rpc(credentials);
 rpc.retriesCredentials = isTauri;
@@ -52,7 +53,6 @@ export function reportError(e: unknown) {
 // App store
 
 export interface AppState {
-    limits: Record<string, PlanLimits>;
     conn: ConnectionState;
     hello?: HelloResult;
     sessions: SessionSummary[];
@@ -71,6 +71,8 @@ export interface AppState {
     /** The mode picked on the home screen, which new sessions start in; the saved default until then. */
     homeMode?: PermissionModeId;
     seen: Record<string, number>;
+    /** The agent CLIs' plan limits, by provider and account: the account's, shared by its sessions. */
+    limits: Record<string, PlanLimits>;
 }
 
 const SEEN_KEY = "harness.seen";
@@ -84,7 +86,6 @@ function loadSeen(): Record<string, number> {
 }
 
 export const [app, setApp] = createStore<AppState>({
-    limits: {},
     conn: "connecting",
     sessions: [],
     archived: [],
@@ -95,6 +96,7 @@ export const [app, setApp] = createStore<AppState>({
     projects: [],
     settings: {},
     seen: loadSeen(),
+    limits: {},
 });
 
 function saveSeen() {
@@ -154,7 +156,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     // Ops missed while it wasn't open (or the connection was down) may have created files.
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
-    deleted.delete(id);
+    sessionPresent(id);
     const existing = handles.get(id);
     if (existing) {
         existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
@@ -228,38 +230,51 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
-/** Show a session in the main view. */
-export async function activate(id: string | undefined) {
+/** Show a session in the main view. `cwd` is its project, for one not in the lists (an old one found by search). */
+export async function activate(id: string | undefined, cwd?: string) {
+    // A jump waiting for another session doesn't wait any more.
+    if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (!id) {
         setApp("activeId", undefined);
         return;
     }
     try {
         const h = await openSession(id);
+        if (id !== app.activeId) setFindOpen(false);
         setApp("activeId", id);
         if (h.view.state.cwd) setApp("homeCwd", h.view.state.cwd);
         markSeen(id);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
-            const s = app.sessions.find((x) => x.id === id);
-            if (s) requestTrust(s.cwd, () => void activate(id));
+            const where = (app.sessions.find((x) => x.id === id) ?? app.archived.find((x) => x.id === id))?.cwd ?? cwd;
+            if (where) requestTrust(where, () => void activate(id, cwd));
             return;
         }
+        if (e instanceof RpcError && e.code === "not_found") forgetSession(id);
+        if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
         reportError(e);
     }
 }
 
 // Trust prompts are shown by the App component; this hands them over.
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void } | undefined>();
-export function requestTrust(path: string, then: () => void) {
-    setTrustRequest({ path, then });
+/** MCP approval upgrades existing session trust; declining it must not change that session. */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" } | undefined>();
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval") {
+    setTrustRequest({ path, then, purpose });
 }
 
 // ---------------------------------------------------------------------------
 // Lists
 
 export async function refreshSessions() {
-    const [list, archived] = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]);
+    const markers = new Map(deleted);
+    const lists = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]);
+    // A list confirms a missed restore, but cannot undo a deletion that happened
+    // while either request was in flight (including a second deletion after Undo).
+    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id))) as typeof lists;
+    batch(() => {
+        for (const s of [...list, ...archived]) sessionPresent(s.id);
+    });
     // First run: nothing counts as unread yet.
     if (!Object.keys(app.seen).length) {
         const seen: Record<string, number> = {};
@@ -312,16 +327,24 @@ export async function refreshSettings() {
 }
 
 /** Unsent text and images per session (the input box keeps them here), so switching sessions doesn't lose them. */
-export const composerDrafts = new Map<string, { text: string; attachments: Attachment[] }>();
+export { composerDrafts } from "../lib/composer-draft";
 /** Deleted sessions (until they're brought back): an input box going away doesn't keep their draft. */
-const deleted = new Set<string>();
-export const wasDeleted = (id: string) => deleted.has(id);
+const deleted = new Map<string, symbol>();
+/** Invalidate search answers when a deletion or its restoration is observed. */
+const [sessionPresenceVersion, setSessionPresenceVersion] = createSignal(0);
+export { sessionPresenceVersion };
+export const wasDeleted = (id: string) => { sessionPresenceVersion(); return deleted.has(id); };
+function sessionPresent(id: string) {
+    if (deleted.delete(id)) setSessionPresenceVersion((v) => v + 1);
+}
 /** What this window had seen of deleted sessions, in case they're brought back (Undo). */
 const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 function forgetSession(id: string) {
-    deleted.add(id);
+    deleted.set(id, Symbol());
+    setSessionPresenceVersion((v) => v + 1);
+    if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
     setApp("archived", (l) => l.filter((s) => s.id !== id));
@@ -342,7 +365,7 @@ function reopenFailed(id: string, e: unknown) {
 }
 
 function upsertSession(s: SessionSummary) {
-    deleted.delete(s.id);
+    sessionPresent(s.id);
     const seen = seenBeforeDelete.get(s.id);
     if (seen !== undefined) {
         seenBeforeDelete.delete(s.id);
@@ -420,8 +443,9 @@ export function start() {
         void (async () => {
             try {
                 setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshLimits()]);
+                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
                 void refreshModels().catch(() => undefined);
+                void refreshLimits().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 connectedOnce = true;

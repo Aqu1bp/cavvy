@@ -5,7 +5,7 @@
 
 import { account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
-import { planLimitKey, type AccountInfo, type PlanLimits } from "./protocol";
+import { planLimitKey, type AccountInfo } from "./protocol";
 import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
@@ -14,15 +14,16 @@ export { RpcError };
 import { readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir, hostname, userInfo } from "os";
-import { APP_VERSION, harnessHome } from "../config/paths";
-import { loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
-import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "../config/trust";
+import { APP_VERSION, harnessHome, paths } from "../config/paths";
+import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError } from "../agent/session";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
+import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
-import { cachedListings, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
+import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentCli, vendorOf } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
@@ -40,6 +41,8 @@ import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validC
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
+import { searchSessions } from "./search";
+import { usageDays, usageSummary } from "./usage";
 import type {
     CliSessionInfo,
     CliSessionsList,
@@ -48,7 +51,9 @@ import type {
     EffortLevel,
     GuiSettings,
     HelloResult,
+    McpListInfo,
     McpStatus,
+    PlanLimits,
     Method,
     Methods,
     PermissionModeId,
@@ -59,6 +64,7 @@ import type {
     ServerEvent,
     SessionOp,
     SessionSnapshot,
+    SessionSearchResult,
     SessionSummary,
 } from "./protocol";
 import { PROTOCOL_VERSION } from "./protocol";
@@ -146,6 +152,15 @@ function updateStore(fn: (s: GuiStore) => void): boolean {
 
 // ---------------------------------------------------------------------------
 
+const MAX_MCP_STATUS = 100;
+
+/** A refusal from the MCP core, or a local settings file that can't be updated, is the client's to show. */
+function mcpError(e: unknown): unknown {
+    if (e instanceof McpApprovalError) return new RpcError(e.message, e.code);
+    if (e instanceof JsonFileError) return new RpcError(e.message, "settings");
+    return e;
+}
+
 export class Workspace {
     settings: Settings;
     mcp: McpManager;
@@ -164,7 +179,7 @@ export class Workspace {
     }
 
     private startMcp(): McpManager {
-        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted);
+        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })));
         mcp.onChange = () => this.engine.workspaceChanged(this);
         mcp.load();
         void mcp.startAll();
@@ -179,7 +194,13 @@ export class Workspace {
 
     /** Trusted later on: project settings, servers and commands take effect. */
     async trust() {
-        if (this.trusted) return;
+        if (this.trusted) {
+            // Trusted for this session only (it had nothing to protect when opened): now the user's word too, which
+            // approving its .mcp.json servers needs, and enableAllProjectMcpServers looks for.
+            await this.mcp.sync();
+            this.engine.workspaceChanged(this);
+            return;
+        }
         this.trusted = true;
         const old = this.mcp;
         this.settings = loadSettings(this.cwd, { trusted: true });
@@ -189,8 +210,35 @@ export class Workspace {
         this.engine.workspaceChanged(this);
     }
 
+    /** For every session's state: no fingerprints, no configuration, bounded (session.mcp has the rest). */
     mcpStatus(): McpStatus[] {
-        return [...this.mcp.servers.values()].map((s) => ({ name: s.name, status: s.status, tools: s.tools.length, error: s.error ? redact(s.error.split("\n")[0]!) : undefined, source: s.source }));
+        return [...this.mcp.servers.values()].slice(0, MAX_MCP_STATUS).map((s) => ({
+            name: s.name,
+            status: s.status,
+            tools: s.tools.length,
+            error: s.error ? visible(redact(s.error.split("\n")[0]!)).text.slice(0, 500) : undefined,
+            source: s.source,
+            // No fingerprint here; and no empty fields (they'd travel as null).
+            approval: s.approval && { state: s.approval.state, ...(s.approval.reason ? { reason: s.approval.reason } : {}), ...(s.approval.viaAll ? { viaAll: true } : {}) },
+        }));
+    }
+
+    /** The folder's servers for `rt`'s card and list: what approving means depends on the session's provider. */
+    mcpList(rt: Runtime, name?: string): McpListInfo {
+        let servers;
+        let omitted = 0;
+        if (name !== undefined) {
+            const one = this.mcp.describe(name);
+            if (!one) throw new RpcError(`There's no MCP server named "${name}" here.`, "unknown");
+            servers = [one];
+        } else ({ servers, omitted } = this.mcp.list());
+        const userTrusted = trustedByUser(this.cwd);
+        return { servers, omitted, trusted: this.trusted, userTrusted, savedIn: paths.localSettings(this.cwd), meaning: approvalMeaning(rt.model?.provider, userTrusted) };
+    }
+
+    /** Approving, rejecting and revoking need the folder trusted, whatever the client sends. */
+    mustTrust() {
+        if (!this.trusted) throw new RpcError("This folder isn't trusted, so its .mcp.json isn't read and its servers can't be approved. Trust the folder first.", "untrusted");
     }
 }
 
@@ -201,6 +249,8 @@ export class Engine {
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
+    /** Each window's latest search: an older one still reading stops. */
+    private searches = new WeakMap<EngineClient, number>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
     private refreshing?: Promise<ProviderListing[]>;
@@ -216,6 +266,8 @@ export class Engine {
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     private purgeTimer?: ReturnType<typeof setInterval>;
+    /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
+    private cliCommandNames = new Map<string, Set<string>>();
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -247,6 +299,14 @@ export class Engine {
 
     broadcast(ev: ServerEvent) {
         for (const c of this.clients) c.send(ev);
+    }
+
+    cliCommandsReported(provider: string, cwd: string, names: string[]) {
+        this.cliCommandNames.set(`${provider}:${resolve(cwd)}`, new Set(names));
+    }
+
+    cliCommands(provider: string | undefined, cwd: string): ReadonlySet<string> | undefined {
+        return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -479,6 +539,37 @@ export class Engine {
             out.set(rt.id, { ...live, updatedAt: Math.max(live.updatedAt, disk?.updatedAt ?? 0) });
         }
         return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+    }
+
+    /** What was said in every session (archived ones marked), read from their files; see search.ts. */
+    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
+        if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
+        const seq = (this.searches.get(client) ?? 0) + 1;
+        this.searches.set(client, seq);
+        if (query.trim().length < 2) return { hits: [], partial: false };
+        const arch = new Set(readStore().archived ?? []);
+        const r = await searchSessions(query, {
+            limit: Math.max(1, Math.min(Math.floor(limit), 200)),
+            include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
+            stale: () => this.searches.get(client) !== seq || this.stopping,
+        });
+        if (r.stale) return { hits: [], partial: true, stale: true };
+        return {
+            partial: r.partial,
+            hits: r.hits.map((h) => ({
+                id: h.id,
+                title: redact(this.runtimes.get(h.id)?.title ?? h.title),
+                cwd: h.cwd,
+                projectName: basename(h.cwd) || h.cwd,
+                archived: arch.has(h.id),
+                seg: h.seg,
+                index: h.index,
+                role: h.role,
+                snippet: h.snippet,
+                ...(h.match ? { match: h.match } : {}),
+                at: h.at,
+            })),
+        };
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
@@ -1011,7 +1102,27 @@ export class Engine {
         });
     }
 
-    private commandsFor(cwd: string): CommandInfo[] {
+    private async commandProvider(cwd: string): Promise<string | undefined> {
+        const usable = async (ref: string | undefined) => {
+            const model = ref && resolveModelInfo(ref);
+            if (!model) return undefined;
+            try {
+                await clientFor(model.provider);
+                return model.provider;
+            } catch {
+                return undefined;
+            }
+        };
+        // A new session falls back when its configured model is unavailable; Home must check that provider's commands.
+        const settings = this.workspaces.get(cwd)?.settings ?? loadSettings(cwd, { trusted: isTrusted(cwd) });
+        const provider = await usable(settings.model ?? this.fallbackModel);
+        if (provider) return provider;
+        const model = defaultModelFrom(this.listings) ?? defaultModelFrom(await this.refreshListings());
+        return usable(model && modelRef(model));
+    }
+
+    /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
+    private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
             { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
@@ -1019,15 +1130,22 @@ export class Engine {
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
+            { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
             { name: "tasks", description: "Sub-agents and tasks delegated to other models (/tasks stop stops them)", args: "[stop [task-id]]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
+            { name: "context", description: "How full the context window is, and your plan's limits" },
         ];
         const ws = this.workspaces.get(resolve(cwd));
-        const custom = (ws?.commands ?? []).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
-        return [...builtin, ...custom];
+        // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
+        const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
+        const own = new Set([...builtin, ...custom].map((c) => c.name));
+        const name = provider ? (getProvider(provider)?.name ?? provider) : "";
+        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
+        return [...builtin, ...custom, ...cli];
     }
 
     // -----------------------------------------------------------------------
@@ -1107,6 +1225,9 @@ export class Engine {
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
+            case "sessions.search":
+                // Awaited: it can reject before its first await (see providers.setKey below).
+                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
                 this.watch(client, rt.id);
@@ -1154,7 +1275,7 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined);
+                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();
@@ -1217,6 +1338,28 @@ export class Engine {
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
                 return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path });
+            }
+            case "session.gitCommit":
+            case "session.gitCommitMessage": {
+                if (!Array.isArray(p.paths) || !p.paths.length || p.paths.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
+                    throw new RpcError("paths must contain 1 to 300 file paths", "invalid");
+                }
+                if (method === "session.gitCommitMessage") return this.runtime(p.id).gitCommitMessage(p.paths);
+                if (typeof p.message !== "string" || !p.message.trim() || Buffer.byteLength(p.message) > 65_536 || p.message.includes("\0")) {
+                    throw new RpcError("message must be nonempty, at most 64 KiB, and contain no NUL bytes", "invalid");
+                }
+                if (p.expectedHead !== undefined) {
+                    const head = p.expectedHead;
+                    if (
+                        !head || typeof head !== "object" || typeof head.detached !== "boolean" ||
+                        (head.detached
+                            ? head.branch !== undefined || typeof head.sha !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.sha)
+                            : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
+                    ) {
+                        throw new RpcError("expectedHead must describe a branch or detached HEAD with its full SHA", "invalid");
+                    }
+                }
+                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead);
             }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
@@ -1380,14 +1523,67 @@ export class Engine {
                 return this.openInEditor(p);
             case "fs.exists":
                 return this.pathsExist(p);
-            case "commands.list":
-                return this.commandsFor(str(p.cwd, "cwd"));
-            case "limits.get":
-                return [...this.limits.values()];
+            case "commands.list": {
+                const cwd = resolve(expandHome(str(p.cwd, "cwd")));
+                const provider = optStr(p.provider) ?? await this.commandProvider(cwd);
+                const commands = this.commandsFor(cwd, provider);
+                const command = optStr(p.command);
+                // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
+                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined)) {
+                    throw new RpcError(`Unknown command /${command}`, "unknown_command");
+                }
+                return commands;
+            }
+            case "session.mcp": {
+                const rt = this.runtime(p.id);
+                await rt.ws.mcp.sync();
+                return rt.ws.mcpList(rt, optStr(p.name));
+            }
+            case "session.mcpApprove": {
+                const rt = this.runtime(p.id);
+                rt.ws.mustTrust();
+                const name = str(p.name, "name");
+                const fingerprint = str(p.fingerprint, "fingerprint");
+                try {
+                    const st = await rt.ws.mcp.approve(name, fingerprint);
+                    void rt.ws.mcp.start(st);
+                    return { approved: true, list: rt.ws.mcpList(rt) };
+                } catch (e) {
+                    // What the card showed isn't what would run now: nothing saved, here's what would.
+                    if (e instanceof McpApprovalError && e.code === "changed") return { approved: false, list: rt.ws.mcpList(rt) };
+                    throw mcpError(e);
+                }
+            }
+            case "session.mcpReject":
+            case "session.mcpRevoke": {
+                const rt = this.runtime(p.id);
+                rt.ws.mustTrust();
+                const name = str(p.name, "name");
+                try {
+                    if (method === "session.mcpReject") await rt.ws.mcp.reject(name);
+                    else await rt.ws.mcp.revoke(name);
+                } catch (e) {
+                    throw mcpError(e);
+                }
+                return rt.ws.mcpList(rt);
+            }
+            case "session.mcpReconnect": {
+                const rt = this.runtime(p.id);
+                const name = str(p.name, "name");
+                // It answers once the configuration is read again; the status follows in session events.
+                await rt.ws.mcp.refresh();
+                if (!rt.ws.mcp.servers.has(name)) throw new RpcError(`There's no MCP server named "${name}" here.`, "unknown");
+                void rt.ws.mcp.reconnect(name).catch(() => undefined);
+                return rt.ws.mcpList(rt);
+            }
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+            case "limits.get":
+                return [...this.limits.values()];
+            case "usage.summary":
+                return usageSummary(usageDays(p.days));
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }

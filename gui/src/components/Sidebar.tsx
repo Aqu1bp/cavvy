@@ -268,7 +268,7 @@ export function Sidebar() {
     return (
         <SidebarFrame>
             <div class="side-tools">
-                <button class="side-search" title={`Search sessions and actions (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
+                <button class="side-search" title={`Search sessions, messages and actions (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
                     <Search size={16} />
                     <span>Search</span>
                     <span class="side-kbd">{mod}K</span>

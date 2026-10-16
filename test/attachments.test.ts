@@ -24,7 +24,7 @@ const { toAnthropicMessages } = await import("../src/providers/anthropic");
 const { toResponsesInput } = await import("../src/providers/openai-responses");
 const { toOpenAIMessages } = await import("../src/providers/openai-compat");
 const { getProvider } = await import("../src/providers/registry");
-const { estimateTokens, transcriptText } = await import("../src/agent/compact");
+const { estimateTokens, compactTranscriptText: transcriptText } = await import("../src/agent/compact");
 const { Session, findSessionAnywhere } = await import("../src/agent/session");
 const { redactedJson, registerSecret } = await import("../src/util/redact");
 const { App } = await import("../src/ui/app");
@@ -252,6 +252,69 @@ describe("session.send with files", () => {
 });
 
 describe("edge cases", () => {
+    test("an unknown command refuses files before a turn starts; a literal retry keeps them", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            const files = [{ name: "notes.md", data: b64("# check this\n") }, { name: "Pasted text", data: b64("pasted line\n".repeat(100)), pasted: true }];
+            const refused = engine.handle(c, "session.send", { id, text: "/nonsense", files });
+            await expect(refused).rejects.toMatchObject({ code: "unknown_command" });
+            expect(rt.session.messages).toEqual([]);
+            expect(rt.snapshot().turns).toEqual([]);
+            expect(rt.snapshot().state.queued).toEqual([]);
+
+            await engine.handle(c, "session.send", { id, text: "/nonsense", files, literal: true });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 1);
+            const prompt = userPrompts(rt.session.messages)[0]!;
+            expect(prompt.meta?.display).toBe("/nonsense");
+            expect(prompt.content.filter((p) => p.type === "file")).toEqual(checkFiles(files));
+            expect(lastPromptSent()).toContain("# check this\n");
+            expect(lastPromptSent()).toContain("pasted line\n".repeat(100));
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("literal /compact sends its file as a message instead of compacting", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            const files = [{ name: "notes.md", data: b64("keep this file\n") }];
+            await expect(engine.handle(c, "session.send", { id, text: "/compact", files })).rejects.toThrow(/compact doesn't take attachments/);
+            expect(rt.session.messages).toEqual([]);
+            await engine.handle(c, "session.send", { id, text: "/compact", files, literal: true });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 1);
+            const prompt = userPrompts(rt.session.messages)[0]!;
+            expect(prompt.meta?.display).toBe("/compact");
+            expect(prompt.content.filter((p) => p.type === "file")).toEqual(checkFiles(files));
+            expect(lastPromptSent().startsWith("/compact")).toBe(true);
+            expect(lastPromptSent()).toContain("keep this file\n");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a queued literal command keeps both its files and its literal dispatch", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            const files = [{ name: "Pasted text", data: b64("queued paste\n".repeat(100)), pasted: true }];
+            rt.busy = true;
+            await expect(engine.handle(c, "session.send", { id, text: "/nonsense", files })).rejects.toMatchObject({ code: "unknown_command" });
+            // /compact makes a lost literal flag observable when the queue dispatches it.
+            expect(await engine.handle(c, "session.send", { id, text: "/compact", files, literal: true })).toEqual({ queued: true });
+            expect(rt.snapshot().state.queued).toEqual(["/compact"]);
+            expect(userPrompts(rt.session.messages)).toEqual([]);
+            rt.busy = false;
+            await (rt as unknown as { runQueued(aborted: boolean): Promise<void> }).runQueued(false);
+            expect(rt.snapshot().state.queued).toEqual([]);
+            const prompt = userPrompts(rt.session.messages)[0]!;
+            expect(prompt.meta?.display).toBe("/compact");
+            expect(prompt.content.filter((p) => p.type === "file")).toEqual(checkFiles(files));
+            expect(lastPromptSent()).toContain("queued paste\n".repeat(100));
+        } finally {
+            rt.busy = false;
+            await engine.stop();
+        }
+    });
+
     test("a slash command that starts a turn takes the files along; /compact refuses them", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         try {

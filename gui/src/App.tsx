@@ -14,14 +14,16 @@ import { AgentView } from "./components/Agents";
 import { RightPanel } from "./components/RightPanel";
 import { ReviewPane } from "./components/ReviewPane";
 import { TerminalPanel } from "./components/TerminalPanel";
-import { terminalOpen, setTerminalOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsNav, SettingsPage } from "./components/Settings";
 import { RewindDialog } from "./components/RewindDialog";
+import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
+import { CommitDialog } from "./components/CommitDialog";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function Toasts() {
@@ -166,6 +168,8 @@ export function App() {
                 if (k === ".") return e.preventDefault(), togglePanel();
                 if (k === "/") return e.preventDefault(), setModelPickerOpen(true);
                 if (k === "l") return e.preventDefault(), requestComposerFocus();
+                // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
+                if (k === "f" && !e.shiftKey && active() && !agent() && !settingsTab()) return e.preventDefault(), openFind();
                 if (k === "[" || (e.altKey && k === "arrowup")) return e.preventDefault(), cycleSession(-1);
                 if (k === "]" || (e.altKey && k === "arrowdown")) return e.preventDefault(), cycleSession(1);
             }
@@ -174,7 +178,8 @@ export function App() {
             const typing = (document.activeElement as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable]");
             // Esc leaves Settings, a sub-agent's view and the review, and otherwise interrupts a working session.
             if (settingsTab()) return typing ? undefined : (e.preventDefault(), setSettingsTab(undefined));
-            if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(undefined));
+            // A sub-agent's own goes back to the one it's under.
+            if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(agent()!.parentId));
             if (review()) return e.preventDefault(), setReview(undefined);
             if (active()?.view.state.busy && !active()?.view.state.interactions.length) interrupt();
         };
@@ -227,9 +232,11 @@ export function App() {
             </Show>
             <CommandPalette />
             <RewindDialog />
+            <McpDialog />
             <FolderPicker />
             <TrustDialog />
             <DeleteSessionDialog />
+            <CommitDialog />
             <Toasts />
         </div>
     );

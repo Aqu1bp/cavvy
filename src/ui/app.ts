@@ -48,6 +48,9 @@ import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { planLimitKey } from "../server/protocol";
+import { mergeLimits } from "../backends/limits";
+import type { PlanLimits } from "../server/protocol";
 
 export interface AppInit {
     cwd: string;
@@ -130,6 +133,8 @@ export class App {
     private detached = new Map<string, ActiveTool>();
     private turnStart = 0;
     private turnTokens = 0;
+    /** The agent CLIs' plan limits as last reported, by provider and account (/cost shows them). */
+    planLimits = new Map<string, PlanLimits>();
     private streamChars = 0;
     /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
     private thinkingNow = false;
@@ -166,7 +171,7 @@ export class App {
         this.allowBypass = init.allowBypass;
         this.checker = new PermissionChecker(() => this.settings, init.cwd);
         this.classifier = new AutoClassifier(undefined);
-        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted);
+        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings());
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
         this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
@@ -844,6 +849,13 @@ export class App {
                 this.thinkingNow = false;
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
+                break;
+            case "limits":
+                {
+                    const key = planLimitKey(e.limits.provider, e.limits.accountId);
+                    const prev = this.planLimits.get(key);
+                    if (!prev || prev.at <= e.limits.at) this.planLimits.set(key, mergeLimits(prev, e.limits, e.partial));
+                }
                 break;
             case "usage":
                 this.turnTokens += e.usage.outputTokens;

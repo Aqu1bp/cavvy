@@ -27,7 +27,7 @@ function onLinkKey(e: KeyboardEvent) {
 }
 
 /** With `sessionId`, paths to files in that session's folders become links (see lib/markdown.ts). */
-export function Markdown(p: { text: string; streaming?: boolean; class?: string; sessionId?: string }) {
+export function Markdown(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
     const r = new MarkdownRenderer();
     // Same objects for unchanged blocks, so <For> keeps their DOM. Only a reply
     // with paths in it looks again when what's known changes.
@@ -55,7 +55,7 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
     });
     onCleanup(() => clearTimeout(timer));
     return (
-        <div class={`md ${p.class ?? ""}`} onClick={onLinkClick} onKeyDown={onLinkKey}>
+        <div class={`md ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
             <For each={segments()}>
                 {(s) => (
                     <Switch>

@@ -1,9 +1,11 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
 import { ArrowDown } from "lucide-solid";
-import type { SessionHandle } from "../state/app";
-import { setRewindOpen } from "../state/ui";
+import { toast, type SessionHandle } from "../state/app";
+import { findOpen, jumpTarget, openFind, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
+import { turnAt } from "../lib/find";
 import { TurnView } from "./TurnView";
 import { rewindTarget } from "./RewindDialog";
+import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
 
 const PAGE = 40;
 
@@ -67,6 +69,40 @@ export function Transcript(p: { handle: SessionHandle }) {
         setStick(gap < 64);
     };
 
+    /** Draws the pages down to this turn and stops following the end, to show something in it. */
+    const show = (turnId: string) => {
+        const i = turns().findIndex((t) => t.id === turnId);
+        if (i < 0) return;
+        const need = turns().length - i;
+        if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+        setStick(false);
+    };
+
+    // A message found from ⌘K: its turn, briefly marked, with the find bar on what was searched.
+    const [anchor, setAnchor] = createSignal<FindAnchor>();
+    createEffect(() => {
+        const j = jumpTarget();
+        if (!j || j.sessionId !== p.handle.id || !turns().length) return;
+        untrack(() => {
+            setJumpTarget(undefined);
+            const turn = turnAt(turns(), j.seg, j.index);
+            if (!turn) return toast("That message isn't in this session any more.");
+            show(turn.id);
+            setAnchor({ turnId: turn.id, role: j.role });
+            setFindQuery(j.query);
+            openFind();
+            requestAnimationFrame(() => {
+                const el = content?.querySelector<HTMLElement>(`[data-turn="${CSS.escape(turn.id)}"]`);
+                if (!el || !scroller) return;
+                scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+                el.classList.remove("flash");
+                void el.offsetWidth;
+                el.classList.add("flash");
+                setTimeout(() => el.classList.remove("flash"), 1800);
+            });
+        });
+    });
+
     const rewind = (index: number) => {
         rewindTarget.set(index);
         setRewindOpen(true);
@@ -86,6 +122,9 @@ export function Transcript(p: { handle: SessionHandle }) {
                     <div class="transcript-end" />
                 </div>
             </div>
+            <Show when={findOpen()}>
+                <FindBar turns={turns} scroller={() => scroller} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} />
+            </Show>
             <Show when={!stick()}>
                 <button class="jump" onClick={() => { setStick(true); toBottom(true); }}>
                     <ArrowDown size={14} /> Jump to latest

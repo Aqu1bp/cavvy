@@ -3,24 +3,26 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { ArrowLeft, ArrowUp, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
+import { ArrowLeft, ArrowUp, ChartColumn, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
-import { mod, openExternal } from "../lib/platform";
+import { mod, openExternal, terminalShortcut } from "../lib/platform";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
 import { MODES } from "./ModePicker";
 import { CrumbSep, TitleBar } from "./Header";
 import { SidebarFrame } from "./Sidebar";
 import { Kbd, Segmented, Spinner, Toggle } from "./ui/bits";
+import { UsageView } from "./UsageView";
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Palette }[] = [
     { id: "general", label: "General", icon: SlidersHorizontal },
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "providers", label: "Providers", icon: Plug },
+    { id: "usage", label: "Usage", icon: ChartColumn },
     { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
     { id: "about", label: "About", icon: Info },
 ];
@@ -514,7 +516,8 @@ function Providers() {
 
 const SHORTCUTS: [string, string][] = [
     [`${mod}+N`, "New session"],
-    [`${mod}+K`, "Search sessions and actions"],
+    [`${mod}+K`, "Search sessions, messages and actions"],
+    [`${mod}+F`, "Find in the conversation"],
     [`${mod}+,`, "Settings"],
     [`${mod}+B`, "Toggle the sidebar"],
     [`${mod}+.`, "Toggle the side panel"],
@@ -522,6 +525,7 @@ const SHORTCUTS: [string, string][] = [
     [`${mod}+1…9`, "Pick a model (model picker open)"],
     [`${mod}+[  ${mod}+]`, "Previous / next session"],
     [`${mod}+L`, "Focus the input box"],
+    [terminalShortcut, "Toggle the terminal"],
     ["Shift+Tab", "Cycle permission mode"],
     ["Esc", "Interrupt (while working) · deny a permission · close"],
     ["1  2  3", "Answer the request on the composer"],
@@ -572,6 +576,7 @@ const INTRO: Record<SettingsTab, string> = {
     general: "Defaults for new sessions, and how Harness behaves.",
     appearance: "How Harness looks on this computer. Changes apply as you pick.",
     providers: "Where the models come from: API keys, and the CLIs signed in on this computer.",
+    usage: "Your plans' limits, and the tokens and cost of your sessions by model.",
     shortcuts: "Keys that work across the app.",
     about: "This build, and where it keeps its data.",
 };
@@ -601,6 +606,9 @@ export function SettingsPage() {
                         </Match>
                         <Match when={tab() === "providers"}>
                             <Providers />
+                        </Match>
+                        <Match when={tab() === "usage"}>
+                            <UsageView />
                         </Match>
                         <Match when={tab() === "shortcuts"}>
                             <Shortcuts />

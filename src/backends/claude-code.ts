@@ -30,7 +30,7 @@ import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
-import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetSentence } from "./limits";
+import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
@@ -39,6 +39,7 @@ import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
 import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
+import { cliCommandNames } from "../commands/custom";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type OrchestratorServer } from "./types";
 import type { TurnEndReason } from "../agent/agent";
@@ -145,6 +146,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
      * resumed run after one counts the earlier runs' spend again.)
      */
     private spent = new Map<string, number>();
+    /** Each limit window's last status and reset, so "close to the limit" is said once for each (Claude Code repeats it per request). */
     private limitSeen = new Map<string, string>();
 
     constructor(readonly def: ProviderDef) {}
@@ -241,13 +243,17 @@ class ClaudeTurn {
     private actions: string[] = [];
     private sessionId?: string;
     private billedToPlan = false;
+    private resolvedModel?: string;
     private contextTokens?: number;
     private aborted = false;
     private failure?: string;
     private reason?: BackendResult["reason"];
     private signedOut = false;
-    private limits?: PlanLimits;
+    /** The turn failed on the plan's usage limit; when that resets (ms), if Claude Code said. */
     private limitHit = false;
+    private limits?: PlanLimits;
+    /** This turn said the limit was reached (its error says it again, with when it resets). */
+    private reachedNoted = false;
     /** Control requests sent to Claude Code, waiting for its answer. */
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
@@ -289,6 +295,7 @@ class ClaudeTurn {
         private t: BackendTurn,
         /** What the session it resumes had spent before (its totals include that). */
         private spent?: number,
+        /** The client's: each limit window's last status and reset (limitNews). */
         private limitSeen = new Map<string, string>(),
     ) {}
 
@@ -622,6 +629,9 @@ class ClaudeTurn {
                 }
                 // No API key behind it: the turn runs on the user's plan, not per-token billing.
                 this.billedToPlan = m.apiKeySource === "none";
+                if (typeof m.model === "string") this.resolvedModel = m.model;
+                // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
+                if (cliCommandNames(m.slash_commands)) this.host.emit({ type: "cli_commands", provider: this.def.id, names: cliCommandNames(m.slash_commands)! });
                 break;
             case "background_tasks_changed":
                 if (Array.isArray(m.tasks)) this.background = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
@@ -756,7 +766,7 @@ class ClaudeTurn {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
-            this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
             this.failure = this.limitFailure();
         }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
@@ -912,14 +922,23 @@ class ClaudeTurn {
 
     private onRateLimit(info: Record<string, any>) {
         const parsed = parseClaudeRateLimit(info, Date.now(), this.t.accountId ?? "default");
-        if (parsed) this.noteLimits(parsed.limits, parsed.partial);
-        if (this.limitHit) this.failure = this.limitFailure();
-        const window = parsed?.limits.windows.find((w) => w.id === info.rateLimitType);
-        const key = `${this.t.accountId ?? "default"}:${window?.id ?? ""}`;
-        const news = ["allowed", "allowed_warning", "rejected"].includes(info.status) && limitNews(this.limitSeen, key, info.status, window?.resetsAt);
-        if (!news || (info.status !== "rejected" && info.status !== "allowed_warning")) return;
-        const reached = info.status === "rejected";
-        this.host.emit({ type: "notice", level: reached ? "warn" : "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${reached ? "usage limit reached" : "close to the usage limit"}${window ? ` (${window.label})` : ""}. ${resetSentence(this.limits?.resetsAt ?? window?.resetsAt, "Claude Code")}` });
+        if (parsed) {
+            // A sparse rejection must not forget another window that still blocks this turn.
+            this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
+            this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+        }
+        const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
+        // Every status counts, so a warning after the window was fine again (or reset) is news again.
+        const news = typeof info.status === "string" && limitNews(this.limitSeen, `${this.t.accountId ?? "default"}:${String(info.rateLimitType ?? "")}`, info.status, w?.resetsAt);
+        if (info.status !== "rejected" && info.status !== "allowed_warning") return;
+        const which = w ? `${w.label.charAt(0).toLowerCase()}${w.label.slice(1)} ` : "";
+        if (info.status === "rejected") {
+            // The turn's error (it may have come first) says when, now that it's known.
+            if (this.limitHit) this.failure = this.limitFailure();
+            if (this.reachedNoted) return;
+            this.reachedNoted = true;
+            this.host.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
+        } else if (news) this.host.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
@@ -938,6 +957,7 @@ class ClaudeTurn {
             // Fast service uses paid credits even on a subscription. A final cooldown
             // must not erase earlier fast spend; the CLI only gives a whole-turn total.
             cost: this.billedToPlan && !this.fastModeObserved ? 0 : spent,
+            billing: this.billedToPlan && !this.fastModeObserved ? "plan" : "api",
         };
         // A turn of Claude Code's own that made no request (a report it passes on from an earlier run): nothing to count.
         const nothing = !ours && !usage.inputTokens && !usage.outputTokens && !usage.cacheReadTokens && !usage.cacheWriteTokens && !spent;
@@ -945,6 +965,10 @@ class ClaudeTurn {
             const mixedPlanCost = this.billedToPlan && this.fastModeObserved && m.fast_mode_state !== "on";
             if (mixedPlanCost) this.host.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
             if (mixedPlanCost) usage.costEstimated = true;
+            const models = Object.keys(m.modelUsage ?? {});
+            // A result can include several models; its init identifies the main one.
+            const served = models.length === 1 ? models[0] : models.find((id) => id === this.resolvedModel);
+            if (served) usage.resolvedModel = `${this.def.id}:${served}`;
             const window = Object.values((m.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).find((x) => typeof x?.contextWindow === "number")?.contextWindow;
             this.host.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });
         }
