@@ -18,7 +18,7 @@ import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, Sess
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
-import { cachedListings, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
+import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentCli, vendorOf } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
@@ -998,6 +998,25 @@ export class Engine {
         });
     }
 
+    private async commandProvider(cwd: string): Promise<string | undefined> {
+        const usable = async (ref: string | undefined) => {
+            const model = ref && resolveModelInfo(ref);
+            if (!model) return undefined;
+            try {
+                await clientFor(model.provider);
+                return model.provider;
+            } catch {
+                return undefined;
+            }
+        };
+        // A new session falls back when its configured model is unavailable; Home must check that provider's commands.
+        const settings = this.workspaces.get(cwd)?.settings ?? loadSettings(cwd, { trusted: isTrusted(cwd) });
+        const provider = await usable(settings.model ?? this.fallbackModel);
+        if (provider) return provider;
+        const model = defaultModelFrom(this.listings) ?? defaultModelFrom(await this.refreshListings());
+        return usable(model && modelRef(model));
+    }
+
     /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
     private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
@@ -1328,8 +1347,17 @@ export class Engine {
                 return this.openInEditor(p);
             case "fs.exists":
                 return this.pathsExist(p);
-            case "commands.list":
-                return this.commandsFor(str(p.cwd, "cwd"), optStr(p.provider));
+            case "commands.list": {
+                const cwd = resolve(expandHome(str(p.cwd, "cwd")));
+                const provider = optStr(p.provider) ?? await this.commandProvider(cwd);
+                const commands = this.commandsFor(cwd, provider);
+                const command = optStr(p.command);
+                // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
+                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined)) {
+                    throw new RpcError(`Unknown command /${command}`, "unknown_command");
+                }
+                return commands;
+            }
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":

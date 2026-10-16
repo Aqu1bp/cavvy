@@ -153,7 +153,7 @@ export async function exportSession(id: string) {
  * screen's project. A /word that names no command isn't sent (false keeps it
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; refused?: (id: string) => (() => void); to?: { id?: string; cwd?: string } } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; to?: { id?: string; cwd?: string } } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
@@ -161,8 +161,11 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
         const to = { id, cwd };
-        const sent = created && id ? opts.refused?.(id) ?? opts.sent : opts.sent;
-        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => ok && sent?.()) });
+        toast(`Unknown command /${name}`, "warn", { label: "Send as message", run: () => void send(text, attachments, { literal: true, to }).then((ok) => {
+            if (!ok) return;
+            if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", to.id);
+            opts.sent?.();
+        }) });
         return false;
     };
     try {
@@ -171,13 +174,17 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
                 toast("Choose a project folder first", "warn");
                 return false;
             }
-            // The server resolves the merged project settings and its workspace's CLI commands.
-            const h = await startIn(cwd);
+            // Check before creating a session, so a typo on Home doesn't start one.
+            const command = opts.literal ? undefined : slashName(text);
+            if (command) await rpc.call("commands.list", { cwd, command });
+            const h = await createIn(cwd);
             if (!h) return false;
             id = h.id;
             created = true;
         }
         await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
+        // A final server refusal leaves the original Home composer and its draft in place.
+        if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
@@ -186,11 +193,9 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
     }
 }
 
-async function startIn(cwd: string) {
+async function createIn(cwd: string) {
     try {
-        const h = await createSession(cwd, app.homeMode);
-        setApp("activeId", h.id);
-        return h;
+        return await createSession(cwd, app.homeMode);
     } catch (e) {
         if (e instanceof RpcError && e.code === "needs_trust") {
             // The message stays in the input box; send it again once the folder is trusted.

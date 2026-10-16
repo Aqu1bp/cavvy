@@ -8,13 +8,13 @@ function mount(key: string, wasDeleted?: (key: string) => boolean) {
 }
 const image = { name: "image", mediaType: "image/png", data: "image-data", preview: "preview" };
 
-// Home unmounts when session creation activates the session, while sending is still pending.
+// Home unmounts when a successful send opens the session, before its completion callback runs.
 const home = mount("home");
 home.setText("send this");
 home.setAttachments([image]);
 const submitted = home.capture();
 const pending = Promise.withResolvers<boolean>();
-const finish = pending.promise.then((ok) => { if (ok) home.sent(submitted); });
+const finish = pending.promise.then((ok) => { if (ok) home.clearSent(submitted); });
 home.dispose();
 pending.resolve(true);
 await finish;
@@ -45,10 +45,10 @@ for (const change of ["text", "attachments"] as const) {
     else replacement.setAttachments([{ ...image, data: "new-image" }]);
     const newer = replacement.capture();
     replacement.dispose();
-    original.sent(sent);
+    original.clearSent(sent);
     const again = mount(change);
-    assert.equal(again.text(), newer.text);
-    assert.deepEqual(again.attachments(), newer.attachments);
+    assert.equal(again.text(), newer.draft.text);
+    assert.deepEqual(again.attachments(), newer.draft.attachments);
     again.dispose();
 }
 
@@ -57,7 +57,7 @@ const original = mount("toast");
 original.setText("/unknown");
 original.setAttachments([image]);
 const snapshot = original.capture();
-const toastSent = () => original.sent(snapshot);
+const toastSent = () => original.clearSent(snapshot);
 original.dispose();
 const replacement = mount("toast");
 replacement.dispose();
@@ -71,7 +71,7 @@ afterToast.dispose();
 const active = mount("active");
 active.setText("message");
 active.setAttachments([image]);
-active.sent(active.capture());
+active.clearSent(active.capture());
 assert.equal(active.text(), "");
 assert.deepEqual(active.attachments(), []);
 active.dispose();
@@ -85,7 +85,7 @@ const toastHome = mount("toast-home");
 toastHome.setText("/unknown");
 toastHome.setAttachments([image]);
 const toastSnapshot = toastHome.capture();
-const retrySent = () => toastHome.sent(toastSnapshot);
+const retrySent = () => toastHome.clearSent(toastSnapshot);
 toastHome.dispose();
 retrySent();
 const afterRetry = mount("toast-home");
@@ -93,50 +93,22 @@ assert.equal(afterRetry.text(), "");
 assert.deepEqual(afterRetry.attachments(), []);
 afterRetry.dispose();
 
-// A refusal can arrive after the user has left the newly created session.
-// Restore it on the next mount and hand the toast's cleanup to that composer.
-for (const remount of [false, true]) {
-    const key = `late-refusal-${remount}`;
-    const home = mount(`${key}-home`);
-    home.setText("/oops");
-    home.setAttachments([image]);
-    const submitted = home.capture();
-    home.dispose();
-    const clear = home.move(submitted, key);
-    const destination = remount ? mount(key) : undefined;
-    if (destination) {
-        assert.equal(destination.text(), "/oops");
-        assert.deepEqual(destination.attachments(), [image]);
+// A late toast retry cannot clear text or images edited in the same composer.
+for (const change of ["text", "attachments", "same-text-again"] as const) {
+    const draft = mount(`late-${change}`);
+    draft.setText("/oops");
+    draft.setAttachments([image]);
+    const submitted = draft.capture();
+    if (change === "attachments") draft.setAttachments([{ ...image, data: "new-image" }]);
+    else {
+        draft.setText("new text");
+        if (change === "same-text-again") draft.setText("/oops");
     }
-    clear();
-    if (destination) {
-        assert.equal(destination.text(), "");
-        assert.deepEqual(destination.attachments(), []);
-        destination.dispose();
-    }
-    const again = mount(key);
-    assert.equal(again.text(), "");
-    assert.deepEqual(again.attachments(), []);
-    again.dispose();
-}
-
-// Text typed in the new session before the refusal arrives survives the transfer and retry.
-for (const mounted of [false, true]) {
-    const key = `edited-before-refusal-${mounted}`;
-    const destination = mount(key);
-    destination.setText("newer text");
-    if (!mounted) destination.dispose();
-    const home = mount(`${key}-home`);
-    home.setText("/oops");
-    home.setAttachments([image]);
-    const submitted = home.capture();
-    home.dispose();
-    const clear = home.move(submitted, key);
-    const current = mounted ? destination : mount(key);
-    clear();
-    assert.equal(current.text(), "/oops\nnewer text");
-    assert.deepEqual(current.attachments(), [image]);
-    current.dispose();
+    const newer = draft.capture();
+    draft.clearSent(submitted);
+    assert.equal(draft.text(), newer.draft.text);
+    assert.deepEqual(draft.attachments(), newer.draft.attachments);
+    draft.dispose();
 }
 
 // Session deletion clears the same store used by the lifecycle controller;
@@ -153,20 +125,6 @@ deleted.add("deleted-session");
 composerDrafts.delete("deleted-session");
 deleting.dispose();
 assert.equal(composerDrafts.has("deleted-session"), false);
-
-// A first-message refusal can arrive after its new session was deleted.
-// Keep the Home draft recoverable, without recreating the deleted draft.
-const lateHome = mount("deleted-home", wasDeleted);
-lateHome.setText("/oops");
-lateHome.setAttachments([image]);
-const lateSubmission = lateHome.capture();
-lateHome.dispose();
-lateHome.move(lateSubmission, "deleted-session")();
-assert.equal(composerDrafts.has("deleted-session"), false);
-const keptHome = mount("deleted-home", wasDeleted);
-assert.equal(keptHome.text(), "/oops");
-assert.deepEqual(keptHome.attachments(), [image]);
-keptHome.dispose();
 
 // Undo allows future drafts again, without reviving the deleted one.
 deleted.delete("deleted-session");

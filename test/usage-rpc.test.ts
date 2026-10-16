@@ -12,7 +12,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-const { saveAgentConfig } = await import("../src/providers/registry");
+const { getProvider, saveAgentConfig } = await import("../src/providers/registry");
 import type { PlanLimits, ServerEvent, SessionSnapshot, SessionState, Turn, UsageSummary } from "../src/server/protocol";
 
 const TOKEN = "test-token-usage-0123456789";
@@ -226,10 +226,19 @@ describe("slash commands the server doesn't know", () => {
         c.close();
     });
 
+    test("a Home typo is refused before any session is created", async () => {
+        const c = await client();
+        const cwd = project();
+        const before = await c.call("sessions.list");
+        await expect(c.call("commands.list", { cwd, command: "nonsense" })).rejects.toMatchObject({ code: "unknown_command", message: "Unknown command /nonsense" });
+        expect(await c.call("sessions.list")).toEqual(before);
+        c.close();
+    });
+
     test("custom commands still run, and are listed before a session opens the project", async () => {
         const c = await client();
         const cwd = project();
-        expect((await c.call<{ name: string }[]>("commands.list", { cwd })).map((x) => x.name)).toEqual(expect.arrayContaining(["hello", "cost", "context", "compact"]));
+        expect((await c.call<{ name: string }[]>("commands.list", { cwd, command: "hello" })).map((x) => x.name)).toEqual(expect.arrayContaining(["hello", "cost", "context", "compact"]));
         const id = await c.create(cwd);
         expect(await c.call("session.send", { id, text: "/hello world" })).toEqual({ queued: false });
         await c.until(() => done(c.view(id)));
@@ -259,6 +268,31 @@ describe("Claude Code's own commands", () => {
         try {
             const c = await client();
             const cwd = project();
+            const override = project();
+            mkdirSync(join(override, ".harness"));
+            writeFileSync(join(override, ".harness", "settings.json"), JSON.stringify({ model: "claude-code:default" }));
+            // The global default is Mock. Home must use the trusted project's Claude Code override.
+            await c.call("projects.trust", { path: override, trust: true });
+            const before = await c.call("sessions.list");
+            await expect(c.call("commands.list", { cwd: override, command: "project-skill" })).resolves.toBeArray();
+            expect(await c.call("sessions.list")).toEqual(before);
+            await expect(c.call("commands.list", { cwd: override, provider: "mock", command: "project-skill" })).rejects.toMatchObject({ code: "unknown_command" });
+            const listings = srv.engine.listings;
+            try {
+                srv.engine.listings = [{ provider: getProvider("claude-code")!, status: "ok", models: [{ provider: "claude-code", id: "default" }] }];
+                for (const model of ["removed-provider:old-model", "anthropic:claude-sonnet-5-5"]) {
+                    const fallback = project();
+                    mkdirSync(join(fallback, ".harness"));
+                    writeFileSync(join(fallback, ".harness", "settings.json"), JSON.stringify({ model }));
+                    await c.call("projects.trust", { path: fallback, trust: true });
+                    // Both an unknown provider and one without credentials fall back to Claude Code.
+                    await expect(c.call("commands.list", { cwd: fallback, command: "project-skill" })).resolves.toBeArray();
+                    const id = await c.create(fallback);
+                    expect(c.view(id).state.model?.provider).toBe("claude-code");
+                }
+            } finally {
+                srv.engine.listings = listings;
+            }
             const claude = async (dir = cwd) => {
                 const id = await c.create(dir);
                 await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
@@ -286,14 +320,17 @@ describe("Claude Code's own commands", () => {
             await c.until(() => done(c.view(b)), 30_000);
             expect((await c.call<{ name: string }[]>("commands.list", { cwd: cwdB, provider: "claude-code" })).map((x) => x.name)).toContain("project-b");
             expect((await c.call<{ name: string }[]>("commands.list", { cwd, provider: "claude-code" })).map((x) => x.name)).toContain("code-review");
+            await expect(c.call("commands.list", { cwd, provider: "claude-code", command: "code-review" })).resolves.toBeArray();
+            await expect(c.call("commands.list", { cwd: cwdB, provider: "claude-code", command: "code-review" })).rejects.toMatchObject({ code: "unknown_command" });
             const newA = await claude();
             await expect(c.call("session.send", { id: newA, text: "/project-b" })).rejects.toMatchObject({ code: "unknown_command" });
             await expect(c.call("session.send", { id: b, text: "/code-review" })).rejects.toMatchObject({ code: "unknown_command" });
             // A known empty list is different from a workspace not initialized yet.
             process.env.FAKE_SLASH_COMMANDS = "[]";
-            const empty = await claude(project());
+            const empty = await claude(override);
             await c.call("session.send", { id: empty, text: "/first-command" });
             await c.until(() => done(c.view(empty)), 30_000);
+            await expect(c.call("commands.list", { cwd: override, command: "first-command" })).rejects.toMatchObject({ code: "unknown_command" });
             await expect(c.call("session.send", { id: empty, text: "/first-command" })).rejects.toMatchObject({ code: "unknown_command" });
 
             // On another model it's still not a command.

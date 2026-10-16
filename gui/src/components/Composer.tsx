@@ -142,9 +142,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     });
     createEffect(
         on(
-            () => st()?.cwd ?? app.homeCwd,
-            (cwd) => {
-                if (cwd) void rpc.call("commands.list", { cwd }).then((c) => (commands = c)).catch(() => undefined);
+            [() => st()?.cwd ?? app.homeCwd, () => st()?.model?.provider],
+            ([cwd, provider]) => {
+                let current = true;
+                onCleanup(() => { current = false; });
+                commands = [];
+                // A reply from the previous project or provider must not replace this menu.
+                if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => { if (current) commands = c; }).catch(() => undefined);
             },
         ),
     );
@@ -215,25 +219,24 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (!canSend() || sending()) return;
         setSending(true);
         const submitted = draft.capture();
-        const { attachments: atts } = submitted;
+        const { attachments: atts } = submitted.draft;
         // A toast retry may finish after Home has unmounted too.
         const resizeAfterSend = whileMounted(() => requestAnimationFrame(resize));
         const sent = () => {
-            draft.sent(submitted);
+            draft.clearSent(submitted);
             resizeAfterSend();
         };
         const finish = whileMounted((ok: boolean | "command") => {
             setSending(false);
             if (!ok) return;
-            if (ok === "command") setText("");
             histIdx = -1;
             setMenu([]);
             requestAnimationFrame(resize);
         });
-        const ok = await send(t, atts, { sent, refused: (id) => draft.move(submitted, id) });
-        if (ok === true) {
-            draft.sent(submitted);
-            if (t.trim()) {
+        const ok = await send(t, atts, { sent });
+        if (ok) {
+            draft.clearSent(submitted, ok === "command");
+            if (t.trim() && (ok === true || !atts.length)) {
                 history.push(t);
                 if (history.length > 100) history.shift();
             }
