@@ -358,6 +358,11 @@ export class Agent {
         this.session.setModel(modelRef(model));
     }
 
+    /** A note of where the mode or model is waits for the next user message: a switch since must correct it. */
+    statePending(kind: StateKind): boolean {
+        return this.pendingReminders.some((r) => r.kind === kind);
+    }
+
     /** Queue a note for the model, delivered with the next user message. */
     addReminder(text: string) {
         this.pendingReminders.push({ text });

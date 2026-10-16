@@ -2084,7 +2084,7 @@ describe("notes to the model on what changed", () => {
         const rt = engine.runtimes.get(id)!;
         // The mock model, whatever earlier tests left as the default.
         await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
-        /** The prompt as the model got it: its text, then the notes that went with it. */
+        /** The prompt as the model got it: its text and the notes that went with it. */
         const send = async (text: string) => {
             await engine.handle(c, "session.send", { id, text });
             const sent = () => rt.session.messages.find((m) => m.role === "user" && m.meta?.kind === "prompt" && m.meta.display === text);
@@ -2117,6 +2117,35 @@ describe("notes to the model on what changed", () => {
         try {
             await engine.handle(c, "session.setMode", { id, mode: "plan" });
             expect((await send("first prompt")).join("\n")).toContain("Plan mode is now active.");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("plan mode picked and left again before the first prompt leaves nothing to tell, whatever the mode is next", async () => {
+        const { engine, c, id, send } = await freshSession();
+        try {
+            for (const mode of ["plan", "default", "acceptEdits"]) await engine.handle(c, "session.setMode", { id, mode });
+            expect(await send("first prompt")).toEqual(["first prompt"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("after a rewind to the first prompt, what it queued again is corrected by a switch before resending", async () => {
+        const { engine, c, id, rt, send } = await freshSession();
+        try {
+            await send("first prompt");
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-haiku", persist: false });
+            const plan = (await engine.handle(c, "session.rewindPlan", { id, index: 0 })) as { planId: string };
+            await engine.handle(c, "session.rewind", { id, index: 0, planId: plan.planId, code: false, conversation: true });
+            expect(rt.session.messages).toEqual([]);
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-sonnet", persist: false });
+            await engine.handle(c, "session.setMode", { id, mode: "acceptEdits" });
+            const notes = await send("again");
+            const last = (re: RegExp) => notes.findLast((n) => re.test(n));
+            expect(last(/switched the model to/)).toContain("(mock:mock-sonnet)");
+            expect(last(/permission mode/)).toContain('"Accept edits"');
         } finally {
             await engine.stop();
         }

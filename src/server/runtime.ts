@@ -632,7 +632,8 @@ export class Runtime {
         if (!info) return false;
         if (!info.contextWindow && def.kind !== "anthropic") info = (await lookupModel(ref).catch(() => undefined)) ?? info;
         // The model it was on, if the conversation has begun (none to tell of before the first prompt).
-        const prev = this.conversationStarted ? this.model : undefined;
+        // A note already queued (one a rewind kept) is corrected all the same.
+        const prev = this.conversationStarted || this.agent?.statePending("model") ? this.model : undefined;
         this.model = info;
         this.client = client;
         this.classifier.setComplete((system, prompt, signal, o) => this.complete(system, prompt, signal, o));
@@ -825,8 +826,9 @@ export class Runtime {
         }
         const from = this.mode;
         this.mode = m;
-        // Before the first prompt only plan mode is news: the model has to know it may only plan.
-        if (!opts.fromAgent && this.agent && (this.conversationStarted || from === "plan" || m === "plan")) this.agent.noteModeChange(from, m);
+        // Before the first prompt only plan mode is news (the model has to know it may only plan), and a note already queued must be corrected.
+        const news = this.conversationStarted || from === "plan" || m === "plan" || this.agent?.statePending("mode");
+        if (!opts.fromAgent && this.agent && news) this.agent.noteModeChange(from, m);
         this.setState({ mode: m, bypassAllowed: this.bypassAllowed() });
         this.recordState();
         return true;

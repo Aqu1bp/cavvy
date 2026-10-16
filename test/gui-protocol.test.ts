@@ -241,8 +241,9 @@ describe("timeline ops", () => {
 
     test("coalescing never changes what a batch builds", () => {
         // Seeded: the same sequences every run.
+        // 32-bit arithmetic (a plain multiply loses digits past 2^53), and the high bits (the low ones repeat soon).
         let seed = 7;
-        const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+        const rnd = (n: number) => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0), (seed >>> 16) % n);
         const ids = ["a", "b", "c"];
         const turns = ["t1", "t2"];
         const pick = <T,>(xs: T[]) => xs[rnd(xs.length)]!;
@@ -274,8 +275,10 @@ describe("timeline ops", () => {
             agents: [{ id: "s", turnId: "t1", description: "sub", agentType: "general-purpose", status: "running", startedAt: 0, toolCount: 0, tokens: 0, blocks: [] }],
         });
         let merged = 0;
+        const seen = new Set<string>();
         for (let run = 0; run < 400; run++) {
             const ops = Array.from({ length: 2 + rnd(30) }, randomOp);
+            for (const op of ops) seen.add(op.op === "block.patch" ? `block.patch:${Object.keys(op.patch).join(",")}` : op.op);
             const plain = start();
             const batched = start();
             // As sent: JSON on the wire (undefined becomes null, which clears).
@@ -286,7 +289,8 @@ describe("timeline ops", () => {
             for (const op of out) applyOp(batched, JSON.parse(JSON.stringify(op, wireReplacer)));
             expect(batched).toEqual(plain);
         }
-        // And it does merge patches (not only leave them as they were).
+        // Every kind of op came up (each patch too), and it does merge patches (not only leave them as they were).
+        expect([...seen].sort()).toEqual(["agent.block", "agent.patch", "append", "block", "block.patch:output,summary", "block.patch:receiving", "block.patch:receiving,status", "block.patch:status", "block.remove", "state", "turn.patch"]);
         expect(merged).toBeGreaterThan(300);
     });
 });
