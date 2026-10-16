@@ -463,41 +463,7 @@
     margin-top: 10px;
 }
 
-/* ---- Labelled form fields (the project script dialog) --------------- */
-
-.script-field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-}
-
-.script-field-label {
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-muted);
-}
-
-.script-field-hint {
-    font-size: 0.8rem;
-    color: var(--fg-subtle);
-}
-
-.script-field-error {
-    font-size: 0.893rem;
-    color: var(--danger);
-    background: var(--danger-soft);
-    border-radius: var(--radius-sm);
-    padding: 8px 10px;
-    overflow-wrap: anywhere;
-}
-
-.script-icons {
-    display: flex;
-    gap: 4px;
-}
-
-/* MCP servers dialog */
+/* ---- MCP servers dialog ---- */
 
 .mcp-card {
     display: flex;
@@ -591,4 +557,38 @@
     overflow-wrap: anywhere;
     max-height: 160px;
     overflow-y: auto;
+}
+
+/* ---- Labelled form fields (the project script dialog) --------------- */
+
+.script-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.script-field-label {
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+}
+
+.script-field-hint {
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+}
+
+.script-field-error {
+    font-size: 0.893rem;
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    overflow-wrap: anywhere;
+}
+
+.script-icons {
+    display: flex;
+    gap: 4px;
 }
