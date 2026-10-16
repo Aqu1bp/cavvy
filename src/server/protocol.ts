@@ -367,6 +367,32 @@ export interface McpStatus {
     approval?: McpApprovalInfo;
 }
 
+/** The latest plan the session presented (ExitPlanMode), answered or not: its id is the tool call's (or the request's). */
+export interface PlanRef {
+    id: string;
+    title: string;
+    at: number;
+}
+
+/**
+ * A plan taken to a new worktree, recorded in both sessions: in the planning
+ * session as "to" (where it went), in the new one as "from" (where it came from).
+ */
+export interface PlanLink {
+    role: "from" | "to";
+    /** The other session's id. */
+    session: string;
+    /** The planning session's title, when the link was made. */
+    title?: string;
+    /** The planning session's folder. */
+    folder: string;
+    /** The new worktree. */
+    path: string;
+    branch: string;
+    /** What the branch started from, as the user named it (the commit when they didn't). */
+    base?: string;
+    at: number;
+}
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 export interface SessionState {
@@ -407,6 +433,8 @@ export interface SessionState {
     filesChanged: number;
     /** Background shells started by the agent. */
     shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number }[];
+    plan?: PlanRef;
+    planLinks?: PlanLink[];
     /** Forked from this session (its title then). */
     forkOf?: { id: string; title: string };
     /** The names of the secrets the user gave this session (never their values). */
@@ -646,6 +674,74 @@ export interface SetupInfo {
     /** Trusted by the user (not only for having nothing to protect). */
     trusted: boolean;
 }
+
+/** The modes a plan can be carried out in: the plan card's Approve choices. */
+export const IMPLEMENT_MODES = ["acceptEdits", "default", "auto"] as const;
+export type ImplementMode = (typeof IMPLEMENT_MODES)[number];
+
+/** A session's plan, and what the plan dialogs start from. */
+export interface PlanInfo {
+    /** What session.implementPlan and session.savePlan take as `toolId`. */
+    id: string;
+    plan: string;
+    title: string;
+    /** Still waiting for an answer on the plan card. */
+    pending: boolean;
+    cwd: string;
+    /** Set when the session's folder is in a Git repository. */
+    git?: {
+        /** The main worktree's root: new worktrees go in <main>/.claude/worktrees/. */
+        main: string;
+        /** A free branch name made from the plan's title. */
+        branch: string;
+        /** The folder's current branch, or its commit when detached. */
+        base: string;
+    };
+    /** Why there's no worktree to make, when there isn't. */
+    notGit?: string;
+    mode: ImplementMode;
+    /** Why that mode was picked, in a few words. */
+    modeWhy: string;
+    /** Where Save plan writes by default (a free name). */
+    savePath: string;
+    /** The Harness home, the other folder (with the session's) plans may be saved in. */
+    home: string;
+}
+
+export interface ImplementPlanParams {
+    id: string;
+    /** PlanInfo.id; the latest plan when omitted. */
+    toolId?: string;
+    branch: string;
+    base?: string;
+    folder?: string;
+    mode: ImplementMode;
+    /** A managed worktree an earlier attempt made (on `branch`), to start the session in instead of making one. */
+    resume?: string;
+}
+
+/** The worktree, and the new session in it; `failed` when the worktree was made but the session couldn't start. */
+export interface ImplementPlanResult {
+    path: string;
+    branch: string;
+    sessionId?: string;
+    failed?: { message: string; code?: string; folder?: string };
+}
+
+/** Whether archiving a session can also remove the managed worktree it works in. */
+export interface ArchiveOffer {
+    /** None: the session isn't in a managed worktree, and archives as it always has. */
+    worktree?: { path: string; branch?: string; main: string };
+    removable: boolean;
+    /** Why the worktree would be kept. */
+    reason?: string;
+}
+
+export type ArchiveResult =
+    /** `kept`: why the worktree stays. `closed`: the server closed the session (the window should let go of it). */
+    | { archived: true; removed: boolean; kept?: string; code?: string; worktree?: string; main?: string; closed?: boolean }
+    /** Nothing done yet: these ignored files would be deleted (removal needs `confirm` as deleteIgnored). */
+    | { archived: false; ignored: string[]; total: number; confirm: string };
 
 export interface AccountInfo {
     id: string;
@@ -1086,7 +1182,18 @@ export interface Methods {
     "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
     "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
-    "session.archive": { params: { id: string; archived: boolean }; result: null };
+    /**
+     * With `removeWorktree`, the managed worktree the session works in goes too (its branch stays), when nothing
+     * would be lost; otherwise it's kept and `kept` says why. Ignored files wait for `deleteIgnored`, as with
+     * projects.removeWorktree, and the session isn't archived until then.
+     */
+    "session.archive": { params: { id: string; archived: boolean; removeWorktree?: boolean; deleteIgnored?: string }; result: ArchiveResult | null };
+    "session.archiveOffer": { params: { id: string }; result: ArchiveOffer };
+    "session.planInfo": { params: { id: string; toolId?: string }; result: PlanInfo };
+    /** A managed worktree on a new branch, and a new session there working on the plan; the plan card is answered so the planning session stops. */
+    "session.implementPlan": { params: ImplementPlanParams; result: ImplementPlanResult };
+    /** Writes the plan as Markdown, in the session's folder or the Harness home; an existing file only with `replace`. */
+    "session.savePlan": { params: { id: string; toolId?: string; path?: string; replace?: boolean }; result: { path: string } };
     "session.settle": { params: { id: string; settled: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
     "session.delete": { params: { id: string }; result: null };

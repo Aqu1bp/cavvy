@@ -112,7 +112,7 @@ describe("creating a worktree", () => {
         const sentinel = join(main, "hook-ran");
         writeFileSync(join(main, ".git", "hooks", "post-checkout"), `#!/bin/sh\ntouch '${sentinel}'\n`, { mode: 0o755 });
         const made = await createWorktree({ path: main, branch: "feat/login" });
-        expect(made).toEqual({ path: join(managedDir(main), "feat-login"), branch: "feat/login" });
+        expect(made).toEqual({ path: join(managedDir(main), "feat-login"), branch: "feat/login", commit: head(main) });
         expect(git(made.path, "branch", "--show-current")).toBe("feat/login");
         expect(head(made.path)).toBe(head(main));
         expect(() => git(made.path, "rev-parse", "--abbrev-ref", "feat/login@{upstream}")).toThrow();

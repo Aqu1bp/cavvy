@@ -40,6 +40,9 @@ const COPIED: Record<Line["t"], boolean> = {
     notice: true,
     import: true,
     subagent: false,
+    // Plans shown before the cut can still be saved or implemented from the fork; links say where the original's went.
+    plan: true,
+    planLink: false,
 };
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
