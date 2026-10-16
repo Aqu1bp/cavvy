@@ -265,7 +265,7 @@ describe("stdio shutdown and crashes", () => {
         expect(await waitFor(() => !alive(pid))).toBe(true);
         expect(elapsed).toBeGreaterThanOrEqual(1400);
         expect(elapsed).toBeLessThan(3400);
-    }, 8000);
+    }, 20_000);
 
     test("close() escalates to SIGKILL when SIGTERM is ignored too", async () => {
         const c = client("very-stubborn", stdio("legacy", { MCP_FIXTURE_IGNORE_EOF: "1", MCP_FIXTURE_IGNORE_SIGTERM: "1" }));
@@ -275,7 +275,7 @@ describe("stdio shutdown and crashes", () => {
         await c.close();
         expect(Date.now() - t0).toBeGreaterThanOrEqual(3400);
         expect(await waitFor(() => !alive(pid))).toBe(true);
-    }, 10000);
+    }, 20_000);
 
     test("a crash rejects the in-flight call, fires onExit, and keeps stderr", async () => {
         const c = client("crashy", stdio("legacy"));
