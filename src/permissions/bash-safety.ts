@@ -12,12 +12,12 @@ export interface SimpleCommand {
     /** The operator before it: ";", "\n", "&&", "||", "|" or "&" (none for the first). */
     after?: string;
     /**
-     * A redirection on it opens a file (`< f`, `> f`, `2>> f`), copies a
-     * descriptor past stderr (`<&9`, `>&3`, closed unless something opened
-     * it), or closes one and copies one (`2>&- 1>&2`): the shell can fail on
-     * that before it runs.
+     * A redirection on it that the shell can fail on before it runs: any but
+     * output to /dev/null and copies onto stdout or stderr (`2>&1`, `>&2`).
+     * Input (`< f`, `<&9`), files (`> f`, `>/dev/stdout`), closes (`2>&-`)
+     * and other descriptors (`>&3`) all count.
      */
-    opensFile?: true;
+    redirectMayFail?: true;
 }
 
 export interface CommandAnalysis {
@@ -39,6 +39,8 @@ export interface CommandAnalysis {
     redirects: string[];
     /** The operator after the last command, if the line ends with one (`cmd &`). */
     trailing?: string;
+    /** A here-document (`<<EOF`): its lines aren't commands, though they're split as if they were. */
+    heredoc?: true;
 }
 
 /** `${NAME}`, `${1}`, `${#NAME}`, `${?}`... at `i` (pointing at `$`) are plain lookups. */
@@ -100,10 +102,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     let quote: "'" | '"' | null = null;
     /** The operator after the last command pushed (`a &&` then a blank line: still &&). */
     let lastOp: string | undefined;
-    let opensFile = false;
-    /** It closes a descriptor (`2>&-`) and copies one (`1>&2`): after the close, the copy fails. */
-    let closesFd = false;
-    let copiesFd = false;
+    let redirectMayFail = false;
+    let heredoc = false;
 
     const endWord = () => {
         if (wordStarted) argv.push(word);
@@ -114,12 +114,12 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     const endCommand = (op?: string) => {
         endWord();
         if (argv.length) {
-            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(opensFile || (closesFd && copiesFd) ? { opensFile: true as const } : {}) });
+            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(redirectMayFail ? { redirectMayFail: true as const } : {}) });
             lastOp = op;
         }
         argv = [];
         text = "";
-        opensFile = closesFd = copiesFd = false;
+        redirectMayFail = false;
     };
 
     for (let i = 0; i < cmd.length; i++) {
@@ -218,11 +218,9 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 wordStarted = false;
             }
             endWord();
-            // `< f` and `<> f` open a file, `<&9` needs fd 9 open; `<<`, `<<<`, `<&0` and `<&-` can't fail.
-            if (c === "<" && n !== "<" && cmd[i - 1] !== "<" && n !== "(" && !(n === "&" && /^&([012]|-)(?![0-9])/.test(cmd.slice(i + 1)))) opensFile = true;
-            if (c === "<" && n === "&") {
-                if (cmd[i + 2] === "-") closesFd = true;
-                else copiesFd = true;
+            if (c === "<") {
+                redirectMayFail = true;
+                if (n === "<" && cmd[i - 1] !== "<" && cmd[i + 2] !== "<") heredoc = true;
             }
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
@@ -232,21 +230,22 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 if (cmd[j] === ">" || cmd[j] === "|") j++;
                 const fd = cmd[j] === "&" ? /^(\d+|-)(?=$|[ \t\n;|&)<>])/.exec(cmd.slice(j + 1)) : null;
                 if (fd) {
-                    // >&2 / >&- style: fd duplication or close, harmless; past stderr (>&3) only if it's open
+                    // >&2 / >&- style: fd duplication or close, harmless (onto stdout or stderr, which are open, it can't fail)
                     end = j + fd[0].length;
-                    if (!/^([012]|-)$/.test(fd[1]!)) opensFile = true;
-                    if (fd[1] === "-") closesFd = true;
-                    else copiesFd = true;
+                    if (fd[1] !== "1" && fd[1] !== "2") redirectMayFail = true;
                 } else {
                     if (cmd[j] === "&") j++; // `>&file` sends stdout and stderr to a file
                     while (cmd[j] === " " || cmd[j] === "\t") j++;
                     // The whole word, however its pieces are quoted: `"src"/../../out` is one target.
                     const raw = cmd.slice(j).match(/^(?:"[^"]*"|'[^']*'|[^ \t\n;|&<>"'])+/)?.[0] ?? "";
                     const target = raw.replace(/["']/g, "");
-                    if (/^\/dev\/(null|stdout|stderr)$/.test(target)) end = j + raw.length - 1;
-                    else {
+                    if (/^\/dev\/(null|stdout|stderr)$/.test(target)) {
+                        end = j + raw.length - 1;
+                        // Opening /dev/stdout or /dev/stderr fails when that descriptor is closed.
+                        if (target !== "/dev/null") redirectMayFail = true;
+                    } else {
                         writesFiles = true;
-                        opensFile = true;
+                        redirectMayFail = true;
                         redirects.push(target);
                     }
                 }
@@ -266,7 +265,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     }
     const unparsable = quote !== null;
     endCommand();
-    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects, ...(lastOp !== undefined ? { trailing: lastOp } : {}) };
+    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects, ...(lastOp !== undefined ? { trailing: lastOp } : {}), ...(heredoc ? { heredoc: true as const } : {}) };
 }
 
 /** Strip leading env assignments (FOO=bar cmd) and wrappers like `time`. */
@@ -515,37 +514,67 @@ export function isReadOnlyCommand(cmd: string): boolean {
     return a.commands.every((c) => isReadOnlySimple(c.argv));
 }
 
-const GREPS = new Set(["grep", "egrep", "fgrep", "zgrep", "ggrep", "rg"]);
+// Not zgrep: it exits 1 for errors of its own (macOS: "Illegal seek" on a bad stream).
+const GREPS = new Set(["grep", "egrep", "fgrep", "ggrep", "rg"]);
 const SHELL_SYNTAX = /(^|[\s;&|])(if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|exit|return|set|setopt|trap)(?=$|[\s;&|])|[{}]|pipe_?fail/i;
-/** Builtins that can redefine what `grep` runs, or hide the shell's own errors (`exec 2>/dev/null`). */
-const RESHAPES_SHELL = new Set(["eval", "alias", "source", ".", "exec", "builtin", "emulate", "unalias", "unset", "functions", "autoload", "hash", "enable", "disable", "shopt"]);
+/**
+ * Reserved words, and builtins that change what a later command is or how
+ * its errors show, or end the shell (an error in a POSIX special builtin ends
+ * a POSIX shell, silently with `2>/dev/null`). Before the search, it can't
+ * run, quoted or not (`e""xit 1`, `command -p eval ...`).
+ */
+const SHELL_WORDS = new Set([
+    "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "function", "select", "coproc", "repeat", "foreach", "end",
+    "break", "continue", "eval", "exec", "exit", "export", "readonly", "return", "set", "shift", "times", "trap", "unset",
+    "source", "alias", "unalias", "builtin", "emulate", "setopt", "unsetopt", "typeset", "declare", "local", "integer", "float", "hash", "rehash", "unhash",
+    "enable", "disable", "functions", "unfunction", "autoload", "zmodload", "shopt", "logout", "bye", "ulimit", "limit", "unlimit",
+]);
+/** Special builtins whose names are common arguments too (`ls .`): only where a command starts. */
+const SHELL_COMMANDS = new Set([".", ":"]);
 
 /**
  * The search program (grep, rg, git grep) whose exit status is the whole
- * command's, when the text makes that certain: it's last, it ran (not after
- * `&&`, where an earlier failure ends the list with its own status), and it
- * isn't backgrounded, negated (`! a | grep x`) or behind pipefail, and no
- * redirection in its pipeline opens a file (`grep x < f`: if the shell can't
- * open it, grep never runs and the status 1 is the shell's). Their status 1
- * means "no match", not a failure. `piped`: other commands feed it, and their
- * failures don't show in its status.
+ * command's, when the text makes that certain. Their status 1 means "no
+ * match", not a failure. It must be:
+ * - last, the real one (`./grep`, `rg --pre`, `git grep -O` run something else),
+ *   run directly (`nice grep` exits 1 itself when it can't lower the priority),
+ *   and not inverted (`-v`, `-L`: then 1 isn't "no match");
+ * - run (not after `&&`, where an earlier failure ends the list with its own status),
+ *   not backgrounded, negated (`! a | grep x`) or behind pipefail;
+ * - with no redirection in its pipeline the shell can fail on before it runs
+ *   (`grep x < f`: if f can't be opened, the 1 is the shell's);
+ * - after nothing that changes the shell or can end it (builtins, assignments
+ *   other than formatting ones: `UID=5 true 2>/dev/null` ends zsh with 1),
+ *   and with no here-document, whose lines aren't commands.
+ * `piped`: other commands feed it, and their failures don't show in its status.
  */
 export function finalSearch(cmd: string): { name: string; piped: boolean } | undefined {
     const a = analyzeCommand(cmd);
-    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion || SHELL_SYNTAX.test(cmd) || !a.commands.length) return undefined;
-    if (a.commands.some((c) => RESHAPES_SHELL.has(effectiveArgv(c.argv)[0] ?? ""))) return undefined;
+    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion || a.heredoc || SHELL_SYNTAX.test(cmd) || !a.commands.length) return undefined;
     if (a.trailing !== undefined && a.trailing !== ";" && a.trailing !== "\n") return undefined;
     const last = a.commands.length - 1;
     const argv = effectiveArgv(a.commands[last]!.argv);
     const prog = (argv[0] ?? "").split("/").pop()!;
     const name = GREPS.has(prog) ? prog : prog === "git" && argv[gitSubcommand(argv).index] === "grep" ? "git grep" : undefined;
     if (!name) return undefined;
+    const raw = a.commands[last]!.argv;
+    if (raw.length - raw.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) !== argv.length) return undefined;
+    // ggrep is GNU grep.
+    if (!isReadOnlySimple(name === "ggrep" ? [argv[0]!.replace(/[^/]*$/, "grep"), ...argv.slice(1)] : argv)) return undefined;
+    if (argv.slice(1).some((w) => /^-[a-zA-Z]*[vL]/.test(w) || /^--(invert-match|files-without-match)$/.test(w))) return undefined;
+    for (const [i, c] of a.commands.entries()) {
+        if (!onlySafeAssignments(c.argv)) return undefined;
+        if (i === last) continue;
+        if (c.argv.some((w) => SHELL_WORDS.has(w))) return undefined;
+        const words = effectiveArgv(c.argv);
+        if (SHELL_COMMANDS.has(words.find((w) => !w.startsWith("-")) ?? "")) return undefined;
+    }
     // The pipeline it ends, and what comes before that.
     let first = last;
     while (first > 0 && a.commands[first]!.after === "|") first--;
     if (a.commands[first]!.after === "&&") return undefined;
     const pipeline = a.commands.slice(first, last + 1);
-    if (pipeline.some((c) => c.opensFile || c.argv[0] === "!" || effectiveArgv(c.argv)[0] === "!")) return undefined;
+    if (pipeline.some((c) => c.redirectMayFail || c.argv[0] === "!" || effectiveArgv(c.argv)[0] === "!")) return undefined;
     return { name, piped: first < last };
 }
 

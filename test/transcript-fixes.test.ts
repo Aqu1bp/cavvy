@@ -334,7 +334,7 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["cat a | rg foo", "rg"],
         ["git grep -n foo", "git grep"],
         ["make || grep x log", "grep"],
-        ["time grep x f", "grep"],
+        ["time grep x f", undefined],
         ["/usr/bin/grep x f", "grep"],
         ["grep x f\n", "grep"],
         ["make && grep x log", undefined],
@@ -349,7 +349,7 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["npm test", undefined],
         ["grep -rn foo .", "grep"],
         ["grep x f 2>/dev/null", "grep"],
-        ["grep x <<< \"$v\"", "grep"],
+        ["grep x <<< \"$v\"", undefined],
         ["npm test > log 2>&1; grep FAIL log", "grep"],
         // The shell opens these before grep runs; when it can't, the 1 is the shell's.
         ["grep x < /no/such/file", undefined],
@@ -363,8 +363,16 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["grep x f >&3", undefined],
         ["grep x f 1>&3", undefined],
         ["grep x f 2>&1", "grep"],
-        ["grep x <&0", "grep"],
-        ["grep x f 2>&-", "grep"],
+        ["grep x <&0", undefined],
+        ["grep x f 2>&-", undefined],
+        ["grep x f >/dev/null 2>&1", "grep"],
+        ["grep x f 1>&2", "grep"],
+        ["grep x /dev/null 2>/dev/null <&0x", undefined],
+        ["grep x /dev/null <&2- >&2", undefined],
+        // A prefix assignment can fail (zsh can't set UID); formatting ones can't.
+        ["UID=5 grep x f 2>/dev/null", undefined],
+        ["cat f | FOO=1 grep x", undefined],
+        ["LC_ALL=C grep x f", "grep"],
         // Closed, then copied: the copy fails.
         ["grep x /dev/null 2>&- 1>&2", undefined],
         ["grep x /dev/null <&- 0<&1", undefined],
@@ -378,6 +386,39 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["source env.sh; grep x f", undefined],
         [". ./env.sh; grep x f", undefined],
         ["hash -p /usr/bin/false grep; grep x f", undefined],
+        ["readonly LANG; LANG=C grep x f 2>/dev/null", undefined],
+        ["typeset -r LC_ALL; LC_ALL=C grep x f", undefined],
+        ["PATH=/tmp/x; grep x f", undefined],
+        ["export PATH=/tmp/x; grep x f", undefined],
+        ["LC_ALL=C; grep x f", "grep"],
+        // Something else runs, and the 1 is its own.
+        ["./grep x f", undefined],
+        ["rg --pre /usr/bin/false x f", undefined],
+        ["git grep -O/usr/bin/false x", undefined],
+        ["git -c core.pager=false grep x", undefined],
+        ["git -C sub grep -n x", "git grep"],
+        ["/opt/homebrew/bin/ggrep x f", "ggrep"],
+        ["git --no-pager -c core.fsmonitor=false grep -O/usr/bin/false name -- package.json", undefined],
+        ["git grep --open-files-in-pager=/usr/bin/false name", undefined],
+        // Before it: a here-document's lines aren't commands; builtins, however they're spelled, can end the shell.
+        ["false <<grep\nhello\ngrep", undefined],
+        ["command -p eval 'exit 1'; grep x /dev/null", undefined],
+        ["e\"\"xit 1; grep x /dev/null", undefined],
+        [": 2>/dev/null < /no/such; grep x f", undefined],
+        ["UID=5 true 2>/dev/null; grep x f", undefined],
+        ["ls .; grep x f", "grep"],
+        ["cd src; grep -rn export .", "grep"],
+        ["zgrep x f.gz", undefined],
+        ["nice grep x /dev/null", undefined],
+        ["command grep x f", undefined],
+        ["LC_ALL=C grep -rn x .", "grep"],
+        ["grep -v x f", undefined],
+        ["grep -rvn x .", undefined],
+        ["grep -L x *.ts", undefined],
+        ["rg --invert-match x", undefined],
+        ["grep x /dev/null 2>&- >/dev/stderr", undefined],
+        ["grep x /dev/null 2>/dev/null 1>&- >/dev/stdout", undefined],
+        ["s\"\"et -e; false; grep x /dev/null", undefined],
     ])("%p: %p", async (cmd, want) => {
         const { finalSearch } = await import("../src/permissions/bash-safety");
         expect(finalSearch(cmd)?.name).toBe(want as string | undefined);
@@ -420,7 +461,7 @@ describe("a last grep that finds nothing isn't an error", () => {
 
     test("a 1 that isn't grep's stays an error", async () => {
         // grep never ran: the shell couldn't open its input, or output file.
-        for (const cmd of ["grep x < /no/such/file", "grep x 2>/dev/null < /no/such/file", "grep x /dev/null > /no/such/dir/out", "grep x 2>/dev/null <&9", "grep x /dev/null 2>&- 1>&2"]) {
+        for (const cmd of ["grep x < /no/such/file", "grep x 2>/dev/null < /no/such/file", "grep x /dev/null > /no/such/dir/out", "grep x 2>/dev/null <&9", "grep x /dev/null 2>&- 1>&2", "UID=5 grep x /dev/null 2>/dev/null"]) {
             const r = await bash(cmd);
             expect(r.isError).toBe(true);
             expect(r.content).toContain("Exit code: 1");
