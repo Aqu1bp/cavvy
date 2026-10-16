@@ -19,6 +19,7 @@ import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsNav, SettingsPage } from "./components/Settings";
 import { RewindDialog } from "./components/RewindDialog";
+import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
@@ -221,7 +222,8 @@ export function App() {
             const typing = (document.activeElement as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable]");
             // Esc leaves Settings, a sub-agent's view and the review, and otherwise interrupts a working session.
             if (settingsTab()) return typing ? undefined : (e.preventDefault(), setSettingsTab(undefined));
-            if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(undefined));
+            // A sub-agent's own goes back to the one it's under.
+            if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(agent()!.parentId));
             if (review()) return e.preventDefault(), setReview(undefined);
             if (active()?.view.state.busy && !active()?.view.state.interactions.length) interrupt();
         };
@@ -274,6 +276,7 @@ export function App() {
             </Show>
             <CommandPalette />
             <RewindDialog />
+            <McpDialog />
             <FolderPicker />
             <TrustDialog />
             <DeleteSessionDialog />

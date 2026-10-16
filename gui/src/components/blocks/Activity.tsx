@@ -462,6 +462,7 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
                                     <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>
                                     <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`}>
                                         {a.model ? `${shortModelRef(a.model)} · ` : ""}
+                                        {a.effort ? `${a.effort} effort · ` : ""}
                                         {agentLine(a)}
                                     </span>
                                 </span>
@@ -527,7 +528,7 @@ export function OpenFileButton(p: { path: string; line?: number }) {
 }
 
 /** One call, as a plain line; opens into its details. */
-export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
+export function ToolRow(p: { tool: ToolBlock }) {
     const [open, setOpen] = createSignal(false);
     const label = () => toolLabel(p.tool);
     const meta = () => {
@@ -537,7 +538,7 @@ export function ToolRow(p: { tool: ToolBlock; nested?: boolean }) {
         return t.summary;
     };
     return (
-        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${p.nested ? "nested" : ""}`}>
+        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status}`}>
             <div class="tool-head">
                 <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
                     <span class="tool-icon">
@@ -694,13 +695,6 @@ function ToolDetails(p: { tool: ToolBlock }) {
                     <button class="link-btn" onClick={() => openAgents(t().id)}>
                         <Bot size={13} /> View its activity
                     </button>
-                    <Show when={t().sub}>
-                        <Section label={`${t().sub!.label} · ${plural(t().sub!.toolCount, "tool use")}${t().sub!.tokens ? ` · ${tokens(t().sub!.tokens)} tokens` : ""}`}>
-                            <div class="sub-rows">
-                                <For each={t().sub!.tools}>{(x) => <ToolRow tool={x} nested />}</For>
-                            </div>
-                        </Section>
-                    </Show>
                     <Show when={t().output && t().status !== "running"}>
                         <Section label="Report">
                             <Markdown text={t().output ?? ""} class="small" />

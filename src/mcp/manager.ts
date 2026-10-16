@@ -2,18 +2,23 @@
 // named mcp__<server>__<tool>.
 //
 // Sources: "mcpServers" in user/local settings (trusted), and the project's
-// .mcp.json, whose servers only start after the user approves them.
+// .mcp.json, whose servers only start after the user approves what they run
+// (approval.ts). start() is the only place a server is started, and it
+// refuses a project server that isn't approved.
 
 import { existsSync } from "fs";
 import type { McpServerConfig, Settings } from "../config/settings";
-import { readJson } from "../config/settings";
+import { loadSettings, readJson } from "../config/settings";
 import { paths } from "../config/paths";
 import type { Tool, ToolResult } from "../tools/types";
 import type { ImagePart } from "../providers/types";
 import { McpClient, type McpCallResult, type McpTool } from "./client";
-import { redact } from "../util/redact";
+import { maskMcpSchema } from "./payload";
 import { truncateMiddle } from "../util/files";
 import { createHash } from "crypto";
+import type { McpServerInfo } from "./info";
+import { trustedByUser } from "../config/trust";
+import { approvalOf, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
 
 export interface ServerState {
     name: string;
@@ -26,9 +31,29 @@ export interface ServerState {
     era?: string;
     /** Another configured server whose names clean to the same segment; this one never starts. */
     collidesWith?: string;
+    /** A project server's standing with the user, for the configuration in `config`. */
+    approval?: Approval;
+    /** Bumped by each start (and when load() drops this state): an earlier start that's still connecting gives up. */
+    gen?: number;
+}
+
+/** Shared start policy: valid, enabled configuration, with an exact approval for project servers. */
+export function mayStart(st: ServerState): boolean {
+    return !st.config.disabled && !startError(st) && (st.source !== "project" || st.approval?.state === "approved");
+}
+
+/** Invalid configurations are excluded by the same policy as unapproved servers. */
+function startError(st: ServerState): string | undefined {
+    if (st.collidesWith !== undefined) return collisionError(serverSegment(st.name), st.collidesWith);
+    return headerClash(st.config);
 }
 
 const MAX_OUTPUT = 40_000;
+/** Bounds for list(): how many servers, and roughly how many characters of description. */
+const MAX_LISTED = 100;
+const LIST_BUDGET = 64_000;
+/** A server named longer than this isn't loaded (its name travels in every status update). */
+const MAX_NAME = 200;
 
 const clean = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
 
@@ -82,33 +107,53 @@ export function formatMcpResult(r: McpCallResult): { content: string; images: Im
         }
     }
     if (!texts.length && r.structuredContent !== undefined) texts.push(JSON.stringify(r.structuredContent, null, 2));
-    return { content: truncateMiddle(redact(texts.join("\n\n")), MAX_OUTPUT), images };
+    return { content: texts.join("\n\n"), images };
 }
 
 export class McpManager {
     servers = new Map<string, ServerState>();
     onChange?: () => void;
+    /** Servers left out by load() for their name's length. */
+    skipped = 0;
 
+    /**
+     * `reloadSettings` re-reads the settings `settings` returns, after an
+     * approval is saved (and before a refresh), so they're current.
+     */
     constructor(
         private cwd: string,
         private settings: () => Settings,
-        private trusted: boolean,
+        readonly trusted: boolean,
+        private reloadSettings?: () => void,
     ) {}
 
-    /** Read configuration; doesn't start anything. */
-    load() {
-        const s = this.settings();
+    /**
+     * Read configuration; doesn't start anything. A server whose configuration
+     * and approval didn't change keeps its state (running, failed, or turned
+     * off for this session); any other running one is stopped, and the
+     * returned promise settles once it has.
+     */
+    load(s = this.settings()): Promise<void> {
         const next = new Map<string, ServerState>();
+        this.skipped = 0;
         for (const [name, config] of Object.entries(s.mcpServers ?? {})) {
-            next.set(name, { name, config, source: "settings", status: config.disabled ? "disabled" : "pending", tools: [] });
+            if (name.length > MAX_NAME) this.skipped++;
+            else next.set(name, { name, config, source: "settings", status: config.disabled ? "disabled" : "pending", tools: [] });
         }
+        let userTrusted: boolean | undefined;
         if (this.trusted && existsSync(paths.projectMcp(this.cwd))) {
             const f = readJson<{ mcpServers?: Record<string, McpServerConfig> }>(paths.projectMcp(this.cwd));
-            for (const [name, config] of Object.entries(f?.mcpServers ?? {})) {
+            const servers = f?.mcpServers && typeof f.mcpServers === "object" ? f.mcpServers : {};
+            for (const [name, raw] of Object.entries(servers)) {
                 if (next.has(name)) continue;
-                const approved = s.enableAllProjectMcpServers || (s.enabledMcpjsonServers ?? []).includes(name);
-                const rejected = (s.disabledMcpjsonServers ?? []).includes(name);
-                next.set(name, { name, config, source: "project", status: rejected || config.disabled ? "disabled" : approved ? "pending" : "needs-approval", tools: [] });
+                if (name.length > MAX_NAME) {
+                    this.skipped++;
+                    continue;
+                }
+                const config: McpServerConfig = raw && typeof raw === "object" ? raw : {};
+                const approval = approvalOf(name, config, s, this.cwd, (userTrusted ??= trustedByUser(this.cwd)));
+                const status = approval.state === "rejected" || config.disabled ? "disabled" : approval.state === "approved" ? "pending" : "needs-approval";
+                next.set(name, { name, config, source: "project", status, tools: [], approval });
             }
         }
         // Two servers whose names clean to the same segment would share tool
@@ -126,13 +171,44 @@ export class McpManager {
                 }
             }
         }
-        // Keep running clients for unchanged servers.
+        // Keep unchanged servers as they are.
+        const closing: Promise<void>[] = [];
         for (const [name, st] of this.servers) {
             const n = next.get(name);
-            if (n && JSON.stringify(n.config) === JSON.stringify(st.config) && st.status === "connected" && n.status === "pending") next.set(name, st);
-            else void st.client?.close();
+            const same = n && n.source === st.source && n.collidesWith === st.collidesWith && JSON.stringify(n.config) === JSON.stringify(st.config) && n.approval?.fingerprint === st.approval?.fingerprint && n.approval?.state === st.approval?.state;
+            const kept = same && n.status === "pending" && (["connected", "connecting", "failed"].includes(st.status) || (st.status === "disabled" && !st.config.disabled));
+            if (kept) {
+                st.approval = n.approval;
+                next.set(name, st);
+            } else {
+                // A start of this state still under way gives up, and starts nothing more.
+                st.gen = (st.gen ?? 0) + 1;
+                const c = st.client;
+                st.client = undefined;
+                if (c) closing.push(c.close().catch(() => undefined));
+            }
         }
         this.servers = next;
+        return Promise.all(closing).then(() => undefined);
+    }
+
+    /** Settings and .mcp.json read again (what the other front end saved, or an edit), clients told if anything changed. */
+    async refresh(): Promise<void> {
+        const before = this.summary();
+        this.reloadSettings?.();
+        const closed = this.load();
+        if (this.summary() !== before) this.onChange?.();
+        await closed;
+    }
+
+    /** refresh(), then start what's newly approved. It doesn't retry a server that failed. */
+    async sync(): Promise<void> {
+        await this.refresh();
+        void this.startAll();
+    }
+
+    private summary(): string {
+        return JSON.stringify([...this.servers.values()].map((s) => [s.name, s.source, s.status, s.tools.length, s.error, s.approval?.state, s.approval?.reason]));
     }
 
     async startAll(signal?: AbortSignal) {
@@ -140,55 +216,179 @@ export class McpManager {
     }
 
     async start(st: ServerState, signal?: AbortSignal) {
-        // Reconnecting doesn't lift the name-collision refusal from load().
-        if (st.collidesWith !== undefined) {
-            st.status = "failed";
-            st.error = collisionError(serverSegment(st.name), st.collidesWith);
+        if (this.servers.get(st.name) !== st) return;
+        if (!mayStart(st)) {
+            const error = startError(st);
+            if (error) {
+                st.status = "failed";
+                st.error = maskConfigValues(error, st.config);
+            }
             this.onChange?.();
             return;
         }
+        // Resolve once: checking a symlink and resolving it again at spawn can run in another folder.
+        const runCwd = st.config.url ? undefined : serverCwd(st.config, this.cwd);
+        const gen = (st.gen ?? 0) + 1;
+        st.gen = gen;
+        const superseded = () => st.gen !== gen;
+        // One client per server: a start already under way is replaced, not doubled.
+        void st.client?.close();
+        st.client = undefined;
         st.status = "connecting";
         st.error = undefined;
         this.onChange?.();
+        let client: McpClient | undefined;
         try {
-            const client = new McpClient(st.name, st.config, this.cwd);
+            if (!this.stillApproved(st, runCwd)) return;
+            client = new McpClient(st.name, st.config, this.cwd, runCwd);
             st.client = client;
+            const c = client;
             client.onExit = () => {
-                if (st.status === "connected") {
+                if (!superseded() && st.status === "connected") {
                     st.status = "failed";
-                    st.error = `server exited${client.stderrTail() ? `: ${client.stderrTail()}` : ""}`;
+                    st.error = maskConfigValues(`server exited${c.stderrTail() ? `: ${c.stderrTail()}` : ""}`, st.config);
                     this.onChange?.();
                 }
             };
             await client.connect(signal);
-            st.tools = await client.listTools(signal);
+            // Revoked (or restarted) while connecting: no more requests with its configuration.
+            if (superseded() || !this.stillApproved(st, runCwd)) {
+                await client.close();
+                return;
+            }
+            const tools = await client.listTools(signal);
+            if (superseded() || !this.stillApproved(st, runCwd)) {
+                await client.close();
+                return;
+            }
+            this.setTools(st, tools);
             st.era = client.era === "modern" ? client.protocolVersion : `legacy ${client.protocolVersion}`;
             st.status = "connected";
+            const current = () => !superseded() && st.client === c;
             client.onToolsChanged = () => {
-                client
-                    .listTools()
+                if (!current()) return;
+                c.listTools()
                     .then((t) => {
-                        st.tools = t;
+                        if (!current()) return;
+                        this.setTools(st, t);
                         this.onChange?.();
                     })
                     .catch(() => {});
             };
         } catch (e) {
+            await client?.close();
+            // Whoever superseded this start closed its client (and owns the status now).
+            if (superseded()) return;
             st.status = "failed";
-            const tail = st.client?.stderrTail();
-            st.error = redact(`${(e as Error).message}${tail ? `\n${tail}` : ""}`);
-            await st.client?.close();
+            const tail = client?.stderrTail();
+            st.error = maskConfigValues(`${(e as Error).message}${tail ? `\n${tail}` : ""}`, st.config);
             st.client = undefined;
         }
         this.onChange?.();
     }
 
+    /** Another process can revoke an approval or edit .mcp.json without refreshing this manager. */
+    private stillApproved(st: ServerState, runCwd?: string): boolean {
+        if (st.source !== "project") return true;
+        const settings = loadSettings(this.cwd, { trusted: this.trusted });
+        const config = this.trusted ? readJson<{ mcpServers?: Record<string, McpServerConfig> }>(paths.projectMcp(this.cwd))?.mcpServers?.[st.name] : undefined;
+        if (config && typeof config === "object" && !Object.hasOwn(settings.mcpServers ?? {}, st.name)) {
+            const approval = approvalOf(st.name, config, settings, this.cwd, trustedByUser(this.cwd), config.cwd === st.config.cwd ? runCwd : undefined);
+            if (mayStart({ ...st, config, approval }) && approval.fingerprint === st.approval?.fingerprint) return true;
+        }
+        // load detaches obsolete states and begins closing their clients synchronously, including in headless runs.
+        void this.load(settings);
+        this.onChange?.();
+        return false;
+    }
+
+    private setTools(st: ServerState, tools: McpTool[]): void {
+        st.tools = tools.filter((t) => !hasConfigValue(t.name, st.config) && maskMcpSchema(t.inputSchema, st.config) !== undefined);
+        const skipped = tools.length - st.tools.length;
+        st.error = skipped ? `${skipped} tool${skipped === 1 ? " was" : "s were"} hidden because its name or input schema contains a configured secret.` : undefined;
+    }
+
     async restart(name: string) {
         const st = this.servers.get(name);
         if (!st) return;
-        await st.client?.close();
-        st.client = undefined;
+        const old = st.client;
+        await old?.close();
+        // Another restart may have started a newer client meanwhile: start() replaces it, closing it.
+        if (st.client === old) st.client = undefined;
         await this.start(st);
+    }
+
+    /** Turned back on after "disable for this session", once settings and .mcp.json are read again (the other front end may have rejected it since). */
+    async enable(name: string): Promise<void> {
+        await this.refresh();
+        const st = this.servers.get(name);
+        if (!st || st.status !== "disabled" || !mayStart(st)) return;
+        st.status = "pending";
+        await this.start(st);
+    }
+
+    /**
+     * Read the configuration again, then start the server afresh if it may
+     * run. One whose .mcp.json entry changed since it was approved asks again
+     * instead (and stays off).
+     */
+    async reconnect(name: string): Promise<ServerState> {
+        await this.refresh();
+        const st = this.servers.get(name);
+        if (!st) throw new McpApprovalError(`There's no MCP server named "${name}" here.`, "unknown");
+        if (mayStart(st) && st.status !== "disabled") await this.restart(name);
+        return st;
+    }
+
+    private projectServer(name: string): ServerState {
+        if (!this.trusted) throw new McpApprovalError("This folder isn't trusted, so its .mcp.json isn't read and its servers can't be approved. Trust the folder first.", "untrusted");
+        const st = this.servers.get(name);
+        if (!st) throw new McpApprovalError(`There's no MCP server named "${name}" here.`, "unknown");
+        if (st.source !== "project" || !st.approval) throw new McpApprovalError(`"${name}" comes from your settings, not from .mcp.json: it doesn't need approving.`, "not_project");
+        return st;
+    }
+
+    /**
+     * Approve exactly the configuration with this fingerprint (what the user
+     * was shown), after reading .mcp.json again: if it changed in between,
+     * nothing is saved ("changed"). Saved to the folder's local settings.
+     * Returns the server, ready for start().
+     */
+    async approve(name: string, fingerprint: string): Promise<ServerState> {
+        await this.refresh();
+        const st = this.projectServer(name);
+        const a = st.approval!;
+        if (a.state === "approved") throw new McpApprovalError(`"${name}" is already approved.`, "not_needed");
+        // Trusted for this session only, for having had nothing to protect when it was opened, isn't the user's say-so.
+        if (!trustedByUser(this.cwd)) throw new McpApprovalError("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened. Trust the folder first, then approve its servers.", "needs_trust");
+        if (st.config.disabled === true) throw new McpApprovalError(`"${name}" is turned off in .mcp.json ("disabled": true).`, "blocked");
+        if (a.fingerprint !== fingerprint) throw new McpApprovalError(`What "${name}" runs changed since it was shown to you. Look at it again before approving.`, "changed");
+        saveApproval(this.cwd, name, a.fingerprint);
+        await this.refresh();
+        const now = this.servers.get(name);
+        if (now?.approval?.state !== "approved") throw new McpApprovalError(`"${name}" is still rejected in your user settings (disabledMcpjsonServers).`, "blocked");
+        return now;
+    }
+
+    /** Rejected by name: it stays off (and stops) until approved again. */
+    async reject(name: string): Promise<void> {
+        await this.refresh();
+        const st = this.projectServer(name);
+        if (st.approval!.state === "rejected") return;
+        saveRejection(this.cwd, name);
+        await this.refresh();
+    }
+
+    /** The approval taken back: the server stops and asks again. */
+    async revoke(name: string): Promise<void> {
+        await this.refresh();
+        const st = this.projectServer(name);
+        const a = st.approval!;
+        if (a.state !== "approved") throw new McpApprovalError(`"${name}" isn't approved.`, "not_needed");
+        if (a.viaAll) throw new McpApprovalError(`"${name}" is approved by enableAllProjectMcpServers in your settings. Turn that off to approve servers one by one, or reject this one.`, "blocked");
+        removeApproval(this.cwd, name);
+        await this.refresh();
+        if (this.servers.get(name)?.approval?.state === "approved") throw new McpApprovalError(`"${name}" is still approved in your user settings (approvedMcpjsonServers). Remove it there.`, "blocked");
     }
 
     async closeAll() {
@@ -198,6 +398,7 @@ export class McpManager {
     /** Harness tool wrappers for every connected server's tools. */
     tools(): Tool<any>[] {
         const out: Tool<any>[] = [];
+        const self = this;
         for (const st of this.servers.values()) {
             if (st.status !== "connected" || !st.client) continue;
             const client = st.client;
@@ -210,29 +411,35 @@ export class McpManager {
                 let name = toolNameFor(st.name, t.name);
                 if ((base.get(name) ?? 0) > 1) name = `${name.slice(0, 64 - 9)}_${createHash("sha256").update(t.name).digest("hex").slice(0, 8)}`;
                 const readOnly = t.annotations?.readOnlyHint === true;
-                const label = t.title ?? t.annotations?.title ?? t.name;
+                // Everything the server says about its tools is masked for its own env and headers, as its results are.
+                const label = maskConfigValues(t.title ?? t.annotations?.title ?? t.name, st.config);
                 out.push({
                     name,
                     category: "mcp",
                     readOnly,
-                    description: `${(t.description ?? label).slice(0, 4000)}\n\n(MCP tool "${t.name}" from server "${st.name}")`,
-                    parameters: sanitizeSchema(t.inputSchema),
+                    description: `${(t.description === undefined ? label : maskConfigValues(t.description, st.config)).slice(0, 4000)}\n\n(MCP tool "${maskConfigValues(t.name, st.config)}" from server "${st.name}")`,
+                    parameters: sanitizeSchema(maskMcpSchema(t.inputSchema, st.config)),
                     title: (input: Record<string, unknown>) => {
                         const arg = Object.values(input ?? {}).find((v) => typeof v === "string") as string | undefined;
                         return `${st.name} - ${label}${arg ? `(${arg.slice(0, 60)})` : ""}`;
                     },
                     async run(input: Record<string, unknown>, ctx): Promise<ToolResult> {
+                        // Revoked, rejected or restarted since this tool was listed (say, while its call waited for permission).
+                        if (st.client !== client || self.servers.get(st.name) !== st || !mayStart(st) || !self.stillApproved(st)) return { content: `MCP server ${st.name} isn't running any more.`, isError: true };
                         try {
                             const r = await client.callTool(t.name, input ?? {}, ctx.signal);
-                            const f = formatMcpResult(r);
+                            // Structured data must be masked before JSON serialization escapes its strings and keys.
+                            const f = formatMcpResult({ ...r, structuredContent: maskConfigDeep(r.structuredContent, st.config) });
+                            // Formatting includes URIs and MIME types too; mask before truncation can split a secret.
+                            const content = truncateMiddle(maskConfigValues(f.content, st.config), MAX_OUTPUT);
                             return {
-                                content: f.content || "(no output)",
+                                content: content || "(no output)",
                                 images: f.images.length ? f.images : undefined,
                                 isError: r.isError,
-                                display: { summary: r.isError ? "Error" : `${f.content.split("\n").length} lines${f.images.length ? `, ${f.images.length} image(s)` : ""}` },
+                                display: { summary: r.isError ? "Error" : `${content.split("\n").length} lines${f.images.length ? `, ${f.images.length} image(s)` : ""}` },
                             };
                         } catch (e) {
-                            return { content: `MCP error from ${st.name}: ${redact((e as Error).message)}`, isError: true };
+                            return { content: `MCP error from ${st.name}: ${maskConfigValues((e as Error).message, st.config)}`, isError: true };
                         }
                     },
                 });
@@ -245,9 +452,43 @@ export class McpManager {
         const parts: string[] = [];
         for (const st of this.servers.values()) {
             const ins = st.client?.instructions?.trim();
-            if (st.status === "connected" && ins) parts.push(`## ${st.name}\n${ins.slice(0, 4000)}`);
+            if (st.status === "connected" && ins) parts.push(`## ${st.name}\n${maskConfigValues(ins, st.config).slice(0, 4000)}`);
         }
         return parts.length ? `# MCP server instructions\nThese come from the connected MCP servers and describe how to use their tools.\n\n${parts.join("\n\n")}` : "";
+    }
+
+    /** What `name` runs and where it stands, as both front ends show it (secrets masked, bounded). */
+    describe(name: string): McpServerInfo | undefined {
+        const st = this.servers.get(name);
+        return st && describeServer(st, this.cwd);
+    }
+
+    /**
+     * Every server, described, within a size budget: past it, servers come as
+     * summaries (`partial`; ask for one with describe()), and past MAX_LISTED
+     * they're left out and counted.
+     */
+    list(): { servers: McpServerInfo[]; omitted: number } {
+        const all = [...this.servers.values()];
+        const servers: McpServerInfo[] = [];
+        let size = 0;
+        for (const st of all.slice(0, MAX_LISTED)) {
+            const full = describeServer(st, this.cwd);
+            const n = JSON.stringify(full).length;
+            if (size + n <= LIST_BUDGET) {
+                servers.push(full);
+                size += n;
+                continue;
+            }
+            const { name, label, source, status, tools, transport, approval, disabledInFile } = full;
+            const summary: McpServerInfo = { name, label, source, status, tools, transport, approval, disabledInFile, partial: true };
+            const m = JSON.stringify(summary).length;
+            // Summaries count too; past twice the budget, the rest are only counted.
+            if (size + m > 2 * LIST_BUDGET) break;
+            servers.push(summary);
+            size += m;
+        }
+        return { servers, omitted: all.length - servers.length + this.skipped };
     }
 
     needsApproval(): ServerState[] {

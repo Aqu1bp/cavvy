@@ -337,9 +337,10 @@ export async function activate(id: string | undefined) {
 }
 
 // Trust prompts are shown by the App component; this hands them over.
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void } | undefined>();
-export function requestTrust(path: string, then: () => void) {
-    setTrustRequest({ path, then });
+/** MCP approval upgrades existing session trust; declining it must not change that session. */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" } | undefined>();
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval") {
+    setTrustRequest({ path, then, purpose });
 }
 
 // ---------------------------------------------------------------------------
