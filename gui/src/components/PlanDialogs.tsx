@@ -67,6 +67,9 @@ function PlanDialog(p: { sessionId: string; planId?: string; kind: "view" | "sav
                     <Match when={kind() === "save"}>
                         <SavePlan sessionId={p.sessionId} info={i()} busy={busy()} setBusy={setBusy} onClose={close} />
                     </Match>
+                    <Match when={kind() === "worktree" && !i().git}>
+                        <ViewPlan info={i()} onClose={close} onSave={() => setKind("save")} onWorktree={() => undefined} />
+                    </Match>
                     <Match when={kind() === "worktree"}>
                         <ImplementPlan sessionId={p.sessionId} info={i()} busy={busy()} setBusy={setBusy} onClose={close} />
                     </Match>

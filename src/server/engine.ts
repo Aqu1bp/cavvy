@@ -656,7 +656,9 @@ export class Engine {
             // The new session works where the planning one did, relative to its worktree.
             const top = gitRoot(from);
             const sub = top ? relative(realPath(top), realPath(from)) : "";
-            const there = sub && !sub.startsWith("..") && isDir(join(made.path, sub)) ? join(made.path, sub) : made.path;
+            // Only a real folder inside the worktree: a checked-out symlink could lead anywhere.
+            const candidate = sub && !sub.startsWith("..") ? join(made.path, sub) : "";
+            const there = candidate && isDir(candidate) && isInside(realPath(candidate), realPath(made.path)) ? candidate : made.path;
             const failed = (e: unknown, sessionId?: string): ImplementPlanResult => {
                 const code = e instanceof RpcError ? e.code : undefined;
                 const folder = code === "needs_trust" ? ((e as RpcError).folder ?? there) : undefined;
@@ -779,6 +781,9 @@ export class Engine {
             }
             if (waiting) return { archived: false, ignored: waiting.ignored, total: waiting.total, confirm: waiting.confirm };
             if (rt) {
+                // Checked again now, after the awaits above: a turn started, or another window opened it, meanwhile.
+                if (this.runtimes.get(id) !== rt || !rt.idle) return done(false, "This session started working again, so its worktree stays.", "running");
+                if ([...this.clients].some((c) => c !== client && c.subs.has(id))) return done(false, "This session was opened in another window, so its worktree stays.", "open_elsewhere");
                 client.subs.delete(id);
                 closed = true;
                 await this.unload(rt);
