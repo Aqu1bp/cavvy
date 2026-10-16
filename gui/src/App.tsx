@@ -1,6 +1,6 @@
 import { createEffect, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
-import { app, attentionCount, dismissToast, handleFor, pauseToast, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
+import { app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
@@ -273,6 +273,15 @@ export function App() {
                         </Match>
                         <Match when={active()} keyed>
                             {(h) => <SessionView handle={h} />}
+                        </Match>
+                        <Match when={app.activeId}>
+                            <Header />
+                            <div class="home">
+                                <div class="home-inner">
+                                    <p class="muted" role="status">Waiting to reopen your session…</p>
+                                    <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
+                                </div>
+                            </div>
                         </Match>
                     </Switch>
                     <TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} />
