@@ -36,12 +36,16 @@ import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
+import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import type {
     AgentRun,
     Block,
     ChangesInfo,
     GitChangesInfo,
+    GitCommitHead,
+    GitCommitInfo,
+    GitCommitMessageInfo,
     GitScope,
     EffortLevel,
     Interaction,
@@ -176,6 +180,10 @@ export class Runtime {
     private titleFrom?: string;
     private shellTimer?: ReturnType<typeof setInterval>;
     private switching?: Promise<unknown>;
+    /** Reserve this session while its reviewed files are being committed. */
+    private committing = false;
+    private commitDone?: Promise<GitCommitInfo>;
+    private commitAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
@@ -694,10 +702,11 @@ export class Runtime {
     }
 
     /** One-shot completion on a cheap model (reviewer, titles, page summaries), or the session's own with `main`. */
-    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage; target?: { model: ModelInfo; client: ProviderClient } }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
-        if (opts?.review) {
+        if (opts?.target) ({ model, client } = opts.target);
+        else if (opts?.review) {
             // The reviewer, or with none the session's own model.
             const r = await reviewTarget(this.settings().reviewModel);
             if (r) ({ model, client } = r);
@@ -1529,6 +1538,7 @@ export class Runtime {
     async send(text: string, attachments?: AttachedPart[]): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
+        this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
         // No await between this check and queueing/dispatch: a switch must not change the model we checked.
         const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
@@ -1569,6 +1579,7 @@ export class Runtime {
                 return;
             }
         }
+        this.checkCommitting();
         const agent = this.agent;
         this.busy = true;
         let settled!: () => void;
@@ -1786,6 +1797,7 @@ export class Runtime {
     async compact(instructions?: string) {
         // On the model being switched to, as a prompt would be.
         while (this.switching) await this.switching.catch(() => undefined);
+        this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         if (!this.agent) throw new Error("No model is selected.");
@@ -1848,6 +1860,7 @@ export class Runtime {
      * nothing happens if the conversation moved on.
      */
     rewind(index: number, planId: string, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } {
+        this.checkCommitting();
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         const t = this.target(index);
         const shown = this.rewindShown;
@@ -1919,6 +1932,42 @@ export class Runtime {
     /** What git says changed in the session's folder, whoever changed it. */
     gitChanges(req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
         return gitChanges(this.ws.cwd, req);
+    }
+
+    private checkCommitting() {
+        if (this.committing) throw new RpcError("Wait for the commit to finish before starting more work.", "busy");
+    }
+
+    private checkGitCommit() {
+        if (!this.ws.trusted) throw new RpcError("Trust this folder before committing: Git commits run the repository's hooks.", "needs_trust", this.ws.cwd);
+        if (this.closed) throw new RpcError("This session was closed.", "busy");
+        if (!this.idle) throw new RpcError("This session is still working. Wait for its responses, questions, shells, and tasks to finish before committing.", "busy");
+    }
+
+    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
+        this.checkGitCommit();
+        this.committing = true;
+        this.commitAbort = new AbortController();
+        this.commitDone = gitCommit(this.ws.cwd, paths, message, { expectedHead, signal: this.commitAbort.signal });
+        try {
+            return await this.commitDone;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            this.commitAbort = undefined;
+        }
+    }
+
+    async gitCommitMessage(paths: string[]): Promise<GitCommitMessageInfo> {
+        await this.ready;
+        this.checkGitCommit();
+        if (!this.model || !this.client) throw new RpcError("Set a small model in Settings to generate messages.", "no_model");
+        const target = await this.smallTarget();
+        if (isAgentBackend(target.client)) throw new RpcError("Set a small model from another provider in Settings to generate messages.", "no_model");
+        const prompt = await gitCommitPrompt(this.ws.cwd, paths);
+        const message = await this.complete(COMMIT_MESSAGE_SYSTEM, prompt, AbortSignal.timeout(30_000), { target });
+        if (!message.trim()) throw new RpcError("The model returned an empty commit message. Try again or write your own.");
+        return { message, model: modelRef(target.model) };
     }
 
     changes(): ChangesInfo {
@@ -2027,7 +2076,7 @@ export class Runtime {
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
-        if (this.busy || this.queued.length || this.pending.size || this.switching) return false;
+        if (this.busy || this.committing || this.queued.length || this.pending.size || this.switching) return false;
         if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }
@@ -2035,6 +2084,7 @@ export class Runtime {
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
         this.abort?.abort();
+        this.commitAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
         if (this.shellTimer) clearInterval(this.shellTimer);
@@ -2044,7 +2094,15 @@ export class Runtime {
         this.syncSteps(true);
         this.closed = true;
         // Delegated tasks still running stop with the session.
-        const ending = Promise.all([this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)), this.agent?.dispose(), killAllShells({ state: this.toolState })]);
+        // Commit cancellation kills its process group and removes the index lock.
+        // Wait for that bounded cleanup, including reconciliation if HEAD advanced.
+        const commit = this.commitDone?.catch(() => undefined);
+        const ending = Promise.all([
+            this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)),
+            this.agent?.dispose(),
+            killAllShells({ state: this.toolState }),
+            commit,
+        ]);
         try {
             // A turn still running notes how it stopped (the interrupt, what it was retrying) before the file is let go.
             const turn = this.turnDone;
@@ -2058,6 +2116,7 @@ export class Runtime {
             }
             await ending;
         } finally {
+            await commit;
             this.ui.close();
             this.session.release();
         }

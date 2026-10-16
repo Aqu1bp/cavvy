@@ -12,6 +12,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
+const { gitArgv, gitEnv } = await import("../src/util/git");
 import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 import type { AgentEvent } from "../src/agent/agent";
 
@@ -27,6 +28,22 @@ function project(): string {
     const dir = createDemoProject(tempDir("harness-gui-proj-"), { git: false });
     projects.push(dir);
     return dir;
+}
+
+function commitRepo(cwd: string) {
+    const git = (...args: string[]) => {
+        const result = Bun.spawnSync(gitArgv(args), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+        if (result.exitCode) throw new Error(result.stderr.toString());
+        return result.stdout.toString();
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Harness Test");
+    git("config", "user.email", "test@example.invalid");
+    git("config", "commit.gpgsign", "false");
+    git("config", "core.hooksPath", join(cwd, ".git", "hooks"));
+    git("add", "-A");
+    git("commit", "-q", "-m", "feat: initial project");
+    return git;
 }
 
 beforeAll(async () => {
@@ -247,6 +264,254 @@ describe("connecting", () => {
     async function whenIdle(rt: { idle: boolean }) {
         for (let i = 0; i < 200 && !rt.idle; i++) await Bun.sleep(50);
         expect(rt.idle).toBe(true);
+    }
+
+    test("commit RPCs validate requests and refuse busy and untrusted sessions", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "new\n");
+        const head = git("rev-parse", "HEAD");
+        const request = { id, paths: ["selected.txt"], message: "feat: selected file" };
+        try {
+            await rt.ready;
+            for (const paths of [[], [1], ["bad\0path"], ["x".repeat(4097)], Array(1001).fill("selected.txt")]) {
+                await expect(engine.handle(c, "session.gitCommit", { ...request, paths })).rejects.toMatchObject({ code: "invalid" });
+                await expect(engine.handle(c, "session.gitCommitMessage", { id, paths })).rejects.toMatchObject({ code: "invalid" });
+            }
+            for (const message of [" ", "bad\0message", "界".repeat(22000), 12]) {
+                await expect(engine.handle(c, "session.gitCommit", { ...request, message })).rejects.toMatchObject({ code: "invalid" });
+            }
+            for (const expectedHead of [null, "main", {}, { branch: "main" }, { detached: false }, { detached: true, branch: "main" }, { detached: true }, { detached: true, sha: "1234567" }]) {
+                await expect(engine.handle(c, "session.gitCommit", { ...request, expectedHead })).rejects.toMatchObject({ code: "invalid" });
+            }
+            rt.busy = true;
+            await expect(engine.handle(c, "session.gitCommit", request)).rejects.toMatchObject({ code: "busy", message: expect.stringContaining("still working") });
+            await expect(engine.handle(c, "session.gitCommitMessage", request)).rejects.toMatchObject({ code: "busy" });
+            rt.busy = false;
+            rt.ws.trusted = false;
+            await expect(engine.handle(c, "session.gitCommit", request)).rejects.toMatchObject({ code: "needs_trust", message: expect.stringContaining("hooks") });
+            await expect(engine.handle(c, "session.gitCommitMessage", request)).rejects.toMatchObject({ code: "needs_trust" });
+            expect(git("rev-parse", "HEAD")).toBe(head);
+        } finally {
+            rt.busy = false;
+            await engine.stop();
+        }
+    });
+
+    test("commit RPC refuses a branch different from the dialog snapshot", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "new\n");
+        const head = git("rev-parse", "HEAD");
+        const request = { id, paths: ["selected.txt"], message: "feat: selected file" };
+        try {
+            await rt.ready;
+            git("checkout", "-q", "-b", "other");
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { branch: "main", detached: false },
+            })).rejects.toMatchObject({ message: "The branch changed from main to other; reopen the dialog." });
+            git("checkout", "-q", "--detach");
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { branch: "other", detached: false },
+            })).rejects.toMatchObject({ message: "The branch changed from other to detached HEAD; reopen the dialog." });
+            git("checkout", "-q", "other");
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: head.trim() },
+            })).rejects.toMatchObject({ message: "The branch changed from detached HEAD to other; reopen the dialog." });
+            expect(git("rev-parse", "HEAD")).toBe(head);
+            expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+            const result = await engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { branch: "other", detached: false },
+            });
+            expect(result).toMatchObject({ branch: "other", subject: request.message });
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("commit RPC refuses a detached HEAD different from the dialog snapshot", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        const first = git("rev-parse", "HEAD").trim();
+        git("commit", "-q", "--allow-empty", "-m", "second commit");
+        const second = git("rev-parse", "HEAD").trim();
+        git("checkout", "-q", "--detach", first);
+        try {
+            await rt.ready;
+            const shown = await engine.handle(c, "session.gitChanges", { id, scope: "uncommitted" }) as { head: { sha: string } };
+            expect(shown.head.sha).toBe(first);
+            git("checkout", "-q", "--detach", second);
+            writeFileSync(join(cwd, "selected.txt"), "new\n");
+            const request = { id, paths: ["selected.txt"], message: "feat: selected file" };
+            await expect(engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: shown.head.sha },
+            })).rejects.toMatchObject({ message: `The detached HEAD changed from ${first.slice(0, 7)} to ${second.slice(0, 7)}; reopen the dialog.` });
+            expect(git("rev-parse", "HEAD").trim()).toBe(second);
+            expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+            const result = await engine.handle(c, "session.gitCommit", {
+                ...request,
+                expectedHead: { detached: true, sha: second },
+            });
+            expect(result).toMatchObject({ subject: request.message });
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("commit message generation uses the small model, redacts selected diffs, and never commits", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        const secret = "commit-generation-secret-abcdefghijklmnop";
+        registerSecret(secret, "commit-test");
+        writeFileSync(join(cwd, "selected.txt"), `selected content ${secret}\n`);
+        writeFileSync(join(cwd, "other.txt"), "unselected content must not be sent\n");
+        const head = git("rev-parse", "HEAD");
+        const message = "feat: add selected file\n\nAn editable body.";
+        let calls = 0;
+        const original = rt.complete;
+        rt.complete = async (system, prompt, signal, opts) => {
+            calls++;
+            expect(system).toContain("72 characters");
+            expect(prompt).toContain("feat: initial project");
+            expect(prompt).toContain("selected content");
+            expect(prompt).toContain("[REDACTED commit-test]");
+            expect(prompt).not.toContain(secret);
+            expect(prompt).not.toContain("unselected content");
+            expect(signal).toBeInstanceOf(AbortSignal);
+            expect(opts?.target?.model.id).toBe("mock-haiku");
+            return message;
+        };
+        try {
+            await rt.ready;
+            expect(calls).toBe(0);
+            const result = await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] });
+            expect(result).toEqual({ message, model: "mock:mock-haiku" });
+            expect(calls).toBe(1);
+            expect(git("rev-parse", "HEAD")).toBe(head);
+            expect(git("diff", "--cached", "--name-only")).toBe("");
+        } finally {
+            rt.complete = original;
+            unregisterSecret(secret);
+            await engine.stop();
+        }
+    });
+
+    test("agent backends explain the small-model setting and generate messages with another provider", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "selected\n");
+        const head = git("rev-parse", "HEAD");
+        const original = rt.complete;
+        let calls = 0;
+        rt.complete = async (_system, _prompt, _signal, opts) => {
+            calls++;
+            expect(opts?.target?.model).toMatchObject({ provider: "mock", id: "mock-haiku" });
+            expect((opts?.target?.client as { agentBackend?: boolean }).agentBackend).not.toBe(true);
+            return "feat: add selected file";
+        };
+        try {
+            await rt.ready;
+            // The same capability flag exposed by both Claude Code and Codex clients.
+            rt.client = Object.assign({}, rt.client, { agentBackend: true });
+            for (const provider of ["claude-code", "codex"]) {
+                rt.model = { ...rt.model!, provider, id: "default" };
+                rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+                const before = calls;
+                await expect(engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).rejects.toMatchObject({ code: "no_model", message: "Set a small model from another provider in Settings to generate messages." });
+                expect(calls).toBe(before);
+                rt.ws.settings = { ...rt.ws.settings, smallModel: "mock:mock-haiku" };
+                expect(await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).toEqual({ message: "feat: add selected file", model: "mock:mock-haiku" });
+                expect(calls).toBe(before + 1);
+            }
+            expect(git("rev-parse", "HEAD")).toBe(head);
+        } finally {
+            rt.complete = original;
+            await engine.stop();
+        }
+    });
+
+    test("a commit reserves the session while its repository hook runs", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "new\n");
+        const hooks = join(cwd, ".git", "hooks");
+        writeFileSync(join(hooks, "pre-commit"), '#!/bin/sh\ntouch .git/commit-started\nwhile [ ! -e .git/commit-release ]; do sleep 0.02; done\n');
+        chmodSync(join(hooks, "pre-commit"), 0o755);
+        let pending: Promise<unknown> | undefined;
+        try {
+            await rt.ready;
+            pending = engine.handle(c, "session.gitCommit", { id, paths: ["selected.txt"], message: "feat: selected file" });
+            for (let i = 0; i < 200 && !existsSync(join(cwd, ".git", "commit-started")); i++) await Bun.sleep(10);
+            expect(existsSync(join(cwd, ".git", "commit-started"))).toBe(true);
+            expect(rt.idle).toBe(false);
+            await expect(engine.handle(c, "session.send", { id, text: "!touch should-not-run" })).rejects.toMatchObject({ code: "busy" });
+            await expect(engine.handle(c, "session.gitCommit", { id, paths: ["selected.txt"], message: "another commit" })).rejects.toMatchObject({ code: "busy" });
+            expect(existsSync(join(cwd, "should-not-run"))).toBe(false);
+            writeFileSync(join(cwd, ".git", "commit-release"), "");
+            await pending;
+            expect(rt.idle).toBe(true);
+            expect(git("log", "-1", "--format=%s").trim()).toBe("feat: selected file");
+        } finally {
+            writeFileSync(join(cwd, ".git", "commit-release"), "");
+            await pending?.catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    for (const phase of ["pre-commit", "reference-transaction"]) {
+        test(`stopping the engine during ${phase} cleans up the hook and index lock`, async () => {
+            const { engine, c, cwd, id, rt } = await engineWithSession();
+            const git = commitRepo(cwd);
+            const head = git("rev-parse", "HEAD");
+            const index = readFileSync(join(cwd, ".git", "index"));
+            writeFileSync(join(cwd, "selected.txt"), "new\n");
+            const hook = join(cwd, ".git", "hooks", phase);
+            const guard = phase === "reference-transaction" ? '[ "$1" = committed ] || exit 0\n' : "";
+            writeFileSync(hook, '#!/bin/sh\n' + guard + 'trap "" TERM\necho $$ > .git/commit-hook-pid\nwhile [ ! -e .git/commit-release ]; do sleep 0.02; done\n');
+            chmodSync(hook, 0o755);
+            let pending: Promise<unknown> | undefined;
+            try {
+                await rt.ready;
+                pending = engine.handle(c, "session.gitCommit", { id, paths: ["selected.txt"], message: "interrupted commit" }).catch((e) => e);
+                for (let i = 0; i < 200 && !existsSync(join(cwd, ".git", "commit-hook-pid")); i++) await Bun.sleep(10);
+                expect(existsSync(join(cwd, ".git", "commit-hook-pid"))).toBe(true);
+                const pid = Number(readFileSync(join(cwd, ".git", "commit-hook-pid"), "utf8"));
+                const started = Date.now();
+                await engine.stop();
+                expect(Date.now() - started).toBeLessThan(6500);
+                expect(existsSync(join(cwd, ".git", "index.lock"))).toBe(false);
+                const alive = () => {
+                    try {
+                        process.kill(pid, 0);
+                        return true;
+                    } catch (e) {
+                        if ((e as NodeJS.ErrnoException).code === "ESRCH") return false;
+                        throw e;
+                    }
+                };
+                for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(10);
+                expect(alive()).toBe(false);
+                if (phase === "pre-commit") {
+                    expect(await pending).toMatchObject({ code: "git_cancelled" });
+                    expect(git("rev-parse", "HEAD")).toBe(head);
+                    expect(readFileSync(join(cwd, ".git", "index"))).toEqual(index);
+                } else {
+                    expect(await pending).toMatchObject({ subject: "interrupted commit" });
+                    expect(git("show", "HEAD:selected.txt")).toBe("new\n");
+                    expect(git("diff", "--cached")).toBe("");
+                }
+            } finally {
+                writeFileSync(join(cwd, ".git", "commit-release"), "");
+                await pending;
+                await engine.stop();
+            }
+        }, 10_000);
     }
 
     test("a new chat saves its speed; an older chat without one gets the default without being written to", async () => {
@@ -940,6 +1205,33 @@ describe("sessions", () => {
         const p = await c.call("session.gitChanges", { id: plain, scope: "uncommitted" });
         expect([p.repo, p.reason]).toEqual([false, expect.stringMatching(/isn't a Git repository/)]);
         c.close();
+    });
+
+    test("the commit RPC commits selected files and preserves another file's staging", async () => {
+        const cwd = project();
+        const git = commitRepo(cwd);
+        writeFileSync(join(cwd, "selected.txt"), "selected\n");
+        writeFileSync(join(cwd, "with space.txt"), "second selected\n");
+        writeFileSync(join(cwd, "other.txt"), "staged\n");
+        git("add", "--", "other.txt");
+        writeFileSync(join(cwd, "other.txt"), "unstaged\n");
+        const staged = git("diff", "--cached", "--", "other.txt");
+        const unstaged = git("diff", "--", "other.txt");
+        const c = await client();
+        try {
+            const id = await c.open("session.create", { cwd });
+            const message = 'feat: "two files"\n\nKeep the body verbatim.\n';
+            const result = await c.call("session.gitCommit", { id, paths: ["selected.txt", "with space.txt"], message });
+            expect(result).toMatchObject({ branch: "main", subject: 'feat: "two files"' });
+            expect(git("rev-parse", "HEAD").trim().startsWith(result.hash)).toBe(true);
+            expect(git("show", "--format=", "--name-only", "HEAD").trim().split("\n")).toEqual(["selected.txt", "with space.txt"]);
+            expect(git("cat-file", "commit", "HEAD").split("\n\n").slice(1).join("\n\n")).toBe(message);
+            expect(git("diff", "--cached", "--", "other.txt")).toBe(staged);
+            expect(git("diff", "--", "other.txt")).toBe(unstaged);
+            expect((await c.call("session.gitChanges", { id, scope: "uncommitted" })).files.map((f: { path: string }) => f.path)).toEqual(["other.txt"]);
+        } finally {
+            c.close();
+        }
     });
 
     test("! runs a shell command for the user", async () => {

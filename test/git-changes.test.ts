@@ -81,6 +81,24 @@ describe("git changes", () => {
         expect(indexState(dir)).toEqual(before);
     });
 
+    test("a tag with the branch name does not change the commit dialog's branch snapshot", async () => {
+        const { gitCommit } = await import("../src/server/git-commit");
+        const dir = repo({ "selected.txt": "old\n" });
+        git(dir, "tag", "main");
+        git(dir, "config", "user.name", "Harness Test");
+        git(dir, "config", "user.email", "test@example.invalid");
+        git(dir, "config", "commit.gpgsign", "false");
+        git(dir, "config", "core.hooksPath", "/dev/null");
+        write(dir, "selected.txt", "new\n");
+        const view = await gitChanges(dir, { scope: "uncommitted" });
+        expect(view.head?.branch).toBe("main");
+        const result = await gitCommit(dir, ["selected.txt"], "update selected file", {
+            expectedHead: { branch: view.head?.branch, detached: !view.head?.branch },
+        });
+        expect(result.branch).toBe("main");
+        expect(git(dir, "show", "HEAD:selected.txt")).toBe("new\n");
+    });
+
     test("a clean tree has nothing, and an untouched file with a new mtime isn't a change", async () => {
         const dir = repo({ "a.txt": "same\n" });
         const before = statSync(join(dir, "a.txt")).mtimeMs;
