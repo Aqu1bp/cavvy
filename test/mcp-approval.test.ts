@@ -13,6 +13,7 @@ const { mcpFingerprint, describeServer, visible, McpApprovalError, saveApproval 
 const { McpManager } = await import("../src/mcp/manager");
 const { loadSettings } = await import("../src/config/settings");
 const { paths } = await import("../src/config/paths");
+const { trustFolder } = await import("../src/config/trust");
 import type { McpServerConfig } from "../src/config/settings";
 import type { McpManager as McpManagerT } from "../src/mcp/manager";
 
@@ -25,9 +26,11 @@ afterAll(async () => {
     iso.cleanup();
 });
 
-function folder(): string {
+/** A project folder, trusted by the user (approving needs that) unless `userTrusted` is false. */
+function folder(userTrusted = true): string {
     const d = tempDir("harness-mcp-approval-");
     dirs.push(d);
+    if (userTrusted) trustFolder(d);
     return d;
 }
 
@@ -492,5 +495,45 @@ describe("second review", () => {
         const echo = m.tools().find((t) => t.name === "mcp__srv__echo")!;
         const r = await echo.run({ text: secret }, ctx);
         expect(r.content).toBe("echo: [REDACTED env TOKEN]");
+    });
+});
+
+describe("a folder trusted only for having had nothing to protect", () => {
+    test("its servers can't be approved, and the blanket opt-in doesn't cover them, until the user trusts it", async () => {
+        const dir = folder(false);
+        const marker = join(dir, "started");
+        writeMcp(dir, { srv: fixture(marker) });
+        writeFileSync(paths.userSettings(), JSON.stringify({ enableAllProjectMcpServers: true }));
+        try {
+            // trusted: true, as the terminal and the GUI open such a folder (trustForSession).
+            const m = manager(dir, true);
+            await m.load();
+            await m.startAll();
+            expect(m.servers.get("srv")!.status).toBe("needs-approval");
+            await expect(m.approve("srv", m.describe("srv")!.fingerprint!)).rejects.toMatchObject({ code: "needs_trust" });
+            expect(existsSync(paths.localSettings(dir))).toBe(false);
+            await m.reconnect("srv");
+            await Bun.sleep(400);
+            expect(existsSync(marker)).toBe(false);
+
+            trustFolder(dir);
+            await m.sync();
+            // Now the user's blanket approval covers it.
+            expect(m.servers.get("srv")!.approval).toMatchObject({ state: "approved", viaAll: true });
+            expect(await waitFor(() => m.servers.get("srv")!.status === "connected")).toBe(true);
+        } finally {
+            rmSync(paths.userSettings());
+        }
+    });
+});
+
+describe("line breaks in errors", () => {
+    test("an error keeps its line breaks and still shows other invisible characters; commands and args don't", () => {
+        expect(visible("a\r\nb\n\u202Ec", { lineBreaks: true }).text).toBe("a\nb\n⟨U+202E⟩c");
+        const st = { name: "s", source: "settings" as const, status: "failed" as const, tools: [], error: "server is not running\nfixture told to fail\u0007", config: { command: "a\nb", args: ["c\nd"] } };
+        const info = describeServer(st, folder());
+        expect(info.error).toBe("server is not running\nfixture told to fail⟨U+0007⟩");
+        expect(info.command).toBe("a⟨U+000A⟩b");
+        expect(info.args).toEqual(["c⟨U+000A⟩d"]);
     });
 });

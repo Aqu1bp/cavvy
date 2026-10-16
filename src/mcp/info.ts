@@ -58,6 +58,8 @@ export interface McpListInfo {
     omitted: number;
     /** Project servers are read from .mcp.json only in a trusted folder. */
     trusted: boolean;
+    /** Trusted by the user, not only for having had nothing to protect when it was opened: approving needs this. */
+    userTrusted: boolean;
     /** Where approvals are saved: this folder's local settings. */
     savedIn: string;
     /** What approving means for the session's provider. */

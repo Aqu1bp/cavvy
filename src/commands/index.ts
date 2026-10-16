@@ -1243,9 +1243,32 @@ function mcpCardLines(app: App, info: McpServerInfo): string[] {
     return out;
 }
 
+/**
+ * A folder trusted for this session only (it had nothing to protect at
+ * startup) isn't trusted by the user: approving its .mcp.json servers asks
+ * for that first.
+ */
+async function trustForApproval(app: App): Promise<boolean> {
+    if (trustedByUser(app.cwd)) return true;
+    const header = [
+        theme.warning("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened."),
+        theme.muted(app.cwd),
+        "",
+        theme.muted("Its settings, hooks and memory files already apply this session. Trusting it is saved, and lets you approve its .mcp.json servers."),
+    ];
+    if (!(await confirm(app, "Trust this folder first?", header, "Trust this folder", "Cancel"))) return false;
+    try {
+        trustFolder(app.cwd);
+    } catch (e) {
+        app.notice(redact((e as Error).message), "warn");
+    }
+    return trustedByUser(app.cwd);
+}
+
 /** Shown the card, and approved if the user says yes; false if they didn't (or it changed meanwhile). */
 async function approveMcp(app: App, name: string): Promise<boolean> {
     for (;;) {
+        if (!(await trustForApproval(app))) return false;
         const info = app.mcp.describe(name);
         if (!info?.fingerprint) return false;
         if (!(await confirm(app, `Allow ${info.label} to run?`, mcpCardLines(app, info)))) return false;
@@ -1256,8 +1279,8 @@ async function approveMcp(app: App, name: string): Promise<boolean> {
         } catch (e) {
             if (!(e instanceof McpApprovalError)) throw e;
             app.notice(e.message, "warn");
-            // Changed while the card was open: show the new one.
-            if (e.code !== "changed") return false;
+            // Changed while the card was open (or trust was taken back): look again.
+            if (e.code !== "changed" && e.code !== "needs_trust") return false;
         }
     }
 }
@@ -1359,7 +1382,7 @@ async function mcpCommand(app: App, args: string) {
             app.print(["", heading(`${info.label} tools`), ...st.tools.map((t) => `  ${bold(visible(t.name).text)}${t.annotations?.readOnlyHint ? theme.muted(" (read-only)") : ""} ${theme.muted(truncate(visible(maskConfigValues((t.description ?? "").split("\n")[0]!, st.config)).text, termCols() - t.name.length - 20))}`)]);
             return;
         } else if (a === "error") {
-            app.print(["", heading(`${info.label} error`), ...(info.error ?? "").split(/⟨U\+000A⟩/).map((l) => theme.error("  " + l))]);
+            app.print(["", heading(`${info.label} error`), ...(info.error ?? "").split("\n").map((l) => theme.error("  " + l))]);
             return;
         }
     }

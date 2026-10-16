@@ -7,7 +7,7 @@
 import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
 import { AlertTriangle, Plug, ShieldAlert } from "lucide-solid";
 import type { McpListInfo, McpServerInfo } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast } from "../state/app";
+import { app, handleFor, reportError, requestTrust, rpc, toast } from "../state/app";
 import { mcpOpen, setMcpOpen } from "../state/ui";
 import { tildify } from "../lib/format";
 import { statusLabel } from "../lib/mcp";
@@ -126,6 +126,11 @@ export function McpDialog() {
     const reject = (s: McpServerInfo) => act(async (sid) => void setList(await rpc.call("session.mcpReject", { id: sid, name: s.name })));
     const revoke = (s: McpServerInfo) => act(async (sid) => void setList(await rpc.call("session.mcpRevoke", { id: sid, name: s.name })));
     const reconnect = (s: McpServerInfo) => act(async (sid) => void setList(await rpc.call("session.mcpReconnect", { id: sid, name: s.name })));
+    // The existing trust flow; the list is read again after it (the folder's servers may be approved by then).
+    const trust = () => {
+        const cwd = handle()?.view.state.cwd;
+        if (cwd) requestTrust(cwd, () => void load(), "Harness trusted this folder for this session only, because it had nothing to protect when it was opened. Its .mcp.json servers can be approved once you trust it yourself.");
+    };
 
     return (
         <Dialog open={Boolean(mcpOpen())} onClose={close} title="MCP servers" subtitle={handle()?.view.state.projectName} width={640}>
@@ -163,7 +168,7 @@ export function McpDialog() {
                         <div class="muted small">{list()!.omitted} more servers aren't listed.</div>
                     </Show>
                 </Show>
-                <Show when={selected()}>{(s) => <Detail s={s()} list={list()!} busy={busy()} approve={approve} reject={reject} revoke={revoke} reconnect={reconnect} />}</Show>
+                <Show when={selected()}>{(s) => <Detail s={s()} list={list()!} busy={busy()} approve={approve} reject={reject} revoke={revoke} reconnect={reconnect} trust={trust} />}</Show>
             </Show>
             <div class="dialog-actions">
                 <span class="grow" />
@@ -183,6 +188,7 @@ interface DetailProps {
     reject: (s: McpServerInfo) => void;
     revoke: (s: McpServerInfo) => void;
     reconnect: (s: McpServerInfo) => void;
+    trust: () => void;
 }
 
 function Detail(p: DetailProps) {
@@ -216,6 +222,12 @@ function Detail(p: DetailProps) {
                             <span>It's turned off in .mcp.json ("disabled": true), so it can't be approved from here.</span>
                         </div>
                     </Show>
+                    <Show when={p.list.trusted && !p.list.userTrusted}>
+                        <div class="mcp-note warn">
+                            <AlertTriangle size={13} />
+                            <span>You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened. Trust it to approve its servers.</span>
+                        </div>
+                    </Show>
                     <div class="dialog-actions">
                         <Show when={p.s.approval?.state === "needs-approval"}>
                             <button class="btn secondary" disabled={p.busy} onClick={() => p.reject(p.s)}>
@@ -223,9 +235,18 @@ function Detail(p: DetailProps) {
                             </button>
                         </Show>
                         <span class="grow" />
-                        <button class="btn primary" disabled={p.busy || !p.s.fingerprint || p.s.disabledInFile || !p.list.trusted} onClick={() => p.approve(p.s)}>
-                            Approve and connect
-                        </button>
+                        <Show
+                            when={p.list.userTrusted}
+                            fallback={
+                                <button class="btn primary" disabled={p.busy || !p.list.trusted} onClick={() => p.trust()}>
+                                    Trust this folder…
+                                </button>
+                            }
+                        >
+                            <button class="btn primary" disabled={p.busy || !p.s.fingerprint || p.s.disabledInFile || !p.list.trusted} onClick={() => p.approve(p.s)}>
+                                Approve and connect
+                            </button>
+                        </Show>
                     </div>
                 </div>
             </Show>

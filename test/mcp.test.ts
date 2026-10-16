@@ -8,6 +8,7 @@ const { McpClient, McpError, headerValue, MODERN_VERSION } = await import("../sr
 const { McpManager, toolNameFor, serverSegment, formatMcpResult } = await import("../src/mcp/manager");
 const { startHttpMcpServer } = await import("./fixtures/mcp-http-server");
 const { mcpFingerprint } = await import("../src/mcp/approval");
+const { trustFolder } = await import("../src/config/trust");
 import type { McpServerConfig, Settings } from "../src/config/settings";
 import type { McpClient as McpClientT } from "../src/mcp/client";
 import type { HttpFixture } from "./fixtures/mcp-http-server";
@@ -548,6 +549,8 @@ describe("McpManager.load and project .mcp.json approval", () => {
     });
 
     test("enableAllProjectMcpServers approves every project server (rejections still win)", () => {
+        // In a folder the user trusted (not one trusted only for having had nothing to protect).
+        trustFolder(proj);
         const m = new McpManager(proj, () => ({ ...base, approvedMcpjsonServers: {}, enableAllProjectMcpServers: true }), true);
         m.load();
         expect(m.servers.get("approved")!.status).toBe("pending");

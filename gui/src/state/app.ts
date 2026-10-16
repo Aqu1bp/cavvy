@@ -247,9 +247,10 @@ export async function activate(id: string | undefined) {
 }
 
 // Trust prompts are shown by the App component; this hands them over.
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void } | undefined>();
-export function requestTrust(path: string, then: () => void) {
-    setTrustRequest({ path, then });
+/** `why`: what trusting it is for, when it's asked for something other than opening a session. */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; why?: string } | undefined>();
+export function requestTrust(path: string, then: () => void, why?: string) {
+    setTrustRequest({ path, then, why });
 }
 
 // ---------------------------------------------------------------------------

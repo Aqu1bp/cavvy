@@ -17,6 +17,7 @@ import { redact } from "../util/redact";
 import { truncateMiddle } from "../util/files";
 import { createHash } from "crypto";
 import type { McpServerInfo } from "./info";
+import { trustedByUser } from "../config/trust";
 import { approvalOf, describeServer, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
 
 export interface ServerState {
@@ -134,6 +135,7 @@ export class McpManager {
             if (name.length > MAX_NAME) this.skipped++;
             else next.set(name, { name, config, source: "settings", status: config.disabled ? "disabled" : "pending", tools: [] });
         }
+        let userTrusted: boolean | undefined;
         if (this.trusted && existsSync(paths.projectMcp(this.cwd))) {
             const f = readJson<{ mcpServers?: Record<string, McpServerConfig> }>(paths.projectMcp(this.cwd));
             const servers = f?.mcpServers && typeof f.mcpServers === "object" ? f.mcpServers : {};
@@ -144,7 +146,7 @@ export class McpManager {
                     continue;
                 }
                 const config: McpServerConfig = raw && typeof raw === "object" ? raw : {};
-                const approval = approvalOf(name, config, s, this.cwd);
+                const approval = approvalOf(name, config, s, this.cwd, (userTrusted ??= trustedByUser(this.cwd)));
                 const status = approval.state === "rejected" || config.disabled ? "disabled" : approval.state === "approved" ? "pending" : "needs-approval";
                 next.set(name, { name, config, source: "project", status, tools: [], approval });
             }
@@ -331,6 +333,8 @@ export class McpManager {
         const st = this.projectServer(name);
         const a = st.approval!;
         if (a.state === "approved") throw new McpApprovalError(`"${name}" is already approved.`, "not_needed");
+        // Trusted for this session only, for having had nothing to protect when it was opened, isn't the user's say-so.
+        if (!trustedByUser(this.cwd)) throw new McpApprovalError("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened. Trust the folder first, then approve its servers.", "needs_trust");
         if (st.config.disabled === true) throw new McpApprovalError(`"${name}" is turned off in .mcp.json ("disabled": true).`, "blocked");
         if (a.fingerprint !== fingerprint) throw new McpApprovalError(`What "${name}" runs changed since it was shown to you. Look at it again before approving.`, "changed");
         saveApproval(this.cwd, name, a.fingerprint);

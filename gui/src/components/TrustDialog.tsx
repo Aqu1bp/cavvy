@@ -27,7 +27,10 @@ export function TrustDialog() {
                 <ShieldAlert size={28} class="tone-warn" />
                 <h2>Do you trust the files in this folder?</h2>
                 <div class="mono small trust-path">{trustRequest()?.path}</div>
-                <Show when={info()}>
+                <Show when={trustRequest()?.why}>
+                    <p class="muted">{trustRequest()!.why}</p>
+                </Show>
+                <Show when={info()?.needsTrust.length}>
                     <p class="muted">
                         It has configuration ({info()!.needsTrust.join(", ")}). Project settings can define hooks and MCP servers that run commands on your machine, and permission rules that let the agent act without asking.
                     </p>

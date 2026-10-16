@@ -23,7 +23,7 @@ import type { McpApprovalInfo, McpServerInfo, McpServerStatus } from "./info";
 export class McpApprovalError extends Error {
     constructor(
         message: string,
-        readonly code: "untrusted" | "unknown" | "not_project" | "not_needed" | "changed" | "blocked",
+        readonly code: "untrusted" | "needs_trust" | "unknown" | "not_project" | "not_needed" | "changed" | "blocked",
     ) {
         super(message);
     }
@@ -116,14 +116,16 @@ const record = (v: unknown): Record<string, string> => (v && typeof v === "objec
 
 /**
  * A rejection wins; then enableAllProjectMcpServers in the user's settings
- * (which covers later changes too, being a blanket opt-in); then an approval of exactly this
+ * (which covers later changes too, being a blanket opt-in), in a folder the
+ * user trusted themselves (`userTrusted`: not one trusted only for having had
+ * nothing to protect when it was opened); then an approval of exactly this
  * configuration. `s` must be settings as loadSettings merges them, where
  * these keys come from user and local settings only.
  */
-export function approvalOf(name: string, config: McpServerConfig, s: Settings, projectCwd: string): Approval {
+export function approvalOf(name: string, config: McpServerConfig, s: Settings, projectCwd: string, userTrusted: boolean): Approval {
     const fingerprint = mcpFingerprint(config, projectCwd);
     if (list(s.disabledMcpjsonServers).includes(name)) return { state: "rejected", fingerprint };
-    if (Object.hasOwn(s, "enableAllProjectMcpServers") && s.enableAllProjectMcpServers === true) return { state: "approved", viaAll: true, fingerprint };
+    if (userTrusted && Object.hasOwn(s, "enableAllProjectMcpServers") && s.enableAllProjectMcpServers === true) return { state: "approved", viaAll: true, fingerprint };
     const approved = record(s.approvedMcpjsonServers);
     const saved = Object.hasOwn(approved, name) ? approved[name] : undefined;
     if (saved === fingerprint) return { state: "approved", fingerprint };
@@ -178,9 +180,11 @@ export const LIMITS = { label: 100, command: 1000, arg: 400, args: 64, argChars:
 /** Control, format (bidi, zero-width) and non-ASCII space characters: shown, never rendered. */
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}   -   　]/gu;
 
-export function visible(s: string): { text: string; hidden: boolean } {
+/** With `lineBreaks` (for error text), a line break stays one; everything else invisible is still shown. */
+export function visible(s: string, o: { lineBreaks?: boolean } = {}): { text: string; hidden: boolean } {
     let hidden = false;
-    const text = s.replace(INVISIBLE, (c) => {
+    const text = (o.lineBreaks ? s.replace(/\r\n/g, "\n") : s).replace(INVISIBLE, (c) => {
+        if (o.lineBreaks && c === "\n") return c;
         hidden = true;
         return `⟨U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟩`;
     });
@@ -260,11 +264,11 @@ export function describeServer(st: DescribeInput, projectCwd: string): McpServer
     let masked = false;
     let hidden = false;
     const cut: string[] = [];
-    const show = (raw: unknown, max: number, what: string, maskValues = true): string => {
+    const show = (raw: unknown, max: number, what: string, maskValues = true, lineBreaks = false): string => {
         const text = String(raw ?? "");
         const m = maskValues ? maskWith(redact(text), secrets) : redact(text);
         if (m !== text) masked = true;
-        const v = visible(m);
+        const v = visible(m, { lineBreaks });
         hidden ||= v.hidden;
         if (v.text.length <= max) return v.text;
         cut.push(what);
@@ -286,7 +290,7 @@ export function describeServer(st: DescribeInput, projectCwd: string): McpServer
         transport: remote ? "http" : "stdio",
     };
     // Masked where it was made (McpManager.start), so not twice.
-    if (st.error) info.error = show(st.error, LIMITS.error, "the error", false);
+    if (st.error) info.error = show(st.error, LIMITS.error, "the error", false, true);
     if (remote) {
         const url = String(c.url);
         const shown = maskUrl(url);

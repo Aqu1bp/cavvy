@@ -186,7 +186,13 @@ export class Workspace {
 
     /** Trusted later on: project settings, servers and commands take effect. */
     async trust() {
-        if (this.trusted) return;
+        if (this.trusted) {
+            // Trusted for this session only (it had nothing to protect when opened): now the user's word too, which
+            // approving its .mcp.json servers needs, and enableAllProjectMcpServers looks for.
+            await this.mcp.sync();
+            this.engine.workspaceChanged(this);
+            return;
+        }
         this.trusted = true;
         const old = this.mcp;
         this.settings = loadSettings(this.cwd, { trusted: true });
@@ -218,7 +224,8 @@ export class Workspace {
             if (!one) throw new RpcError(`There's no MCP server named "${name}" here.`, "unknown");
             servers = [one];
         } else ({ servers, omitted } = this.mcp.list());
-        return { servers, omitted, trusted: this.trusted, savedIn: paths.localSettings(this.cwd), meaning: approvalMeaning(rt.model?.provider, trustedByUser(this.cwd)) };
+        const userTrusted = trustedByUser(this.cwd);
+        return { servers, omitted, trusted: this.trusted, userTrusted, savedIn: paths.localSettings(this.cwd), meaning: approvalMeaning(rt.model?.provider, userTrusted) };
     }
 
     /** Approving, rejecting and revoking need the folder trusted, whatever the client sends. */

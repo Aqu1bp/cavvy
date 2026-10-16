@@ -2071,7 +2071,11 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         const card = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!;
         await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
         await c.until(id, (v) => srvOf(v)?.status === "failed");
-        expect((await c.call<McpListInfo>("session.mcp", { id })).servers[0]!.error).toContain("fixture told to fail");
+        const failedError = (await c.call<McpListInfo>("session.mcp", { id })).servers[0]!.error!;
+        expect(failedError).toContain("fixture told to fail");
+        // Line breaks stay line breaks in an error (commands and args show them as ⟨U+000A⟩).
+        expect(failedError).toContain("\n");
+        expect(failedError).not.toContain("⟨U+000A⟩");
 
         rmSync(join(dir, "fail"));
         await c.call("session.mcpReconnect", { id, name: "srv" });
@@ -2095,6 +2099,36 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         expect(srvOf(c2.view(id2))?.status).toBe("needs-approval");
         c.close();
         c2.close();
+    }, 20_000);
+
+    test("a folder trusted only for having had nothing to protect: approving asks for the user's trust first", async () => {
+        // Nothing to protect when the session opens, so it's trusted for this run only.
+        const dir = project();
+        const c = await client();
+        const id = await c.open("session.create", { cwd: dir });
+        expect(c.view(id).state.trusted).toBe(true);
+        const marker = join(dir, "started");
+        writeMcp(dir, { srv: fx(marker) });
+
+        const list = await c.call<McpListInfo>("session.mcp", { id });
+        expect(list.trusted).toBe(true);
+        expect(list.userTrusted).toBe(false);
+        const card = list.servers.find((s) => s.name === "srv")!;
+        expect(card.status).toBe("needs-approval");
+        await expect(c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint })).rejects.toMatchObject({ code: "needs_trust" });
+        await c.call("session.mcpReconnect", { id, name: "srv" });
+        await Bun.sleep(400);
+        expect(existsSync(marker)).toBe(false);
+        expect(existsSync(join(dir, ".harness", "settings.local.json"))).toBe(false);
+
+        // The existing trust flow works for a workspace already trusted in that weaker sense.
+        await c.call("projects.trust", { path: dir, trust: true });
+        const after = await c.call<McpListInfo>("session.mcp", { id });
+        expect(after.userTrusted).toBe(true);
+        const r = await c.call<{ approved: boolean }>("session.mcpApprove", { id, name: "srv", fingerprint: after.servers.find((s) => s.name === "srv")!.fingerprint });
+        expect(r.approved).toBe(true);
+        await c.until(id, (v) => srvOf(v)?.status === "connected");
+        c.close();
     }, 20_000);
 
     test("an untrusted folder: nothing from .mcp.json is read, starts, or can be approved", async () => {
