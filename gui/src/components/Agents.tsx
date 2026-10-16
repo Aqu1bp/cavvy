@@ -219,7 +219,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                             </span>
                             <span class="grow" />
                             <span class="agent-bar-model truncate" title={a().model ?? st().model?.ref}>
-                                <Show when={provider()}>{(id) => <ProviderIcon id={id()} size={14} />}</Show> {model()}
+                                <Show when={provider()}>{(id) => <ProviderIcon id={id()} size={14} />}</Show> {model()}<Show when={a().effort}>{(effort) => ` · ${effort()} effort`}</Show>
                             </span>
                             <span class="vs" aria-hidden="true" />
                             <button class="ctl back" onClick={back} title={parent() ? `Back to ${parentName()} (Esc)` : "Back to session (Esc)"}>

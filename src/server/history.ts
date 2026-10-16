@@ -7,6 +7,7 @@
 import { createHash } from "crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
+import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
 import { textOf, toolCallsOf } from "../providers/types";
 import { redactedJson } from "../util/redact";
@@ -309,6 +310,7 @@ export function agentFromCall(b: ToolBlock, turnId: string, ownModel?: string): 
         description: text(i.description) ?? b.title,
         agentType: text(i.subagent_type) ?? text(i.agent) ?? "general-purpose",
         model: model && model !== ownModel ? model : undefined,
+        effort: EFFORT_LEVELS.includes(i.effort as Effort) ? i.effort as Effort : undefined,
         prompt: text(i.prompt) ?? text(i.task),
         status: "running",
         startedAt: b.startedAt ?? Date.now(),
@@ -575,7 +577,7 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     else if (b.status === "ok") b.summary = derivedSummary(b, p.content);
     if (rec?.durationMs !== undefined) b.durationMs = rec.durationMs;
     if (rec?.approval) b.approval = rec.approval;
-    if (rec?.sandboxed) b.sandboxed = true;
+    if (rec?.sandboxed !== undefined) b.sandboxed = rec.sandboxed;
     if (p.images?.length || rec?.images) b.images = p.images?.length ?? rec?.images;
 }
 

@@ -462,6 +462,7 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
                                     <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>
                                     <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`}>
                                         {a.model ? `${shortModelRef(a.model)} · ` : ""}
+                                        {a.effort ? `${a.effort} effort · ` : ""}
                                         {agentLine(a)}
                                     </span>
                                 </span>

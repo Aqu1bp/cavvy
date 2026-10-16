@@ -163,6 +163,7 @@ export interface AgentRun {
     agentType: string;
     /** provider:model, when it isn't the session's own. */
     model?: string;
+    effort?: EffortLevel;
     /** The instructions it was given (cut when long). */
     prompt?: string;
     status: "running" | "waiting" | "done" | "failed" | "stopped";

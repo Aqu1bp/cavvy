@@ -33,10 +33,10 @@ export function compactRequestMessage(extra?: string): UserMessage {
  * the most recent end. No message takes more than a quarter of the space, so
  * one huge batch of tool results can't push out what was said around it.
  */
-export function transcriptText(messages: Message[], maxChars: number): string {
+export function compactTranscriptText(messages: Message[], maxChars: number): string {
     const cap = Math.floor(maxChars / 4);
     const blocks = messages
-        .map((m) => renderForTranscript(m, cap))
+        .map((m) => renderForTranscript(m, cap).text)
         .filter(Boolean)
         .map((b) => truncateMiddle(b, cap));
     if (!blocks.length) return "";
@@ -55,39 +55,86 @@ export function transcriptText(messages: Message[], maxChars: number): string {
     return [first, ...recent.reverse()].join("\n\n");
 }
 
-function renderForTranscript(m: Message, cap: number): string {
-    const out: string[] = [];
-    const files: { at: number; name: string }[] = [];
+/** Handoffs keep the initial task, then whole recent user messages, before other history. */
+export function handoffTranscript(messages: Message[], maxChars: number): { text: string; shortenedChars: number } {
+    // Queued user instructions can share a message with a batch of tool results.
+    const blocks = messages.flatMap((m) => {
+        if (m.role !== "user") return [{ ...renderForTranscript(m, maxChars), user: false }];
+        const results = m.content.filter((p) => p.type === "tool_result");
+        const content = m.content.filter((p) => p.type !== "tool_result");
+        return [{ ...renderForTranscript({ ...m, content: results }, maxChars), user: false }, { ...renderForTranscript({ ...m, content }, maxChars, true), user: true }];
+    });
+    const first = blocks.findIndex((b) => b.user && b.text);
+    const recent = blocks.map((_, i) => i).reverse();
+    const order = [first, ...recent.filter((i) => i !== first && blocks[i]!.user), ...recent.filter((i) => !blocks[i]!.user)];
+    const selected = new Map<number, string>();
+    let remaining = Math.max(0, Math.floor(maxChars));
+    let shortenedChars = blocks.reduce((n, b) => n + b.originalChars, 0);
+    for (const i of order) {
+        const b = blocks[i];
+        if (!b?.text) continue;
+        const available = remaining - (selected.size ? 2 : 0);
+        let text = b.text;
+        let kept = b.keptChars;
+        if (text.length > available) {
+            // Only an oversized user message is cut again; capped assistant/tool blocks can wait.
+            if (!b.user || text.length <= maxChars) continue;
+            // The full omission marker bounds its digit counts, including the omitted lines.
+            kept = available - truncateMiddle(text, 0).length;
+            if (kept <= 0) continue;
+            text = truncateMiddle(text, kept);
+        }
+        selected.set(i, text);
+        remaining -= text.length + (selected.size > 1 ? 2 : 0);
+        shortenedChars -= kept;
+    }
+    return { text: [...selected].sort(([a], [b]) => a - b).map(([, text]) => text).join("\n\n"), shortenedChars };
+}
+
+/**
+ * A message as a transcript entry, and how much of it that keeps (what a
+ * handoff shortened is said). Past `cap`, whole attached files go (the last
+ * first) rather than shortening the message through a frame.
+ */
+function renderForTranscript(m: Message, cap: number, wholeUserText = false): { text: string; originalChars: number; keptChars: number } {
+    const parts: { text: string; original: number; kept: number; file?: string }[] = [];
+    const part = (text: string, max: number, prefix = "", suffix = "") =>
+        parts.push({ text: prefix + truncateMiddle(text, max) + suffix, original: prefix.length + text.length + suffix.length, kept: prefix.length + Math.min(text.length, max) + suffix.length });
     for (const p of m.content) {
-        if (p.type === "text") out.push(truncateMiddle(p.text, 4000));
-        else if (p.type === "tool_call") out.push(`[called ${p.name}: ${truncateMiddle(JSON.stringify(p.input), 600)}]`);
-        else if (p.type === "tool_result") out.push(`[${p.isError ? "error from" : "result of"} ${p.toolName}: ${truncateMiddle(p.content, 1500)}]`);
-        else if (p.type === "image") out.push("[image]");
+        if (p.type === "text") part(p.text, wholeUserText && m.role === "user" ? p.text.length : 4000);
+        else if (p.type === "tool_call") part(JSON.stringify(p.input), 600, `[called ${p.name}: `, "]");
+        else if (p.type === "tool_result") part(p.content, 1500, `[${p.isError ? "error from" : "result of"} ${p.toolName}: `, "]");
+        else if (p.type === "image") part("[image]", 7);
         else if (p.type === "file") {
-            if (p.kind === "pdf") out.push(`[the user attached ${p.name} earlier; its contents aren't included here]`);
+            if (p.kind === "pdf") part(`[the user attached ${p.name} earlier; its contents aren't included here]`, Infinity);
             else {
                 // Framed here too (shortened first), so a file can't pass for the transcript's own lines.
-                files.push({ at: out.length, name: p.name });
-                out.push(framedText({ ...p, text: truncateMiddle(p.text, 4000) }));
+                const text = framedText({ ...p, text: truncateMiddle(p.text, 4000) });
+                parts.push({ text, original: text.length + Math.max(0, p.text.length - 4000), kept: text.length, file: p.name });
             }
         }
     }
-    if (!out.length) return "";
+    if (!parts.length) return { text: "", originalChars: 0, keptChars: 0 };
     const results = m.content.every((p) => p.type === "tool_result");
     const left: string[] = [];
     const render = () => {
-        const parts = out.filter(Boolean);
-        if (left.length) parts.push(`[${left.length === 1 ? "an attached file" : `${left.length} attached files`} left out here, too long to include: ${left.join(", ")}]`);
-        return results ? parts.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${parts.join("\n")}`;
+        const shown = parts.filter((x) => x.text).map((x) => x.text);
+        if (left.length) shown.push(`[${left.length === 1 ? "an attached file" : `${left.length} attached files`} left out here, too long to include: ${left.join(", ")}]`);
+        return results ? shown.join("\n") : `${m.role === "user" ? "User" : "Assistant"}: ${shown.join("\n")}`;
     };
-    // Past the cap, whole files go (the last first) rather than shortening the message through a frame.
-    let s = render();
-    for (let f = files.pop(); f && s.length > cap; f = files.pop()) {
-        out[f.at] = "";
-        left.unshift(f.name);
-        s = render();
+    let text = render();
+    for (let i = parts.length - 1; i >= 0 && text.length > cap; i--) {
+        const x = parts[i]!;
+        if (!x.file || !x.text) continue;
+        left.unshift(x.file);
+        x.text = "";
+        x.kept = 0;
+        text = render();
     }
-    return s;
+    // What the entry adds (its role, line breaks, the note of files left out) counts as kept.
+    const cut = parts.reduce((n, x) => n + x.text.length - x.kept, 0);
+    const keptChars = text.length - cut;
+    return { text, originalChars: keptChars + parts.reduce((n, x) => n + x.original - x.kept, 0), keptChars };
 }
 
 /** The compaction request with a condensed transcript in place of the full history. */

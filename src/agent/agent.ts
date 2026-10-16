@@ -24,7 +24,7 @@ import type {
     UserMessage,
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
-import type { Settings } from "../config/settings";
+import type { Effort, Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
@@ -40,7 +40,7 @@ import { mcpToolMatches } from "../permissions/rules";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
 import { fireHooks, runHooks } from "./hooks";
-import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, transcriptText } from "./compact";
+import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
@@ -59,6 +59,7 @@ import {
     Delegations,
     catalog,
     delegationAvailable,
+    inheritedEffort,
     orchestrationInstructions,
     orchestratorTitle,
     orchestratorTools,
@@ -811,7 +812,7 @@ export class Agent {
             const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
             // ~2.5 characters per token leaves room for code and JSON.
             const maxChars = window ? Math.max(2_000, Math.min(400_000, Math.floor((window - maxOut - 2_000) * 2.5))) : 100_000;
-            const transcript = transcriptText(history, maxChars);
+            const transcript = compactTranscriptText(history, maxChars);
             if (!transcript.trim()) throw new Error("Nothing in the conversation to summarize");
             const req = this.request([transcriptCompactRequest(transcript, opts.instructions)], opts.signal, {
                 system: "You summarize conversations between a user and an AI coding assistant so the work can continue in a fresh context.",
@@ -967,14 +968,14 @@ export class Agent {
     }
 
     /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
-    private async checkModel(ref: string): Promise<string | { ok: true }> {
+    private async checkModel(ref: string): Promise<string | { effortLevels?: Effort[]; effort?: Effort }> {
         const p = parseModelRef(ref);
         if (!p) return `"${ref}" isn't a model reference (provider:model).`;
         const r = await this.o.helpers?.resolveModel?.(ref);
         if (!r) return `${getProvider(p.provider)?.name ?? p.provider} isn't set up in ${APP_TITLE}, so ${ref} can't run here. Call models to see what can.`;
         const listed = this.listings().find((l) => l.provider.id === p.provider)?.models;
         if (listed?.length && !listed.some((m) => m.id === p.id)) return `${p.provider} has no model "${p.id}". Call models (with provider "${p.provider}") to see its models.`;
-        return { ok: true };
+        return { effortLevels: r.model.effortLevels, effort: inheritedEffort(r.model, this.o.settings().effort) };
     }
 
     /**
@@ -1007,12 +1008,13 @@ export class Agent {
         const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
         // Only that its last turn was stopped, which it never heard (Harness stopped or died part way): said plainly.
         if (resume && missed.length && missed.every((m) => m.role === "user" && m.meta?.kind === "interrupt")) return `${reminder(BACKEND_CUT_OFF).text}\n\n${text}`;
-        const transcript = missed.length ? transcriptText(missed, 60_000) : "";
-        if (!transcript) return text;
+        const { text: transcript, shortenedChars } = handoffTranscript(missed, 60_000);
+        if (!transcript && !shortenedChars) return text;
         const intro = resume
             ? "While another model answered in this session, the conversation went on. Here is what happened since your last turn:"
             : "This conversation started before you joined it (with another model, or before the history was compacted or rewound). Here it is so far:";
-        return `<conversation-so-far>\n${intro}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
+        const shortened = shortenedChars ? ` Parts of it were shortened or left out (${shortenedChars} characters); the user's messages are given whole where they fit.` : "";
+        return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
     }
 
     private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
@@ -1712,6 +1714,7 @@ export class Agent {
             // An agent type's model that isn't set up falls back to this one; one asked for by name doesn't.
             else if (req.model) return fail(`Can't run a sub-agent on ${req.model}: ${parseModelRef(req.model) ? "that provider isn't set up here, or the model isn't known" : "it isn't a provider:model reference"}. Call ListModels to see the models that can run.`);
         }
+        const effort = req.effort ?? inheritedEffort(model, this.o.settings().effort);
         const backend = isAgentBackend(client);
         const other = modelRef(model) !== modelRef(this.model);
 
@@ -1747,6 +1750,7 @@ export class Agent {
             client,
             tools,
             isSubagent: true,
+            settings: () => ({ ...this.o.settings(), effort }),
             parentRequests: () => this.requestContext(),
             delegatedTask: req.prompt,
             // At the speed the parent runs at (not fast where the parent's model has none and shows standard),

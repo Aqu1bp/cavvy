@@ -211,6 +211,8 @@ const PLAN_NOTE =
 const MANUAL_NOTE =
     "<system-reminder>\nThe sandbox is read-only, but you can still change files and run other commands: each one goes to the user for approval first and runs once they approve. Make the changes the task needs; don't stop because the sandbox is read-only.\n</system-reminder>";
 
+const LISTENER_NOTE = "Local listeners are blocked by the sandbox, including loopback servers used by tests. If a command needs a local listener, ask to run that command outside the sandbox through Codex's approval flow.";
+
 /** What a turn starts with for the mode: plan mode's rules, or (manual mode, an agent that may change things) that changes are asked about. */
 function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
     if (mode === "plan") return PLAN_NOTE;
@@ -384,6 +386,8 @@ class CodexTurn {
     private limitNoted = false;
     /** Reviewer noes shown from item/autoApprovalReview/completed, by thread and reason, whose guardianWarning hasn't come yet. */
     private noesShown = new Map<string, number>();
+    /** Codex's reviewer's approvals of items not started yet, by item id. */
+    private pendingApprovals = new Map<string, string>();
     /** What the user said when declining something, when it can't go into the running turn: it starts the next one. */
     private followUp?: string;
     private followUps = 0;
@@ -443,7 +447,8 @@ class CodexTurn {
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
             const o = t.orchestrator;
-            const developerInstructions = [t.appendSystemPrompt, o?.instructions].filter(Boolean).join("\n\n") || undefined;
+            const baseInstructions = [t.appendSystemPrompt, policy.sandboxPolicy.networkAccess === false ? LISTENER_NOTE : undefined].filter(Boolean).join("\n\n") || undefined;
+            const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config = o ? orchestratorConfig(o) : undefined;
             if (t.readOnly) {
                 const off = await this.mcpServersOff(t.cwd);
@@ -464,7 +469,7 @@ class CodexTurn {
                     return await this.rpc.request(method, params);
                 } catch (e) {
                     if (this.aborted || !o) throw e;
-                    const r = await this.rpc.request(method, { ...params, config: undefined, developerInstructions: t.appendSystemPrompt || undefined });
+                    const r = await this.rpc.request(method, { ...params, config: undefined, developerInstructions: baseInstructions });
                     this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them.` });
                     return r;
                 }
@@ -627,6 +632,19 @@ class CodexTurn {
                 break;
             }
             case "item/autoApprovalReview/completed": {
+                if (p.review?.status === "approved") {
+                    // Without an item id there is no command block to attach the verdict to.
+                    if (typeof p.targetItemId !== "string" || !p.targetItemId) break;
+                    const reason = redact(`Codex's reviewer (risk: ${String(p.review.riskLevel ?? "unknown")}): ${String(p.review.rationale ?? "No reason supplied.").trim()}`);
+                    const open = this.items.get(p.targetItemId);
+                    if (open) this.emitApproval(p.targetItemId, reason, open.sub);
+                    else {
+                        // Its item has ended (the block takes it now), or hasn't started (it waits for the block).
+                        this.emitApproval(p.targetItemId, reason, this.subs.get(p.threadId));
+                        this.pendingApprovals.set(p.targetItemId, reason);
+                    }
+                    break;
+                }
                 // Codex's reviewer said no: the model hears it from Codex; the user hears it here.
                 const status = p.review?.status;
                 if (status !== "denied" && status !== "timedOut") break;
@@ -642,10 +660,8 @@ class CodexTurn {
             }
             case "guardianWarning": {
                 const msg = String(p.message ?? "").trim();
-                // Its verdict on each action ("Automatic approval review approved (risk: low, …): why"): an
-                // approval is noise, and a no shown from item/autoApprovalReview/completed (same thread, same
-                // reason) isn't shown twice. Anything it can't match, a no that event didn't bring included, shows.
                 if (!msg || APPROVED_VERDICT.test(msg)) break;
+                // A rejection already shown with its action does not need a second notice.
                 const reason = msg.match(REVIEW_VERDICT)?.[1]?.trim();
                 const key = reason ? verdictKey(p.threadId, reason) : undefined;
                 const shown = key ? (this.noesShown.get(key) ?? 0) : 0;
@@ -669,6 +685,12 @@ class CodexTurn {
                 break;
             }
         }
+    }
+
+    private emitApproval(id: string, reason: string, sub?: SubAgent) {
+        const e: AgentEvent = { type: "tool_approved", id, reason, sandboxed: false };
+        if (sub) this.subEmit(sub, e);
+        else this.host.emit(e);
     }
 
     /**
@@ -873,6 +895,9 @@ class CodexTurn {
         const e: AgentEvent = { type: "tool_start", call: { type: "tool_call", id, name: open.name, input: open.input }, title: open.title };
         if (sub) this.subEmit(sub, e);
         else this.host.emit(e);
+        const approval = this.pendingApprovals.get(id);
+        if (approval) this.emitApproval(id, approval, sub);
+        this.pendingApprovals.delete(id);
     }
 
     private onItemCompleted(item: any, turn: string | undefined, sub?: SubAgent) {

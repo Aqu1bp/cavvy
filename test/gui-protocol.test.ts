@@ -710,3 +710,43 @@ test.each(["scalar", "object", "array"])("backend history redacts %s input befor
         unregisterSecret(value);
     }
 });
+
+test("a delegated task's effective effort is set once and survives agent-head replay", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    const runtime = await engine.createSession(tempDir("effort-row-"));
+    await runtime.ready;
+    const session = runtime.session;
+    session.meta.system = "Test";
+    session.setTitle("Delegation effort test");
+    const call = { type: "tool_call" as const, id: "delegated", name: DELEGATE_TOOL, input: { description: "Review", model: "gemini:test" } };
+    const task = { id: "task-1", callId: call.id, model: "gemini:test", effort: "high", status: "done", delivered: true };
+    Object.assign(runtime, {
+        model: { provider: "codex", id: "test" },
+        agent: {
+            delegatedTasks: [task],
+            dispose: async () => {},
+            run: async () => {
+                session.push({ role: "user", content: [{ type: "text", text: "Delegate a review" }] });
+                (runtime as any).onEvent({ type: "tool_start", call, title: "Review" });
+                (runtime as any).onEvent({ type: "subagent", parentId: call.id, label: "Review", event: { type: "request_start" } });
+                runtime.flush();
+                task.effort = "low";
+                (runtime as any).onEvent({ type: "subagent", parentId: call.id, label: "Review", event: { type: "request_start" } });
+                (runtime as any).onEvent({ type: "tool_end", call, result: { content: "Done" }, durationMs: 1 });
+                session.push({ role: "assistant", provider: "codex", content: [{ type: "text", text: "Done" }], stopReason: "end_turn" });
+                (runtime as any).onEvent({ type: "turn_end", reason: "done" });
+                return "done";
+            },
+        },
+    });
+    await runtime.startTurn("Delegate a review");
+    expect(runtime.snapshot().agents[0]!.effort).toBe("high");
+    let next = 0;
+    const ui = new UiLog(session.path, session.meta.id);
+    const turns = replay({ segments: [{ messages: session.messages }], current: session.messages, ui, meta: (c) => ({ title: c.name }), newId: () => `r${++next}` });
+    expect(agentsFromTurns(turns, undefined, ui.agents)[0]!.effort).toBe("high");
+    const records = readFileSync(join(session.path, "..", "ui", `${session.meta.id}.jsonl`), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(records.filter((r) => r.t === "agent" && r.head?.effort)).toHaveLength(1);
+    expect(records.filter((r) => r.t === "step").every((r) => r.block?.effort === undefined)).toBe(true);
+    await engine.stop();
+});
