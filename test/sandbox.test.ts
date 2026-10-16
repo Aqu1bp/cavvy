@@ -26,7 +26,7 @@ describe("sandboxPolicy", () => {
         expect(p.writable).toContain(ws);
         expect(p.writable).toContain(real(tmpdir()));
         expect(p.writable).toContain(process.platform === "darwin" ? "/private/tmp" : "/tmp");
-        expect(p.readOnly).toEqual([join(ws, ".harness"), join(ws, ".mcp.json"), real(HARNESS_HOME)]);
+        expect(p.readOnly).toEqual([join(ws, ".harness"), join(ws, ".mcp.json"), real(HARNESS_HOME), real(process.env.CLAUDE_CONFIG_DIR!), real(process.env.CODEX_HOME!)]);
         for (const c of [".ssh", ".aws", ".gnupg", ".config/gcloud", ".netrc", ".npmrc", ".git-credentials", "Library/Keychains"]) expect(p.unreadable).toContain(join(home, c));
         expect(p.unreadable).toContain(real(HARNESS_HOME));
         // Covered before a repo exists, so `git init` can't plant hooks either.

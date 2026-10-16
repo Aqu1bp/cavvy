@@ -1448,7 +1448,7 @@ export class Engine {
                 const id = str(p.id, "id");
                 account(provider, id);
                 for (const rt of this.runtimes.values()) {
-                    if (rt.busy && rt.session.accountId(provider) === id) throw new RpcError("Stop the account's running turn before removing it", "busy");
+                    if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn before removing it", "busy");
                 }
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);

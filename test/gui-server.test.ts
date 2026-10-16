@@ -1429,7 +1429,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "map the auth module" });
             await c.until(id, done, 30_000);
             const v = c.view(id);
@@ -1462,7 +1462,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "count the files" });
             // Its sub-agent's command asks (Manual mode): as that sub-agent, under the task, and it's the one waiting.
             let during: unknown;
@@ -1521,7 +1521,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "count the files" });
             await c.until(id, (v) => done(v) && v.state.interactions.length > 0, 20_000);
             await Bun.sleep(200);
@@ -1555,7 +1555,7 @@ describe("sub-agents", () => {
             const c = await client();
             await c.call("models.list", { refresh: true });
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "map the auth module" });
             await c.until(id, done, 30_000);
             const v = c.view(id);
@@ -1696,7 +1696,7 @@ describe("sub-agents", () => {
         try {
             const c = await client();
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.setModel", { id, ref: "codex:default", persist: false });
             await c.call("session.send", { id, text: "count the files with a sub-agent" });
             // Its command asks (Manual mode), naming it.
             const ask = await c.answer(id, { kind: "permission", choice: "yes" });
@@ -1735,7 +1735,7 @@ describe("sub-agents", () => {
         try {
             const c = await client();
             const id = await c.open("session.create", { cwd: project() });
-            await c.call("session.setModel", { id, ref: "codex:default" });
+            await c.call("session.setModel", { id, ref: "codex:default", persist: false });
             await c.call("session.send", { id, text: "count the files, then the tests" });
             await c.answer(id, { kind: "permission", choice: "yes" });
             // Its second turn's command: the chip it asks from is working again.
@@ -1777,7 +1777,7 @@ describe("sub-agents", () => {
             const c = await client();
             const dir = project();
             const id = await c.open("session.create", { cwd: dir });
-            await c.call("session.setModel", { id, ref: "claude-code:default" });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "get a note written" });
             // Its Write asks (Manual mode), naming it, and it shows as waiting, after the turn is over.
             await c.until(id, (v) => done(v) && v.state.interactions.length > 0 && v.agents[0]?.status === "waiting", 20_000);
@@ -2792,6 +2792,7 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         expect(failed.error).toContain("[REDACTED env SENTINEL_TOKEN]");
         await c.call("session.mcpReconnect", { id, name: "srv" });
         await c.until(id, (v) => srvOf(v)?.status === "failed");
+        expect(c.view(id).state.model?.provider).toBe("mock");
         await c.call("session.send", { id, text: "explain the layout" });
         await c.until(id, done);
         await c.call("session.mcpRevoke", { id, name: "srv" });

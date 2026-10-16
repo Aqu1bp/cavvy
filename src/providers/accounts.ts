@@ -55,7 +55,7 @@ export function accountEnv(provider: string, id = "default"): Record<string, str
 }
 /** Read afresh: accounts added during a session must immediately be protected. */
 export function accountFolders(): string[] {
-    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).map((a) => a.folder))])];
+    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => listAccounts(p).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
 }
 function projectFolder(folder: string, roots: string[]): boolean {
     if (roots.some((root) => inside(folder, accountRealPath(resolve(root))))) return true;

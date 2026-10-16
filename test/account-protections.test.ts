@@ -10,7 +10,7 @@ const outside = realpathSync(tempDir());
 const { saveAgentConfig } = await import("../src/providers/registry");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
-const { sandboxPolicy, sandboxArgv, sandboxKind } = await import("../src/permissions/sandbox");
+const { sandboxPolicy, sandboxArgv, sandboxKind, seatbeltProfile } = await import("../src/permissions/sandbox");
 const { accountTarget } = await import("../src/permissions/bash-safety");
 const checker = new PermissionChecker(() => ({}), workspace);
 const tool = (name: string) => BUILTIN_TOOLS.find((t) => t.name === name)!;
@@ -84,4 +84,58 @@ describe("CLI account folder protections", () => {
             }
         }
     });
+});
+
+
+test("effective Default homes stay protected with named accounts selected, including symlinked missing homes", async () => {
+    const { accountFolders } = await import("../src/providers/accounts");
+    const { claudePermissions } = await import("../src/backends/claude-code");
+    const { claudeAccountSandbox, accountPermissionConfig } = await import("../src/backends/account-permissions");
+    const previous = [process.env.CLAUDE_CONFIG_DIR, process.env.CODEX_HOME];
+    const link = join(workspace, "default-homes");
+    symlinkSync(outside, link);
+    process.env.CLAUDE_CONFIG_DIR = join(link, "claude-default");
+    process.env.CODEX_HOME = join(link, "codex-default");
+    saveAgentConfig("codex", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }], defaultAccount: "personal" });
+    try {
+        for (const name of ["claude-default", "codex-default"]) {
+            const canonical = join(outside, name);
+            expect(accountFolders()).toContain(canonical);
+            for (const root of [canonical, join(link, name)]) {
+                expect(check("Read", { file_path: join(root, "auth.json") }).behavior).toBe("deny");
+                expect(check("Write", { file_path: join(root, "auth.json"), content: "x" }).behavior).toBe("deny");
+                expect(check("Bash", { command: `cat '${root}/auth.json'` }).behavior).toBe("deny");
+            }
+            const policy = sandboxPolicy([workspace], { harnessHome: isolated.home });
+            expect(policy.unreadable).toContain(canonical);
+            expect(policy.readOnly).toContain(canonical);
+            expect(claudePermissions({ deny: [], ask: [], root: workspace }).deny).toContain(`Read(/${canonical}/**)`);
+            expect(claudeAccountSandbox()!.filesystem.denyRead).toContain(canonical);
+            expect(claudeAccountSandbox()!.filesystem.denyWrite).toContain(canonical);
+            for (const profile of Object.values(accountPermissionConfig([])!)) expect((profile as any).filesystem[canonical]).toBe("deny");
+        }
+    } finally {
+        [process.env.CLAUDE_CONFIG_DIR, process.env.CODEX_HOME] = previous;
+        saveAgentConfig("codex", { defaultAccount: "default" });
+    }
+});
+
+test("account ancestors inside writable roots cannot be renamed, while siblings stay writable", () => {
+    const ancestor = join(outside, "container", "nested");
+    const nested = join(ancestor, "account");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, "auth.json"), "fake-nested-marker");
+    saveAgentConfig("claude-code", { accounts: [{ id: "nested", name: "Nested", folder: nested, managed: false }] });
+    const policy = sandboxPolicy([workspace, outside], { harnessHome: isolated.home });
+    const profile = seatbeltProfile(policy);
+    for (const path of [outside, join(outside, "container"), ancestor, nested, realpathSync(isolated.home)]) {
+        expect(profile).toContain(`(literal "${path}")`);
+    }
+    expect(profile).not.toContain(`(subpath "${ancestor}")`);
+    if (sandboxKind() === "seatbelt") {
+        const moved = join(outside, "moved");
+        const result = Bun.spawnSync(sandboxArgv({ kind: "seatbelt", policy }, "/bin/sh", `mv '${ancestor}' '${moved}' && cat '${moved}/account/auth.json'`));
+        expect(result.exitCode).not.toBe(0);
+        expect(Bun.spawnSync(sandboxArgv({ kind: "seatbelt", policy }, "/bin/sh", `touch '${ancestor}/sibling'`)).exitCode).toBe(0);
+    }
 });

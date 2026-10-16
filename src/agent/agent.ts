@@ -963,6 +963,11 @@ export class Agent {
         return this.delegations?.list() ?? [];
     }
 
+    /** Children keep the accounts they started with even when the parent switches. */
+    childUsesAccount(provider: string, id: string): boolean {
+        return [...this.children].some((child) => child.session.accountId(provider) === id || child.childUsesAccount(provider, id));
+    }
+
     /** Stop one delegated task, or all of them; how many were running. */
     stopDelegated(id?: string): number {
         if (!this.delegations) return 0;
