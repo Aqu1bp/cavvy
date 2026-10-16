@@ -12,7 +12,8 @@ import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
 import { ago, duration, monogram, since } from "../lib/format";
 import { now } from "../lib/clock";
 import { isTauri, mod, os } from "../lib/platform";
-import { Popover } from "./ui/Popover";
+import { Menu } from "./ui/Menu";
+import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
 /** Cards shown before "Show more". */
@@ -72,38 +73,63 @@ function useRename(s: () => SessionSummary) {
     return { editing, setEditing, input };
 }
 
-function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; onRename: () => void }) {
+function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; point?: { x: number; y: number }; onRename: () => void }) {
     const close = () => p.setOpen(false);
     return (
-        <Popover open={p.open} anchor={p.anchor} onClose={close} align="end" width={220}>
-            <button class="menu-item compact" onClick={() => (close(), p.onRename())}>
+        <Menu label="Session actions" returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} onClose={close} align="end" width={220}>
+            <button role="menuitem" class="menu-item compact" onClick={() => (close(), p.onRename())}>
                 <Pencil size={14} /> Rename
             </button>
-            <button class="menu-item compact" onClick={() => (close(), void pin(p.s.id, !p.s.pinned))}>
+            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void pin(p.s.id, !p.s.pinned))}>
                 {p.s.pinned ? <PinOff size={14} /> : <Pin size={14} />} {p.s.pinned ? "Unpin" : "Pin"}
             </button>
             <Show when={!p.s.archived}>
-                <button class="menu-item compact" onClick={() => (close(), void settle(p.s.id, !p.s.settled))}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (close(), void settle(p.s.id, !p.s.settled))}>
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
-            <button class="menu-item compact" onClick={() => (close(), newSession(p.s.cwd))}>
+            <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(p.s.cwd))}>
                 <Plus size={14} /> <span class="truncate">New session in {p.s.projectName}</span>
             </button>
             <div class="menu-sep" />
-            <button class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
+            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
                 {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
             </button>
-            <button class="menu-item compact danger" onClick={() => (close(), setDeleteRequest({ id: p.s.id, title: p.s.title, projectName: p.s.projectName }))}>
+            <button role="menuitem" class="menu-item compact danger" onClick={() => (close(), setDeleteRequest({ id: p.s.id, title: p.s.title, projectName: p.s.projectName }))}>
                 <Trash2 size={14} /> Delete…
             </button>
-        </Popover>
+        </Menu>
     );
+}
+
+/** Both row layouts use the same pointer/keyboard invocation and focus target. */
+function useRowMenu(more: () => HTMLElement | undefined) {
+    const [menu, setMenu] = createSignal(false);
+    const [point, setPoint] = createSignal<{ x: number; y: number }>();
+    let returnTo: HTMLElement | undefined;
+    const contextMenu = (e: MouseEvent) => {
+        if ((e.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
+        e.preventDefault();
+        returnTo = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(".card-hit, .slim-hit") ?? more();
+        setPoint(e.button === 2 ? { x: e.clientX, y: e.clientY } : undefined);
+        setMenu(true);
+    };
+    const contextKey = (e: KeyboardEvent) => rowMenuKey(e, () => {
+        returnTo = e.target as HTMLElement;
+        setPoint(undefined);
+        setMenu(true);
+    });
+    const toggleMenu = () => {
+        returnTo = more();
+        setPoint(undefined);
+        setMenu(!menu());
+    };
+    return { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
 }
 
 function SessionCard(p: { s: SessionSummary }) {
     const r = useRename(() => p.s);
-    const [menu, setMenu] = createSignal(false);
+    const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     let el: HTMLDivElement | undefined;
     let more: HTMLButtonElement | undefined;
     const current = () => app.activeId === p.s.id;
@@ -116,7 +142,7 @@ function SessionCard(p: { s: SessionSummary }) {
         <div
             ref={el}
             class={`card ${current() ? "cur" : ""} ${recede() ? "rec" : ""} ${menu() ? "menu-open" : ""}`}
-            onContextMenu={(e) => (e.preventDefault(), setMenu(true))}
+            onContextMenu={contextMenu} onKeyDown={contextKey}
         >
             <button class="card-hit" onClick={() => void activate(p.s.id)} onDblClick={() => r.setEditing(true)} aria-current={current() ? "page" : undefined} title={`${p.s.title}\n${p.s.cwd}`}>
                 <span class="l1">
@@ -145,24 +171,24 @@ function SessionCard(p: { s: SessionSummary }) {
                     </Show>
                 </span>
             </button>
-            <button ref={more} class="hb sm card-more" title="More" aria-label={`More for ${p.s.title}`} onClick={() => setMenu(!menu())}>
+            <button ref={more} class="hb sm card-more" title="More" aria-label={`More for ${p.s.title}`} aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
                 <MoreHorizontal size={14} />
             </button>
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>
             </Show>
-            <RowMenu s={p.s} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
 
 function SessionRow(p: { s: SessionSummary }) {
     const r = useRename(() => p.s);
-    const [menu, setMenu] = createSignal(false);
+    const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     let more: HTMLButtonElement | undefined;
     const current = () => app.activeId === p.s.id;
     return (
-        <div class={`slim ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={(e) => (e.preventDefault(), setMenu(true))}>
+        <div class={`slim ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <Show
                 when={!r.editing()}
                 fallback={
@@ -193,13 +219,13 @@ function SessionRow(p: { s: SessionSummary }) {
                                 <PinOff size={13} />
                             </Show>
                         </button>
-                        <button ref={more} class="hb sm" title="More" aria-label="More" onClick={() => setMenu(!menu())}>
+                        <button ref={more} class="hb sm" title="More" aria-label="More" aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
                             <MoreHorizontal size={14} />
                         </button>
                     </span>
                 </span>
             </Show>
-            <RowMenu s={p.s} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
@@ -273,7 +299,7 @@ export function Sidebar() {
                     <span>Search</span>
                     <span class="side-kbd">{mod}K</span>
                 </button>
-                <button ref={viewBtn} class={`hb ${viewOpen() ? "on" : ""}`} title="View options" aria-label="View options" onClick={() => setViewOpen(!viewOpen())}>
+                <button ref={viewBtn} class={`hb ${viewOpen() ? "on" : ""}`} title="View options" aria-label="View options" aria-haspopup="menu" aria-expanded={viewOpen()} onClick={() => setViewOpen(!viewOpen())}>
                     <ListFilter size={16} />
                 </button>
                 <button
@@ -290,25 +316,25 @@ export function Sidebar() {
                 <button class="hb" title={`New session (${mod}+N)`} aria-label="New session" onClick={() => newSession(app.homeCwd)}>
                     <SquarePen size={16} />
                 </button>
-                <Popover open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
+                <Menu label="View options" open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
                     <div class="menu-head">Group</div>
-                    <button class="menu-item compact" onClick={() => setPrefs("groupBy", "date")}>
+                    <button role="menuitemradio" aria-checked={prefs.groupBy === "date"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "date"), setViewOpen(false))}>
                         <span class="menu-label">Most recent first</span>
                         <Show when={prefs.groupBy === "date"}>
                             <Check size={14} class="menu-check" />
                         </Show>
                     </button>
-                    <button class="menu-item compact" onClick={() => setPrefs("groupBy", "project")}>
+                    <button role="menuitemradio" aria-checked={prefs.groupBy === "project"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "project"), setViewOpen(false))}>
                         <span class="menu-label">By project</span>
                         <Show when={prefs.groupBy === "project"}>
                             <Check size={14} class="menu-check" />
                         </Show>
                     </button>
                     <div class="menu-sep" />
-                    <button class="menu-item compact" onClick={() => (setShowArchived(!showArchived()), setViewOpen(false))}>
+                    <button role="menuitem" class="menu-item compact" onClick={() => (setShowArchived(!showArchived()), setViewOpen(false))}>
                         <Archive size={14} /> {showArchived() ? "Show active sessions" : `Show archived (${app.archived.length})`}
                     </button>
-                </Popover>
+                </Menu>
             </div>
 
             <nav class="side-list" aria-label="Session list">

@@ -14,7 +14,7 @@ import { useChanges, useGitChanges } from "../state/changes";
 import { canReveal, copyText, revealPath } from "../lib/platform";
 import { duration, plural, tildify } from "../lib/format";
 import { now } from "../lib/clock";
-import { Popover } from "./ui/Popover";
+import { Menu } from "./ui/Menu";
 
 const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
 const ran = (a: AgentRun) => duration((a.endedAt ?? (live(a) ? now() : a.startedAt)) - a.startedAt);
@@ -43,22 +43,22 @@ function Workspace(p: { handle: SessionHandle }) {
                     <ChevronDown size={16} />
                 </span>
             </button>
-            <Popover open={menu()} anchor={() => row} onClose={close} width={232}>
+            <Menu label="Workspace actions" open={menu()} anchor={() => row} onClose={close} width={232}>
                 <Show when={canReveal}>
-                    <button class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
+                    <button role="menuitem" class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
                         <FolderOpen size={14} /> Reveal in Finder
                     </button>
                 </Show>
-                <button class="menu-item compact" onClick={async () => (close(), (await copyText(st().cwd)) && toast(`Copied ${tildify(st().cwd, app.hello?.homeDir)}`, "success"))}>
+                <button role="menuitem" class="menu-item compact" onClick={async () => (close(), (await copyText(st().cwd)) && toast(`Copied ${tildify(st().cwd, app.hello?.homeDir)}`, "success"))}>
                     <Copy size={14} /> Copy folder path
                 </button>
-                <button class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
                     <SquarePen size={14} /> New session in {st().projectName}
                 </button>
-                <button class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
                     <Plug size={14} /> MCP servers
                 </button>
-            </Popover>
+            </Menu>
             <Show when={st().branch}>
                 <span class="prow lock" title="Git branch">
                     <GitBranch size={16} />

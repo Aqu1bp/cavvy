@@ -11,7 +11,7 @@ import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest } from "
 import { copyText, isTauri, mod, os, terminalShortcut } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { Monogram } from "./Sidebar";
-import { Popover } from "./ui/Popover";
+import { Menu } from "./ui/Menu";
 import { ProjectScripts } from "./ProjectScripts";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
@@ -126,7 +126,7 @@ export function Header(p: { handle?: SessionHandle }) {
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
-                        <Popover open={menuOpen()} anchor={() => titleBtn} onClose={close} width={244}>
+                        <Menu label="Session actions" open={menuOpen()} anchor={() => titleBtn} onClose={close} width={244}>
                             <For
                                 each={[
                                     { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },
@@ -140,32 +140,32 @@ export function Header(p: { handle?: SessionHandle }) {
                                 ] as MenuEntry[]}
                             >
                                 {(it) => (
-                                    <button class="menu-item compact" disabled={it.disabled} onClick={it.run}>
+                                    <button role="menuitem" class="menu-item compact" disabled={it.disabled} onClick={it.run}>
                                         <it.icon size={14} /> {it.label}
                                     </button>
                                 )}
                             </For>
                             <div class="menu-sep" />
-                            <button class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
                                 <Share size={14} /> Copy as Markdown
                             </button>
-                            <button class="menu-item compact" onClick={() => void copy(`harness --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(`harness --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
                                 <SquareTerminal size={14} /> Copy resume command
                             </button>
-                            <button class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
+                            <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
                                 <FolderOpen size={14} /> Copy folder path
                             </button>
-                            <button class="menu-item compact" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
+                            <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
                                 <SquareArrowOutUpRight size={14} /> Open project in {editorName() ?? "editor"}
                             </button>
                             <div class="menu-sep" />
-                            <button class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
                                 <Archive size={14} /> Archive
                             </button>
-                            <button class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), askDelete(p.handle))}>
+                            <button role="menuitem" class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), askDelete(p.handle))}>
                                 <Trash2 size={14} /> Delete…
                             </button>
-                        </Popover>
+                        </Menu>
                     </>
                 )}
             </Show>

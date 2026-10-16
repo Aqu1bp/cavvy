@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Brain, ChevronDown, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import type { EffortLevel, ModelSummary } from "@shared/protocol";
 import { app, refreshModels } from "../state/app";
@@ -6,7 +6,8 @@ import { setEffort, setModel, setFastMode } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setSettingsTab } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
-import { Popover } from "./ui/Popover";
+import { menuIndex, menuTypeahead } from "../lib/menu";
+import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
@@ -53,6 +54,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     let anchor: HTMLButtonElement | undefined;
     let input: HTMLInputElement | undefined;
     let list: HTMLDivElement | undefined;
+    const listId = createUniqueId();
+    const typeahead = menuTypeahead();
     const [q, setQ] = createSignal("");
     const [sel, setSel] = createSignal(0);
     const [rail, setRail] = createSignal<string>(FAVORITES);
@@ -93,7 +96,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 setSel(Math.max(0, rows().findIndex((r) => r.m.ref === currentRef())));
                 if (!app.models.length) void refreshModels();
                 requestAnimationFrame(() => {
-                    input?.focus();
+                    if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
                 });
             },
@@ -112,16 +115,37 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             if (r) choose(r.m);
             return;
         }
-        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const target = e.target as HTMLElement;
+        const tab = target.closest<HTMLElement>('[role="tab"]');
+        if (tab && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
             e.preventDefault();
-            const n = rows().length;
-            if (!n) return;
-            setSel((s) => (s + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
-            requestAnimationFrame(() => list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" }));
-        } else if (e.key === "Enter" && e.target === input) {
+            const tabs = [...tab.parentElement!.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+            const key = e.key === "ArrowLeft" ? "ArrowUp" : e.key === "ArrowRight" ? "ArrowDown" : e.key;
+            const next = tabs[menuIndex(tabs.length, tabs.indexOf(tab as HTMLButtonElement), key)];
+            next?.focus();
+            next?.click();
+            return;
+        }
+        if (target !== input && !target.closest(".mp-list")) return;
+        const picks = () => [...(list?.querySelectorAll<HTMLButtonElement>(".mr-pick") ?? [])];
+        if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+            e.preventDefault();
+            const next = menuIndex(rows().length, sel(), e.key);
+            if (next < 0) return;
+            setSel(next);
+            if (target !== input) picks()[next]?.focus();
+            list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter" && target === input) {
             e.preventDefault();
             const r = rows()[sel()];
             if (r) choose(r.m);
+        } else if (target !== input && e.key.length === 1 && e.key !== " " && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            e.preventDefault();
+            const next = typeahead(rows().map((r) => r.m.name), sel(), e.key);
+            if (next >= 0) {
+                setSel(next);
+                picks()[next]?.focus();
+            }
         }
     };
     const empty = () => {
@@ -140,8 +164,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
                 <ChevronDown size={14} class="chv" />
             </button>
-            <Popover open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
-                <div class="mp-wrap" role="dialog" aria-label="Choose a model" onKeyDown={onKey}>
+            <Menu label="Choose a model" kind="dialog" initialFocus={() => input} onKeyDown={onKey} open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
+                <div class="mp-wrap">
                     <div class="mp-rail" role="tablist" aria-label="Providers">
                         <button class={`rb ${rail() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={rail() === FAVORITES} title="Favorites" aria-label="Favorites" onClick={() => (setQ(""), setRail(FAVORITES))}>
                             <Star size={18} />
@@ -163,7 +187,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     <div class="mp-main">
                         <div class="mp-search">
                             <Search size={14} />
-                            <input ref={input} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
+                            <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
                             <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModels(true)} disabled={app.modelsLoading}>
                                 <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
                                     <Spinner size={13} />
@@ -183,12 +207,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                 </span>
                             </Show>
                         </div>
-                        <div class="mp-list" ref={list} role="listbox" aria-label={label()}>
+                        <div class="mp-list" ref={list} id={listId} role="listbox" aria-label={label()}>
                             <Show when={rows().length} fallback={<div class="mp-empty">{empty()}</div>}>
                                 <For each={rows()}>
                                     {(r, i) => (
                                         <div class={`mr ${i() === sel() ? "sel" : ""} ${r.m.ref === currentRef() ? "on" : ""}`} onMouseMove={() => setSel(i())}>
-                                            <button class="mr-pick" role="option" aria-selected={r.m.ref === currentRef()} onClick={() => choose(r.m)}>
+                                            <button class="mr-pick" id={`${listId}-${i()}`} onFocus={() => setSel(i())} role="option" aria-selected={r.m.ref === currentRef()} onClick={() => choose(r.m)}>
                                                 <span class="mr-text">
                                                     <span class="mr-name truncate">{r.m.name}</span>
                                                     <Show when={r.sub}>
@@ -199,7 +223,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                                     <kbd>{`${mod === "⌘" ? "⌘" : "Ctrl+"}${i() + 1}`}</kbd>
                                                 </Show>
                                             </button>
-                                            <button class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${r.m.name} from Favorites` : `Add ${r.m.name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
+                                            <button onFocus={() => setSel(i())} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${r.m.name} from Favorites` : `Add ${r.m.name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
                                                 <Star size={14} />
                                             </button>
                                         </div>
@@ -218,7 +242,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                         </button>
                     </div>
                 </div>
-            </Popover>
+            </Menu>
         </>
     );
 }
@@ -237,8 +261,8 @@ export function EffortMenu(p: ComposerMenu & { current?: ModelSummary; currentRe
                 <span>{EFFORTS.find((e) => e.id === p.effort)?.label ?? "Default"}</span>
                 <ChevronDown size={14} class="chv" />
             </button>
-            <Popover open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={272}>
-                <div class="effort-menu" role="menu" aria-label="Reasoning effort">
+            <Menu label="Reasoning effort" open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={272}>
+                <div class="effort-menu">
                     <div class="menu-head">Reasoning effort</div>
                     <For each={levels()}>
                         {(e) => (
@@ -266,7 +290,7 @@ export function EffortMenu(p: ComposerMenu & { current?: ModelSummary; currentRe
                         )}
                     </For>
                 </div>
-            </Popover>
+            </Menu>
         </Show>
     );
 }

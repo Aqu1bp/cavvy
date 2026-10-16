@@ -11,7 +11,7 @@ import { ago, basename, tildify } from "../lib/format";
 import { now } from "../lib/clock";
 import { CliSessions } from "./CliSessions";
 import { Composer } from "./Composer";
-import { Popover } from "./ui/Popover";
+import { Menu } from "./ui/Menu";
 import { WorktreePicker } from "./WorktreePicker";
 
 export function Home() {
@@ -53,11 +53,12 @@ export function Home() {
                         What should we build in {projectButton()}?
                     </Show>
                 </h1>
-                <Popover open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
+                <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
                     <div class="menu-head">Recent projects</div>
                     <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
                         {(pr) => (
                             <button
+                                role="menuitem"
                                 class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
                                 onClick={() => {
                                     setPickerOpen(false);
@@ -77,11 +78,11 @@ export function Home() {
                         )}
                     </For>
                     <div class="menu-sep" />
-                    <button class="menu-item" onClick={() => void pick()}>
+                    <button role="menuitem" class="menu-item" onClick={() => void pick()}>
                         <FolderOpen size={15} />
                         <span class="menu-label">Open folder…</span>
                     </button>
-                </Popover>
+                </Menu>
 
                 <Show when={info()?.needsTrust.length}>
                     <div class="trust-callout">
@@ -138,7 +139,7 @@ export function Home() {
                     strip={
                         app.homeCwd ? (
                             <>
-                                <button class="strip-ctl" title={`${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder`} aria-haspopup="menu" onClick={togglePicker}>
+                                <button class="strip-ctl" title={`${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder`} aria-haspopup="menu" aria-expanded={pickerOpen()} onClick={togglePicker}>
                                     <Folder size={13} />
                                     <span class="truncate">{tildify(app.homeCwd, app.hello?.homeDir)}</span>
                                     <ChevronDown size={12} class="chv" />

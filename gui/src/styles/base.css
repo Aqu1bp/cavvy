@@ -731,6 +731,7 @@ input[type="range"] {
 }
 
 .menu-item:hover:not(:disabled),
+.menu-item:focus-visible:not(:disabled),
 .menu-item.sel {
     background: var(--bg-hover);
 }
