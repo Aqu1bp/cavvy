@@ -220,10 +220,23 @@ export class McpManager {
 
     /** Start permission, independent of connection status except "disable for this session"; copy the raw approved config without resolving or masking it. */
     approvedServers(): ApprovedMcpServers {
+        // Approvals as saved now: another Harness process may have revoked one (or blanket approval) since load().
+        let still: (st: ServerState) => boolean;
+        try {
+            const settings = this.reloadSettings ? loadSettings(this.cwd, { trusted: this.trusted }) : this.settings();
+            const userTrusted = trustedByUser(this.cwd);
+            still = (st) => {
+                if (st.source !== "project") return true;
+                const now = approvalOf(st.name, st.config, settings, this.cwd, userTrusted);
+                return now.state === "approved" && now.fingerprint === st.approval?.fingerprint;
+            };
+        } catch {
+            still = (st) => st.source !== "project";
+        }
         return {
             cwd: this.cwd,
             servers: Object.fromEntries([...this.servers.values()]
-                .filter((s) => mayStart(s) && s.status !== "disabled")
+                .filter((s) => mayStart(s) && s.status !== "disabled" && still(s))
                 .map((s) => [s.name, { config: structuredClone(s.config), source: s.source, ...(s.approval ? { fingerprint: s.approval.fingerprint } : {}) }])),
         };
     }

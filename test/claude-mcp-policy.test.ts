@@ -8,7 +8,7 @@ import type { McpServerConfig } from "../src/config/settings";
 const { cleanup } = isolate();
 const { claudeMcpPolicy } = await import("../src/backends/claude-mcp-policy");
 const { McpManager } = await import("../src/mcp/manager");
-const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
+const { mcpFingerprint, removeApproval, saveApproval, saveRejection } = await import("../src/mcp/approval");
 const { loadSettings } = await import("../src/config/settings");
 const dirs: string[] = [];
 afterAll(() => {
@@ -132,9 +132,31 @@ describe("Claude native project MCP policy", () => {
         // Point it at the project folder itself, where Claude Code (which ignores cwd) would run it.
         rmSync(join(cwd, "run"));
         symlinkSync(cwd, join(cwd, "run"));
-        const policy = claudeMcpPolicy(cwd, manager.approvedServers());
+        // The manager no longer offers it, and the policy rechecks a snapshot taken before the change too.
+        expect(manager.approvedServers().servers.linked).toBeUndefined();
+        expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.enabledMcpjsonServers).toEqual([]);
+        const before = snapshot({ linked: cfg });
+        before.servers.linked!.fingerprint = "v1:approved-before-the-change";
+        const policy = claudeMcpPolicy(cwd, before);
         expect(policy.settings?.enabledMcpjsonServers).toEqual([]);
         expect(policy.warning).toContain("no longer resolve to what was approved");
+    });
+
+    for (const [label, revoke] of [
+        ["rejected", (name: string) => saveRejection(cwd, name)],
+        ["withdrawn", (name: string) => removeApproval(cwd, name)],
+    ] as const) test(`an approval ${label} by another process since load() isn't passed on`, () => {
+        const cfg = config();
+        write({ approved: cfg });
+        saveApproval(cwd, "approved", mcpFingerprint(cfg, cwd));
+        // The engine's getter returns settings cached at load; reloadSettings marks a real runtime.
+        const cached = loadSettings(cwd, { trusted: true });
+        const manager = new McpManager(cwd, () => cached, true, () => {});
+        manager.load();
+        expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.enabledMcpjsonServers).toEqual(["approved"]);
+        revoke("approved");
+        expect(manager.approvedServers().servers.approved).toBeUndefined();
+        expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.enabledMcpjsonServers).toEqual([]);
     });
 
     test("a URL-only definition without a type isn't passed on: Claude Code reads it as stdio", () => {
