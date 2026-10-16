@@ -4,17 +4,19 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles/terminal.css";
-import { app, refreshProviders, reportError, rpc, toast } from "../state/app";
+import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, type SetupRun } from "../state/ui";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, terminalInputChunks } from "../lib/terminal";
 import { copyText, isMod, isTerminalToggle, terminalShortcut } from "../lib/platform";
 
-/** `script`: the project script the tab was opened to run (once: restarting it gives a plain shell). */
-interface Tab { id: string; cwd: string; number: number; login?: { provider: string; accountId: string; name: string }; script?: { id: string; name: string } }
+/** `script`: the project script the tab was opened to run (once: restarting it gives a plain shell); `setup` when it's a new worktree's setup run. */
+interface Tab { id: string; cwd: string; number: number; login?: { provider: string; accountId: string; name: string }; script?: { id: string; name: string; setup?: { label: string; command: string } } }
 const MAX_TABS = 12;
+/** Setup tickets by tab, taken by the tab's first shell: kept off the tab so nothing that keeps tabs keeps one. */
+const setupTickets = new Map<string, string>();
 
 /** Mounted while hidden: each tab keeps its emulator and shell across chat navigation. */
 export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
@@ -32,10 +34,13 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setSelected(tab.id);
     };
     // A click on a project script: its own tab, shown, with the command typed into its shell.
-    const runScript = (cwd: string, script: { id: string; name: string }) => {
-        if (app.conn !== "open") return toast(`Not connected to the harness server, so “${script.name}” can't start.`, "error");
-        if (full()) return toast(`${MAX_TABS} terminals are open in this window, some maybe in other projects. Close one to run “${script.name}”.`, "error");
-        const tab = { id: crypto.randomUUID(), cwd, number: next++, script: { id: script.id, name: script.name } };
+    const runScript = (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => {
+        // A new worktree's setup run that can't start: the worktree is there, and the script can be run by hand.
+        const cant = (why: string, plain: string) => (setup ? toast(`The worktree was created, but its setup script “${script.name}” didn't run: ${why} You can run it from the project scripts menu.`, "warn") : toast(plain, "error"));
+        if (app.conn !== "open") return cant("not connected to the harness server.", `Not connected to the harness server, so “${script.name}” can't start.`);
+        if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open in this window, some maybe in other projects. Close one to run “${script.name}”.`);
+        const tab = { id: crypto.randomUUID(), cwd, number: next++, script: { id: script.id, name: script.name, ...(setup ? { setup: { label: setup.label, command: setup.command } } : {}) } };
+        if (setup) setupTickets.set(tab.id, setup.ticket);
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
         setTerminalOpen(true);
@@ -79,8 +84,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                 <SquareTerminal size={14} /><span class="terminal-label">Terminal</span>
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
-                        <button class="hb sm" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.setup?.label ?? tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button class="hb sm" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
                 <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={app.conn !== "open" || full()} onClick={add}><Plus size={15} /></button>
@@ -107,6 +112,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
     let id = p.tab.id;
     // Typed by the first shell only: a restart, or a reconnect, never runs it again by itself.
     let script = p.tab.script;
+    onCleanup(() => setupTickets.delete(p.tab.id));
     const early = new EarlyInput();
     const send = (data: string) => {
         // A pasted command may exceed one RPC's input limit. Preserve order.
@@ -149,8 +155,16 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
     const start = async () => {
         const run = script;
         script = undefined;
+        const ticket = setupTickets.get(p.tab.id);
+        setupTickets.delete(p.tab.id);
+        const failed = (why: string) => (run?.setup ? `The setup script “${run!.name}” didn't run. ${why.charAt(0).toUpperCase()}${why.slice(1).replace(/\.?$/, ".")} The worktree was created; you can run the script from the project scripts menu.` : `Couldn't run “${run!.name}”: ${why}`);
+        // A restored/remounted setup tab must never fall back to an ordinary script click.
+        if (run?.setup && !ticket) {
+            setEnded(failed("this setup run is no longer available."));
+            return;
+        }
         if (app.conn !== "open") {
-            if (run) setEnded(`Couldn't run “${run.name}”: not connected to the harness server.`);
+            if (run) setEnded(failed("not connected to the harness server."));
             return;
         }
         setEnded(undefined);
@@ -158,11 +172,20 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         early.begin();
         try {
             const shell = { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) };
-            if (run) await rpc.call("scripts.run", { ...shell, script: run.id });
+            if (run) await rpc.call("scripts.run", { ...shell, script: run.id, ...(ticket ? { setup: ticket } : {}) });
             else await rpc.call("terminal.open", { ...shell, login: p.tab.login });
             opened = true;
             const typed = early.take();
             if (disposed) { if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {}); return; }
+            // Opening the shell also yields: Settings/navigation may have hidden the tab since checkout.
+            if (run?.setup && (!p.visible || setupObscured() || trustRequest())) {
+                opened = false;
+                const message = failed("the setup terminal is no longer visible");
+                setEnded(message);
+                toast(message, "warn");
+                if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {});
+                return;
+            }
             if (typed && app.conn === "open") send(typed);
             // Only after what was typed meanwhile (the socket keeps the order): a Ctrl+C there cancels the script first.
             if (run && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});
@@ -170,7 +193,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
             if (p.visible) term.focus();
         } catch (e) {
             early.take();
-            if (!disposed) setEnded(run ? `Couldn't run “${run.name}”: ${(e as Error).message}` : (e as Error).message);
+            if (!disposed) setEnded(run ? failed((e as Error).message) : (e as Error).message);
         }
     };
     onMount(() => {

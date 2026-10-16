@@ -35,6 +35,30 @@ describe("embedded terminals", () => {
         for (const [cols, rows] of [[0, 24], [80, 0], [501, 24], [80, 301], [1.5, 24], [NaN, 24], [80, Infinity], ["80", 24]]) expect(() => terminalSize(cols, rows)).toThrow();
         expect(terminalSize(80, 24)).toEqual({ cols: 80, rows: 24 });
     });
+    test("setup shells strip inherited account selectors while login commands keep their selected one", async () => {
+        const shells = new Terminals();
+        const command = 'printf "__selectors__%s|%s__end__\\n" "${CLAUDE_CONFIG_DIR-unset}" "${CODEX_HOME-unset}"';
+        // isolate() supplies both inherited selectors; neither belongs in a setup shell.
+        expect(process.env.CLAUDE_CONFIG_DIR).toBeTruthy();
+        expect(process.env.CODEX_HOME).toBeTruthy();
+        try {
+            const setup = client();
+            shells.open(setup, "setup-env", iso.home, 80, 24, { input: `${command}\nexit\n` });
+            shells.arm(setup, "setup-env");
+            await until(() => setup.events.some((e) => e.type === "terminal.exit"));
+            expect(setup.output()).toContain("__selectors__unset|unset__end__");
+            for (const selector of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {
+                const login = client();
+                shells.open(login, `login-${selector.replaceAll("_", "-")}`, iso.home, 80, 24, {
+                    command: { argv: ["/bin/sh", "-c", command], env: { [selector]: iso.home } },
+                });
+                await until(() => login.events.some((e) => e.type === "terminal.exit"));
+                expect(login.output()).toContain(selector === "CLAUDE_CONFIG_DIR"
+                    ? `__selectors__${iso.home}|unset__end__`
+                    : `__selectors__unset|${iso.home}__end__`);
+            }
+        } finally { shells.stop(); }
+    });
     test("a real PTY has the selected cwd, interactive input, resize, Ctrl-C and exit status", async () => {
         const shells = new Terminals(); const owner = client();
         try {
