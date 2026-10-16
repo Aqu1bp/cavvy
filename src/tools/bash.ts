@@ -9,6 +9,7 @@ import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
 import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
+import { finalSearch } from "../permissions/bash-safety";
 
 export { childEnv };
 
@@ -239,18 +240,21 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
             }
         }
         let out = truncateMiddle(cleanOutput(res.output), MAX_OUTPUT);
+        const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
+        // A last grep that found nothing exits 1: that's the answer, not a failure of what came before it.
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted ? finalSearch(input.command) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
+        else if (search) out += `${out.trim() ? "\n\n" : ""}Exit code: 1 (the last command, ${search}, found no matches: that's its status for no match, not an error.${out.trim() ? " The output above is everything the command printed." : ""})`;
         else if (res.exitCode !== 0 && res.exitCode !== null) out += `\n\nExit code: ${res.exitCode}`;
         else if (res.signal) out += `\n\nTerminated by signal ${res.signal}`;
         out += notes;
-        const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
         const hint = ctx.sandbox && failed && !res.aborted ? failureHint(ctx.sandbox, res.output, proxy) : undefined;
         if (hint) out += `\n\n${hint}`;
         const lineCount = out.trim() ? out.trim().split("\n").length : 0;
         return {
             content: out.trim() || "(no output)",
-            isError: failed && !res.aborted,
+            isError: failed && !res.aborted && !search,
             display: {
                 summary: res.timedOut ? "Timed out" : res.aborted ? "Interrupted" : lineCount === 0 ? (failed ? `Exit code ${res.exitCode}` : "(no output)") : undefined,
                 body: out.trim() || undefined,

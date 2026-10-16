@@ -325,3 +325,56 @@ describe("the environment block warns about GNU and bash habits that fail here",
         }
     });
 });
+
+describe("a last grep that finds nothing isn't an error", () => {
+    test.each([
+        ["npm test 2>&1 | grep FAIL", "grep"],
+        ["ls src; grep -rn TODO src", "grep"],
+        ["cat a | rg foo", "rg"],
+        ["git grep -n foo", "git grep"],
+        ["make || grep x log", "grep"],
+        ["time grep x f", "grep"],
+        ["/usr/bin/grep x f", "grep"],
+        ["grep x f\n", "grep"],
+        ["make && grep x log", undefined],
+        ["make && cat log | grep x", undefined],
+        ["make &&\ngrep x log", undefined],
+        ["grep x f &", undefined],
+        ["! grep x f", undefined],
+        ["grep x f | wc -l", undefined],
+        ["set -o pipefail; a | grep x", undefined],
+        ["if true; then grep x f; fi", undefined],
+        ["grep $(cat p) f", undefined],
+        ["npm test", undefined],
+    ])("%p: %p", async (cmd, want) => {
+        const { finalSearch } = await import("../src/permissions/bash-safety");
+        expect(finalSearch(cmd)).toBe(want as string | undefined);
+    });
+
+    const bash = async (command: string) => {
+        const { BashTool } = await import("../src/tools/bash");
+        const cwd = realpathSync(tempDir());
+        return BashTool.run({ command }, { state: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, settings: {}, signal: new AbortController().signal } as any);
+    };
+
+    test("the output stays the result, and says what exit 1 means", async () => {
+        const r = await bash("echo useful output; grep -q nomatch /dev/null");
+        expect(r.isError).toBe(false);
+        expect(r.content).toStartWith("useful output");
+        expect(r.content).toContain("Exit code: 1 (the last command, grep, found no matches");
+        expect(r.content).toContain("The output above is everything the command printed.");
+        const empty = await bash("grep nomatch /dev/null");
+        expect(empty.isError).toBe(false);
+        expect(empty.content).toBe("Exit code: 1 (the last command, grep, found no matches: that's its status for no match, not an error.)");
+    });
+
+    test("other failures are still errors, a grep that errs too", async () => {
+        expect((await bash("echo x; false")).isError).toBe(true);
+        const before = await bash("false && grep x /dev/null");
+        expect(before.isError).toBe(true);
+        expect(before.content).toContain("Exit code: 1");
+        const missing = await bash("grep x /no/such/file");
+        expect(missing.isError).toBe(true);
+        expect(missing.content).toContain("Exit code: 2");
+    });
+});

@@ -9,6 +9,8 @@ import { CASE_INSENSITIVE_FS, spellings } from "../util/files";
 export interface SimpleCommand {
     text: string;
     argv: string[];
+    /** The operator before it: ";", "\n", "&&", "||", "|" or "&" (none for the first). */
+    after?: string;
 }
 
 export interface CommandAnalysis {
@@ -28,6 +30,8 @@ export interface CommandAnalysis {
     unsafeExpansion: boolean;
     /** Targets of `>` / `>>` / `>|` / `>&file` redirections, quotes removed. */
     redirects: string[];
+    /** The operator after the last command, if the line ends with one (`cmd &`). */
+    trailing?: string;
 }
 
 /** `${NAME}`, `${1}`, `${#NAME}`, `${?}`... at `i` (pointing at `$`) are plain lookups. */
@@ -87,6 +91,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     let wordQuoted = false;
     let text = "";
     let quote: "'" | '"' | null = null;
+    /** The operator after the last command pushed (`a &&` then a blank line: still &&). */
+    let lastOp: string | undefined;
 
     const endWord = () => {
         if (wordStarted) argv.push(word);
@@ -94,9 +100,12 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         wordStarted = false;
         wordQuoted = false;
     };
-    const endCommand = () => {
+    const endCommand = (op?: string) => {
         endWord();
-        if (argv.length) commands.push({ text: text.trim(), argv });
+        if (argv.length) {
+            commands.push({ text: text.trim(), argv, ...(lastOp !== undefined ? { after: lastOp } : {}) });
+            lastOp = op;
+        }
         argv = [];
         text = "";
     };
@@ -174,7 +183,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
         if (c === "#" && !wordStarted && (i === 0 || /[ \t\n]/.test(cmd[i - 1]!))) {
             // comment to end of line
             while (i < cmd.length && cmd[i] !== "\n") i++;
-            endCommand();
+            endCommand(i < cmd.length ? "\n" : undefined);
             continue;
         }
         if (c === ";" || c === "\n" || c === "|" || c === "&") {
@@ -184,8 +193,9 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 text += c;
                 continue;
             }
-            if ((c === "|" || c === "&") && n === c) i++;
-            endCommand();
+            const doubled = (c === "|" || c === "&") && n === c;
+            if (doubled) i++;
+            endCommand(doubled ? c + c : c);
             continue;
         }
         if (c === ">" || c === "<") {
@@ -234,7 +244,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     }
     const unparsable = quote !== null;
     endCommand();
-    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects };
+    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects, ...(lastOp !== undefined ? { trailing: lastOp } : {}) };
 }
 
 /** Strip leading env assignments (FOO=bar cmd) and wrappers like `time`. */
@@ -481,6 +491,32 @@ export function isReadOnlyCommand(cmd: string): boolean {
     if (a.unparsable || a.hasSubstitution || a.writesFiles || a.unsafeExpansion) return false;
     if (!a.commands.length) return true;
     return a.commands.every((c) => isReadOnlySimple(c.argv));
+}
+
+const GREPS = new Set(["grep", "egrep", "fgrep", "zgrep", "ggrep", "rg"]);
+const SHELL_SYNTAX = /(^|[\s;&|])(if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|exit|return|set|setopt|trap)(?=$|[\s;&|])|[{}]|pipe_?fail/i;
+
+/**
+ * The search program (grep, rg, git grep) whose exit status is the whole
+ * command's, when the text makes that certain: it's last, it ran (not after
+ * `&&`, where an earlier failure ends the list with its own status), and it
+ * isn't backgrounded, negated or behind pipefail. Their status 1 means
+ * "no match", not a failure.
+ */
+export function finalSearch(cmd: string): string | undefined {
+    const a = analyzeCommand(cmd);
+    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion || SHELL_SYNTAX.test(cmd) || !a.commands.length) return undefined;
+    if (a.trailing !== undefined && a.trailing !== ";" && a.trailing !== "\n") return undefined;
+    const last = a.commands.length - 1;
+    const argv = effectiveArgv(a.commands[last]!.argv);
+    const prog = (argv[0] ?? "").split("/").pop()!;
+    const name = GREPS.has(prog) ? prog : prog === "git" && argv[gitSubcommand(argv).index] === "grep" ? "git grep" : undefined;
+    if (!name) return undefined;
+    // The pipeline it ends, and what comes before that.
+    let first = last;
+    while (first > 0 && a.commands[first]!.after === "|") first--;
+    if (a.commands[first]!.after === "&&") return undefined;
+    return name;
 }
 
 const DANGEROUS: [RegExp, string][] = [
