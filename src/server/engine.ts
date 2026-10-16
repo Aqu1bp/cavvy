@@ -125,13 +125,15 @@ function readStore(): GuiStore {
     return readJson<GuiStore>(storeFile()) ?? {};
 }
 
-function updateStore(fn: (s: GuiStore) => void) {
+/** Best effort: false when it couldn't be saved. */
+function updateStore(fn: (s: GuiStore) => void): boolean {
     const s = readStore();
     fn(s);
     try {
         writeJson(storeFile(), s, 0o600);
+        return true;
     } catch {
-        // best effort
+        return false;
     }
 }
 
@@ -1182,11 +1184,13 @@ export class Engine {
                 const id = checkId(p.id);
                 while (this.closing.has(id)) await this.afterClosing(id);
                 const flags = restoreSession(id);
-                updateStore((s) => {
+                const saved = updateStore((s) => {
                     for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
                 });
-                const summary = this.listSessions(1000, flags.archived).find((s) => s.id === id);
+                // In whichever list it's in: without its flags saved, it's back as an active one.
+                const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
                 if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
+                if (!saved && STORE_FLAGS.some((key) => flags[key])) client.send({ type: "toast", level: "warn", message: `The session is back, but its pin and archived state couldn't be saved to ${storeFile()}.` });
                 return null;
             }
             case "session.killShell":

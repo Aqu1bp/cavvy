@@ -122,6 +122,27 @@ describe("session.delete", () => {
         }
     }, 30_000);
 
+    test("Undo when gui.json can't be written: the session is back (as an active one), every window is told, and the user is warned", async () => {
+        const { engine, c, events, id, f } = await setup();
+        const gui = join(iso.home, "gui.json");
+        try {
+            await engine.handle(c, "session.pin", { id, pinned: true });
+            await engine.handle(c, "session.archive", { id, archived: true });
+            await engine.handle(c, "session.delete", { id });
+            events.length = 0;
+            chmodSync(gui, 0o400);
+            await engine.handle(c, "session.restore", { id });
+            chmodSync(gui, 0o600);
+            expect(existsSync(f.file)).toBe(true);
+            expect(events.some((e) => e.type === "sessions.upsert" && e.session.id === id && !e.session.archived && !e.session.pinned)).toBe(true);
+            expect(events.some((e) => e.type === "toast" && e.level === "warn" && /couldn't be saved/.test(e.message))).toBe(true);
+            expect(((await engine.handle(c, "sessions.list", {})) as SessionSummary[]).some((s) => s.id === id)).toBe(true);
+        } finally {
+            chmodSync(gui, 0o600);
+            await engine.stop();
+        }
+    });
+
     test("a restore is refused once the id is taken again", async () => {
         const { engine, c, id, f } = await setup();
         try {

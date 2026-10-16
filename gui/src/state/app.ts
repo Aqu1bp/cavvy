@@ -13,6 +13,7 @@ import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
 import { toastMs } from "../lib/toasts";
+import { afterFailedReopen } from "../lib/reopen";
 import type { Attachment } from "./actions";
 
 export const rpc = new Rpc(credentials);
@@ -324,6 +325,13 @@ function forgetSession(id: string) {
     if (app.activeId === id) setApp("activeId", undefined);
 }
 
+/** Opening it again failed: deleted meanwhile, kept while disconnected (the reconnect reopens it), or dropped. */
+function reopenFailed(id: string, e: unknown) {
+    const next = afterFailedReopen(e instanceof RpcError ? e.code : undefined);
+    if (next === "forget") forgetSession(id);
+    else if (next === "drop" && handles.delete(id)) setHandleVersion((v) => v + 1);
+}
+
 function upsertSession(s: SessionSummary) {
     deleted.delete(s.id);
     const seen = seenBeforeDelete.get(s.id);
@@ -367,11 +375,7 @@ function onEvent(ev: ServerEvent) {
             return;
         case "session.reload":
             // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
-            if (handles.has(ev.sessionId))
-                void rpc.call("session.open", { id: ev.sessionId }).then(adopt, () => {
-                    handles.delete(ev.sessionId);
-                    setHandleVersion((v) => v + 1);
-                });
+            if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
             handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images });
@@ -406,7 +410,7 @@ export function start() {
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
                 void refreshModels().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
-                if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => (e instanceof RpcError && e.code === "not_found" ? forgetSession(h.id) : handles.delete(h.id)));
+                if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 connectedOnce = true;
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();
