@@ -41,6 +41,7 @@ import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type Vert
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
 import { modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
 import { formatCost, formatPrice, formatTokens, formatUsd } from "../providers/pricing";
+import { attachmentsNote } from "../providers/files";
 import { getKey, removeKey, setKey, storageDescription } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { maskKey, redact } from "../util/redact";
@@ -1050,7 +1051,8 @@ async function exportCommand(app: App, args: string) {
                 continue;
             }
             const t = (msg.meta?.display ?? textOf(msg)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-            if (t) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", t, "");
+            const note = attachmentsNote(msg.content);
+            if (t || note) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", ...(t ? [t] : []), ...(note ? [`*${note}*`] : []), "");
         } else {
             const t = textOf(msg).trim();
             if (t) out.push("## Assistant", "", t, "");

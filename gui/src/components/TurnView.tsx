@@ -1,8 +1,9 @@
 import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
+import { formatSize } from "../lib/attachments";
 import { prefs } from "../state/prefs";
 import { openInEditor, openReview } from "../state/actions";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
@@ -30,8 +31,19 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
                         <SquareTerminal size={13} /> {text().slice(1)}
                     </span>
                 </Show>
-                <Show when={p.turn.prompt?.images}>
-                    <span class="chip tiny">{p.turn.prompt!.images} image{p.turn.prompt!.images === 1 ? "" : "s"}</span>
+                <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
+                    <span class="prompt-attachments">
+                        <Show when={p.turn.prompt?.images}>
+                            <span class="chip tiny">{p.turn.prompt!.images} image{p.turn.prompt!.images === 1 ? "" : "s"}</span>
+                        </Show>
+                        <For each={p.turn.prompt?.files ?? []}>
+                            {(f) => (
+                                <span class="chip tiny" title={`${f.name} · ${formatSize(f.size)}${f.lines !== undefined ? ` · ${plural(f.lines, "line")}` : ""}`}>
+                                    <FileText size={11} /> <span class="truncate">{f.name}</span> · {formatSize(f.size)}
+                                </span>
+                            )}
+                        </For>
+                    </span>
                 </Show>
                 <Show when={long()}>
                     <button class="link-btn more" onClick={() => setExpanded(!expanded())}>

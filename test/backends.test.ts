@@ -25,6 +25,7 @@ const { stopTiming } = await import("../src/backends/cli");
 const { backendActionsNote } = await import("../src/agent/agent");
 const { withoutActionsNote } = await import("../src/server/history");
 const { attachTiming, backgroundTiming } = await import("../src/backends/claude-code");
+const { framedText, pdfPlaceholder } = await import("../src/providers/files");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -1712,5 +1713,30 @@ describe("Codex project MCP boundary", () => {
         const second = await makeAgent({ provider: "codex", trusted: true });
         expect(await second.run("hello")).toBe("error");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
+    });
+});
+
+describe("attachments", () => {
+    const file = { type: "file", kind: "text", name: "notes.md", size: 7, lines: 1, text: "# todo\n" } as const;
+    const pdf = { type: "file", kind: "pdf", name: "spec.pdf", size: 9, mediaType: "application/pdf", data: Buffer.from("%PDF-1.4\n").toString("base64") } as const;
+    const signal = () => new AbortController().signal;
+
+    test("Claude Code gets text files framed in its prompt, and PDFs as document blocks", async () => {
+        const { agent } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await agent.run([{ type: "text", text: "read these" }, file, pdf], { signal: signal() });
+        const content = received().find((m) => m.type === "user").message.content;
+        expect(content[0].type).toBe("text");
+        expect(content[0].text.startsWith(`read these\n\n${framedText(file)}`)).toBe(true);
+        expect(content.slice(1)).toEqual([{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.data } }]);
+    });
+
+    test("Codex gets text files framed in its prompt; a PDF isn't sent, only named", async () => {
+        const { agent } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+        await agent.run([{ type: "text", text: "read these" }, file, pdf], { signal: signal() });
+        const start = received().find((m) => m.method === "turn/start").params;
+        expect(start.input).toHaveLength(1);
+        expect(start.input[0].type).toBe("text");
+        expect(start.input[0].text).toContain(`read these\n\n${framedText(file)}\n\n${pdfPlaceholder(pdf)}`);
+        expect(JSON.stringify(start)).not.toContain(pdf.data);
     });
 });

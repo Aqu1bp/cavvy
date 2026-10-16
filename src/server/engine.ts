@@ -58,7 +58,8 @@ import type {
     SessionSummary,
 } from "./protocol";
 import { PROTOCOL_VERSION } from "./protocol";
-import { modelRef, type ImagePart } from "../providers/types";
+import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
+import { checkFiles, checkMedia, toWire } from "./attachments";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -248,9 +249,9 @@ export class Engine {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "session.ops", sessionId, seq, ops });
     }
 
-    draft(rt: Runtime, text: string, images?: ImagePart[]) {
-        const back = images?.length ? images.map((i) => ({ mediaType: i.mediaType, data: i.data })) : undefined;
-        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, images: back });
+    draft(rt: Runtime, text: string, attachments?: AttachedPart[]) {
+        const back = toWire(attachments);
+        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, ...back });
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
@@ -1094,7 +1095,12 @@ export class Engine {
             }
             case "session.send": {
                 const rt = this.runtime(p.id);
-                const images = Array.isArray(p.images) ? (p.images as { mediaType: unknown; data: unknown }[]).filter(validImage).map((i): ImagePart => ({ type: "image", mediaType: String(i.mediaType), data: String(i.data) })) : undefined;
+                const images = Array.isArray(p.images) ? (p.images as { mediaType: unknown; data: unknown }[]).map((i): ImagePart => {
+                    if (!validImage(i)) throw new RpcError("Images must be PNG, JPEG, GIF or WebP, under 15 MB.");
+                    return { type: "image", mediaType: String(i.mediaType), data: String(i.data) };
+                }) : [];
+                const attached: AttachedPart[] = [...images, ...checkFiles(p.files)];
+                checkMedia(attached);
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.
                 if ((readStore().settled ?? []).includes(rt.id)) {
@@ -1103,7 +1109,7 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return rt.send(str(p.text ?? "", "text"), images?.length ? images : undefined);
+                return rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();
@@ -1173,7 +1179,7 @@ export class Engine {
                 const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
                 if (!q) return { removed: false };
                 // Edited, it goes back to the window that asked (not to every one showing the session).
-                return p.edit === true ? { removed: true, text: q.text, images: q.images?.map((i) => ({ mediaType: i.mediaType, data: i.data })) } : { removed: true };
+                return p.edit === true ? { removed: true, text: q.text, ...toWire(q.attachments) } : { removed: true };
             }
             case "session.pin":
             case "session.settle":

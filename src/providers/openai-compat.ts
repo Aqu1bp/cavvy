@@ -5,6 +5,7 @@
 import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
+import { fileAsText, fitRequest, frameName, providerReadsPdf } from "./files";
 import {
     ProviderError,
     type AssistantContent,
@@ -81,6 +82,11 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
             for (const p of msg.content) {
                 if (p.type === "text" && p.text) parts.push({ type: "text", text: p.text });
                 else if (p.type === "image") parts.push({ type: "image_url", image_url: { url: `data:${p.mediaType};base64,${p.data}` } });
+                else if (p.type === "file") {
+                    // Only OpenRouter documents a PDF part here; elsewhere the model hears one was attached.
+                    if (p.kind === "pdf" && providerReadsPdf(def)) parts.push({ type: "file", file: { filename: frameName(p.name), file_data: `data:application/pdf;base64,${p.data}` } });
+                    else parts.push({ type: "text", text: fileAsText(p) });
+                }
             }
             if (extraImages.length) parts.unshift({ type: "text", text: "Images returned by the tool calls above:" }, ...extraImages);
             if (parts.length) {
@@ -176,9 +182,8 @@ export class OpenAICompatProvider implements ProviderClient {
     async stream(req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<AssistantMessage> {
         const def = this.def;
         const m = req.model;
-        const body: Json = {
+        const body: Json & { messages?: never } = {
             model: m.id,
-            messages: toOpenAIMessages(req.system, req.messages, def),
             stream: true,
         };
         if (req.tools.length) {
@@ -195,7 +200,7 @@ export class OpenAICompatProvider implements ProviderClient {
             else body.reasoning_effort = effort;
         }
 
-        const payload = JSON.stringify(body);
+        const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => JSON.stringify({ ...body, messages: toOpenAIMessages(req.system, messages, def) }));
         // A request that stops sending anything is retried instead of waited on forever.
         const stall = stallTimer(req.signal, def.id === "vertex");
         const post = async (fresh: boolean) =>
