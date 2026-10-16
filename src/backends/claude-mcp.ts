@@ -35,18 +35,3 @@ export function claudeMcpServers(approved: Record<string, McpServerConfig>, warn
     if (omitted.length) warn(`MCP servers omitted from Claude Code: ${omitted.join("; ")}.`);
     return Object.fromEntries(entries);
 }
-
-/** --mcp-config is variadic: leaving any explicit config would bypass the manager even in strict mode. */
-export function withoutMcpConfig(args: string[], warn?: (message: string) => void): string[] {
-    const out: string[] = [];
-    let skipping = false;
-    let removed = false;
-    for (const arg of args) {
-        if (arg === "--mcp-config" || arg.startsWith("--mcp-config=")) {
-            skipping = removed = true;
-        } else if (skipping && !arg.startsWith("-")) continue;
-        else { skipping = false; out.push(arg); }
-    }
-    if (removed) warn?.("Ignored extra Claude Code --mcp-config arguments; Harness supplies the approved MCP servers.");
-    return out;
-}

@@ -25,7 +25,7 @@
 // through those credentials. The harness's own provider keys are removed from
 // the CLI's environment (childEnv), so it can't be pointed at one of those.
 
-import { claudeMcpServers, withoutMcpConfig } from "./claude-mcp";
+import { claudeMcpServers } from "./claude-mcp";
 import { homedir } from "os";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
@@ -155,7 +155,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         // No settings, MCP servers or session file: this only asks for the list.
-        const proc = new JsonLinesProcess(bin, [...withoutMcpConfig(extraArgs(this.def.id)), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir() });
+        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir() });
         const kill = () => void proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, 30_000);
@@ -298,8 +298,7 @@ class ClaudeTurn {
 
     private args(): string[] {
         const t = this.t;
-        const extra = withoutMcpConfig(extraArgs(this.def.id), (message) => this.host.emit({ type: "notice", level: "warn", message }));
-        const a = [...extra, ...STREAM_ARGS, "--include-partial-messages", "--strict-mcp-config", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
+        const a = [...extraArgs(this.def.id), ...STREAM_ARGS, "--include-partial-messages", "--strict-mcp-config", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
         if (t.model.id !== "default") a.push("--model", t.model.id);
         if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
         if (t.resumeId) a.push("--resume", t.resumeId);

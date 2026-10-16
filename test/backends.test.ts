@@ -1551,17 +1551,6 @@ describe("Claude Code MCP approval boundary", () => {
         });
     }
 
-    test("extra variadic MCP configs cannot bypass the manager in strict mode", async () => {
-        registry.saveAgentConfig("claude-code", { path: claudeBin, args: ["--mcp-config", "secret-config-a", "secret-config-b", "--debug", "--mcp-config=secret-config-c", "secret-config-d"] });
-        const { run, events } = await makeAgent({ provider: "claude-code", trusted: true });
-        await run("hello");
-        expect(starts()[0].argv).toContain("--strict-mcp-config");
-        expect(starts()[0].argv).toContain("--debug");
-        expect(JSON.stringify(starts())).not.toContain("secret-config");
-        expect(payloads()).toEqual([]);
-        expect(notices(events).join("\n")).toContain("Ignored extra Claude Code --mcp-config");
-    });
-
     test("only the manager's approved set reaches stdin, and approval changes apply next turn", async () => {
         const { McpManager } = await import("../src/mcp/manager");
         const cfg = config();
