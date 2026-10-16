@@ -45,7 +45,9 @@ import { attachmentsNote } from "../providers/files";
 import { getKey, removeKey, setKey, storageDescription } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { maskKey, redact } from "../util/redact";
-import { listSessions, findSession } from "../agent/session";
+import { listSessions, findSession, type Session } from "../agent/session";
+import { forkSession, forkTargets } from "../agent/fork";
+import { forkUiLog } from "../server/history";
 import { loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
 import { estimateTokens } from "../agent/compact";
@@ -1015,6 +1017,25 @@ async function resumeCommand(app: App, args: string) {
     app.resume(file);
 }
 
+/** A new session with this conversation so far, switched to; the original stays as it is (/resume goes back). */
+function forkCommand(app: App) {
+    const origin = app.session;
+    if (!forkTargets(origin.messages).length) return app.notice("Nothing to fork yet.");
+    let fork: Session;
+    try {
+        fork = forkSession(origin, { cut: origin.messages.length, model: app.model && modelRef(app.model) });
+    } catch (e) {
+        return app.notice(`Couldn't fork the session: ${(e as Error).message}`, "error");
+    }
+    // Its timeline, for when the app opens it.
+    forkUiLog({ file: origin.path, id: origin.meta.id }, { file: fork.path, id: fork.meta.id });
+    app.resume(fork);
+    // Resume creates a new agent; tell it the current mode, as GUI forks do.
+    if (app.mode === "plan") app.agent?.noteModeChange("default", "plan");
+    else app.agent?.addReminder(`The permission mode is "${MODE_INFO[app.mode].label}": ${MODE_INFO[app.mode].description}`);
+    app.notice(`Forked into "${fork.title}" (${fork.meta.id}). /resume ${origin.meta.id} goes back to the original.`);
+}
+
 function costCommand(app: App) {
     const s = app.session;
     const lines = ["", heading("Session cost")];
@@ -1688,6 +1709,7 @@ const BUILTIN: Command[] = [
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },
     { name: "rewind", description: "Go back to before an earlier prompt: restore files, the conversation, or both", noEcho: true, run: rewindCommand },
+    { name: "fork", description: "Continue in a new session from here, keeping this one as it is", run: forkCommand },
     { name: "rename", description: "Name this conversation", args: "<title>", run: (app, args) => (args ? (app.session.setTitle(args), app.notice(`Renamed to "${args}"`)) : app.notice("Usage: /rename <title>", "error")) },
     { name: "export", description: "Save the conversation as markdown (or --copy)", args: "[file|--copy]", run: exportCommand },
     {

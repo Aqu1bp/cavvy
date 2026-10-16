@@ -107,6 +107,8 @@ export interface BackendTurn {
     maxTurns?: number;
     /** Continue this backend session (from an earlier turn). */
     resumeId?: string;
+    /** It's shared with a forked session: continue a copy of it (a new id), never the session itself. */
+    forkSession?: boolean;
     /**
      * The harness's MCP server, with its tools for delegating to other
      * providers' models (src/agent/delegation.ts). The backend attaches it

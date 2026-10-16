@@ -6,14 +6,15 @@
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { backendsIn, canonical, FileHistory, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
+import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
+import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, slashCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
-import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -205,6 +206,8 @@ export class Runtime {
 
     // What the current turn is building
     private turnId?: string;
+    /** Where the running turn's messages start (its prompt, and what was sent meanwhile, from here on). */
+    private runStart?: number;
     private turnStartedAt = 0;
     /** Settles when the running turn has ended (and written how). */
     private turnDone?: Promise<void>;
@@ -338,6 +341,7 @@ export class Runtime {
             shells: [],
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
+            ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
         };
     }
@@ -1150,6 +1154,7 @@ export class Runtime {
         // Claude Code or Codex compacting its own context leaves this session's history as it is.
         if (!this.backendModel()) {
             this.segment++;
+            if (this.runStart !== undefined) this.runStart = 0;
             // Everything before is out of the model's context now (and out of /rewind's reach).
             for (const t of this.view.turns) {
                 if (t.id === current) {
@@ -1650,6 +1655,9 @@ export class Runtime {
         this.op({ op: "turn", turn });
         if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
         this.turnId = turn.id;
+        // After a finished answer they start a turn of their own: the one before can be forked now. (Claude
+        // Code and Codex take them in the middle of theirs, before its answer is recorded: it's still running.)
+        if (!steering && last?.role === "assistant") this.runStart = this.session.messages.length;
         // Where it starts: its own prompt, or the tool results it rides along with.
         this.uiTurn = { seg: this.segment, index: this.session.messages.length, at: turn.startedAt! };
         this.ui.write({ t: "turn", ...this.uiTurn });
@@ -1737,6 +1745,7 @@ export class Runtime {
         };
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
+        this.runStart = index;
         if (this.backendModel()) this.backendTurns.set(turn.id, this.segment);
         this.responseBlocks = [];
         this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
@@ -1777,6 +1786,7 @@ export class Runtime {
         } finally {
             this.busy = false;
             this.abort = undefined;
+            this.runStart = undefined;
             this.cancelInteractions({ keepDelegated: true });
             this.closeOpen();
             this.turnId = undefined;
@@ -1966,7 +1976,46 @@ export class Runtime {
         const history = FileHistory.for(this.session);
         return rewindTargets(this.session.messages)
             .reverse()
-            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0, ...(t.backends.length ? { backends: t.backends } : {}) }));
+            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0, ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}) }));
+    }
+
+    /** A prompt this session was forked with: the files changed before the fork are in the original's history, not here. */
+    private beforeFork(index: number): boolean {
+        return beforeFork(this.session.meta, this.session.messages[index], index);
+    }
+
+    // -----------------------------------------------------------------------
+    // Forking
+
+    /**
+     * Where a fork from the turn of the prompt at `index` ends (session.fork),
+     * checked against what the window showed: that turn (by id, which is new
+     * once a rewind rebuilds the timeline) with this prompt and its text.
+     */
+    forkPoint(index: unknown, text: string, turnId: string): number {
+        if (typeof index !== "number" || !Number.isInteger(index)) throw new RpcError("index must be an integer");
+        if (!forkTargets(this.session.messages).some((t) => t.index === index)) throw new RpcError("That isn't one of this conversation's prompts (one from before a compaction can't be forked from).");
+        if (this.runStart !== undefined && index >= this.runStart) throw new RpcError("That turn is still running. Fork from it once it's done, or interrupt it first.", "busy");
+        const shown = this.view.turns.find((t) => t.id === turnId);
+        const shownIndex = shown?.imported ? shown.pos?.index : shown?.prompt?.index;
+        if (!shown || shown.archived || shownIndex !== index || shown.prompt?.text !== text) throw new RpcError("The conversation changed since this was shown; nothing was forked.", "stale");
+        return Math.min(forkCut(this.session.messages, index), this.runStart ?? Infinity);
+    }
+
+    /** Notes that were pending at a fork's cut: they went out with the prompt there (as a rewind to it would queue them again). */
+    notesAt(cut: number): string[] {
+        const next = this.session.messages[cut];
+        return next?.role === "user" ? promptNotes(next) : [];
+    }
+
+    /** Just forked: the notes pending at the cut go with the first prompt here, and so does the mode it has now. */
+    forkedFrom(notes: string[]) {
+        // A fork must keep its selected mode on reopen even with the default effort.
+        this.recordState();
+        if (!this.agent) return;
+        for (const n of notes) this.agent.addReminder(n);
+        if (this.mode === "plan") this.agent.noteModeChange("default", "plan");
+        else this.agent.addReminder(`The permission mode is "${MODE_INFO[this.mode].label}": ${MODE_INFO[this.mode].description}`);
     }
 
     private target(index: number) {
@@ -1987,6 +2036,7 @@ export class Runtime {
         return {
             index,
             planId,
+            ...(this.beforeFork(index) ? { forked: true } : {}),
             ...(backends.length ? { backends } : {}),
             tracked: Boolean(plan),
             restore: (plan ?? []).filter((i) => i.action !== "skip").map((i) => ({ path: rel(i.path), action: i.action as "write" | "delete", outside: Boolean(i.outside) })),

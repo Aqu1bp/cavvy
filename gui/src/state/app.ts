@@ -332,6 +332,14 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
+/** Fork a session at the end of the turn `turn` of its prompt `index` (shown as `text`), and show the fork. */
+export async function forkSession(id: string, at: { index: number; text: string; turn: string }): Promise<SessionHandle> {
+    const snap = await rpc.call("session.fork", { id, ...at });
+    const h = adopt(snap);
+    await activate(h.id);
+    return h;
+}
+
 /** Show a session in the main view. `cwd` is its project, for one not in the lists (an old one found by search). */
 export async function activate(id: string | undefined, cwd?: string) {
     // A jump waiting for another session doesn't wait any more.
