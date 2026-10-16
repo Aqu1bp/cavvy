@@ -332,7 +332,7 @@ export class Session {
     }
 
     /** A removed/re-added account or a changed Default home cannot inherit the previous home's thread. */
-    backendSession(provider: string, folder: string): BackendSession | undefined {
+    backendSession(provider: string, folder: string | undefined): BackendSession | undefined {
         const current = this.backends.get(provider);
         const bound = this.backendFolders.get(provider);
         if (current && (bound ? bound !== folder : this.accountId(provider) !== "default")) {

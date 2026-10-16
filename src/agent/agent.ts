@@ -49,7 +49,7 @@ import { TurnSnapshots } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
-import { account, accountRealPath } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
@@ -1110,7 +1110,7 @@ export class Agent {
     private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
-        const folder = accountRealPath(account(provider, this.session.accountId(provider)).folder);
+        const folder = this.backendFolder(provider);
         let promptIndex = this.session.messages.length - 1;
         const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
@@ -1233,7 +1233,13 @@ export class Agent {
     /** The last backend turn as its report, when this agent is a sub-agent on a backend. */
     private backendReport?: string;
 
-    private backendResume(provider: string, folder: string) {
+    /** The account folder a CLI backend's sessions live in; other backends have none. */
+    private backendFolder(provider: string): string | undefined {
+        if (!(ACCOUNT_PROVIDERS as readonly string[]).includes(provider)) return undefined;
+        return accountRealPath(account(provider, this.session.accountId(provider)).folder);
+    }
+
+    private backendResume(provider: string, folder: string | undefined) {
         const hadSession = this.session.backends.has(provider);
         const resume = this.session.backendSession(provider, folder);
         if (hadSession && !resume) {
@@ -1266,7 +1272,7 @@ export class Agent {
 
     private async compactBackend(backend: AgentBackendClient, opts: { auto: boolean; signal: AbortSignal; instructions?: string }): Promise<boolean> {
         const provider = this.model.provider;
-        const folder = accountRealPath(account(provider, this.session.accountId(provider)).folder);
+        const folder = this.backendFolder(provider);
         const resume = this.backendResume(provider, folder);
         if (!resume) return false;
         this.emit({ type: "compact_start", auto: opts.auto });

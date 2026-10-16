@@ -176,7 +176,7 @@ test("Codex fails closed if it cannot apply account protections, even with deleg
     process.env.FAKE_REJECT_CONFIG = "1";
     const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "codex")!);
     const turn = fakeTurn("codex");
-    turn.orchestrator = { name: "fake", url: "http://127.0.0.1:1", authorization: "fake", tools: [], instructions: "fake", toolTimeoutSec: 1 };
+    turn.orchestrator = { name: "harness", url: "http://127.0.0.1:1", authorization: "fake", tools: [], instructions: "fake", toolTimeoutSec: 1 };
     expect((await backend.runTurn(turn)).reason).toBe("error");
     const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
     expect(received.filter((message) => message.method === "thread/start")).toHaveLength(1);

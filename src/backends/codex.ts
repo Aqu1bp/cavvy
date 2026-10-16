@@ -489,9 +489,7 @@ class CodexTurn {
             const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config: Record<string, unknown> | undefined = o && !t.readOnly ? { mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
-            // Account denies ride on every config, including the fallback below.
             if (accountPermissions) config = { ...config, ...accountPermissions };
-            const fallback = accountPermissions ? { ...off, ...accountPermissions } : off;
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
             // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
@@ -505,8 +503,9 @@ class CodexTurn {
                 try {
                     return await this.rpc.request(method, params);
                 } catch (e) {
-                    if (this.aborted || !o) throw e;
-                    const r = await this.rpc.request(method, { ...params, config: fallback, developerInstructions: baseInstructions });
+                    // Never fall back by dropping account denies: fail closed instead.
+                    if (this.aborted || !o || accountPermissions) throw e;
+                    const r = await this.rpc.request(method, { ...params, config: off, developerInstructions: baseInstructions });
                     this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
                     return r;
                 }
