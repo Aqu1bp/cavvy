@@ -3,8 +3,13 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
+import { loginCommand } from "../backends/account-login";
+import { planLimitKey, type AccountInfo } from "./protocol";
+import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
-import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
+import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
+import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { readdirSync, realpathSync, statSync } from "fs";
@@ -27,7 +32,7 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
+import { createWorktree, listWorktrees, mainCheckoutOf, planRemoval, runRemoval } from "./worktrees";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
 import { expandPath, isInside } from "../util/files";
@@ -39,11 +44,12 @@ import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions } from "./search";
 import { usageDays, usageSummary } from "./usage";
-import { mergeLimits } from "../backends/limits";
 import type {
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
+    CreateWorktreeParams,
+    CreateWorktreeResult,
     EditorInfo,
     EffortLevel,
     GuiSettings,
@@ -64,7 +70,7 @@ import type {
     SessionSearchResult,
     SessionSummary,
 } from "./protocol";
-import { PROTOCOL_VERSION } from "./protocol";
+import { PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
 
@@ -243,6 +249,8 @@ export class Workspace {
 
 export class Engine {
     private terminals = new Terminals();
+    /** Setup runs that a window may start, once, in the worktree it just created (see setup.ts). */
+    readonly setups = new SetupTickets();
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
@@ -263,8 +271,6 @@ export class Engine {
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     private purgeTimer?: ReturnType<typeof setInterval>;
-    /** The agent CLIs' plan limits as last reported, by provider: the account's, so every session shares them. */
-    private limits = new Map<string, PlanLimits>();
     /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
     private cliCommandNames = new Map<string, Set<string>>();
 
@@ -298,15 +304,6 @@ export class Engine {
 
     broadcast(ev: ServerEvent) {
         for (const c of this.clients) c.send(ev);
-    }
-
-    /** An agent CLI reported where the plan stands (an older report doesn't replace a newer one). */
-    limitsReported(l: PlanLimits, partial: boolean) {
-        const prev = this.limits.get(l.provider);
-        if (prev && prev.at > l.at) return;
-        const merged = mergeLimits(prev, l, partial);
-        this.limits.set(l.provider, merged);
-        this.broadcast({ type: "limits", limits: merged });
     }
 
     cliCommandsReported(provider: string, cwd: string, names: string[]) {
@@ -459,6 +456,28 @@ export class Engine {
         const ws = new Workspace(this, p, trusted);
         this.workspaces.set(p, ws);
         return ws;
+    }
+
+    /**
+     * The worktree at `path` was just created for `client`, which asked for its setup: may the setup script run
+     * there? Never throws: the worktree is made either way, and the window says why the script didn't run.
+     */
+    private async grantSetup(client: EngineClient, path: string, preview: CreateWorktreeParams["setupScript"]): Promise<Pick<CreateWorktreeResult, "setup" | "setupError">> {
+        try {
+            const main = mainCheckoutOf(path);
+            if (!setupTrusted(main, path)) return { setupError: "The setup script didn't run: you haven't trusted this repository." };
+            const { project, script } = await findSetupScript(path);
+            if (!script) return { setupError: "The setup script didn't run: no script is marked to run when a worktree is created (it may have changed in another window)." };
+            if (!preview || script.id !== preview.id || script.command !== preview.command) {
+                return { setupError: "The setup script didn't run: it no longer matches the script and command previewed when you clicked Create. Review it in the project scripts menu before running it." };
+            }
+            // Nobody would see it start.
+            if (!this.clients.has(client)) return {};
+            const ticket = this.setups.issue({ owner: client, path, main, project, script: script.id, command: script.command });
+            return { setup: { ticket, script } };
+        } catch (e) {
+            return { setupError: `The setup script didn't run: ${redact((e as Error).message)}` };
+        }
     }
 
     /**
@@ -767,6 +786,7 @@ export class Engine {
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         this.terminals.drop(client);
+        this.setups.drop(client);
         for (const id of client.subs) this.unloadLater(id);
     }
 
@@ -861,6 +881,40 @@ export class Engine {
     // -----------------------------------------------------------------------
     // Providers
 
+    private limits = new Map<string, PlanLimits>();
+
+    /** Never let a delayed report or a different account replace this account's meter. */
+    limitsReported(limits: PlanLimits, partial: boolean) {
+        const key = planLimitKey(limits.provider, limits.accountId);
+        const prev = this.limits.get(key);
+        if (prev && prev.at > limits.at) return;
+        const merged = mergeLimits(prev, limits, partial);
+        this.limits.set(key, merged);
+        this.broadcast({ type: "limits", limits: merged });
+    }
+
+    private accountStatus = new Map<string, Partial<AccountInfo>>();
+
+    private accountProjects(): string[] {
+        return [...this.workspaces.keys(), ...(this.o.startCwd ? [this.o.startCwd] : [])];
+    }
+
+    private async accountsList(provider: string, refresh = false): Promise<AccountInfo[]> {
+        accountProvider(provider);
+        return Promise.all(listAccounts(provider).map(async (a) => {
+            const key = `${provider}:${a.id}`;
+            if (refresh) {
+                try {
+                    const status = await checkAgentCli(provider, undefined, a.id);
+                    this.accountStatus.set(key, { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan });
+                } catch (e) {
+                    this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
+                }
+            }
+            return { ...a, ...this.accountStatus.get(key) };
+        }));
+    }
+
     private async providersList(): Promise<ProviderInfo[]> {
         const out: ProviderInfo[] = [];
         for (const p of allProviders()) {
@@ -881,7 +935,7 @@ export class Engine {
                     source: on ? "your plan" : undefined,
                     keyUrl: p.keyUrl,
                     requiresKey: false,
-                    agentCli: { installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
+                    agentCli: { accounts: listAccounts(p.id).length > 1 ? await this.accountsList(p.id) : undefined, defaultAccount: defaultAccount(p.id), installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
                 });
                 continue;
             }
@@ -1136,6 +1190,13 @@ export class Engine {
         switch (method) {
             case "terminal.open":
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                if (p.login !== undefined) {
+                    if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
+                    const provider = str(p.login.provider, "provider");
+                    const accountId = str(p.login.accountId, "accountId");
+                    const command = loginCommand(provider, accountId);
+                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, onExit: () => { void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
                 this.terminals.write(client, str(p.id, "id"), str(p.data, "data"));
@@ -1155,7 +1216,7 @@ export class Engine {
             case "scripts.list":
                 return await listScripts(p.cwd);
             case "scripts.save": {
-                const { project, script } = await saveScript(p.cwd, { id: p.id, name: p.name, command: p.command, icon: p.icon });
+                const { project, script } = await saveScript(p.cwd, { id: p.id, name: p.name, command: p.command, icon: p.icon, runOnWorktreeCreate: p.runOnWorktreeCreate });
                 this.broadcast({ type: "scripts.changed", project });
                 return script;
             }
@@ -1171,14 +1232,27 @@ export class Engine {
             }
             case "scripts.run": {
                 // Only ever from a click in the GUI: the stored command, typed into a terminal the window can see and stop.
+                // Or, with `setup`, the setup script, once, in the worktree this window just created (see setup.ts).
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
-                const { project, script } = await findScript(p.cwd, p.script);
+                const grant = p.setup === undefined ? undefined : this.setups.take(client, p.setup);
+                const cwd = str(p.cwd, "cwd");
+                const found = await findScript(cwd, p.script);
+                const { project, script } = found;
                 // The window may have gone while the script was looked up.
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
-                const opened = this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, { input: `${script.command}\r` });
+                if (grant) checkGrant(grant, cwd, found);
+                const opened = this.terminals.open(client, str(p.id, "id"), grant ? grant.path : cwd, p.cols, p.rows, { input: `${script.command}\r` });
                 // It's running; remembering it for the header button needn't hold up the reply, and may fail quietly.
-                void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
+                // A setup run isn't a choice of the user's, so the button keeps what it had.
+                if (!grant) void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
                 return { ...opened, script };
+            }
+            case "scripts.setupInfo": {
+                if (typeof p.cwd !== "string") throw new RpcError("cwd must be a string", "invalid");
+                const cwd = resolve(expandHome(text(p.cwd, "cwd", 4096)));
+                const main = mainCheckoutOf(cwd);
+                const { script } = await findSetupScript(cwd);
+                return { main, ...(script ? { script } : {}), trusted: setupTrusted(main, main) };
             }
             case "hello": {
                 const startCwd = this.o.startCwd && this.o.startCwd !== homedir() ? this.o.startCwd : undefined;
@@ -1389,6 +1463,43 @@ export class Engine {
                 if (p.refresh) await this.refreshListings(true);
                 else if (!this.listed) await this.firstListings();
                 return this.modelsList();
+            case "session.setAccount":
+                this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
+                return null;
+            case "accounts.list":
+                return this.accountsList(str(p.provider, "provider"), p.refresh === true);
+            case "accounts.add": {
+                const provider = str(p.provider, "provider");
+                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
+                const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
+                forgetClient(provider);
+                await this.refreshListings(true);
+                this.broadcast({ type: "models.changed" });
+                return added;
+            }
+            case "accounts.rename":
+                renameAccount(str(p.provider, "provider"), str(p.id, "id"), str(p.name, "name"));
+                this.broadcast({ type: "models.changed" });
+                return null;
+            case "accounts.setDefault":
+                setDefaultAccount(str(p.provider, "provider"), str(p.id, "id"));
+                await this.refreshListings(true);
+                this.broadcast({ type: "models.changed" });
+                return null;
+            case "accounts.remove": {
+                const provider = str(p.provider, "provider");
+                const id = str(p.id, "id");
+                account(provider, id);
+                for (const rt of this.runtimes.values()) {
+                    if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn before removing it", "busy");
+                }
+                removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
+                this.accountStatus.delete(`${provider}:${id}`);
+                this.limits.delete(planLimitKey(provider, id));
+                this.broadcast({ type: "limits", limits: { provider, accountId: id, windows: [], reached: false, at: Date.now() } });
+                this.broadcast({ type: "models.changed" });
+                return null;
+            }
             case "providers.list":
                 return this.providersList();
             // Awaited here: these can reject before their first await, and a promise handed back unawaited is
@@ -1400,6 +1511,8 @@ export class Engine {
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");
                 if (getProvider(id)?.auth === "cli") {
+                    // Keep account folders registered and protected until explicitly removed.
+                    if ((readAgentConfig(id)?.accounts?.length ?? 0) > 0) throw new RpcError("Remove named accounts before turning off this CLI", "invalid");
                     // Turns it off here; the CLI stays signed in.
                     removeAgentConfig(id);
                     forgetClient(id);
@@ -1419,8 +1532,18 @@ export class Engine {
                 return this.inspectProject(str(p.path, "path"));
             case "projects.worktrees":
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
-            case "projects.createWorktree":
-                return createWorktree(
+            case "projects.createWorktree": {
+                if (p.setup !== undefined && typeof p.setup !== "boolean") throw new RpcError("setup must be true or false", "invalid");
+                // Copy the client's accepted preview before checkout yields; never select a replacement later.
+                let preview: CreateWorktreeParams["setupScript"];
+                if (p.setup === true && p.setupScript !== undefined) {
+                    const s = p.setupScript;
+                    if (!s || typeof s !== "object" || Array.isArray(s) || typeof s.id !== "string" || typeof s.command !== "string") {
+                        throw new RpcError("setupScript must contain the previewed id and command", "invalid");
+                    }
+                    preview = { id: text(s.id, "setupScript.id", 64), command: text(s.command, "setupScript.command", SCRIPT_LIMITS.command) };
+                }
+                const made = await createWorktree(
                     {
                         path: resolve(expandHome(text(p.path, "path", 4096))),
                         branch: text(p.branch, "branch", 200),
@@ -1430,6 +1553,9 @@ export class Engine {
                     },
                     this.o.log,
                 );
+                // The worktree is there whatever its setup does: only asked for, by this request, may it run.
+                return p.setup === true ? { ...made, ...(await this.grantSetup(client, made.path, preview)) } : made;
+            }
             case "projects.removeWorktree":
                 return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));
             case "projects.trust":

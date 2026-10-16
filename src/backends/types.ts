@@ -85,6 +85,8 @@ export interface BackendHost {
 }
 
 export interface BackendTurn {
+    /** The CLI config folder selection; omitted means its Default account. */
+    accountId?: string;
     prompt: string;
     images: ImagePart[];
     /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */

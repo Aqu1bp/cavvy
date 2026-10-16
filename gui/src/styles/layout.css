@@ -268,13 +268,13 @@
     color: var(--link);
 }
 
-/* Working in the background: it recedes until you look. */
-.card.rec {
-    opacity: 0.75;
+/* Keep background sessions quieter without fading their metadata below AA. */
+.card.rec .l2 {
+    color: var(--fg-muted);
 }
 
-.card.rec:hover {
-    opacity: 1;
+.card.rec:hover .l2 {
+    color: var(--fg);
 }
 
 .card-rename {
@@ -484,7 +484,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
     flex: none;
 }
 
@@ -864,7 +864,7 @@ a.prow:hover,
     height: 8px;
     border-radius: 50%;
     box-shadow: 0 0 0 2px var(--bg-card);
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
 }
 
 .nd.st-running {
@@ -884,7 +884,7 @@ a.prow:hover,
 }
 
 .nd.st-stopped {
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
 }
 
 .lt {
@@ -2360,6 +2360,17 @@ button.strip-ctl[aria-expanded="true"] {
 .script-row:focus-within .script-acts,
 .script-row.confirming .script-acts {
     display: flex;
+}
+
+/* The name, and a label on the setup script (the one that runs in each new worktree). */
+.script-name {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.script-badge {
+    flex: none;
 }
 
 /* ---- Settings → Usage ------------------------------------------------------ */

@@ -1,0 +1,4 @@
+.accounts { margin: 8px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.account-form, .account-row { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.account-form label, .account-path { flex-basis: 100%; overflow-wrap: anywhere; }
+.account-form input { width: 100%; }

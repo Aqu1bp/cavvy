@@ -34,6 +34,7 @@ function PlanLimitsGroup() {
                             <div>
                                 <div class="usage-plan-name">
                                     {name(l.provider)?.agentCli?.plan ?? name(l.provider)?.name ?? l.provider}
+                                    {" · "}{name(l.provider)?.agentCli?.accounts?.find((a) => a.id === (l.accountId ?? "default"))?.name ?? l.accountId ?? "Default"}
                                     <Show when={m!.asOf}>
                                         <span class="plan-asof"> · {m!.asOf}</span>
                                     </Show>
@@ -79,16 +80,17 @@ export function UsageView() {
                     <Spinner size={14} />
                 </Show>
                 <span class="spacer" />
-                <Segmented size="sm" value={String(days())} options={RANGES} onChange={(v) => setDays(Number(v) as UsageDays)} />
+                <Segmented label="Usage time range" size="sm" value={String(days())} options={RANGES} onChange={(v) => setDays(Number(v) as UsageDays)} />
                 <button class="hb sm" title="Refresh" aria-label="Refresh" onClick={() => void load()}>
                     <RotateCcw size={14} />
                 </button>
             </div>
-            <Show when={data()} fallback={<p class="set-note">Reading the sessions…</p>}>
+            <Show when={data()} fallback={<p class="set-note" role="status">Reading the sessions…</p>}>
                     {(d) => (
                         <Show when={d().rows.length} fallback={<p class="set-note">{emptyText(d())}</p>}>
                             <div class="usage-table-wrap">
-                                <table class="usage-table">
+                                <table class="usage-table" aria-busy={loading()}>
+                                    <caption class="sr-only">Tokens and cost for the last {days()} days</caption>
                                     <thead>
                                         <tr>
                                             <th>Model</th>

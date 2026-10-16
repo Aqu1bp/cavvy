@@ -49,7 +49,7 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
                     </span>
                 </Show>
                 <Show when={long()}>
-                    <button class="link-btn more" onClick={() => setExpanded(!expanded())}>
+                    <button class="link-btn more" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
                         {expanded() ? "Show less" : "Show more"}
                     </button>
                 </Show>
@@ -151,7 +151,7 @@ function Compacted(p: { block: CompactBlock }) {
         <div class="compacted" data-find={p.block.id}>
             <div class="compacted-rule" data-find-skip>
                 <span />
-                <button class="link-btn" onClick={() => setOpen(!open())}>
+                <button class="link-btn" aria-expanded={open()} onClick={() => setOpen(!open())}>
                     Conversation compacted · {open() ? "hide summary" : "view summary"}
                 </button>
                 <span />
@@ -404,12 +404,14 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
     );
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""}`} data-turn={p.turn.id}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""}`} data-turn={p.turn.id} aria-busy={running()}>
             <Show when={p.turn.prompt}>
+                <h2 class="sr-only" data-find-skip>You said</h2>
                 <UserPrompt turn={p.turn} onRewind={p.onRewind} />
             </Show>
             <Show when={hasOutput()}>
                 <div class="reply">
+                    <h2 class="sr-only" data-find-skip>{running() ? "Harness is working" : "Harness replied"}</h2>
                     <Show when={running() && p.last}>
                         <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
                     </Show>

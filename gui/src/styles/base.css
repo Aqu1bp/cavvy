@@ -289,7 +289,7 @@ h3 {
 }
 
 .btn.primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 88%, #fff);
+    background: var(--accent-hover);
 }
 
 .btn.secondary {
@@ -312,7 +312,7 @@ h3 {
 
 .btn.danger {
     background: var(--danger);
-    color: #fff;
+    color: var(--fg-inverse);
 }
 
 .btn:disabled {
@@ -354,7 +354,7 @@ h3 {
 }
 
 .link-btn {
-    color: var(--accent);
+    color: var(--accent-text);
     font-size: 0.857rem;
     font-weight: 550;
     display: inline-flex;
@@ -636,7 +636,7 @@ input[type="range"] {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
     flex: none;
     display: inline-block;
 }
@@ -791,6 +791,85 @@ select:focus-visible {
 
 .hidden {
     display: none !important;
+}
+
+/* Read by screen readers, not shown. */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Forced colors (Windows high contrast) drop shadows and author backgrounds, which is all
+   that shows focus on text fields and state on rows, toggles and the send button. System
+   colors are kept, so state is redrawn with them. */
+@media (forced-colors: active) {
+    :focus-visible,
+    input:focus-visible,
+    textarea:focus-visible,
+    select:focus-visible,
+    .input:focus,
+    .select:focus,
+    .composer-box:focus-within,
+    :root .itab-input:focus,
+    :root .itab-feedback:focus,
+    :root .mp-search input:focus-visible {
+        outline: 2px solid Highlight;
+    }
+
+    .card.cur,
+    .slim.cur,
+    .navi.on:not(:focus-visible),
+    .segmented button.on:not(:focus-visible),
+    .menu-item.sel:not(:focus-visible),
+    .menu-item.current:not(:focus-visible),
+    .mr.sel,
+    .mr.on,
+    .rw-item.on:not(:focus-visible),
+    .rf-row.on {
+        outline: 1px solid SelectedItem;
+        outline-offset: -1px;
+    }
+
+    .toggle {
+        border: 1px solid ButtonText;
+        background: GrayText;
+    }
+
+    .toggle.on {
+        background: Highlight;
+    }
+
+    .toggle.on:not(:focus-visible) {
+        outline: 1px solid Highlight;
+    }
+
+    .toggle-knob {
+        border: 1px solid ButtonText;
+        background: Canvas;
+    }
+
+    .toggle.on .toggle-knob {
+        background: HighlightText;
+    }
+
+    /* button: outranks composer.css, which loads later. */
+    button.send,
+    button.send.stop {
+        border: 1px solid ButtonText;
+        background: ButtonText;
+        color: ButtonFace;
+    }
+
+    button.send:disabled {
+        background: GrayText;
+    }
 }
 
 /* Icons: a lighter stroke than the library's default reads calmer at UI sizes. */
