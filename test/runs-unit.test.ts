@@ -87,16 +87,16 @@ describe("names", () => {
         expect(uniqueName("x", () => true, 5)).toBeUndefined();
     });
 
-    test("what counts as paid", () => {
-        expect(billingOf(getProvider("claude-code"))).toBe("plan");
-        expect(billingOf(getProvider("codex"))).toBe("plan");
-        expect(billingOf(getProvider("ollama"))).toBe("local");
-        expect(billingOf(getProvider("lmstudio"))).toBe("local");
-        expect(billingOf(getProvider("mock"))).toBe("local");
-        expect(billingOf(getProvider("anthropic"))).toBe("api");
-        expect(billingOf(getProvider("openrouter"))).toBe("api");
-        expect(billingOf(getProvider("vertex"))).toBe("api");
-        expect(billingOf(undefined)).toBe("api");
+    test("what counts as paid", async () => {
+        expect(await billingOf(getProvider("claude-code"))).toBe("plan");
+        expect(await billingOf(getProvider("codex"))).toBe("plan");
+        expect(await billingOf(getProvider("ollama"))).toBe("local");
+        expect(await billingOf(getProvider("lmstudio"))).toBe("local");
+        expect(await billingOf(getProvider("mock"))).toBe("local");
+        expect(await billingOf(getProvider("anthropic"))).toBe("api");
+        expect(await billingOf(getProvider("openrouter"))).toBe("api");
+        expect(await billingOf(getProvider("vertex"))).toBe("api");
+        expect(await billingOf(undefined)).toBe("api");
     });
 });
 
@@ -176,6 +176,8 @@ describe("the cost guard", () => {
         { id: "paida", name: "Paid A", baseUrl: "https://paid-a.invalid/v1" },
         { id: "paidb", name: "Paid B", baseUrl: "https://paid-b.invalid/v1" },
         { id: "paidc", name: "Paid C", baseUrl: "https://paid-c.invalid/v1" },
+        { id: "proxy", name: "Local Proxy", baseUrl: "http://localhost:4000/v1" },
+        { id: "optionalproxy", name: "Optional Key Proxy", baseUrl: "http://127.0.0.1:4000/v1", requiresKey: false },
     ];
     beforeAll(() => {
         writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [...PROVIDERS.custom, ...paid] }));
@@ -187,6 +189,19 @@ describe("the cost guard", () => {
     });
     const listing = (id: string, pricing?: { input: number; output: number }): ProviderListing => ({ provider: getProvider(id)!, status: "ok", models: [{ provider: id, id: "big", name: `${id} Big`, pricing }] });
     const listings = () => [listing("paida", { input: 3, output: 15 }), listing("paidb"), listing("paidc", { input: 1, output: 2 }), { provider: getProvider("mock")!, status: "ok" as const, models: [{ provider: "mock", id: "mock-opus" }] }];
+
+    test.each(["proxy", "optionalproxy"])("a keyed loopback provider (%s) counts toward paid confirmation before creating anything", async (id) => {
+        const main = repo();
+        const h = host({ setModel: () => true, listings: [...listings(), listing(id)] });
+        const req = { path: main, models: ["paida:big", "paidb:big", `${id}:big`], text: "compare", images: [], confirmPaid: false };
+        await expect(startRun(h.h, req)).rejects.toMatchObject({ code: "confirm_paid" });
+        expect(h.opened).toEqual([]);
+        expect(h.sent).toEqual([]);
+        expect(worktreesOf(main)).toEqual([]);
+        expect(branchesOf(main)).toEqual(["main"]);
+        const result = await startRun(h.h, { ...req, confirmPaid: true });
+        expect(result.results.map((r) => r.ok)).toEqual([true, true, true]);
+    });
 
     test("more than two paid API models are refused until confirmed; cancelled, nothing is created", async () => {
         const engine = new Engine({ listModels: async () => listings() });

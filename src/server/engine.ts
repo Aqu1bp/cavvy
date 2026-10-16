@@ -424,10 +424,10 @@ export class Engine {
         return p;
     }
 
-    private modelsList(): ProviderModels[] {
-        return this.listings
+    private modelsList(): Promise<ProviderModels[]> {
+        return Promise.all(this.listings
             .filter((l) => l.status !== "offline")
-            .map((l) => ({ provider: l.provider.id, providerName: l.provider.name, status: l.status, error: l.error ? redact(l.error) : undefined, billing: billingOf(l.provider), models: l.models.map(modelSummary) }));
+            .map(async (l) => ({ provider: l.provider.id, providerName: l.provider.name, status: l.status, error: l.error ? redact(l.error) : undefined, billing: await billingOf(l.provider), models: l.models.map(modelSummary) })));
     }
 
     // -----------------------------------------------------------------------

@@ -6,6 +6,7 @@
 import { randomBytes } from "crypto";
 import { lstatSync, realpathSync, statSync } from "fs";
 import { join, relative } from "path";
+import { getKey } from "../auth/credentials";
 import { projectConfigSummary, trustedByUser } from "../config/trust";
 import { PERMISSION_MODES } from "../permissions/modes";
 import { clientFor, type ProviderListing } from "../providers/models";
@@ -126,9 +127,11 @@ function lexists(path: string): boolean {
 // Checks before anything is created
 
 /** Claude Code and Codex run on the user's plan, Ollama and LM Studio on this machine; anything else is billed per token (when in doubt, too). */
-export function billingOf(def: ProviderDef | undefined): Billing {
+export async function billingOf(def: ProviderDef | undefined): Promise<Billing> {
     if (def?.auth === "cli") return "plan";
-    if (def?.local) return "local";
+    // A keyed loopback proxy can forward to paid APIs. Only unkeyed custom
+    // providers qualify as local, even when their key is optional.
+    if (def?.local && !(def.custom && await getKey(def.id))) return "local";
     return "api";
 }
 
@@ -193,7 +196,7 @@ async function checkModel(ref: string, listings: ProviderListing[], withImages: 
     const shown = info.name ?? info.id;
     if (withImages && info.supportsImages === false) return { ref, name: shown, ok: false, error: `${shown} doesn't take images. Remove the images, or pick another model.` };
     if (withPdf && !readsPdf(info)) return { ref, name: shown, ok: false, error: `${shown} can't read PDFs. Remove the PDFs, or pick another model.` };
-    return { ref, name: shown, ok: true, billing: billingOf(def), info };
+    return { ref, name: shown, ok: true, billing: await billingOf(def), info };
 }
 
 /** The commit every worktree starts from, read once so they all start from the same one. */

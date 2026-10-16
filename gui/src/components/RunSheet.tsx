@@ -29,6 +29,7 @@ export function RunSheet() {
         if (p?.kind === "trust") return "Trust this project first?";
         if (p?.kind === "done") return `Sent to ${p.results.filter((r) => r.ok).length} of ${p.results.length} models`;
         if (p?.kind === "error") return "The run didn't start";
+        if (p?.kind === "unknown") return "Run outcome unknown";
         return `Starting ${s()?.req.models.length ?? ""} models…`;
     };
     return (
@@ -79,7 +80,7 @@ export function RunSheet() {
                             </>
                         )}
                     </Match>
-                    <Match when={phase()?.kind === "error" && (phase() as Extract<Phase, { kind: "error" }>)}>
+                    <Match when={(phase()?.kind === "error" || phase()?.kind === "unknown") && (phase() as Extract<Phase, { kind: "error" | "unknown" }>)}>
                         {(e) => (
                             <>
                                 <div class="rw-confirm">

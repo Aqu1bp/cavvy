@@ -17,6 +17,7 @@ type Phase =
     | { kind: "confirm"; message: string }
     | { kind: "trust"; folder: string; message: string; project: boolean }
     | { kind: "error"; message: string }
+    | { kind: "unknown"; message: string }
     | { kind: "done"; results: RunResult[] };
 
 export function createRunSheet(io: {
@@ -38,6 +39,7 @@ export function createRunSheet(io: {
             io.refresh();
         } catch (e) {
             const message = (e as Error).message;
+            if (e instanceof RpcError && e.code === "disconnected") return setPhase({ kind: "unknown", message: "Lost connection — some sessions may already be running; check the sidebar before resending" });
             if (e instanceof RpcError && e.code === "confirm_paid") return setPhase({ kind: "confirm", message });
             if (e instanceof RpcError && (e.code === "needs_trust" || e.code === "needs_project_trust")) return setPhase({ kind: "trust", folder: e.folder ?? s.req.path, message, project: e.code === "needs_project_trust" });
             setPhase({ kind: "error", message });
