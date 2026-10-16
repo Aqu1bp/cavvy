@@ -89,14 +89,19 @@ function entries(o: unknown): unknown {
         .map((k) => [k, (o as Record<string, unknown>)[k]]);
 }
 
-/** What an approval is bound to. "disabled" isn't part of it: turning a server off and on again isn't a change to what it runs. */
-export function mcpFingerprint(config: McpServerConfig, projectCwd: string): string {
+/**
+ * What an approval is bound to. "disabled" isn't part of it: turning a server off and on doesn't change what runs.
+ * `runCwd`: the folder it will be started in, resolved once by the caller
+ * (McpManager.start), so what's checked is where it runs, whatever a
+ * symlink points at a moment later.
+ */
+export function mcpFingerprint(config: McpServerConfig, projectCwd: string, runCwd?: string): string {
     const what = {
         // The same folder reached through a symlink (the GUI and the terminal may name it differently) is the same approval.
         folder: real(resolve(projectCwd)),
         command: config.command ?? null,
         args: config.args ?? [],
-        cwd: config.url ? null : serverCwd(config, projectCwd),
+        cwd: config.url ? null : (runCwd ?? serverCwd(config, projectCwd)),
         env: entries(config.env),
         url: config.url ?? null,
         headers: entries(config.headers),
@@ -122,8 +127,8 @@ const record = (v: unknown): Record<string, string> => (v && typeof v === "objec
  * configuration. `s` must be settings as loadSettings merges them, where
  * these keys come from user and local settings only.
  */
-export function approvalOf(name: string, config: McpServerConfig, s: Settings, projectCwd: string, userTrusted: boolean): Approval {
-    const fingerprint = mcpFingerprint(config, projectCwd);
+export function approvalOf(name: string, config: McpServerConfig, s: Settings, projectCwd: string, userTrusted: boolean, runCwd?: string): Approval {
+    const fingerprint = mcpFingerprint(config, projectCwd, runCwd);
     if (list(s.disabledMcpjsonServers).includes(name)) return { state: "rejected", fingerprint };
     if (userTrusted && Object.hasOwn(s, "enableAllProjectMcpServers") && s.enableAllProjectMcpServers === true) return { state: "approved", viaAll: true, fingerprint };
     const approved = record(s.approvedMcpjsonServers);
@@ -192,16 +197,36 @@ export function visible(s: string, o: { lineBreaks?: boolean } = {}): { text: st
 }
 
 /**
- * Values from a server's env and headers, longest first, labelled by name,
- * to mask wherever they turn up (args, errors, tool output). Shorter than
- * four characters isn't masked: "1" or "on" would garble everything shown,
- * and holds nothing secret.
+ * Configured secrets, longest first, labelled by source. Ordinary env/header values
+ * shorter than four characters aren't masked: "1" or "on" would garble the text.
+ * Explicit credential flags and URL fields are masked regardless of length.
  */
 function configSecrets(config: McpServerConfig): [string, string][] {
     const out: [string, string][] = [];
-    const add = (v: unknown, label: string) => {
-        if (typeof v === "string" && v.length >= 4) out.push([v, label]);
+    const add = (v: unknown, label: string, minLength = 4) => {
+        if (typeof v === "string" && v.length >= minLength) out.push([v, label]);
     };
+    // As written, and decoded (an error may echo either).
+    const addUrlPart = (v: string | undefined, label: string) => {
+        if (v === undefined) return;
+        add(v, label, 1);
+        try {
+            const d = decodeURIComponent(v);
+            if (d !== v) add(d, label, 1);
+        } catch {
+            // not percent-encoded
+        }
+    };
+    if (typeof config.url === "string") {
+        addUrlPart(URL_PASSWORD.exec(config.url)?.[1], "URL password");
+        for (const m of config.url.matchAll(URL_QUERY)) {
+            if (!secretQueryName(m[2]!)) continue;
+            addUrlPart(m[3], `URL ${m[2]}`);
+            // Query decoding treats '+' as a space too; errors may echo either representation.
+            addUrlPart(m[3]!.replace(/\+/g, " "), `URL ${m[2]}`);
+        }
+    }
+    for (const [flag, v] of secretFlags(config.args)) add(v, `argument ${flag}`, 1);
     for (const [k, v] of Object.entries(record(config.env))) add(v, `env ${k}`);
     for (const [k, v] of Object.entries(record(config.headers))) {
         add(v, `header ${k}`);
@@ -219,7 +244,7 @@ function maskWith(text: string, secrets: [string, string][]): string {
     return text.replace(re, (m) => `[REDACTED ${labels.get(m)}]`);
 }
 
-/** An env or header value of this server's, wherever it shows up in `text`, masked; then redact(). */
+/** Config secrets, wherever they show up in `text`, masked; then redact(). */
 export function maskConfigValues(text: string, config: McpServerConfig): string {
     return redact(maskWith(text, configSecrets(config)));
 }
@@ -237,14 +262,60 @@ export function maskConfigDeep<T>(v: T, config: McpServerConfig): T {
         if (!x || typeof x !== "object") return x;
         if (depth > 64) return null;
         if (Array.isArray(x)) return x.map((y) => walk(y, depth + 1));
-        return Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y, depth + 1)]));
+        // Keys too: a server can put a value it knows in a key of its structured output.
+        return Object.fromEntries(Object.entries(x).map(([k, y]) => [maskWith(k, secrets), walk(y, depth + 1)]));
     };
     return walk(v, 0) as T;
 }
 
+const URL_PASSWORD = /^[a-z][a-z0-9+.-]*:\/\/[^/?#@:]*:([^/?#@]*)@/i;
+const SECRET_QUERY_KEY = /token|key|secret|passw|auth|sig|credential/i;
+const URL_QUERY = /([?&#])([^=&#]*)=([^&#]*)/g;
+
+function secretQueryName(name: string): boolean {
+    try {
+        name = decodeURIComponent(name);
+    } catch {
+        // A malformed name can still contain a recognizable credential label.
+    }
+    return SECRET_QUERY_KEY.test(name);
+}
+
 /** A password in the URL, and query values whose names look like credentials. */
 function maskUrl(url: string): string {
-    return url.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#@:]*:)([^/?#@]*)@/i, "$1[REDACTED password]@").replace(/([?&#][^=&#]*(?:token|key|secret|passw|auth|sig|credential)[^=&#]*=)([^&#]*)/gi, "$1[REDACTED]");
+    return url.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#@:]*:)([^/?#@]*)@/i, "$1[REDACTED password]@").replace(URL_QUERY, (part, sep: string, name: string) => secretQueryName(name) ? `${sep}${name}=[REDACTED]` : part);
+}
+
+/** A flag named like a password, token, secret or API key (--password, --access-token, --api-key), not --token-file. */
+const SECRET_FLAG = /^--?[A-Za-z0-9_-]*(?:password|passwd|token|secret|api[-_]?key|apikey)$/i;
+
+/** [flag, value, index of the value's arg, "=" form] for each secret-looking flag's value in `args`. */
+function secretFlags(args: unknown): [string, string, number, boolean][] {
+    if (!Array.isArray(args)) return [];
+    const out: [string, string, number, boolean][] = [];
+    args.forEach((a, i) => {
+        if (typeof a !== "string") return;
+        const eq = a.indexOf("=");
+        if (eq > 0 && SECRET_FLAG.test(a.slice(0, eq))) out.push([a.slice(0, eq), a.slice(eq + 1), i, true]);
+        else if (SECRET_FLAG.test(a) && typeof args[i + 1] === "string" && !(args[i + 1] as string).startsWith("--")) out.push([a, args[i + 1] as string, i + 1, false]);
+    });
+    return out;
+}
+
+/** Does `text` hold one of the server's env, header, URL or argument secrets? */
+export function hasConfigValue(text: string, config: McpServerConfig): boolean {
+    return configSecrets(config).some(([value]) => text.includes(value));
+}
+
+/** HTTP header names aren't case-sensitive: two that differ only in case would be sent combined, in whatever order they were written. */
+export function headerClash(config: McpServerConfig): string | undefined {
+    const seen = new Map<string, string>();
+    for (const k of Object.keys(record(config.headers))) {
+        const first = seen.get(k.toLowerCase());
+        if (first !== undefined) return `its headers "${first}" and "${k}" are the same header (names aren't case-sensitive); keep one of them`;
+        seen.set(k.toLowerCase(), k);
+    }
+    return undefined;
 }
 
 export interface DescribeInput {
@@ -299,7 +370,12 @@ export function describeServer(st: DescribeInput, projectCwd: string): McpServer
         info.headerNames = names(c.headers, "header names");
     } else {
         info.command = show(c.command ?? "", LIMITS.command, "the command");
-        const raw = Array.isArray(c.args) ? c.args : c.args === undefined ? [] : [c.args];
+        const raw: unknown[] = Array.isArray(c.args) ? [...c.args] : c.args === undefined ? [] : [c.args];
+        // The value of a --password, --token, --secret or --api-key flag, either form.
+        for (const [flag, , i, eq] of secretFlags(raw)) {
+            raw[i] = eq ? `${flag}=[REDACTED]` : "[REDACTED]";
+            masked = true;
+        }
         const args: string[] = [];
         let chars = 0;
         for (const a of raw) {

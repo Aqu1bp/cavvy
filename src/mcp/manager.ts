@@ -8,7 +8,7 @@
 
 import { existsSync } from "fs";
 import type { McpServerConfig, Settings } from "../config/settings";
-import { readJson } from "../config/settings";
+import { loadSettings, readJson } from "../config/settings";
 import { paths } from "../config/paths";
 import type { Tool, ToolResult } from "../tools/types";
 import type { ImagePart } from "../providers/types";
@@ -18,7 +18,7 @@ import { truncateMiddle } from "../util/files";
 import { createHash } from "crypto";
 import type { McpServerInfo } from "./info";
 import { trustedByUser } from "../config/trust";
-import { approvalOf, describeServer, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
+import { approvalOf, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
 
 export interface ServerState {
     name: string;
@@ -37,9 +37,15 @@ export interface ServerState {
     gen?: number;
 }
 
-/** A project server may start: approved for exactly what `config` runs, and not turned off in .mcp.json. */
+/** Shared start policy: valid, enabled configuration, with an exact approval for project servers. */
 export function mayStart(st: ServerState): boolean {
-    return st.source !== "project" || (st.approval?.state === "approved" && st.config.disabled !== true);
+    return !st.config.disabled && !startError(st) && (st.source !== "project" || st.approval?.state === "approved");
+}
+
+/** Invalid configurations are excluded by the same policy as unapproved servers. */
+function startError(st: ServerState): string | undefined {
+    if (st.collidesWith !== undefined) return collisionError(serverSegment(st.name), st.collidesWith);
+    return headerClash(st.config);
 }
 
 const MAX_OUTPUT = 40_000;
@@ -127,8 +133,7 @@ export class McpManager {
      * off for this session); any other running one is stopped, and the
      * returned promise settles once it has.
      */
-    load(): Promise<void> {
-        const s = this.settings();
+    load(s = this.settings()): Promise<void> {
         const next = new Map<string, ServerState>();
         this.skipped = 0;
         for (const [name, config] of Object.entries(s.mcpServers ?? {})) {
@@ -211,19 +216,18 @@ export class McpManager {
     }
 
     async start(st: ServerState, signal?: AbortSignal) {
-        // Nothing starts a project server that isn't approved for what it runs, whoever asks; nor a
-        // state load() has replaced since (a revoke while a reconnect waited for the old process to stop).
-        if (!mayStart(st) || this.servers.get(st.name) !== st) {
+        if (this.servers.get(st.name) !== st) return;
+        if (!mayStart(st)) {
+            const error = startError(st);
+            if (error) {
+                st.status = "failed";
+                st.error = maskConfigValues(error, st.config);
+            }
             this.onChange?.();
             return;
         }
-        // Reconnecting doesn't lift the name-collision refusal from load().
-        if (st.collidesWith !== undefined) {
-            st.status = "failed";
-            st.error = collisionError(serverSegment(st.name), st.collidesWith);
-            this.onChange?.();
-            return;
-        }
+        // Resolve once: checking a symlink and resolving it again at spawn can run in another folder.
+        const runCwd = st.config.url ? undefined : serverCwd(st.config, this.cwd);
         const gen = (st.gen ?? 0) + 1;
         st.gen = gen;
         const superseded = () => st.gen !== gen;
@@ -235,7 +239,8 @@ export class McpManager {
         this.onChange?.();
         let client: McpClient | undefined;
         try {
-            client = new McpClient(st.name, st.config, this.cwd);
+            if (!this.stillApproved(st, runCwd)) return;
+            client = new McpClient(st.name, st.config, this.cwd, runCwd);
             st.client = client;
             const c = client;
             client.onExit = () => {
@@ -256,7 +261,7 @@ export class McpManager {
                 await client.close();
                 return;
             }
-            st.tools = tools;
+            this.setTools(st, tools);
             st.era = client.era === "modern" ? client.protocolVersion : `legacy ${client.protocolVersion}`;
             st.status = "connected";
             const current = () => !superseded() && st.client === c;
@@ -265,7 +270,7 @@ export class McpManager {
                 c.listTools()
                     .then((t) => {
                         if (!current()) return;
-                        st.tools = t;
+                        this.setTools(st, t);
                         this.onChange?.();
                     })
                     .catch(() => {});
@@ -280,6 +285,27 @@ export class McpManager {
             st.client = undefined;
         }
         this.onChange?.();
+    }
+
+    /** Another process can revoke an approval or edit .mcp.json without refreshing this manager. */
+    private stillApproved(st: ServerState, runCwd?: string): boolean {
+        if (st.source !== "project") return true;
+        const settings = loadSettings(this.cwd, { trusted: this.trusted });
+        const config = this.trusted ? readJson<{ mcpServers?: Record<string, McpServerConfig> }>(paths.projectMcp(this.cwd))?.mcpServers?.[st.name] : undefined;
+        if (config && typeof config === "object" && !Object.hasOwn(settings.mcpServers ?? {}, st.name)) {
+            const approval = approvalOf(st.name, config, settings, this.cwd, trustedByUser(this.cwd), config.cwd === st.config.cwd ? runCwd : undefined);
+            if (mayStart({ ...st, config, approval }) && approval.fingerprint === st.approval?.fingerprint) return true;
+        }
+        // load detaches obsolete states and begins closing their clients synchronously, including in headless runs.
+        void this.load(settings);
+        this.onChange?.();
+        return false;
+    }
+
+    private setTools(st: ServerState, tools: McpTool[]): void {
+        st.tools = tools.filter((t) => !hasConfigValue(t.name, st.config));
+        const skipped = tools.length - st.tools.length;
+        st.error = skipped ? `${skipped} tool${skipped === 1 ? " was" : "s were"} hidden because its name contains a configured secret.` : undefined;
     }
 
     async restart(name: string) {
@@ -399,7 +425,7 @@ export class McpManager {
                     },
                     async run(input: Record<string, unknown>, ctx): Promise<ToolResult> {
                         // Revoked, rejected or restarted since this tool was listed (say, while its call waited for permission).
-                        if (st.client !== client || self.servers.get(st.name) !== st || !mayStart(st)) return { content: `MCP server ${st.name} isn't running any more.`, isError: true };
+                        if (st.client !== client || self.servers.get(st.name) !== st || !mayStart(st) || !self.stillApproved(st)) return { content: `MCP server ${st.name} isn't running any more.`, isError: true };
                         try {
                             // The server knows its own env and headers: it doesn't get to echo them into the transcript.
                             const r = maskConfigDeep(await client.callTool(t.name, input ?? {}, ctx.signal), st.config);

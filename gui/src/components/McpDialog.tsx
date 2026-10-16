@@ -10,7 +10,8 @@ import type { McpListInfo, McpServerInfo } from "@shared/protocol";
 import { app, handleFor, reportError, requestTrust, rpc, toast } from "../state/app";
 import { mcpOpen, setMcpOpen } from "../state/ui";
 import { tildify } from "../lib/format";
-import { statusLabel } from "../lib/mcp";
+import { SessionRequestGate } from "../lib/session-request-gate";
+import { mergeMcpStatus, statusLabel } from "../lib/mcp";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -29,21 +30,29 @@ export function McpDialog() {
     const [full, setFull] = createSignal<McpServerInfo>();
     const [busy, setBusy] = createSignal(false);
     const handle = () => handleFor(id());
-    const close = () => setMcpOpen(undefined);
+    const requests = new SessionRequestGate(() => mcpOpen() ? app.activeId : undefined);
+    const close = () => {
+        requests.open();
+        setMcpOpen(undefined);
+    };
 
     const load = async () => {
-        const sid = id();
-        if (!sid) return;
+        const request = requests.capture();
+        if (!request) return;
         try {
-            setList(await rpc.call("session.mcp", { id: sid }));
+            const result = await rpc.call("session.mcp", { id: request.id });
+            if (request.current()) setList(result);
         } catch (e) {
-            reportError(e);
+            if (request.current()) reportError(e);
         }
     };
     createEffect(
         on(mcpOpen, (o) => {
+            requests.open(o ? app.activeId : undefined);
             if (!o) return;
             setId(app.activeId);
+            setBusy(false);
+            setFull(undefined);
             setList(undefined);
             setChosen(o.focus);
             void load();
@@ -73,9 +82,7 @@ export function McpDialog() {
     const servers = (): McpServerInfo[] =>
         (list()?.servers ?? []).map((s) => {
             const live = handle()?.view.state.mcp.find((m) => m.name === s.name);
-            if (!live) return s;
-            const error = live.status !== "failed" ? undefined : s.status === "failed" && s.error ? s.error : live.error;
-            return { ...s, status: live.status, tools: live.tools, error };
+            return mergeMcpStatus(s, live);
         });
     const selected = (): McpServerInfo | undefined => {
         const s = servers().find((x) => x.name === chosen());
@@ -91,45 +98,60 @@ export function McpDialog() {
     createEffect(
         on(needsFull, async (key) => {
             setFull(undefined);
-            const sid = id();
+            const request = requests.capture();
             const name = chosen();
-            if (!key || !sid || name === undefined) return;
+            if (!key || !request || name === undefined) return;
             try {
-                const one = (await rpc.call("session.mcp", { id: sid, name })).servers[0];
-                if (needsFull() === key) setFull(one);
+                const one = (await rpc.call("session.mcp", { id: request.id, name })).servers[0];
+                if (request.current() && needsFull() === key) setFull(one);
             } catch (e) {
-                reportError(e);
+                if (request.current()) reportError(e);
             }
         }),
     );
 
-    const act = async (fn: (sid: string) => Promise<void>) => {
-        const sid = id();
-        if (!sid || busy()) return;
+    const act = async (fn: (sid: string) => Promise<() => void>) => {
+        const request = requests.capture();
+        if (!request || busy()) return;
         setBusy(true);
         try {
-            await fn(sid);
+            const apply = await fn(request.id);
+            if (request.current()) apply();
         } catch (e) {
-            reportError(e);
-            void load();
+            if (request.current()) {
+                reportError(e);
+                void load();
+            }
         } finally {
-            setBusy(false);
+            if (request.current()) setBusy(false);
         }
     };
     const approve = (s: McpServerInfo) =>
         act(async (sid) => {
             const r = await rpc.call("session.mcpApprove", { id: sid, name: s.name, fingerprint: s.fingerprint ?? "" });
-            setList(r.list);
-            setFull(undefined);
-            if (!r.approved) toast(`What ${s.label} runs changed since it was shown. Nothing was approved: look at it again.`, "warn");
+            return () => {
+                setList(r.list);
+                setFull(undefined);
+                if (!r.approved) toast(`What ${s.label} runs changed since it was shown. Nothing was approved: look at it again.`, "warn");
+            };
         });
-    const reject = (s: McpServerInfo) => act(async (sid) => void setList(await rpc.call("session.mcpReject", { id: sid, name: s.name })));
-    const revoke = (s: McpServerInfo) => act(async (sid) => void setList(await rpc.call("session.mcpRevoke", { id: sid, name: s.name })));
-    const reconnect = (s: McpServerInfo) => act(async (sid) => void setList(await rpc.call("session.mcpReconnect", { id: sid, name: s.name })));
+    const change = (method: "session.mcpReject" | "session.mcpRevoke" | "session.mcpReconnect", s: McpServerInfo) =>
+        act(async (sid) => {
+            const result = await rpc.call(method, { id: sid, name: s.name });
+            return () => setList(result);
+        });
+    const reject = (s: McpServerInfo) => change("session.mcpReject", s);
+    const revoke = (s: McpServerInfo) => change("session.mcpRevoke", s);
+    const reconnect = (s: McpServerInfo) => change("session.mcpReconnect", s);
     // The existing trust flow; the list is read again after it (the folder's servers may be approved by then).
     const trust = () => {
         const cwd = handle()?.view.state.cwd;
-        if (cwd) requestTrust(cwd, () => void load(), "Harness trusted this folder for this session only, because it had nothing to protect when it was opened. Its .mcp.json servers can be approved once you trust it yourself.");
+        const request = requests.capture();
+        if (cwd && request) {
+            requestTrust(cwd, () => {
+                if (request.current()) void load();
+            }, "Harness trusted this folder for this session only, because it had nothing to protect when it was opened. Its .mcp.json servers can be approved once you trust it yourself.");
+        }
     };
 
     return (

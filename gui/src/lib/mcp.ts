@@ -1,6 +1,6 @@
 // How an MCP server's state reads, in the side panel and the MCP dialog.
 
-import type { McpStatus } from "@shared/protocol";
+import type { McpServerInfo, McpStatus } from "@shared/protocol";
 
 /** As the server's visible(): control, bidi and other invisible characters shown, never rendered. */
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}   -   　]/gu;
@@ -28,4 +28,12 @@ export function statusLabel(m: Pick<McpStatus, "status" | "tools" | "approval">)
         case "disabled":
             return { text: m.approval?.state === "rejected" ? "Rejected" : "Off" };
     }
+}
+
+/** Connected servers can carry a warning too (for example, a tool hidden for leaking a secret). */
+export function mergeMcpStatus(server: McpServerInfo, live?: McpStatus): McpServerInfo {
+    if (!live) return server;
+    // Live failures contain only their first line; retain the detail response's full error.
+    const error = live.status === "failed" && server.status === "failed" && server.error ? server.error : live.error;
+    return { ...server, status: live.status, tools: live.tools, error };
 }

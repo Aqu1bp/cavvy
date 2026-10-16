@@ -198,7 +198,7 @@ describe("what the card shows", () => {
         const secret = "sentinel-env-value-0123456789";
         const st = { name: "s", source: "project" as const, status: "needs-approval" as const, tools: [], config: { command: "node", args: ["a b", `--token=${secret}`, ""], cwd: "link", env: { API_TOKEN: secret, MODE: "x" } } };
         const info = describeServer(st, dir);
-        expect(info.args).toEqual(["a b", "--token=[REDACTED env API_TOKEN]", ""]);
+        expect(info.args).toEqual(["a b", "--token=[REDACTED]", ""]);
         expect(info.cwd).toBe(join(realDir(dir), "real"));
         expect(info.envNames).toEqual(["API_TOKEN", "MODE"]);
         expect(info.masked).toBe(true);

@@ -7,7 +7,7 @@ const iso = isolate();
 const { McpClient, McpError, headerValue, MODERN_VERSION } = await import("../src/mcp/client");
 const { McpManager, toolNameFor, serverSegment, formatMcpResult } = await import("../src/mcp/manager");
 const { startHttpMcpServer } = await import("./fixtures/mcp-http-server");
-const { mcpFingerprint } = await import("../src/mcp/approval");
+const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
 const { trustFolder } = await import("../src/config/trust");
 import type { McpServerConfig, Settings } from "../src/config/settings";
 import type { McpClient as McpClientT } from "../src/mcp/client";
@@ -161,7 +161,7 @@ describe("stdio, legacy server (2025-06-18)", () => {
         expect(await waitFor(() => !alive(pid))).toBe(true);
         // The fixture exits on stdin EOF, so no SIGTERM wait was needed.
         expect(Date.now() - t0).toBeLessThan(1400);
-        await expect(c.callTool("echo", { text: "x" })).rejects.toThrow("server is not running");
+        await expect(c.callTool("echo", { text: "x" })).rejects.toThrow("was closed");
     });
 });
 
@@ -584,6 +584,7 @@ describe("McpManager start, tools and shutdown", () => {
     mkdirSync(proj, { recursive: true });
     writeFileSync(join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { mod: stdio("modern") } }));
     let settings: Settings = { mcpServers: { leg: stdio("legacy") }, approvedMcpjsonServers: { mod: mcpFingerprint(stdio("modern"), proj) } };
+    saveApproval(proj, "mod", settings.approvedMcpjsonServers!.mod!);
     const m = new McpManager(proj, () => settings, true);
     const ctx = { signal: new AbortController().signal } as never;
     afterAll(() => m.closeAll());
