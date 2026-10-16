@@ -15,6 +15,7 @@ import { dirname, join } from "path";
 import { randomBytes } from "crypto";
 import { APP_VERSION } from "../config/paths";
 import { textOf, type Message } from "../providers/types";
+import { redact } from "../util/redact";
 import { hold, letGo, newSessionId, redactedJson, Session, type ForkOrigin, type Line, type SessionMeta } from "./session";
 
 /**
@@ -42,7 +43,8 @@ const COPIED: Record<Line["t"], boolean> = {
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
-const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 120);
+// Match secrets while they're whole, before whitespace changes or clipping.
+const oneLine = (s: string) => redact(s).replace(/\s+/g, " ").trim().slice(0, 120);
 
 /** "Fork of …", once: a fork of a fork is named after the same conversation. */
 export function forkTitle(title: string): string {
@@ -152,7 +154,7 @@ function firstPrompt(lines: Line[]): string | undefined {
         if (l.t === "msg") {
             const m = l.m;
             const kind = m.role === "user" ? (m.meta?.kind ?? "prompt") : undefined;
-            const text = m.role === "user" && (kind === "prompt" || kind === "command") ? oneLine((m.meta?.display ?? textOf(m)).replace(REMINDERS, "")) : "";
+            const text = m.role === "user" && (kind === "prompt" || kind === "command") ? oneLine(redact(m.meta?.display ?? textOf(m)).replace(REMINDERS, "")) : "";
             if (!first && text) first = { text, at: count };
             count++;
         } else if (l.t === "rewind") {

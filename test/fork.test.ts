@@ -15,6 +15,8 @@ const { FileHistory } = await import("../src/agent/checkpoints");
 const { App } = await import("../src/ui/app");
 const { runCommand } = await import("../src/commands/index");
 const { stripAnsi } = await import("../src/ui/ansi");
+const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+const { MODE_INFO } = await import("../src/permissions/modes");
 import type { AssistantMessage, ChatRequest, Message } from "../src/providers/types";
 
 beforeAll(() => {
@@ -50,6 +52,30 @@ function original(cwd = realpathSync(tempDir())) {
 const filesIn = (dir: string) => readdirSync(dir).sort();
 
 describe("the fork's file", () => {
+    test.each(["explicit", "session", "prompt"] as const)("redacts %s titles before shortening or normalizing them", (source) => {
+        for (const secret of ["fork-private-token-" + "x".repeat(160), "fork-private\n  token-123456789"]) {
+            const s = Session.create(realpathSync(tempDir()));
+            const title = `Discuss ${secret} later`;
+            // Register after saving to cover older transcripts containing newly known secrets.
+            s.push(prompt(source === "prompt" ? title : "first"));
+            if (source === "session") s.setTitle(title);
+            registerSecret(secret, "fork-test");
+            try {
+                const f = forkSession(s, { cut: 1, ...(source === "explicit" ? { title } : {}) });
+                try {
+                    expect(f.title).toBe("Fork of Discuss [REDACTED fork-test] later");
+                    expect(f.meta.forkOf?.title).toBe("Discuss [REDACTED fork-test] later");
+                    expect(readFileSync(f.path, "utf-8")).not.toContain("fork-private");
+                } finally {
+                    f.release();
+                }
+            } finally {
+                unregisterSecret(secret);
+                s.release();
+            }
+        }
+    });
+
     test("at the last response: the whole conversation, a new id and title, the model and speed now, no spend, and where it came from", () => {
         const s = original();
         s.setModel("test:m2"); // picked since, nothing run on it yet
@@ -385,6 +411,32 @@ describe("/fork in the terminal", () => {
         await app.startTurn("what did I say?");
         expect(JSON.stringify(requests[0]!.messages)).toContain("PINEAPPLE");
         expect(JSON.stringify(requests[0]!.messages)).not.toContain("MANGO");
+    });
+
+    test.each(["default", "acceptEdits", "plan"] as const)("reminds the model of the current %s mode on the first fork turn", async (mode) => {
+        const cwd = realpathSync(tempDir());
+        const { app, requests } = testApp(cwd);
+        app.session = Session.create(cwd);
+        app.makeAgent();
+        app.setMode(mode === "plan" ? "default" : "plan");
+        await app.startTurn("consider the change");
+        app.setMode(mode);
+        const origin = app.session;
+        const before = readFileSync(origin.path, "utf-8");
+        try {
+            await runCommand(app, "/fork");
+            expect(app.mode).toBe(mode);
+            expect(app.session.messages).toEqual(origin.messages);
+            requests.length = 0;
+            await app.startTurn("continue in the current mode");
+            const sent = requests[0]!.messages.findLast((m) => m.role === "user")!;
+            const text = sent.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
+            expect(text).toContain(mode === "plan" ? "Plan mode" : `The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}`);
+            expect(readFileSync(origin.path, "utf-8")).toBe(before);
+        } finally {
+            app.session.release();
+            origin.release();
+        }
     });
 
     test("with nothing to fork, says so", async () => {

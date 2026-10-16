@@ -972,6 +972,9 @@ function forkCommand(app: App) {
     // Its timeline, for when the app opens it.
     forkUiLog({ file: origin.path, id: origin.meta.id }, { file: fork.path, id: fork.meta.id });
     app.resume(fork);
+    // Resume creates a new agent; tell it the current mode, as GUI forks do.
+    if (app.mode === "plan") app.agent?.noteModeChange("default", "plan");
+    else app.agent?.addReminder(`The permission mode is "${MODE_INFO[app.mode].label}": ${MODE_INFO[app.mode].description}`);
     app.notice(`Forked into "${fork.title}" (${fork.meta.id}). /resume ${origin.meta.id} goes back to the original.`);
 }
 
