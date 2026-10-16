@@ -1000,7 +1000,18 @@ describe("sub-agents", () => {
 
     test("Claude Code saying again how its sub-agent ended replaces what it said: failed after all", async () => {
         const v = await claudeCodeTurn("agent-fails-later");
-        expect(v.agents.map((a) => [a.status, a.report])).toEqual([["failed", undefined]]);
+        // With no report, what its call says now is its report (the call said otherwise before).
+        expect(v.agents.map((a) => [a.status, a.report])).toEqual([["failed", "The sub-agent failed."]]);
+        // Its call's row says so too, not what it said first.
+        const call = tools(lastTurn(v)).find((b) => b.name === "Task")!;
+        expect([call.status, call.output]).toEqual(["error", "The sub-agent failed."]);
+    }, 45_000);
+
+    test("Claude Code's sub-agent failing, then its report coming: the report, and its row still says it failed", async () => {
+        const v = await claudeCodeTurn("agent-fails-then-reports");
+        expect(v.agents.map((a) => [a.status, a.report])).toEqual([["failed", "src/auth registers sign-in strategies in one list."]]);
+        const call = tools(lastTurn(v)).find((b) => b.name === "Task")!;
+        expect([call.status, call.output]).toEqual(["error", "src/auth registers sign-in strategies in one list."]);
     }, 45_000);
 
     for (const early of [undefined, "all"])

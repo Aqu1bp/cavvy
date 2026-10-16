@@ -20,11 +20,13 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-hands-back-late
+// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
 // FAKE_OLD_RESULTS=1  results don't say which prompt they answer (an older CLI)
+// FAKE_LIST_FIRST=1   a background sub-agent leaves Claude Code's background list before its task_notification
+// FAKE_HOLD_STDOUT=1  starts a command that keeps its stdout open for a while after it exits
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
@@ -49,6 +51,8 @@ if (argv[0] === "auth" && argv[1] === "status") {
     process.exit(on ? 0 : 1);
 }
 if (process.env.FAKE_IGNORE_STOP === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
+// Something it starts that holds its output open after it exits (a command left running with its stdout).
+if (process.env.FAKE_HOLD_STDOUT === "1") Bun.spawn(["sleep", "8"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }).unref();
 
 const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
 const flag = (name: string) => {
@@ -250,7 +254,7 @@ function agentCall(background: boolean, late = false, stuck = false) {
     }
     sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_glob", name: "Glob", input: { pattern: "src/auth/**" } }]);
     if (background) {
-        if (!stuck) afterResult = () => setTimeout(() => backgroundAgentEnds(id), Number(process.env.FAKE_BACKGROUND_MS ?? 300));
+        if (!stuck) afterResult = () => setTimeout(() => void backgroundAgentEnds(id), Number(process.env.FAKE_BACKGROUND_MS ?? 300));
         return;
     }
     // The Glob never gets a result: it's left open when the sub-agent ends.
@@ -264,14 +268,25 @@ function agentCall(background: boolean, late = false, stuck = false) {
 /** A turn's continuation once its result is out (a sub-agent in the background going on). */
 let afterResult: (() => void) | undefined;
 
-/** The background sub-agent's last step and words, Claude Code saying it's done, and the turn it takes with its report. */
-function backgroundAgentEnds(id: string) {
+/**
+ * The background sub-agent's last step and words, Claude Code saying it's
+ * done, and the turn it takes with its report. With FAKE_LIST_FIRST=1 it
+ * stops listing the sub-agent a while before it says it's done.
+ */
+async function backgroundAgentEnds(id: string) {
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_glob", content: "src/auth/index.ts", is_error: false }]);
     sub(id, "assistant", [{ type: "text", text: REPORT }]);
     out({ type: "system", subtype: "task_updated", task_id: "agent-1", patch: { status: "completed" }, session_id: sessionId });
+    const unlist = () => {
+        bgTasks.delete("agent-1");
+        backgroundChanged();
+    };
+    if (process.env.FAKE_LIST_FIRST === "1") {
+        unlist();
+        await Bun.sleep(200);
+    }
     out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", output_file: "/tmp/agent-1.output", summary: REPORT, usage: { total_tokens: 4321, tool_uses: 2, duration_ms: 300 }, session_id: sessionId });
-    bgTasks.delete("agent-1");
-    backgroundChanged();
+    if (process.env.FAKE_LIST_FIRST !== "1") unlist();
     followUp("The explorer reported back: sign-in strategies are registered in one list.");
 }
 
@@ -314,7 +329,7 @@ function agentWaits() {
  * report and then the one that replaces it, or it hands its report back itself
  * (after it was said to be finished) and then is said to be finished with it.
  */
-function agentRenotified(how: "replaced" | "failed" | "handed-back") {
+function agentRenotified(how: "replaced" | "failed" | "failed-reported" | "handed-back") {
     const id = "toolu_agent";
     toolUse(id, "Agent", { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose", run_in_background: true });
     out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "Map auth", is_backgrounded: true, session_id: sessionId });
@@ -322,6 +337,10 @@ function agentRenotified(how: "replaced" | "failed" | "handed-back") {
     sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "export const strategies = [];", is_error: false }]);
     const notify = (status: string, report?: string) => out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status, summary: "", ...(report ? { handback: "send", handback_report: { text: report } } : {}), session_id: sessionId });
+    if (how === "failed-reported") {
+        notify("failed");
+        return notify("failed", REPORT);
+    }
     notify("completed");
     if (how === "failed") return notify("failed");
     if (how === "handed-back") sub(id, "assistant", [{ type: "tool_use", id: "toolu_handback", name: "SubagentHandback", input: { message: REPORT } }]);
@@ -407,6 +426,7 @@ async function turn(content: any[], uuid?: string) {
     else if (scenario === "agent-waits") agentWaits();
     else if (scenario === "agent-renotified") agentRenotified("replaced");
     else if (scenario === "agent-fails-later") agentRenotified("failed");
+    else if (scenario === "agent-fails-then-reports") agentRenotified("failed-reported");
     else if (scenario === "agent-hands-back-late") agentRenotified("handed-back");
     else if (scenario.startsWith("agent")) agentCall(scenario !== "agent", scenario === "agent-background-late", scenario === "agent-background-stuck");
     else if (scenario === "mcp") {
