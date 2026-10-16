@@ -107,6 +107,10 @@ export async function runToastAction(id: number) {
         }
         throw new RpcError("Action failed. Try again.");
     } catch (e) {
+        if (!toasts.some((t) => t.id === id)) {
+            reportError(e);
+            return;
+        }
         // A separate error toast could evict another failed Undo under the two-row cap.
         const message = e instanceof Error ? e.message : String(e);
         setToasts((t) => t.id === id, { level: "error", message: `${entry.message}: ${message}` });

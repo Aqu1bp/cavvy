@@ -275,3 +275,31 @@ test("delete then offline Undo stays available; only an explicit retry after rec
         creds.mockRestore();
     }
 });
+
+
+test("dismissing a running Undo still reports a later restore failure", async () => {
+    const restore = Promise.withResolvers<any>();
+    const calls: string[] = [];
+    const call = spyOn(rpc, "call").mockImplementation((method) => {
+        calls.push(method);
+        if (method === "session.delete") return Promise.resolve(null);
+        if (method === "session.restore") return restore.promise;
+        throw new Error(`Unexpected RPC: ${method}`);
+    });
+    try {
+        await deleteSession("deleted-session");
+        const undo = toasts.find((t) => t.action?.label === "Undo")!;
+        const restoring = runToastAction(undo.id);
+        expect(calls).toEqual(["session.delete", "session.restore"]);
+        expect(toasts[0]!.running).toBe(true);
+        dismissToast(undo.id);
+        expect(toasts).toHaveLength(0);
+        restore.reject(new Error("Restore failed"));
+        await restoring;
+        expect(toasts.map((t) => [t.level, t.message])).toEqual([["error", "Restore failed"]]);
+        expect(toasts[0]!.id).not.toBe(undo.id);
+        expect(toasts[0]!.action).toBeUndefined();
+    } finally {
+        call.mockRestore();
+    }
+});
