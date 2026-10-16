@@ -106,3 +106,17 @@ test("a handoff still discloses history when every block was left out", () => {
     expect(handoffTranscript(messages, 60_000).text).toBe("");
     expect(handoff(messages)).toContain("Parts of it were shortened or left out");
 });
+
+test("a handoff frames attached files, and drops a whole file rather than cut a message through its frame", () => {
+    const file = (name: string, text: string) => ({ type: "file" as const, kind: "text" as const, name, size: text.length, lines: 1, text });
+    const msg: Message = { role: "user", content: [{ type: "text", text: "Read these." }, file("a.txt", "a".repeat(3000)), file("b.txt", "b".repeat(3000))] };
+    const whole = handoffTranscript([msg], 60_000);
+    expect(whole.text).toMatch(/<attached-file name="a\.txt" boundary="[0-9a-f]{16}">\na{3000}\n<\/attached-file boundary="[0-9a-f]{16}">/);
+    expect(whole.shortenedChars).toBe(0);
+    const tight = handoffTranscript([msg], 5000);
+    expect(tight.text.length).toBeLessThanOrEqual(5000);
+    expect(tight.text).toContain("Read these.");
+    expect(tight.text).toContain("an attached file left out here, too long to include: b.txt");
+    expect(tight.text).not.toContain("characters / ~");
+    expect(tight.shortenedChars).toBeGreaterThanOrEqual(3000);
+});
