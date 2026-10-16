@@ -1,6 +1,7 @@
 // File diffs in the GUI's shape (hunks with line numbers), kept small enough
 // to send over the socket.
 
+import { redact } from "../util/redact";
 import { diffLines, hunks } from "../util/diff";
 import type { DiffHunk, FileDiff } from "./protocol";
 
@@ -9,13 +10,13 @@ const MAX_LINES = 1500;
 /** Longest line sent; minified files would otherwise blow up a message. */
 const MAX_LINE_CHARS = 2000;
 /** Bigger inputs aren't diffed at all. */
-const MAX_INPUT = 2 * 1024 * 1024;
+export const MAX_DIFF_INPUT = 2 * 1024 * 1024;
 
 export function fileDiff(path: string, before: string | null, after: string | null, opts: { context?: number; maxLines?: number } = {}): FileDiff {
     const status: FileDiff["status"] = before === null ? "added" : after === null ? "deleted" : "modified";
     const a = before ?? "";
     const b = after ?? "";
-    if (a.length + b.length > MAX_INPUT) return { path, status, added: 0, removed: 0, hunks: [], note: "Too large to show" };
+    if (a.length + b.length > MAX_DIFF_INPUT) return { path, status, added: 0, removed: 0, hunks: [], note: "Too large to show" };
     const ops = diffLines(a, b);
     let added = 0;
     let removed = 0;
@@ -54,11 +55,19 @@ export function textOf(buf: Uint8Array | undefined | null): string | undefined {
     return Buffer.from(buf).toString("utf-8");
 }
 
+/** Redact full values before any display cut: partial values can't be matched later when history is saved. */
+function redactInput(value: unknown): unknown {
+    if (typeof value === "string") return redact(value);
+    if (Array.isArray(value)) return value.map(redactInput);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, v]) => [redact(key), redactInput(v)]));
+    return value;
+}
+
 /** Long string values cut, so a Write of a 5 MB file doesn't travel to the GUI with every update. */
 export function trimInput(input: unknown, max = 4000): Record<string, unknown> | undefined {
     if (!input || typeof input !== "object") return undefined;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(redactInput(input) as Record<string, unknown>)) {
         if (typeof v === "string") out[k] = v.length > max ? `${v.slice(0, max)}\n… (${v.length - max} more characters)` : v;
         else if (Array.isArray(v) || (v && typeof v === "object")) {
             const s = JSON.stringify(v);

@@ -21,7 +21,7 @@
 // FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
 //                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
 //                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
-// FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web
+// FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web | steps (command, message, command, answer)
 //                     subagent: Codex's own sub-agent (spawnAgent, then wait): its thread runs a command (which
 //                     asks from its thread under untrusted), says something, answers and has usage of its own;
 //                     FAKE_CHILD_EARLY=1 sends its first events before the spawn says which thread is whose;
@@ -40,7 +40,15 @@
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
+// FAKE_RATE_LIMITS    a JSON file: account/rateLimits/read's result (without it, the method is unknown, as to an
+//                     older Codex); FAKE_LIMIT_UPDATE a JSON file: an account/rateLimits/updated's params, sent as a
+//                     turn starts (shapes from Codex 0.163.0's schema and a capture, test/fixtures/limits)
+//                     (FAKE_LIMIT_REPEAT=n: n times)
+// FAKE_RATE_LIMITS_RELEASE  hold the read's snapshot and turn until this file exists (cross-session races)
+// FAKE_CODEX_REROUTED_FIRST=1  FAKE_CODEX_REROUTED applies only to the first turn
+// FAKE_SCENARIO=usage-limit  the turn fails on the plan's limit (codexErrorInfo usageLimitExceeded)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
+// FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 //
 // Token usage is each thread's running total, kept beside the log as Codex keeps it with the thread. Like
 // Codex 0.163 (checked against it with a stand-in model server), it reports the last usage again on
@@ -97,6 +105,7 @@ function spend(threadId: string, turnId: string, last: Tokens) {
     const total = was ? (Object.fromEntries(Object.entries(was).map(([k, v]) => [k, v + last[k as keyof Tokens]])) as Tokens) : last;
     usageOf.set(threadId, { total, last, turnId });
     if (usageFile) writeFileSync(usageFile, JSON.stringify(Object.fromEntries(usageOf)));
+    if (process.env.FAKE_CODEX_REROUTED && (process.env.FAKE_CODEX_REROUTED_FIRST !== "1" || turnSeq === 1)) notify("model/rerouted", { threadId, turnId, toModel: process.env.FAKE_CODEX_REROUTED });
     notify("thread/tokenUsage/updated", { threadId, turnId, tokenUsage: { total, last, modelContextWindow: 400000 } });
 }
 /** The thread's usage as it last was, reported again (no new spend). */
@@ -129,12 +138,24 @@ function serverRequest(method: string, params: unknown): Promise<any> {
 }
 
 const notify = (method: string, params: unknown) => out({ method, params });
+let delayedLimits: (() => void) | undefined;
+let releasedLimits: Promise<void> | undefined;
 
 async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }) {
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
     current = t;
     const finish = (status: string) => notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
+    for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
+    // Answer an earlier read after the push, before completing the turn.
+    delayedLimits?.();
+    delayedLimits = undefined;
+    await releasedLimits;
+    if (scenario === "usage-limit") {
+        const error = { message: "You've hit your usage limit. Upgrade to Pro or try again later.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
+        notify("error", { error, willRetry: false, threadId, turnId });
+        return notify("turn/completed", { threadId, turn: { id: turnId, status: "failed", error } });
+    }
     notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "", ...phase("commentary") } });
     notify("item/agentMessage/delta", { threadId, turnId, itemId: `msg-${turnId}`, delta: "Running it." });
     notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "Running it.", ...phase("commentary") } });
@@ -142,6 +163,20 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         // The first turn works until interrupted (or a while).
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(5000)]);
         return finish(t.interrupted ? "interrupted" : "completed");
+    }
+    if (scenario === "steps") {
+        // What a long turn sends: a progress message between its commands, then the answer.
+        const ran = (n: number) => {
+            const cmd = { type: "commandExecution", id: `cmd${n}-${turnId}`, command: `/bin/zsh -lc 'ls ${n}'`, cwd, status: "inProgress", commandActions: [{ type: "listFiles", command: `ls ${n}` }], aggregatedOutput: null, exitCode: null };
+            notify("item/started", { threadId, turnId, item: cmd });
+            notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
+        };
+        ran(1);
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-mid-${turnId}`, text: "Checked the first.", ...phase("commentary") } });
+        ran(2);
+        spend(threadId, turnId, tokens(120, 20, 30, 5));
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Finished.", ...phase("final_answer") } });
+        return finish("completed");
     }
     let decision: string | undefined = "accept";
     if (scenario === "mcp") {
@@ -228,6 +263,10 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("item/started", { threadId: child, turnId: childTurn, item: cmd });
             notify("item/commandExecution/outputDelta", { threadId: child, turnId: childTurn, itemId: cmd.id, delta: "working\n" });
             const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
+            if (process.env.FAKE_REVIEW_APPROVE === "1") {
+                notify("item/autoApprovalReview/completed", { threadId: child, turnId: childTurn, reviewId: `rev-${childTurn}`, targetItemId: cmd.id, action: { type: "command", command: cmd.command }, review: { status: "approved", riskLevel: "low", rationale: "The delegated task needs this command." } });
+                notify("guardianWarning", { threadId: child, message: "Automatic approval review approved (risk: low, authorization: high): The delegated task needs this command." });
+            }
             const childDecision = runsItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
             log({ childRan: childDecision === "accept" });
             notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
@@ -269,7 +308,24 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     } else {
         const shown = process.env.FAKE_COMMAND ?? "touch x";
         const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: process.env.FAKE_COMMAND_RAW ?? `/bin/zsh -lc '${process.env.FAKE_COMMAND_SCRIPT ?? shown}'`, cwd: process.env.FAKE_COMMAND_CWD ?? cwd, status: "inProgress", commandActions: [{ type: "unknown", command: shown }], aggregatedOutput: null, exitCode: null };
+        const approve = () => {
+            if (process.env.FAKE_REVIEW_APPROVE !== "1") return;
+            const review = { threadId, turnId, reviewId: `rev-${turnId}`, targetItemId: cmd.id, action: { type: "command", command: shown, cwd: cmd.cwd, source: "shell" } };
+            notify("item/autoApprovalReview/started", { ...review, review: { status: "inProgress" } });
+            if (process.env.FAKE_REVIEW_NO_COMPLETED !== "1") notify("item/autoApprovalReview/completed", { ...review, review: { status: "approved", riskLevel: "low", rationale: process.env.FAKE_REVIEW_RATIONALE ?? "The user requested this local test." } });
+            notify("guardianWarning", { threadId, message: "Automatic approval review approved (risk: low, authorization: high): The user requested this local test." });
+            if (process.env.FAKE_REVIEW_MULTIPLE === "1") {
+                const completed = { ...review, reviewId: `rev-second-${turnId}`, review: { status: "approved", riskLevel: "medium", rationale: "The user also requested cleanup." } };
+                notify("item/autoApprovalReview/completed", completed);
+                notify("item/autoApprovalReview/completed", completed);
+                notify("item/autoApprovalReview/completed", { ...completed, reviewId: "no-target", targetItemId: null });
+                notify("guardianWarning", { threadId, message: "Automatic approval review approved (risk: medium, authorization: high): The user also requested cleanup." });
+                for (const reason of ["A standalone approval.", "Another standalone approval."]) notify("guardianWarning", { threadId, message: `Automatic approval review approved (risk: low, authorization: high): ${reason}` });
+            }
+        };
+        if (process.env.FAKE_REVIEW_TIMING === "before") approve();
         notify("item/started", { threadId, turnId, item: cmd });
+        if (!process.env.FAKE_REVIEW_TIMING) approve();
         // Its own policy: in a workspace-write sandbox with on-request, or never, it just runs it.
         const runsItself = policy.approvalPolicy === "never" || (policy.approvalPolicy === "on-request" && policy.sandboxPolicy?.type === "workspaceWrite");
         if (process.env.FAKE_REVIEW_DENY === "1" && policy.approvalsReviewer === "auto_review") {
@@ -308,6 +364,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         log({ ran: decision === "accept", command: shown });
         if (decision === "accept") notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
         else notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
+        if (process.env.FAKE_REVIEW_TIMING === "after") approve();
     }
     spend(threadId, turnId, tokens(120, 20, 30, 5));
     if (decision === "cancel" || t.interrupted) return finish("interrupted");
@@ -326,14 +383,23 @@ async function handle(m: any) {
     const reply = (result: unknown) => out({ id: m.id, result });
     const fail = (message: string) => out({ id: m.id, error: { code: -32600, message } });
     const p = m.params ?? {};
-    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
+    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config?.mcp_servers?.harness?.url && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
     switch (m.method) {
         case "initialize":
             if (process.env.FAKE_HANG_INIT === "1") return;
             return reply({ userAgent: "fake-codex/0.0.1", codexHome: "/tmp/none", platformFamily: "unix", platformOs: "linux" });
         case "config/read":
             if (process.env.FAKE_NO_CONFIG_READ === "1") return fail("config/read failed: invalid configuration");
-            return reply({ config: { model: null, ...(process.env.FAKE_USER_MCP ? { mcp_servers: JSON.parse(process.env.FAKE_USER_MCP) } : {}) }, origins: {} });
+            const userMcp = JSON.parse(process.env.FAKE_USER_MCP ?? "{}");
+            const projectMcp = JSON.parse(process.env.FAKE_PROJECT_MCP ?? "{}");
+            return reply({
+                config: { model: null, mcp_servers: { ...userMcp, ...projectMcp } },
+                origins: {},
+                ...(process.env.FAKE_NO_CONFIG_LAYERS === "1" ? {} : { layers: process.env.FAKE_CONFIG_LAYERS ? JSON.parse(process.env.FAKE_CONFIG_LAYERS) : [
+                    { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp } },
+                    { name: { type: "project", dotCodexFolder: `${cwd}/.codex` }, config: { mcp_servers: projectMcp } },
+                ] }),
+            });
         case "initialized":
             return;
         case "account/read": {
@@ -358,7 +424,7 @@ async function handle(m: any) {
             return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? "default" });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
-            if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
+            if (String(p.threadId).startsWith("gone") || p.threadId === process.env.FAKE_GONE_ID) return fail(`thread not found: ${p.threadId}`);
             await startMcp(p.config);
             if (!tiers.has(p.threadId)) setTier(p.threadId, process.env.FAKE_THREAD_TIER ?? null);
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
@@ -397,6 +463,24 @@ async function handle(m: any) {
             notify("turn/completed", { threadId: p.threadId, turn: { id: turnId, status: "completed", error: null } });
             return;
         }
+        case "account/rateLimits/read":
+            if (!process.env.FAKE_RATE_LIMITS) return fail(`unknown method ${m.method}`);
+            if (process.env.FAKE_RATE_LIMITS_RELEASE) {
+                const snapshot = JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS, "utf-8"));
+                const release = process.env.FAKE_RATE_LIMITS_RELEASE;
+                releasedLimits = (async () => {
+                    const until = Date.now() + 5000;
+                    while (!existsSync(release) && Date.now() < until) await Bun.sleep(5);
+                    reply(snapshot);
+                    log({ limitsReadReplied: true });
+                })();
+                return;
+            }
+            if (process.env.FAKE_RATE_LIMITS_DELAY === "1") {
+                delayedLimits = () => reply(JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS!, "utf-8")));
+                return;
+            }
+            return reply(JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS, "utf-8")));
         default:
             return fail(`unknown method ${m.method}`);
     }

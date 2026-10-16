@@ -3,12 +3,12 @@
 // bottom; sending to one brings it back.
 
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Undo2 } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
 import type { RunMember, SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread } from "../state/app";
 import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { setPaletteOpen, setSettingsTab } from "../state/ui";
+import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
 import { ago, basename, duration, monogram, since } from "../lib/format";
 import { now } from "../lib/clock";
 import { isTauri, mod, os } from "../lib/platform";
@@ -93,6 +93,9 @@ function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) =>
             <div class="menu-sep" />
             <button class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
                 {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
+            </button>
+            <button class="menu-item compact danger" onClick={() => (close(), setDeleteRequest({ id: p.s.id, title: p.s.title, projectName: p.s.projectName }))}>
+                <Trash2 size={14} /> Delete…
             </button>
         </Popover>
     );
@@ -226,7 +229,7 @@ function SessionRow(p: { s: SessionSummary }) {
                     <Show when={p.s.pinned}>
                         <Pin size={12} class="slim-pin" />
                     </Show>
-                    <span class="truncate">{p.s.title}</span>
+                    <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                 </button>
                 <span class="slim-end">
                     <span class="t">{(now(), since(p.s.updatedAt))}</span>
@@ -314,7 +317,7 @@ export function Sidebar() {
     return (
         <SidebarFrame>
             <div class="side-tools">
-                <button class="side-search" title={`Search sessions and actions (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
+                <button class="side-search" title={`Search sessions, messages and actions (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
                     <Search size={16} />
                     <span>Search</span>
                     <span class="side-kbd">{mod}K</span>

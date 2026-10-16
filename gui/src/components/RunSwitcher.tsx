@@ -4,14 +4,11 @@
 import { For, Show } from "solid-js";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor } from "../state/app";
+import { runStatus } from "../lib/run-status";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
-function state(s: SessionSummary): { word: string; tone: string } {
-    const status = handleFor(s.id)?.view.state.status ?? s.status;
-    if (status === "running") return { word: "working", tone: "running" };
-    if (status === "waiting") return { word: "needs you", tone: "waiting" };
-    if (status === "error") return { word: "stopped", tone: "stopped" };
-    return { word: "done", tone: "done" };
+function state(s: SessionSummary) {
+    return runStatus(handleFor(s.id)?.view.state.status ?? s.status, s.run?.outcome);
 }
 
 export function RunSwitcher(p: { id: string }) {

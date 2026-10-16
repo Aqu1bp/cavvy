@@ -39,6 +39,8 @@ export class Editor {
     cursor = 0;
     /** Mask input (API keys). */
     secret = false;
+    /** In secret mode, a paste keeps its spaces (a password's), dropping only the line breaks around it. */
+    keepSpaces = false;
     private history: string[] = [];
     private histIdx = -1;
     private draft = "";
@@ -113,7 +115,7 @@ export class Editor {
             const id = ++this.pasteCounter;
             this.pastes.set(id, s);
             this.insert(`[Pasted text #${id} +${lines} lines]`);
-        } else this.insert(this.secret ? s.replace(/\s+/g, "") : s);
+        } else this.insert(!this.secret ? s : this.keepSpaces ? s.replace(/^[\r\n]+|[\r\n]+$/g, "") : s.replace(/\s+/g, ""));
         this.lastWasInsert = false;
     }
 

@@ -37,13 +37,17 @@ import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tool
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
-import { formatTokens, formatUsd } from "../providers/pricing";
+import { formatCost, formatTokens } from "../providers/pricing";
+import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
+import { SecretStore, secretValueError } from "../agent/secrets";
+import { mergeLimits } from "../backends/limits";
+import type { PlanLimits } from "../server/protocol";
 
 export interface AppInit {
     cwd: string;
@@ -102,6 +106,7 @@ export class App {
     lastResponse = "";
 
     private dialogs: Dialog[] = [];
+    private dialogQueue: Dialog[] = [];
     busy = false;
     private abort?: AbortController;
     private queued: string[] = [];
@@ -125,6 +130,8 @@ export class App {
     private detached = new Map<string, ActiveTool>();
     private turnStart = 0;
     private turnTokens = 0;
+    /** The agent CLIs' plan limits as last reported, by provider (/cost shows them). */
+    planLimits = new Map<string, PlanLimits>();
     private streamChars = 0;
     /** The model is thinking (its thinking may not be streamed at all, so nothing else moves). */
     private thinkingNow = false;
@@ -144,7 +151,6 @@ export class App {
     private menuIndex = 0;
     private menuHiddenFor?: string;
     private exitResolve!: () => void;
-    private permissionQueue: Promise<unknown> = Promise.resolve();
     private exiting = false;
     readonly notifier = new Notifier({
         settings: () => this.settings,
@@ -162,10 +168,10 @@ export class App {
         this.allowBypass = init.allowBypass;
         this.checker = new PermissionChecker(() => this.settings, init.cwd);
         this.classifier = new AutoClassifier(undefined);
-        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted);
+        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings());
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
-        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map() };
+        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
         this.editor.setHistory(loadPromptHistory(init.cwd));
     }
 
@@ -235,11 +241,11 @@ export class App {
         this.exiting = true;
         this.abort?.abort();
         const disposed = this.agent?.dispose();
-        for (const d of this.dialogs) d.cancel();
+        for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.stopTicker();
         this.screen.setLive([]);
         const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
-        if (this.session?.cost) this.screen.print(theme.muted(`Total cost: ${formatUsd(this.session.cost)}`));
+        if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
@@ -393,7 +399,7 @@ export class App {
         else {
             this.agent.setModel(info, client);
             this.agent.options.nativeWebSearch = this.nativeSearch();
-            if (prev && modelRef(prev) !== ref) this.agent.addReminder(`The user switched the model to ${info.name ?? info.id} (${ref}). You are now running as this model.`);
+            if (prev) this.agent.noteModelChange(modelRef(prev), info);
         }
         if (opts.persist) {
             const { updateSettings } = await import("../config/settings");
@@ -472,7 +478,8 @@ export class App {
         );
         if (res.usage) {
             const { costOf } = await import("../providers/pricing");
-            this.session.recordUsage(modelRef(model), res.usage, costOf(res.usage, model).usd);
+            const c = costOf(res.usage, model);
+            this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
         }
         return opts?.review ? reviewText(res) : textOf(res);
     }
@@ -489,9 +496,11 @@ export class App {
         void this.agent?.dispose();
         this.agent = new Agent({
             session: this.session,
+            trusted: () => this.init.trusted,
             model: this.model,
             client: this.client,
             settings: () => this.settings,
+            approvedMcpServers: () => this.mcp.approvedServers(),
             checker: this.checker,
             classifier: this.classifier,
             tools: () => this.tools(),
@@ -515,6 +524,7 @@ export class App {
                 ui: {
                     askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
+                    requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
                 drainQueued: () => {
                     // Plain messages join the running turn; slash commands wait for it to end.
@@ -574,6 +584,7 @@ export class App {
         prev.release();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
+        this.toolState.secrets?.clear();
         this.makeAgent();
         this.sessionSwitched(prev, "clear");
     }
@@ -591,6 +602,7 @@ export class App {
         prev?.release();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
+        this.toolState.secrets?.clear();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
         // At startup, run() fires SessionStart.
@@ -613,14 +625,28 @@ export class App {
         const id = this.session.meta.id;
         const count = msgs.length;
         const tail = msgs.slice(-40);
+        const from = count - tail.length;
+        // How turns ended where the messages don't say (an error, a limit): each after the message before it.
+        const notices = this.session.notices.filter((n) => n.index > from).sort((a, b) => a.index - b.index);
         this.screen.print((cols) => {
             const out: string[] = ["", theme.muted(`── Resumed session ${id} (${count} messages) ──`)];
-            for (const m of tail) {
+            let next = 0;
+            const noticesUpTo = (index: number) => {
+                for (; next < notices.length && notices[next]!.index <= index; next++) {
+                    const n = notices[next]!;
+                    const color = n.level === "error" ? theme.error : n.level === "warn" ? theme.warning : theme.muted;
+                    out.push(...wrapLine(n.text, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+                }
+            };
+            tail.forEach((m, i) => {
+                noticesUpTo(from + i);
                 if (m.role === "user") {
                     const kind = m.meta?.kind ?? "prompt";
                     if (kind === "prompt" || kind === "summary") {
                         const t = (m.meta?.display ?? textOf(m)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
                         if (t) out.push("", ...wrapLine(theme.muted("> ") + truncate(t, cols * 3), cols - 2));
+                        const note = attachmentsNote(m.content);
+                        if (note) out.push(...(t ? [] : [""]), ...wrapLine(theme.subtle(`  ${truncate(note, cols * 2)}`), cols - 2));
                     }
                 } else {
                     const t = textOf(m).trim();
@@ -631,7 +657,8 @@ export class App {
                     }
                     for (const p of m.content) if (p.type === "tool_call") out.push(theme.muted(`  ${BULLET} ${p.name}`));
                 }
-            }
+            });
+            noticesUpTo(Infinity);
             out.push(theme.muted("── end of resumed history ──"));
             return out;
         });
@@ -808,6 +835,9 @@ export class App {
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
                 break;
+            case "limits":
+                this.planLimits.set(e.limits.provider, mergeLimits(this.planLimits.get(e.limits.provider), e.limits, e.partial));
+                break;
             case "usage":
                 this.turnTokens += e.usage.outputTokens;
                 this.streamChars = 0;
@@ -916,32 +946,41 @@ export class App {
     // Permissions and UI bridges
 
     async showDialog<T>(d: Dialog & { done: Promise<T> }): Promise<T> {
-        this.dialogs.push(d);
-        this.renderLive();
+        this.pushDialog(d);
         try {
             return await d.done;
         } finally {
-            this.dialogs = this.dialogs.filter((x) => x !== d);
-            this.renderLive();
+            // A cancelled dialog is removed even if it hasn't been shown yet.
+            this.popDialog(d);
         }
     }
 
     pushDialog(d: Dialog) {
-        this.dialogs.push(d);
+        // A sub-agent must never redirect keystrokes meant for a masked input
+        // into a permission or question. All interactive dialogs share the queue.
+        if (this.dialogs.length || this.dialogQueue.length) this.dialogQueue.push(d);
+        else this.dialogs.push(d);
         this.renderLive();
     }
 
     popDialog(d: Dialog) {
         this.dialogs = this.dialogs.filter((x) => x !== d);
+        this.dialogQueue = this.dialogQueue.filter((x) => x !== d);
+        if (!this.dialogs.length && !this.exiting) {
+            // One abort can settle several dialogs together. Let their cleanup
+            // remove queued prompts before deciding which one to display next.
+            queueMicrotask(() => {
+                if (this.dialogs.length || this.exiting) return;
+                const next = this.dialogQueue.shift();
+                if (next) this.dialogs.push(next);
+                this.renderLive();
+            });
+        }
         this.renderLive();
     }
 
     private askPermission(req: PermissionRequest): Promise<PermissionResponse> {
-        // One prompt at a time, even with parallel sub-agents. A stopped sub-agent's prompt isn't shown.
-        const run = async (): Promise<PermissionResponse> => (req.signal?.aborted ? { allow: false } : this.permissionDialog(req));
-        const p = this.permissionQueue.then(run, run);
-        this.permissionQueue = p.catch(() => undefined);
-        return p;
+        return req.signal?.aborted ? Promise.resolve({ allow: false }) : this.permissionDialog(req);
     }
 
     private async permissionDialog(req: PermissionRequest): Promise<PermissionResponse> {
@@ -956,13 +995,14 @@ export class App {
 
         if (req.agentLabel) header.push(theme.muted(`Requested by sub-agent: ${req.agentLabel}`), "");
         if (tool.name === "Bash") {
-            title = "Bash command";
+            title = req.secrets?.length ? "Bash command with secrets" : "Bash command";
             const cmd = String(input.command ?? "");
             const { highlightCode } = await import("./highlight");
             const lines = highlightCode(cmd, "sh");
             header.push(...lines.slice(0, 12).map((l) => "  " + l));
             if (lines.length > 12) header.push(theme.subtle(`  … +${lines.length - 12} lines`));
             if (input.description) header.push(theme.muted(`  ${input.description}`));
+            if (req.secrets?.length) header.push(theme.warning(`  It gets ${req.secrets.map((n) => `$${n}`).join(", ")} in its environment.`));
             const hosts = Array.isArray(input.allowedHosts) ? input.allowedHosts.map(String) : [];
             if (decision.sandbox && hosts.length) header.push(theme.muted(`  Sandboxed, with network access to ${hosts.join(", ")}`));
             if (!decision.dangerous && suggestions.length) {
@@ -1043,6 +1083,26 @@ export class App {
         }
     }
 
+    /** A masked prompt; the value goes back to the tool and is never printed. */
+    private async requestSecret(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined> {
+        if (signal.aborted) return undefined;
+        const d = new InputDialog({
+            title: `The agent asks for a secret: ${name}`,
+            header: [purpose, theme.muted(`Only this session's shell commands see the value, as $${name}; the agent gets its name.`)],
+            secret: true,
+            exact: true,
+            placeholder: "Type or paste the value (input is hidden)",
+            color: theme.info,
+            hint: "enter to provide · esc to decline",
+            validate: (v) => secretValueError(v, name),
+        });
+        void this.notifier.notify("question");
+        const withdraw = () => d.cancel();
+        signal.addEventListener("abort", withdraw, { once: true });
+        const value = await this.showDialog(d).finally(() => signal.removeEventListener("abort", withdraw));
+        return signal.aborted ? undefined : value;
+    }
+
     private async askQuestion(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined> {
         const OTHER = "\u0000other";
         const items: SelectItem<string>[] = options.map((o) => ({ label: o.label, value: o.label, description: o.description }));
@@ -1108,6 +1168,7 @@ export class App {
     private interrupt() {
         if (!this.busy) return;
         this.abort?.abort();
+        for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.status = "Interrupting";
     }
 
@@ -1627,7 +1688,7 @@ export class App {
                 parts.push(pct >= 70 ? theme.warning(`${pct}% context`) : `${pct}% context`);
             }
         }
-        if (this.session?.cost) parts.push(formatUsd(this.session.cost));
+        if (this.session?.cost) parts.push(formatCost(this.session.cost, this.session.costUnknown));
         const mcpFailed = [...this.mcp.servers.values()].filter((s) => s.status === "failed").length;
         if (mcpFailed) parts.push(theme.error(`${mcpFailed} MCP failed · /mcp`));
         const custom = this.statusLineText();

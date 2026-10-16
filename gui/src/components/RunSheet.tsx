@@ -2,88 +2,27 @@
 // than two paid-API models, the one trust question a run can need, then each
 // model's result, started or why not.
 
-import { createSignal, For, Match, Show, Switch } from "solid-js";
+import { For, Match, Show, Switch } from "solid-js";
 import { AlertTriangle, CircleCheck, CircleX, ShieldAlert } from "lucide-solid";
-import type { PermissionModeId, RunResult } from "@shared/protocol";
-import { RpcError } from "../lib/rpc";
 import { activate, app, refreshProjects, refreshSessions, rpc } from "../state/app";
-import { attachmentParams, type Attachment } from "../state/actions";
-import { basename, price, tildify } from "../lib/format";
+import { toWire } from "../lib/attachments";
+import { createRunSheet, type RunPhase as Phase } from "../lib/run-sheet";
+import { basename, tildify } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
-export interface RunRequest {
-    path: string;
-    models: string[];
-    text: string;
-    attachments: Attachment[];
-    mode: PermissionModeId;
-}
-
-type Phase =
-    | { kind: "starting" }
-    | { kind: "confirm"; message: string }
-    | { kind: "trust"; folder: string; message: string; project: boolean }
-    | { kind: "error"; message: string }
-    | { kind: "done"; results: RunResult[] };
-
-const [sheet, setSheet] = createSignal<{ req: RunRequest; phase: Phase; confirmPaid: boolean; resolve: (started: boolean) => void }>();
-
-/** Starts the run and shows how it went. True once anything started (the composer can be cleared); false if cancelled or nothing did. */
-export function startRun(req: RunRequest): Promise<boolean> {
-    return new Promise((resolve) => {
-        setSheet({ req, phase: { kind: "starting" }, confirmPaid: false, resolve });
-        void attempt();
-    });
-}
-
-const setPhase = (phase: Phase) => setSheet((s) => s && { ...s, phase });
-
-async function attempt() {
-    const s = sheet();
-    if (!s) return;
-    setPhase({ kind: "starting" });
-    try {
-        const r = await rpc.call("runs.start", { path: s.req.path, models: s.req.models, text: s.req.text, ...attachmentParams(s.req.attachments), mode: s.req.mode, confirmPaid: s.confirmPaid });
-        if (sheet()?.req !== s.req) return;
-        setPhase({ kind: "done", results: r.results });
-        void refreshSessions();
-        void refreshProjects();
-    } catch (e) {
-        const message = (e as Error).message;
-        if (e instanceof RpcError && e.code === "confirm_paid") return setPhase({ kind: "confirm", message });
-        if (e instanceof RpcError && (e.code === "needs_trust" || e.code === "needs_project_trust")) return setPhase({ kind: "trust", folder: e.folder ?? s.req.path, message, project: e.code === "needs_project_trust" });
-        setPhase({ kind: "error", message });
-    }
-}
-
-function close() {
-    const s = sheet();
-    if (!s || s.phase.kind === "starting") return;
-    setSheet(undefined);
-    s.resolve(s.phase.kind === "done" && s.phase.results.some((r) => r.ok));
-}
-
-/** The user's answer to the trust question, then the same run again. */
-async function decide(folder: string, trust: boolean) {
-    setPhase({ kind: "starting" });
-    try {
-        await rpc.call("projects.trust", { path: folder, trust });
-    } catch (e) {
-        return setPhase({ kind: "error", message: (e as Error).message });
-    }
-    await attempt();
-}
-
-const modelOf = (ref: string) => app.models.flatMap((g) => g.models).find((m) => m.ref === ref);
-const billingOf = (ref: string) => app.models.find((g) => g.provider === ref.split(":")[0])?.billing ?? "api";
+const controller = createRunSheet({
+    start: (req, confirmPaid) => rpc.call("runs.start", { path: req.path, models: req.models, text: req.text, ...toWire(req.attachments), mode: req.mode, confirmPaid }),
+    trust: (folder, trust) => rpc.call("projects.trust", { path: folder, trust }),
+    refresh: () => { void refreshSessions(); void refreshProjects(); },
+});
+export const { startRun } = controller;
+const { sheet, close, confirm, decide } = controller;
 
 export function RunSheet() {
     const s = () => sheet();
     const phase = () => s()?.phase;
-    // Those the server counted: listed (so set up here) and billed per token.
-    const paid = () => s()?.req.models.filter((ref) => modelOf(ref) && billingOf(ref) === "api") ?? [];
     const title = () => {
         const p = phase();
         if (p?.kind === "confirm") return "Start paid models?";
@@ -93,7 +32,7 @@ export function RunSheet() {
         return `Starting ${s()?.req.models.length ?? ""} models…`;
     };
     return (
-        <Dialog open={Boolean(s())} onClose={close} title={title()} subtitle={s() ? `“${s()!.req.text.replace(/\s+/g, " ").slice(0, 90)}”` : undefined} width={560}>
+        <Dialog open={Boolean(s())} onClose={close} title={title()} subtitle={s() ? `“${s()!.req.text.replace(/\s+/g, " ").trim().slice(0, 90) || "Attached files"}”` : undefined} width={560}>
             <div class="run-sheet">
                 <Switch>
                     <Match when={phase()?.kind === "starting"}>
@@ -103,27 +42,14 @@ export function RunSheet() {
                         </div>
                     </Match>
                     <Match when={phase()?.kind === "confirm"}>
-                        <p class="small">These models are billed per token through your API keys, and each works on the whole task:</p>
-                        <ul class="run-paid">
-                            <For each={paid()}>
-                                {(ref) => (
-                                    <li>
-                                        <ProviderIcon id={ref.split(":")[0]!} size={14} />
-                                        <span class="truncate">{modelOf(ref)?.name ?? ref}</span>
-                                        <span class="muted small num">{modelOf(ref)?.pricing ? `${price(modelOf(ref)!.pricing)} per M tokens` : "price unknown"}</span>
-                                    </li>
-                                )}
-                            </For>
-                        </ul>
-                        <Show when={!paid().length}>
-                            <p class="small">{(phase() as { message: string }).message}</p>
-                        </Show>
+                        {/* The server counted these models and quoted their prices; our model cache may be stale. */}
+                        <p class="small">{(phase() as Extract<Phase, { kind: "confirm" }>).message}</p>
                         <div class="dialog-actions">
                             <span class="grow" />
                             <button class="btn ghost" onClick={close}>
                                 Cancel
                             </button>
-                            <button class="btn primary" autofocus onClick={() => (setSheet((x) => x && { ...x, confirmPaid: true }), void attempt())}>
+                            <button class="btn primary" autofocus onClick={confirm}>
                                 Start {s()?.req.models.length} models
                             </button>
                         </div>

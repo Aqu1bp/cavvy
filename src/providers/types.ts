@@ -9,6 +9,14 @@ import type { Effort } from "../config/settings";
 
 export type TextPart = { type: "text"; text: string };
 export type ImagePart = { type: "image"; mediaType: string; data: string /* base64 */ };
+/**
+ * A file the user attached to a prompt. Text is stored redacted and framed
+ * only when sent (src/providers/files.ts); a PDF's bytes are stored as they
+ * came, since redacting base64 would corrupt it.
+ */
+export type FilePart =
+    | { type: "file"; kind: "text"; name: string; size: number; lines: number; text: string; pasted?: boolean }
+    | { type: "file"; kind: "pdf"; name: string; size: number; mediaType: "application/pdf"; data: string /* base64 */ };
 
 export type ThinkingPart = {
     type: "thinking";
@@ -36,7 +44,10 @@ export type ToolResultPart = {
     isError?: boolean;
 };
 
-export type UserContent = TextPart | ImagePart | ToolResultPart;
+export type UserContent = TextPart | ImagePart | FilePart | ToolResultPart;
+export type PdfPart = Extract<FilePart, { kind: "pdf" }>;
+/** What the user can attach to a prompt besides its text. */
+export type AttachedPart = ImagePart | FilePart;
 export type AssistantContent = TextPart | ThinkingPart | ToolCallPart;
 
 export interface UserMessage {
@@ -48,6 +59,8 @@ export interface UserMessage {
         display?: string;
         /** The file checkpoint this prompt started (/rewind). */
         checkpoint?: number;
+        /** Brought in from a Claude Code or Codex session started elsewhere: shown, never rewound to. */
+        imported?: boolean;
     };
 }
 
@@ -81,6 +94,10 @@ export interface Usage {
     cost?: number;
     /** Backend total includes both paid and plan-covered requests; billed share is estimated. */
     costEstimated?: boolean;
+    /** The concrete provider:model served by an agent CLI, rather than its requested alias. */
+    resolvedModel?: string;
+    /** How this spend was covered; retained when sub-agent usage is folded into its parent. */
+    billing?: "plan" | "api";
 }
 
 export interface ToolSchema {
@@ -133,6 +150,8 @@ export interface ModelInfo {
     pricingEstimated?: boolean;
     supportsTools?: boolean;
     supportsImages?: boolean;
+    /** Takes PDFs as document input. Usually decided by `readsPdf` (models.ts) from the provider. */
+    supportsPdf?: boolean;
     supportsReasoning?: boolean;
     /** Explicit provider/catalog capability; never inferred from reasoning effort. */
     supportsFastMode?: boolean;
@@ -162,6 +181,8 @@ export function parseModelRef(ref: string): { provider: string; id: string } | u
 }
 
 export class ProviderError extends Error {
+    /** Nothing came back for minutes (sse.ts): retried only a few times. */
+    stalled?: boolean;
     constructor(
         message: string,
         public status?: number,

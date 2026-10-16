@@ -2,22 +2,30 @@
 // the session's menu on its title, and the panel toggle.
 
 import { createSignal, For, Show, type JSX } from "solid-js";
-import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareTerminal } from "lucide-solid";
+import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { archive, exportSession, newSession, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, editorName, exportSession, newSession, openInEditor, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen, setRewindOpen } from "../state/ui";
+import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest } from "../state/ui";
 import { copyText, isTauri, mod, os, terminalShortcut } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { Monogram } from "./Sidebar";
 import { Popover } from "./ui/Popover";
 import { RunSwitcher } from "./RunSwitcher";
+import { ProjectScripts } from "./ProjectScripts";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
 
 export function sessionTitle(h?: SessionHandle): string {
     return h?.view.state.title ?? h?.view.turns.find((t) => t.prompt)?.prompt?.text.slice(0, 80) ?? "New session";
+}
+
+/** Open the delete dialog for a session that's open (nothing to delete before its first prompt). */
+export function askDelete(h?: SessionHandle) {
+    if (!h?.view.turns.length) return;
+    const cwd = h.view.state.cwd;
+    setDeleteRequest({ id: h.id, title: sessionTitle(h), projectName: app.sessions.concat(app.archived).find((s) => s.id === h.id)?.projectName ?? (cwd.split("/").filter(Boolean).pop() || cwd) });
 }
 
 /** The frame every main view shares: room for the traffic lights when the sidebar is hidden, the sidebar toggle, then the crumbs. */
@@ -70,6 +78,7 @@ export function Header(p: { handle?: SessionHandle }) {
             end={
                 <>
                     <Show when={st()}>{(s) => <RunSwitcher id={s().id} />}</Show>
+                    <Show when={st()?.cwd}>{(cwd) => <ProjectScripts cwd={cwd()} />}</Show>
                     <button class={`hb ${terminalOpen() ? "on" : ""}`} title={`Toggle terminal (${terminalShortcut})`} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}><SquareTerminal size={16} /></button>
                     <Show when={st()}>
                         <button class={`hb ${prefs.panel ? "on" : ""}`} title={`Toggle panel (${mod}+.)`} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
@@ -109,7 +118,7 @@ export function Header(p: { handle?: SessionHandle }) {
                                 />
                             }
                         >
-                            <button ref={titleBtn} class={`bct ${menuOpen() ? "open" : ""}`} aria-haspopup="menu" aria-expanded={menuOpen()} title="Session actions" onClick={() => setMenuOpen(!menuOpen())} onDblClick={() => (close(), setEditing(true))}>
+                            <button ref={titleBtn} class={`bct ${menuOpen() ? "open" : ""}`} aria-haspopup="menu" aria-expanded={menuOpen()} title="Session actions" onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())} onDblClick={() => (close(), setEditing(true))}>
                                 <span class="truncate">{sessionTitle(p.handle)}</span>
                                 <ChevronDown size={14} class="chv" />
                             </button>
@@ -148,9 +157,15 @@ export function Header(p: { handle?: SessionHandle }) {
                             <button class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
                                 <FolderOpen size={14} /> Copy folder path
                             </button>
+                            <button class="menu-item compact" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
+                                <SquareArrowOutUpRight size={14} /> Open project in {editorName() ?? "editor"}
+                            </button>
                             <div class="menu-sep" />
                             <button class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
                                 <Archive size={14} /> Archive
+                            </button>
+                            <button class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), askDelete(p.handle))}>
+                                <Trash2 size={14} /> Delete…
                             </button>
                         </Popover>
                     </>

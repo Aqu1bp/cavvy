@@ -4,18 +4,21 @@
 // that each model gets its own result, and one failing never stops the others.
 
 import { randomBytes } from "crypto";
-import { lstatSync, statSync } from "fs";
+import { lstatSync, realpathSync, statSync } from "fs";
 import { join, relative } from "path";
 import { projectConfigSummary, trustedByUser } from "../config/trust";
 import { PERMISSION_MODES } from "../permissions/modes";
 import { clientFor, type ProviderListing } from "../providers/models";
 import { formatPrice } from "../providers/pricing";
+import { readsPdf } from "../providers/files";
 import { getProvider, type ProviderDef } from "../providers/registry";
-import { modelRef, parseModelRef, type ImagePart, type ModelInfo } from "../providers/types";
+import { modelRef, parseModelRef, type AttachedPart, type FilePart, type ImagePart, type ModelInfo } from "../providers/types";
 import { redact } from "../util/redact";
-import type { Billing, PermissionModeId, RunResult } from "./protocol";
+import { isInside } from "../util/files";
+import type { Billing, PermissionModeId, RunOutcome, RunResult } from "./protocol";
 import { RpcError } from "./rpc-error";
-import { checkCreate, createWorktree, runGitAsync, WORKTREES_DIR, type Log } from "./worktrees";
+import { checkFiles, checkMedia } from "./attachments";
+import { checkCreate, createWorktree, listWorktrees, runGitAsync, WORKTREES_DIR, type Log } from "./worktrees";
 
 export const MIN_MODELS = 2;
 export const MAX_MODELS = 4;
@@ -134,6 +137,7 @@ export interface RunRequest {
     models: string[];
     text: string;
     images: ImagePart[];
+    files?: FilePart[];
     mode?: PermissionModeId;
     confirmPaid: boolean;
 }
@@ -149,24 +153,26 @@ export function parseRunRequest(p: Record<string, unknown>, o: { validImage: (i:
     if (new Set(models).size !== models.length) throw bad("Each model can be picked only once.");
     if (typeof p.text !== "string") throw bad("text must be a string");
     if (p.text.length > MAX_TEXT) throw bad("The prompt is too long to send to several models.");
-    if (!p.text.trim()) throw bad("Write the task first: every model gets the same prompt.");
     if (p.text.trim().startsWith("!")) throw bad("Shell commands can't be sent to several models.");
     let images: ImagePart[] = [];
     if (p.images !== undefined && p.images !== null) {
         if (!Array.isArray(p.images) || p.images.length > MAX_IMAGES) throw bad(`Attach at most ${MAX_IMAGES} images.`);
         const whole = (i: any) => typeof i?.mediaType === "string" && typeof i?.data === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(i.data);
-        if (!p.images.every((i) => o.validImage(i) && whole(i))) throw bad("An attached image isn't one Harness can send (PNG, JPEG, GIF or WebP, under 20 MB).");
+        if (!p.images.every((i) => o.validImage(i) && whole(i))) throw bad("An attached image isn't one Harness can send (PNG, JPEG, GIF or WebP, under 15 MB).");
         images = (p.images as { mediaType: string; data: string }[]).map((i) => ({ type: "image", mediaType: i.mediaType as ImagePart["mediaType"], data: i.data }));
     }
+    const files = checkFiles(p.files);
+    checkMedia([...images, ...files]);
+    if (!p.text.trim() && !images.length && !files.length) throw bad("Write the task first: every model gets the same prompt.");
     if (p.mode !== undefined && p.mode !== null && !PERMISSION_MODES.includes(p.mode as PermissionModeId)) throw bad("Unknown mode");
     if (p.confirmPaid !== undefined && typeof p.confirmPaid !== "boolean") throw bad("confirmPaid must be a boolean");
-    return { path: o.resolvePath(p.path), models, text: p.text, images, mode: (p.mode ?? undefined) as PermissionModeId | undefined, confirmPaid: p.confirmPaid === true };
+    return { path: o.resolvePath(p.path), models, text: p.text, images, files, mode: (p.mode ?? undefined) as PermissionModeId | undefined, confirmPaid: p.confirmPaid === true };
 }
 
 type Checked = { ref: string; name: string; ok: true; billing: Billing; info: ModelInfo } | { ref: string; name: string; ok: false; error: string };
 
 /** A listed model of a provider that's set up here, which takes images if there are any. The message says what to do. */
-async function checkModel(ref: string, listings: ProviderListing[], withImages: boolean): Promise<Checked> {
+async function checkModel(ref: string, listings: ProviderListing[], withImages: boolean, withPdf: boolean): Promise<Checked> {
     const parsed = parseModelRef(ref);
     const def = parsed && getProvider(parsed.provider);
     const name = parsed?.id ?? ref;
@@ -186,6 +192,7 @@ async function checkModel(ref: string, listings: ProviderListing[], withImages: 
     if (!info) return { ref, name, ok: false, error: `${def.name} doesn't list ${redact(parsed.id).slice(0, 120)}. Refresh the model list, or pick another model.` };
     const shown = info.name ?? info.id;
     if (withImages && info.supportsImages === false) return { ref, name: shown, ok: false, error: `${shown} doesn't take images. Remove the images, or pick another model.` };
+    if (withPdf && !readsPdf(info)) return { ref, name: shown, ok: false, error: `${shown} can't read PDFs. Remove the PDFs, or pick another model.` };
     return { ref, name: shown, ok: true, billing: billingOf(def), info };
 }
 
@@ -199,10 +206,14 @@ async function headCommit(path: string): Promise<string> {
 
 /** The project configuration a checkout of `commit` will have, read from its tree (no file contents). */
 async function committedConfig(main: string, commit: string): Promise<string[]> {
-    const r = await runGitAsync(main, ["ls-tree", "-r", "-t", "--name-only", "-z", commit, "--", ".harness", ".mcp.json", ".claude", ".codex"], GIT_READ_MS);
+    const r = await runGitAsync(main, ["ls-tree", "-r", "-t", "-z", commit, "--", ".harness", ".mcp.json", ".claude", ".codex"], GIT_READ_MS);
     if (r.code !== 0 || r.timedOut) throw new RpcError("Git couldn't read this repository's HEAD, so nothing was created.", "git_failed");
-    const entries = new Set(r.stdout.split("\0").filter(Boolean));
-    return projectConfigSummary(main, (path) => entries.has(relative(main, path)));
+    const records = r.stdout.split("\0").filter(Boolean);
+    const entries = new Set(records.map((r) => r.slice(r.indexOf("\t") + 1)));
+    // A committed config directory can be a symlink. Its targets aren't
+    // beneath that name in the tree, but checkout will expose them there.
+    const linked = records.filter((r) => r.startsWith("120000 ")).map((r) => r.slice(r.indexOf("\t") + 1)).filter((p) => [".harness", ".claude", ".codex"].includes(p));
+    return [...projectConfigSummary(main, (path) => entries.has(relative(main, path))), ...linked];
 }
 
 /**
@@ -231,7 +242,7 @@ export interface RunSession {
     readonly id: string;
     readonly model?: { provider: string; id: string };
     setModel(ref: string, opts: { quiet?: boolean }): Promise<boolean>;
-    send(text: string, images?: ImagePart[]): Promise<unknown>;
+    send(text: string, attachments?: AttachedPart[], literal?: boolean): Promise<unknown>;
 }
 
 export interface RunRecord {
@@ -239,7 +250,7 @@ export interface RunRecord {
     label: string;
     cwd: string;
     at: number;
-    sessions: { id: string; model: string; modelName: string }[];
+    sessions: { id: string; model: string; modelName: string; outcome?: RunOutcome }[];
 }
 
 /** What a run needs of the engine. */
@@ -273,7 +284,20 @@ export async function startRun(host: RunHost, req: RunRequest): Promise<{ runId:
         throw new RpcError("Bypass mode is off. Start the GUI with --dangerously-skip-permissions or set permissions.allowBypass in your user settings.", "invalid");
     }
     // A repository with a main worktree, its own Git metadata, and Git config that's trusted (or can't run anything).
-    const main = checkCreate(home);
+    let main: string;
+    try {
+        main = checkCreate(home);
+    } catch (e) {
+        if (!(e instanceof RpcError) || e.code !== "needs_trust") throw e;
+        // One decision must cover both Git and the new checkouts' project
+        // configuration. Trusting a nested Home alone would ask again later.
+        const root = listWorktrees(home).find((w) => w.main)?.path;
+        if (!root) throw e;
+        if (!isInside(realpathSync(home), realpathSync(root))) {
+            throw new RpcError(`This run needs trusted Git configuration in both ${home} and ${root}. Open each folder from Home and trust it, then retry the run. Nothing was created.`, "run_trust_required");
+        }
+        throw new RpcError(`This repository's Git configuration can run commands while files are checked out. Trust ${root} and its project configuration to start this run.`, "needs_trust", root);
+    }
     if (starting.has(main)) throw new RpcError("A run is already starting in this repository.", "busy");
     starting.add(main);
     try {
@@ -285,7 +309,7 @@ export async function startRun(host: RunHost, req: RunRequest): Promise<{ runId:
 
 async function run(host: RunHost, req: RunRequest, main: string): Promise<{ runId: string; results: RunResult[] }> {
     const listings = await host.listings();
-    const checked = await Promise.all(req.models.map((ref) => checkModel(ref, listings, req.images.length > 0)));
+    const checked = await Promise.all(req.models.map((ref) => checkModel(ref, listings, req.images.length > 0, Boolean(req.files?.some((f) => f.kind === "pdf")))));
     const paid = checked.filter((c) => c.ok && c.billing === "api") as Extract<Checked, { ok: true }>[];
     if (paid.length > PAID_WITHOUT_ASKING && !req.confirmPaid) {
         const list = paid.map((c) => `${c.name} (${formatPrice(c.info) ? `${formatPrice(c.info)} per million tokens` : "price unknown"})`).join(", ");
@@ -297,7 +321,7 @@ async function run(host: RunHost, req: RunRequest, main: string): Promise<{ runI
     const branches = ready.length ? await branchNames(main) : new Set<string>();
 
     const runId = `run-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
-    const record: RunRecord = { id: runId, label: redact(req.text).replace(/\s+/g, " ").trim().slice(0, 80), cwd: req.path, at: Date.now(), sessions: [] };
+    const record: RunRecord = { id: runId, label: redact(req.text).replace(/\s+/g, " ").trim().slice(0, 80) || "Attached files", cwd: req.path, at: Date.now(), sessions: [] };
     const slug = promptSlug(req.text);
     const slugs = modelSlugs(req.models);
     /** Names this run tried or used, lower case. */
@@ -360,10 +384,18 @@ async function startSession(host: RunHost, req: RunRequest, record: RunRecord, c
         host.discard(rt.id);
         return { ...kept, ok: false, error: `${where} its session couldn't be set to ${c.name}, so it wasn't sent the prompt. Check the provider in Settings → Providers, then open the folder from Home.` };
     }
-    record.sessions.push({ id: rt.id, model: c.ref, modelName: c.name });
-    host.record(record);
+    record.sessions.push({ id: rt.id, model: c.ref, modelName: c.name, outcome: "working" });
     try {
-        await rt.send(req.text, req.images.length ? req.images : undefined);
+        host.record(record);
+    } catch (e) {
+        record.sessions = record.sessions.filter((s) => s.id !== rt.id);
+        host.discard(rt.id);
+        return { ...kept, ok: false, error: `${where} its run couldn't be saved, so it wasn't sent the prompt: ${messageOf(e, "unknown error")} Check that Harness's data folder is writable, then retry.` };
+    }
+    try {
+        const attachments: AttachedPart[] = [...req.images, ...(req.files ?? [])];
+        // A run compares the same task on every model, even when it starts with a slash.
+        await rt.send(req.text, attachments.length ? attachments : undefined, true);
     } catch (e) {
         host.release(rt.id);
         return { ...kept, ok: false, error: `${where} the prompt couldn't be sent: ${messageOf(e, "unknown error")}` };

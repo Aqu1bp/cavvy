@@ -4,38 +4,54 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { Terminals } from "./terminals";
+import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir, hostname, userInfo } from "os";
-import { APP_VERSION, harnessHome } from "../config/paths";
-import { loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
-import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "../config/trust";
+import { APP_VERSION, harnessHome, paths } from "../config/paths";
+import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError } from "../agent/session";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
+import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
-import { cachedListings, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
+import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentCli, vendorOf } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
-import { gitRoot, gitSnapshot } from "../util/git";
+import { gitRoot, gitBranch } from "../util/git";
 import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
-import { isInside } from "../util/files";
+import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
+import { childEnv } from "../util/env";
+import { expandPath, isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
+import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
+import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
+import { CODEX_CLIENT_NAME } from "../backends/codex";
+import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
+import { searchSessions } from "./search";
+import { usageDays, usageSummary } from "./usage";
+import { mergeLimits } from "../backends/limits";
 import type {
+    CliSessionInfo,
+    CliSessionsList,
     CommandInfo,
+    EditorInfo,
     EffortLevel,
     GuiSettings,
     HelloResult,
+    McpListInfo,
     McpStatus,
+    PlanLimits,
     Method,
     Methods,
     PermissionModeId,
@@ -45,12 +61,15 @@ import type {
     ProviderModels,
     ServerEvent,
     RunMember,
+    RunOutcome,
     SessionOp,
     SessionSnapshot,
+    SessionSearchResult,
     SessionSummary,
 } from "./protocol";
 import { PROTOCOL_VERSION } from "./protocol";
-import { modelRef, type ImagePart } from "../providers/types";
+import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
+import { checkFiles, checkMedia, toWire } from "./attachments";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -65,10 +84,34 @@ export interface EngineOptions {
     unloadAfterMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
     log?: (message: string) => void;
+    /** Where to look for editors (tests point it at fake launchers). */
+    editorEnv?: () => DetectEnv;
+    /** Starts an editor (tests record the argv instead). */
+    launchEditor?: (argv: string[]) => Promise<void>;
 }
+
+/**
+ * A CLI session in the list: one Harness holds is listed apart; one Harness's
+ * sub-agents ran on is left out, as is a Codex thread started by Harness's
+ * client that no session holds (sub-agent runs from before they were recorded).
+ */
+function sortCliSession(links: HarnessLinks, source: CliSource, id: string, originator: string | undefined): "new" | "held" | "hidden" {
+    const k = linkKey(source, id);
+    if (links.held.has(k)) return "held";
+    if (links.subagent.has(k)) return "hidden";
+    if (source === "codex" && originator === CODEX_CLIENT_NAME) return "hidden";
+    return "new";
+}
+
+/** A CLI session changed this recently may still be open in a terminal. */
+const RECENT_CLI_MS = 2 * 60_000;
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
 const UNLOAD_AFTER_MS = 30_000;
+/** Deleted sessions older than a week are purged at start and this often. */
+const PURGE_EVERY_MS = 60 * 60 * 1000;
+/** How long opening a session waits for its model to be set up, so the snapshot has it (a slow provider's comes after). */
+const OPEN_MODEL_WAIT_MS = 2_000;
 
 export interface EngineClient {
     send(ev: ServerEvent): void;
@@ -95,27 +138,45 @@ const MAX_RUNS = 50;
 /** Each session's place in a run. */
 function runMembers(store: GuiStore): Map<string, RunMember> {
     const out = new Map<string, RunMember>();
-    for (const r of store.runs ?? []) for (const s of r.sessions) out.set(s.id, { id: r.id, label: r.label, cwd: r.cwd, model: s.model, modelName: s.modelName });
+    for (const r of store.runs ?? []) for (const s of r.sessions) out.set(s.id, { id: r.id, label: r.label, cwd: r.cwd, model: s.model, modelName: s.modelName, ...(s.outcome ? { outcome: s.outcome === "working" ? "stopped" : s.outcome } : {}) });
     return out;
 }
 
+function runOutcome(rt: Runtime): RunOutcome {
+    if (rt.status === "running" || rt.status === "waiting") return "working";
+    return rt.lastTurnStatus === "done" ? "done" : "stopped";
+}
+
 const storeFile = () => join(harnessHome(), "gui.json");
+/** The store's lists of session ids. */
+const STORE_FLAGS = ["pinned", "archived", "settled"] as const;
 
 function readStore(): GuiStore {
     return readJson<GuiStore>(storeFile()) ?? {};
 }
 
-function updateStore(fn: (s: GuiStore) => void) {
+/** Best effort: false when it couldn't be saved. */
+function updateStore(fn: (s: GuiStore) => void): boolean {
     const s = readStore();
     fn(s);
     try {
         writeJson(storeFile(), s, 0o600);
+        return true;
     } catch {
-        // best effort
+        return false;
     }
 }
 
 // ---------------------------------------------------------------------------
+
+const MAX_MCP_STATUS = 100;
+
+/** A refusal from the MCP core, or a local settings file that can't be updated, is the client's to show. */
+function mcpError(e: unknown): unknown {
+    if (e instanceof McpApprovalError) return new RpcError(e.message, e.code);
+    if (e instanceof JsonFileError) return new RpcError(e.message, "settings");
+    return e;
+}
 
 export class Workspace {
     settings: Settings;
@@ -135,7 +196,7 @@ export class Workspace {
     }
 
     private startMcp(): McpManager {
-        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted);
+        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })));
         mcp.onChange = () => this.engine.workspaceChanged(this);
         mcp.load();
         void mcp.startAll();
@@ -150,7 +211,13 @@ export class Workspace {
 
     /** Trusted later on: project settings, servers and commands take effect. */
     async trust() {
-        if (this.trusted) return;
+        if (this.trusted) {
+            // Trusted for this session only (it had nothing to protect when opened): now the user's word too, which
+            // approving its .mcp.json servers needs, and enableAllProjectMcpServers looks for.
+            await this.mcp.sync();
+            this.engine.workspaceChanged(this);
+            return;
+        }
         this.trusted = true;
         const old = this.mcp;
         this.settings = loadSettings(this.cwd, { trusted: true });
@@ -160,8 +227,35 @@ export class Workspace {
         this.engine.workspaceChanged(this);
     }
 
+    /** For every session's state: no fingerprints, no configuration, bounded (session.mcp has the rest). */
     mcpStatus(): McpStatus[] {
-        return [...this.mcp.servers.values()].map((s) => ({ name: s.name, status: s.status, tools: s.tools.length, error: s.error ? redact(s.error.split("\n")[0]!) : undefined, source: s.source }));
+        return [...this.mcp.servers.values()].slice(0, MAX_MCP_STATUS).map((s) => ({
+            name: s.name,
+            status: s.status,
+            tools: s.tools.length,
+            error: s.error ? visible(redact(s.error.split("\n")[0]!)).text.slice(0, 500) : undefined,
+            source: s.source,
+            // No fingerprint here; and no empty fields (they'd travel as null).
+            approval: s.approval && { state: s.approval.state, ...(s.approval.reason ? { reason: s.approval.reason } : {}), ...(s.approval.viaAll ? { viaAll: true } : {}) },
+        }));
+    }
+
+    /** The folder's servers for `rt`'s card and list: what approving means depends on the session's provider. */
+    mcpList(rt: Runtime, name?: string): McpListInfo {
+        let servers;
+        let omitted = 0;
+        if (name !== undefined) {
+            const one = this.mcp.describe(name);
+            if (!one) throw new RpcError(`There's no MCP server named "${name}" here.`, "unknown");
+            servers = [one];
+        } else ({ servers, omitted } = this.mcp.list());
+        const userTrusted = trustedByUser(this.cwd);
+        return { servers, omitted, trusted: this.trusted, userTrusted, savedIn: paths.localSettings(this.cwd), meaning: approvalMeaning(rt.model?.provider, userTrusted) };
+    }
+
+    /** Approving, rejecting and revoking need the folder trusted, whatever the client sends. */
+    mustTrust() {
+        if (!this.trusted) throw new RpcError("This folder isn't trusted, so its .mcp.json isn't read and its servers can't be approved. Trust the folder first.", "untrusted");
     }
 }
 
@@ -172,6 +266,8 @@ export class Engine {
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
+    /** Each window's latest search: an older one still reading stops. */
+    private searches = new WeakMap<EngineClient, number>();
     listings: ProviderListing[] = cachedListings();
     readonly fallbackModel?: string;
     private refreshing?: Promise<ProviderListing[]>;
@@ -186,18 +282,31 @@ export class Engine {
     private removing = new Set<string>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
+    private purgeTimer?: ReturnType<typeof setInterval>;
+    /** The agent CLIs' plan limits as last reported, by provider: the account's, so every session shares them. */
+    private limits = new Map<string, PlanLimits>();
+    /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
+    private cliCommandNames = new Map<string, Set<string>>();
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
     }
 
+    log(msg: string) {
+        this.o.log?.(redact(msg));
+    }
+
     async start() {
         void this.firstListings();
+        purgeTrash();
+        this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
+        this.purgeTimer.unref?.();
     }
 
     async stop() {
         this.stopping = true;
         this.terminals.stop();
+        clearInterval(this.purgeTimer);
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
@@ -211,13 +320,30 @@ export class Engine {
         for (const c of this.clients) c.send(ev);
     }
 
+    /** An agent CLI reported where the plan stands (an older report doesn't replace a newer one). */
+    limitsReported(l: PlanLimits, partial: boolean) {
+        const prev = this.limits.get(l.provider);
+        if (prev && prev.at > l.at) return;
+        const merged = mergeLimits(prev, l, partial);
+        this.limits.set(l.provider, merged);
+        this.broadcast({ type: "limits", limits: merged });
+    }
+
+    cliCommandsReported(provider: string, cwd: string, names: string[]) {
+        this.cliCommandNames.set(`${provider}:${resolve(cwd)}`, new Set(names));
+    }
+
+    cliCommands(provider: string | undefined, cwd: string): ReadonlySet<string> | undefined {
+        return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
+    }
+
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "session.ops", sessionId, seq, ops });
     }
 
-    draft(rt: Runtime, text: string, images?: ImagePart[]) {
-        const back = images?.length ? images.map((i) => ({ mediaType: i.mediaType, data: i.data })) : undefined;
-        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, images: back });
+    draft(rt: Runtime, text: string, attachments?: AttachedPart[]) {
+        const back = toWire(attachments);
+        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, ...back });
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
@@ -230,6 +356,12 @@ export class Engine {
 
     sessionChanged(rt: Runtime) {
         if (!rt.session.messages.length && !rt.busy) return;
+        const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
+        const outcome = runOutcome(rt);
+        if (member && member.outcome !== outcome) updateStore((s) => {
+            const saved = s.runs?.flatMap((r) => r.sessions).find((m) => m.id === rt.id);
+            if (saved) saved.outcome = outcome;
+        });
         this.broadcast({ type: "sessions.upsert", session: this.summaryOf(rt) });
     }
 
@@ -313,7 +445,7 @@ export class Engine {
             exists,
             trusted: trusted || (!found.length && exists),
             needsTrust: trusted || this.declined.has(p) ? [] : found,
-            branch: git ? gitSnapshot(p)?.branch : undefined,
+            branch: git ? gitBranch(p) : undefined,
             git,
             openedAt: readStore().recent?.find((r) => r.path === p)?.at,
         };
@@ -408,6 +540,7 @@ export class Engine {
 
     summaryOf(rt: Runtime): SessionSummary {
         const store = readStore();
+        const run = runMembers(store).get(rt.id);
         return {
             id: rt.id,
             cwd: rt.ws.cwd,
@@ -422,7 +555,7 @@ export class Engine {
             settled: (store.settled ?? []).includes(rt.id),
             model: rt.session.model,
             live: true,
-            run: runMembers(store).get(rt.id),
+            run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
         };
     }
 
@@ -443,6 +576,37 @@ export class Engine {
             out.set(rt.id, { ...live, updatedAt: Math.max(live.updatedAt, disk?.updatedAt ?? 0) });
         }
         return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+    }
+
+    /** What was said in every session (archived ones marked), read from their files; see search.ts. */
+    async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
+        if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
+        const seq = (this.searches.get(client) ?? 0) + 1;
+        this.searches.set(client, seq);
+        if (query.trim().length < 2) return { hits: [], partial: false };
+        const arch = new Set(readStore().archived ?? []);
+        const r = await searchSessions(query, {
+            limit: Math.max(1, Math.min(Math.floor(limit), 200)),
+            include: archived === undefined ? undefined : (id) => arch.has(id) === archived,
+            stale: () => this.searches.get(client) !== seq || this.stopping,
+        });
+        if (r.stale) return { hits: [], partial: true, stale: true };
+        return {
+            partial: r.partial,
+            hits: r.hits.map((h) => ({
+                id: h.id,
+                title: redact(this.runtimes.get(h.id)?.title ?? h.title),
+                cwd: h.cwd,
+                projectName: basename(h.cwd) || h.cwd,
+                archived: arch.has(h.id),
+                seg: h.seg,
+                index: h.index,
+                role: h.role,
+                snippet: h.snippet,
+                ...(h.match ? { match: h.match } : {}),
+                at: h.at,
+            })),
+        };
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
@@ -480,12 +644,118 @@ export class Engine {
             openSession: (cwd, mode) => this.createSession(cwd, { mode }),
             discard: (id) => this.unloadIfUnused(id),
             release: (id) => this.unloadLater(id),
-            record: (run) =>
-                updateStore((s) => {
-                    s.runs = [run, ...(s.runs ?? []).filter((r) => r.id !== run.id)].slice(0, MAX_RUNS);
-                }),
+            record: (run) => {
+                const saved = updateStore((s) => {
+                    // A preceding model can finish while the next worktree is made.
+                    const previous = s.runs?.find((r) => r.id === run.id);
+                    const sessions = run.sessions.map((m) => previous?.sessions.find((p) => p.id === m.id) ?? m);
+                    s.runs = [{ ...run, sessions }, ...(s.runs ?? []).filter((r) => r.id !== run.id)].slice(0, MAX_RUNS);
+                });
+                if (!saved) throw new RpcError("Harness couldn't save this run.");
+            },
             log: this.o.log,
         };
+    }
+
+    /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Harness. */
+    cliSessionsList(cwd: string): CliSessionsList {
+        const p = resolve(expandHome(cwd));
+        if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
+        const now = Date.now();
+        const links = harnessLinks(this.aliasesOf(p, []));
+        const listings = CLI_SOURCES.map((source) => ({ source, ...listCliSessions(source, p, { sort: (id, originator) => sortCliSession(links, source, id, originator) }) }));
+        const sessions: CliSessionInfo[] = listings
+            .flatMap((l) => [...l.sessions, ...l.held])
+            .map((s) => ({
+                source: s.source,
+                id: s.id,
+                title: redact(s.title),
+                startedAt: s.startedAt,
+                updatedAt: s.updatedAt,
+                messages: s.messages,
+                partial: s.partial,
+                ...(s.model ? { model: redact(s.model) } : {}),
+                ...(links.held.has(linkKey(s.source, s.id)) ? { harnessId: links.held.get(linkKey(s.source, s.id)) } : {}),
+                recent: now - s.updatedAt < RECENT_CLI_MS,
+            }))
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+        return {
+            sources: listings.map((l) => ({ source: l.source, name: getProvider(l.source)?.name ?? l.source, enabled: Boolean(readAgentConfig(l.source)), more: l.more, moreInHarness: l.moreHeld })),
+            sessions,
+        };
+    }
+
+    /**
+     * Paths that are this folder, under which Harness may have kept its sessions:
+     * as given, as the CLI sessions recorded it, and recent projects that are the
+     * same folder by another path (/tmp and /private/tmp).
+     */
+    private aliasesOf(p: string, recorded: string[]): string[] {
+        const real = (x: string) => {
+            try {
+                return realpathSync(x);
+            } catch {
+                return resolve(x);
+            }
+        };
+        const target = real(p);
+        const recent = (readStore().recent ?? []).map((r) => r.path).filter((x) => real(x) === target);
+        return [...new Set([p, ...recorded, ...recent])];
+    }
+
+    private importing = new Map<string, Promise<Runtime>>();
+
+    /**
+     * A Harness session for a Claude Code or Codex session of this folder: the
+     * one that already holds it, else a new one on the matching backend with
+     * the conversation so far, opened. Two requests for the same one share the work.
+     */
+    async importCliSession(cwd: string, source: unknown, id: unknown): Promise<Runtime> {
+        if (!CLI_SOURCES.includes(source as CliSource)) throw new RpcError("source must be claude-code or codex");
+        if (!validCliId(id)) throw new RpcError("That isn't a Claude Code or Codex session id");
+        const p = resolve(expandHome(cwd));
+        if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
+        const key = linkKey(source as CliSource, id);
+        const running = this.importing.get(key);
+        if (running) return running;
+        const work = (async () => this.importNow(p, source as CliSource, id))();
+        this.importing.set(key, work);
+        try {
+            return await work;
+        } finally {
+            this.importing.delete(key);
+        }
+    }
+
+    private async importNow(p: string, source: CliSource, id: string): Promise<Runtime> {
+        const name = getProvider(source)?.name ?? source;
+        // Only a session a listing of this folder shows: no path is made from the id.
+        const entry = findCliSession(source, p, id);
+        if (!entry) throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
+        const links = harnessLinks(this.aliasesOf(p, [entry.cwd]));
+        // A run of Harness's own sub-agents isn't offered, so it isn't imported either.
+        if (sortCliSession(links, source, entry.id, entry.originator) === "hidden") throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
+        const existing = links.held.get(linkKey(source, entry.id));
+        if (existing) {
+            while (this.closing.has(existing)) await this.afterClosing(existing);
+            const rt = this.openSession(existing);
+            await rt.ready.catch(() => undefined);
+            return rt;
+        }
+        if (!readAgentConfig(source)) throw new RpcError(`Turn on ${name} in Settings → Providers`, "provider_off");
+        // The folder it ran in, as this one names it (the listing matched them by real path): the
+        // trust asked about and given is for this path, and the CLI, started here, sees the real one.
+        const folder = p;
+        // The trust check comes first: nothing is written for a folder that can't be opened.
+        this.workspaceFor(folder);
+        const transcript = readCliTranscript(entry);
+        if (!transcript.turns.length) throw new RpcError(`That ${name} session has no messages to import`);
+        const model = importModel(source, transcript.model ?? entry.model, this.listings);
+        const sid = writeImportedSession({ cwd: folder, entry, transcript, model, title: cleanTitle(redact(entry.title)) });
+        this.remember(folder);
+        const rt = this.openSession(sid);
+        await rt.ready.catch(() => undefined);
+        return rt;
     }
 
     private loadSession(id: string): Session {
@@ -562,10 +832,79 @@ export class Engine {
         if (!this.clients.has(client)) this.unloadLater(id);
     }
 
-    /** Before opening a session that's being unloaded: once that's done, if the server isn't stopping meanwhile. */
+    /**
+     * Before opening a session that's being unloaded or deleted: once that's
+     * done, if the server isn't stopping meanwhile. Callers loop on `closing`
+     * (`while (this.closing.has(id)) await ...`) so they act in the same turn
+     * they found nothing closing: returning from here leaves a gap in which a
+     * delete can start.
+     */
     private async afterClosing(id: string) {
         await this.closing.get(id);
         if (this.stopping) throw new RpcError("The harness server is stopping.", "stopping");
+    }
+
+    /**
+     * Delete a session: its files go to the trash (session-delete.ts). One
+     * that's working is left alone; one open here but idle is closed first.
+     * Meanwhile opening or renaming it waits, as for one being unloaded, and
+     * then finds nothing.
+     */
+    private async deleteSession(id: string) {
+        // A model still being set up (as it opens) isn't work to refuse over: wait for it, a while.
+        const until = Date.now() + 10_000;
+        for (;;) {
+            while (this.closing.has(id)) await this.afterClosing(id);
+            const setup = this.runtimes.get(id)?.modelSetup;
+            if (!setup || Date.now() >= until) break;
+            await Promise.race([setup.catch(() => undefined), new Promise((r) => setTimeout(r, until - Date.now()).unref?.())]);
+        }
+        const rt = this.runtimes.get(id);
+        if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
+        const store = readStore();
+        const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
+        // Held from before its runtime closes until it's in the trash, so a terminal can't take it in between.
+        const release = claimForDelete(locateSession(id).file);
+        const work = (async () => {
+            try {
+                if (rt) {
+                    this.runtimes.delete(id);
+                    clearTimeout(this.unloadTimers.get(id));
+                    this.unloadTimers.delete(id);
+                    await rt.close().catch(() => undefined);
+                }
+                trashSession(id, flags);
+            } finally {
+                release();
+            }
+        })();
+        const done: Promise<void> = work
+            .catch(() => undefined)
+            .finally(() => {
+                if (this.closing.get(id) === done) {
+                    this.closing.delete(id);
+                    this.closingIn.delete(id);
+                }
+            });
+        this.closing.set(id, done);
+        // As for one being unloaded: its SessionEnd hooks may run in its folder meanwhile.
+        if (rt) this.closingIn.set(id, rt.ws.cwd);
+        try {
+            await work;
+        } catch (e) {
+            if (rt) {
+                // Closed, but not deleted: windows that had it open it again, as it now is on disk.
+                for (const c of this.clients) if (c.subs.delete(id)) c.send({ type: "session.reload", sessionId: id });
+                const summary = this.listSessions(1000, flags.archived).find((s) => s.id === id);
+                if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
+            }
+            throw e;
+        }
+        for (const c of this.clients) c.subs.delete(id);
+        updateStore((s) => {
+            for (const key of STORE_FLAGS) if (s[key]) s[key] = s[key]!.filter((x) => x !== id);
+        });
+        this.broadcast({ type: "sessions.remove", id });
     }
 
     private runtime(id: unknown): Runtime {
@@ -688,6 +1027,7 @@ export class Engine {
             autoCompact: s.autoCompact,
             webSearch: s.webSearch,
             allowBypass: s.permissions?.allowBypass,
+            editor: s.editor,
         };
     }
 
@@ -711,12 +1051,108 @@ export class Engine {
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
                 if ("allowBypass" in patch) perms.allowBypass = Boolean(patch.allowBypass) || undefined;
             }
+            if ("editor" in patch) {
+                if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
+                s.editor = patch.editor || undefined;
+            }
         });
         this.reloadSettings();
         return this.guiSettings(cwd);
     }
 
-    private commandsFor(cwd: string): CommandInfo[] {
+    // -----------------------------------------------------------------------
+    // Open in editor
+
+    private editorsList(): { editors: EditorInfo[]; selected?: string } {
+        const env = (this.o.editorEnv ?? defaultDetectEnv)();
+        const editors = EDITORS.filter((d) => d.style !== "reveal" || env.platform === "darwin").map((d) => {
+            const f = detectEditor(d, env);
+            return { id: d.id, name: d.name, installed: Boolean(f), lines: Boolean(f && takesLines(f)) };
+        });
+        return { editors, selected: this.guiSettings().editor };
+    }
+
+    /**
+     * The folder a path from the GUI is resolved against, and the roots it
+     * must stay inside: a session's cwd plus its additionalDirectories, or a
+     * project that's open in Harness. Any other folder is refused, so the GUI
+     * can't widen the roots by naming one.
+     */
+    private openScope(p: Record<string, any>): { cwd: string; roots: string[] } {
+        if (p.sessionId !== undefined) {
+            const rt = this.runtime(p.sessionId);
+            return { cwd: rt.ws.cwd, roots: rt.checker.workspaceRoots() };
+        }
+        const ws = this.workspaces.get(resolve(str(p.cwd, "cwd")));
+        if (!ws) throw new RpcError("That folder isn't open in Harness", "not_open");
+        const extra = ws.settings.permissions?.additionalDirectories ?? [];
+        return { cwd: ws.cwd, roots: [ws.cwd, ...extra.map((d) => expandPath(d, ws.cwd))] };
+    }
+
+    private async openInEditor(p: Record<string, any>): Promise<{ editor: string }> {
+        const id = optStr(p.editor) ?? this.guiSettings().editor;
+        if (!id) throw new RpcError("Choose an editor in Settings → General → Open files with.", "no_editor");
+        const def = editorById(id);
+        if (!def) throw new RpcError("Unknown editor", "invalid");
+        const env = (this.o.editorEnv ?? defaultDetectEnv)();
+        if (env.platform === "win32") throw new RpcError("Opening files in an editor isn't supported on Windows yet.", "unsupported");
+        const found = detectEditor(def, env);
+        if (!found) throw new RpcError(`${def.name} isn't installed on this computer. Choose another editor in Settings → General.`, "not_installed");
+        const line = position(p.line, "line", MAX_LINE);
+        const col = position(p.col, "col", MAX_COL);
+        const folder = p.folder === true;
+        const { cwd, roots } = this.openScope(p);
+        const t = confinePath(str(p.path, "path"), cwd, roots);
+        if (folder && !t.dir) throw new RpcError(`${p.path} isn't a folder`, "invalid");
+        if (!folder && t.dir && def.style !== "reveal") throw new RpcError(`${p.path} is a folder`, "invalid");
+        // The real location, so a symlink in the path can't be swapped after the
+        // check. (A file or folder replaced in the moment between the check and
+        // the editor opening it isn't caught: that needs the editor to take an
+        // open handle, which none of these launchers do.)
+        const argv = editorArgv(found, { path: t.real, line, col, folder });
+        await (this.o.launchEditor ?? launchEditor)(argv);
+        return { editor: def.name };
+    }
+
+    private pathsExist(p: Record<string, any>): (string | null)[] {
+        if (!Array.isArray(p.paths)) throw new RpcError("paths must be a list", "invalid");
+        if (p.paths.length > 200) throw new RpcError("At most 200 paths at a time", "limit");
+        const { cwd, roots } = this.openScope(p);
+        // Not linked: what the chosen editor (any, before one is chosen) would open as a project.
+        const chosen = this.guiSettings().editor;
+        const def = chosen ? editorById(chosen) : undefined;
+        return p.paths.map((raw: unknown) => {
+            try {
+                const t = confinePath(checkPathInput(raw), cwd, roots);
+                // The real file decides, as in fs.open: a link named like a solution may be a text file, and the other way round.
+                return t.dir || opensAsProject(def, t.real) ? null : t.path;
+            } catch {
+                return null;
+            }
+        });
+    }
+
+    private async commandProvider(cwd: string): Promise<string | undefined> {
+        const usable = async (ref: string | undefined) => {
+            const model = ref && resolveModelInfo(ref);
+            if (!model) return undefined;
+            try {
+                await clientFor(model.provider);
+                return model.provider;
+            } catch {
+                return undefined;
+            }
+        };
+        // A new session falls back when its configured model is unavailable; Home must check that provider's commands.
+        const settings = this.workspaces.get(cwd)?.settings ?? loadSettings(cwd, { trusted: isTrusted(cwd) });
+        const provider = await usable(settings.model ?? this.fallbackModel);
+        if (provider) return provider;
+        const model = defaultModelFrom(this.listings) ?? defaultModelFrom(await this.refreshListings());
+        return usable(model && modelRef(model));
+    }
+
+    /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
+    private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
             { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
@@ -724,15 +1160,22 @@ export class Engine {
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
+            { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
             { name: "tasks", description: "Sub-agents and tasks delegated to other models (/tasks stop stops them)", args: "[stop [task-id]]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
+            { name: "context", description: "How full the context window is, and your plan's limits" },
         ];
         const ws = this.workspaces.get(resolve(cwd));
-        const custom = (ws?.commands ?? []).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
-        return [...builtin, ...custom];
+        // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
+        const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
+        const own = new Set([...builtin, ...custom].map((c) => c.name));
+        const name = provider ? (getProvider(provider)?.name ?? provider) : "";
+        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
+        return [...builtin, ...custom, ...cli];
     }
 
     // -----------------------------------------------------------------------
@@ -762,6 +1205,37 @@ export class Engine {
             case "terminal.close":
                 this.terminals.close(client, str(p.id, "id"));
                 return null;
+            case "terminal.arm":
+                this.terminals.arm(client, str(p.id, "id"));
+                return null;
+            case "scripts.list":
+                return await listScripts(p.cwd);
+            case "scripts.save": {
+                const { project, script } = await saveScript(p.cwd, { id: p.id, name: p.name, command: p.command, icon: p.icon });
+                this.broadcast({ type: "scripts.changed", project });
+                return script;
+            }
+            case "scripts.delete": {
+                const { project } = await deleteScript(p.cwd, p.id);
+                this.broadcast({ type: "scripts.changed", project });
+                return null;
+            }
+            case "scripts.reorder": {
+                const list = await reorderScripts(p.cwd, p.ids);
+                this.broadcast({ type: "scripts.changed", project: list.project });
+                return list;
+            }
+            case "scripts.run": {
+                // Only ever from a click in the GUI: the stored command, typed into a terminal the window can see and stop.
+                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                const { project, script } = await findScript(p.cwd, p.script);
+                // The window may have gone while the script was looked up.
+                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                const opened = this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, { input: `${script.command}\r` });
+                // It's running; remembering it for the header button needn't hold up the reply, and may fail quietly.
+                void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
+                return { ...opened, script };
+            }
             case "hello": {
                 const startCwd = this.o.startCwd && this.o.startCwd !== homedir() ? this.o.startCwd : undefined;
                 let user = "";
@@ -774,6 +1248,9 @@ export class Engine {
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
+            case "sessions.search":
+                // Awaited: it can reject before its first await (see providers.setKey below).
+                return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
             case "session.create": {
                 const rt = await this.createSession(str(p.cwd, "cwd"), { model: optStr(p.model), mode: p.mode });
                 this.watch(client, rt.id);
@@ -781,10 +1258,23 @@ export class Engine {
             }
             case "session.open": {
                 const id = str(p.id, "id");
-                await this.afterClosing(id);
+                while (this.closing.has(id)) await this.afterClosing(id);
+                const loaded = this.runtimes.has(id);
                 const rt = this.openSession(id);
                 this.watch(client, rt.id);
+                if (!loaded) {
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    await Promise.race([rt.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
+                    clearTimeout(timer);
+                }
                 return rt.snapshot();
+            }
+            case "cliSessions.list":
+                return this.cliSessionsList(str(p.cwd, "cwd"));
+            case "cliSessions.import": {
+                const rt = await this.importCliSession(str(p.cwd, "cwd"), p.source, p.id);
+                this.watch(client, rt.id);
+                return rt.snapshot() satisfies SessionSnapshot;
             }
             case "session.close": {
                 const id = str(p.id, "id");
@@ -794,7 +1284,12 @@ export class Engine {
             }
             case "session.send": {
                 const rt = this.runtime(p.id);
-                const images = Array.isArray(p.images) ? (p.images as { mediaType: unknown; data: unknown }[]).filter(validImage).map((i): ImagePart => ({ type: "image", mediaType: String(i.mediaType), data: String(i.data) })) : undefined;
+                const images = Array.isArray(p.images) ? (p.images as { mediaType: unknown; data: unknown }[]).map((i): ImagePart => {
+                    if (!validImage(i)) throw new RpcError("Images must be PNG, JPEG, GIF or WebP, under 15 MB.");
+                    return { type: "image", mediaType: String(i.mediaType), data: String(i.data) };
+                }) : [];
+                const attached: AttachedPart[] = [...images, ...checkFiles(p.files)];
+                checkMedia(attached);
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.
                 if ((readStore().settled ?? []).includes(rt.id)) {
@@ -803,7 +1298,7 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return rt.send(str(p.text ?? "", "text"), images?.length ? images : undefined);
+                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();
@@ -833,7 +1328,7 @@ export class Engine {
             case "session.rename": {
                 const id = str(p.id, "id");
                 const title = cleanTitle(str(p.title, "title"));
-                await this.afterClosing(id);
+                while (this.closing.has(id)) await this.afterClosing(id);
                 const rt = this.runtimes.get(id);
                 if (rt) rt.rename(title);
                 else if (title) {
@@ -860,13 +1355,44 @@ export class Engine {
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.changes":
                 return this.runtime(p.id).changes();
+            case "session.gitChanges": {
+                if (!["uncommitted", "branch", "last-turn", "turn"].includes(p.scope)) throw new RpcError("Unknown changes scope", "invalid");
+                if (p.turnId !== undefined && (!Number.isSafeInteger(p.turnId) || p.turnId < 0)) throw new RpcError("turnId must be a checkpoint id", "invalid");
+                if (p.scope === "turn" && p.turnId === undefined) throw new RpcError("turnId is required for a turn scope", "invalid");
+                // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
+                if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
+                if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId });
+            }
+            case "session.gitCommit":
+            case "session.gitCommitMessage": {
+                if (!Array.isArray(p.paths) || !p.paths.length || p.paths.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
+                    throw new RpcError("paths must contain 1 to 300 file paths", "invalid");
+                }
+                if (method === "session.gitCommitMessage") return this.runtime(p.id).gitCommitMessage(p.paths);
+                if (typeof p.message !== "string" || !p.message.trim() || Buffer.byteLength(p.message) > 65_536 || p.message.includes("\0")) {
+                    throw new RpcError("message must be nonempty, at most 64 KiB, and contain no NUL bytes", "invalid");
+                }
+                if (p.expectedHead !== undefined) {
+                    const head = p.expectedHead;
+                    if (
+                        !head || typeof head !== "object" || typeof head.detached !== "boolean" ||
+                        (head.detached
+                            ? head.branch !== undefined || typeof head.sha !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.sha)
+                            : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
+                    ) {
+                        throw new RpcError("expectedHead must describe a branch or detached HEAD with its full SHA", "invalid");
+                    }
+                }
+                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead);
+            }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.dequeue": {
                 const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
                 if (!q) return { removed: false };
                 // Edited, it goes back to the window that asked (not to every one showing the session).
-                return p.edit === true ? { removed: true, text: q.text, images: q.images?.map((i) => ({ mediaType: i.mediaType, data: i.data })) } : { removed: true };
+                return p.edit === true ? { removed: true, text: q.text, ...toWire(q.attachments) } : { removed: true };
             }
             case "session.pin":
             case "session.settle":
@@ -885,8 +1411,27 @@ export class Engine {
                 if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
                 return null;
             }
+            case "session.delete":
+                await this.deleteSession(checkId(p.id));
+                return null;
+            case "session.restore": {
+                const id = checkId(p.id);
+                while (this.closing.has(id)) await this.afterClosing(id);
+                const flags = restoreSession(id);
+                const saved = updateStore((s) => {
+                    for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
+                });
+                // In whichever list it's in: without its flags saved, it's back as an active one.
+                const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
+                if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
+                if (!saved && STORE_FLAGS.some((key) => flags[key])) client.send({ type: "toast", level: "warn", message: `The session is back, but its pin and archived state couldn't be saved to ${storeFile()}.` });
+                return null;
+            }
             case "session.killShell":
                 await this.runtime(p.id).killShell(str(p.shellId, "shellId"));
+                return null;
+            case "session.forgetSecret":
+                this.runtime(p.id).forgetSecret(str(p.name, "name"));
                 return null;
             case "session.stopAgent":
                 try {
@@ -960,12 +1505,73 @@ export class Engine {
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));
-            case "commands.list":
-                return this.commandsFor(str(p.cwd, "cwd"));
+            case "editors.list":
+                return this.editorsList();
+            case "fs.open":
+                return this.openInEditor(p);
+            case "fs.exists":
+                return this.pathsExist(p);
+            case "commands.list": {
+                const cwd = resolve(expandHome(str(p.cwd, "cwd")));
+                const provider = optStr(p.provider) ?? await this.commandProvider(cwd);
+                const commands = this.commandsFor(cwd, provider);
+                const command = optStr(p.command);
+                // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
+                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined)) {
+                    throw new RpcError(`Unknown command /${command}`, "unknown_command");
+                }
+                return commands;
+            }
+            case "session.mcp": {
+                const rt = this.runtime(p.id);
+                await rt.ws.mcp.sync();
+                return rt.ws.mcpList(rt, optStr(p.name));
+            }
+            case "session.mcpApprove": {
+                const rt = this.runtime(p.id);
+                rt.ws.mustTrust();
+                const name = str(p.name, "name");
+                const fingerprint = str(p.fingerprint, "fingerprint");
+                try {
+                    const st = await rt.ws.mcp.approve(name, fingerprint);
+                    void rt.ws.mcp.start(st);
+                    return { approved: true, list: rt.ws.mcpList(rt) };
+                } catch (e) {
+                    // What the card showed isn't what would run now: nothing saved, here's what would.
+                    if (e instanceof McpApprovalError && e.code === "changed") return { approved: false, list: rt.ws.mcpList(rt) };
+                    throw mcpError(e);
+                }
+            }
+            case "session.mcpReject":
+            case "session.mcpRevoke": {
+                const rt = this.runtime(p.id);
+                rt.ws.mustTrust();
+                const name = str(p.name, "name");
+                try {
+                    if (method === "session.mcpReject") await rt.ws.mcp.reject(name);
+                    else await rt.ws.mcp.revoke(name);
+                } catch (e) {
+                    throw mcpError(e);
+                }
+                return rt.ws.mcpList(rt);
+            }
+            case "session.mcpReconnect": {
+                const rt = this.runtime(p.id);
+                const name = str(p.name, "name");
+                // It answers once the configuration is read again; the status follows in session events.
+                await rt.ws.mcp.refresh();
+                if (!rt.ws.mcp.servers.has(name)) throw new RpcError(`There's no MCP server named "${name}" here.`, "unknown");
+                void rt.ws.mcp.reconnect(name).catch(() => undefined);
+                return rt.ws.mcpList(rt);
+            }
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":
                 return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+            case "limits.get":
+                return [...this.limits.values()];
+            case "usage.summary":
+                return usageSummary(usageDays(p.days));
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }
@@ -1001,6 +1607,23 @@ function listDirs(path: string): { path: string; parent?: string; dirs: string[]
     }
     const parent = dirname(p);
     return { path: p, parent: parent !== p ? parent : undefined, dirs };
+}
+
+/**
+ * Starts an editor's launcher and lets it run on its own. Launchers that hand
+ * the file to a running editor exit at once; one that fails quickly (a broken
+ * install) is reported, and one still running after a moment is the editor.
+ */
+async function launchEditor(argv: string[]): Promise<void> {
+    let proc: ReturnType<typeof Bun.spawn>;
+    try {
+        proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: childEnv(), detached: true });
+    } catch (e) {
+        throw new RpcError(`Couldn't start ${basename(argv[0] ?? "")}: ${(e as Error).message}`);
+    }
+    const code = await Promise.race([proc.exited, Bun.sleep(1500).then(() => undefined)]);
+    proc.unref();
+    if (code !== undefined && code !== 0) throw new RpcError(`${basename(argv[0] ?? "")} exited with status ${code}`);
 }
 
 function validImage(i: { mediaType: unknown; data: unknown }): boolean {

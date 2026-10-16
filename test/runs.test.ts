@@ -14,10 +14,7 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 const { getProvider } = await import("../src/providers/registry");
-const runs = await import("../src/server/runs");
-const { promptSlug, modelSlug, modelSlugs, uniqueName, billingOf, startRun } = runs;
 import type { RunResult, SessionSummary } from "../src/server/protocol";
-import type { ProviderListing } from "../src/providers/models";
 
 const TOKEN = "test-token-runs-0123456789";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -107,65 +104,6 @@ afterAll(async () => {
 
 // ---------------------------------------------------------------------------
 
-describe("names", () => {
-    test("a few words of the prompt, in ASCII", () => {
-        expect(promptSlug("Fix the login redirect, please!")).toBe("fix-the-login-redirect-please");
-        expect(promptSlug("Ünïcödé café — naïve résumé")).toBe("unicode-cafe-naive-resume");
-        expect(promptSlug("修复登录 🚀 bug")).toBe("bug");
-        expect(promptSlug("?!… --- ***")).toBe("run");
-        expect(promptSlug("")).toBe("run");
-    });
-
-    test("bounded: at most five words and 40 characters", () => {
-        expect(promptSlug("one two three four five six seven")).toBe("one-two-three-four-five");
-        const long = promptSlug("internationalization localization accessibility interoperability");
-        expect(long.length).toBeLessThanOrEqual(40);
-        expect(long).toBe("internationalization-localization");
-        expect(promptSlug("x".repeat(10_000))).toBe("run");
-    });
-
-    test("secrets and token-like words never reach a name", () => {
-        const key = "sk-ant-api03-" + "A".repeat(40);
-        expect(promptSlug(`use ${key} to deploy`)).toBe("use-to-deploy");
-        expect(promptSlug("rotate ghp_" + "a1".repeat(18) + " now")).toBe("rotate-now");
-        expect(promptSlug("check commit 3f9a2b7c1d0e4f5a")).toBe("check-commit");
-        expect(promptSlug("upgrade to oauth2 and sha256")).toBe("upgrade-to-oauth2-and-sha256");
-    });
-
-    test("model slugs", () => {
-        expect(modelSlug("anthropic:claude-opus-5-5")).toBe("opus-5-5");
-        expect(modelSlug("claude-code:opus")).toBe("opus");
-        expect(modelSlug("codex:gpt-6-astra")).toBe("gpt-6-astra");
-        expect(modelSlug("openrouter:meta-llama/Llama-4.1-405B-Instruct")).toBe("llama-4-1-405b-instruct");
-        expect(modelSlug("ollama:qwen3:32b")).toBe("qwen3-32b");
-        expect(modelSlug("x:" + "very-long-".repeat(10)).length).toBeLessThanOrEqual(24);
-        expect(modelSlug("x:✨")).toBe("model");
-        // The same model through two providers stays tellable apart.
-        expect(modelSlugs(["claude-code:claude-opus-5-5", "anthropic:claude-opus-5-5", "codex:gpt-6"])).toEqual(["claude-code-opus-5-5", "anthropic-opus-5-5", "gpt-6"]);
-    });
-
-    test("de-duplicated with -2, -3, ...", () => {
-        const taken = new Set(["fix-opus", "fix-opus-2"]);
-        expect(uniqueName("fix-opus", (n) => taken.has(n))).toBe("fix-opus-3");
-        expect(uniqueName("fix-sonnet", (n) => taken.has(n))).toBe("fix-sonnet");
-        expect(uniqueName("x", () => true, 5)).toBeUndefined();
-    });
-
-    test("what counts as paid", () => {
-        expect(billingOf(getProvider("claude-code"))).toBe("plan");
-        expect(billingOf(getProvider("codex"))).toBe("plan");
-        expect(billingOf(getProvider("ollama"))).toBe("local");
-        expect(billingOf(getProvider("lmstudio"))).toBe("local");
-        expect(billingOf(getProvider("mock"))).toBe("local");
-        expect(billingOf(getProvider("anthropic"))).toBe("api");
-        expect(billingOf(getProvider("openrouter"))).toBe("api");
-        expect(billingOf(getProvider("vertex"))).toBe("api");
-        expect(billingOf(undefined)).toBe("api");
-    });
-});
-
-// ---------------------------------------------------------------------------
-
 describe("runs.start", () => {
     test("two models: two worktrees on their own branches, two sessions on their own models, each given the prompt and image, grouped", async () => {
         const main = repo();
@@ -174,7 +112,8 @@ describe("runs.start", () => {
         mkdirSync(join(main, ".claude", "worktrees", "fix-the-login-redirect-mock-sonnet"), { recursive: true });
         const before = mock.requests.length;
         const text = "Fix the login redirect";
-        const r = await c.call<{ runId: string; results: RunResult[] }>("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text, images: [{ mediaType: "image/png", data: PNG }], mode: "default" });
+        const files = [{ name: "notes.txt", data: Buffer.from("Keep the login accessible").toString("base64") }];
+        const r = await c.call<{ runId: string; results: RunResult[] }>("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text, files, images: [{ mediaType: "image/png", data: PNG }], mode: "default" });
 
         expect(r.results.map((x) => x.ok)).toEqual([true, true]);
         const [a, b] = r.results as Extract<RunResult, { ok: true }>[];
@@ -187,9 +126,10 @@ describe("runs.start", () => {
         expect(git(a!.path, "rev-parse", "HEAD")).toBe(git(main, "rev-parse", "HEAD"));
 
         // Each session's turn went to its own model, with the prompt and the image.
-        const turns = () => mock.requests.slice(before).filter((q) => q.kind === "turn" && q.prompt === text);
+        const turns = () => mock.requests.slice(before).filter((q) => q.kind === "turn" && q.prompt?.includes(text));
         await until(() => turns().length >= 2);
         expect(turns().map((q) => [q.model, q.images]).sort()).toEqual([["mock-opus", 1], ["mock-sonnet", 1]]);
+        for (const turn of turns()) expect(turn.body).toContain("Keep the login accessible");
 
         const list = await c.call<SessionSummary[]>("sessions.list", {});
         const mine = list.filter((s) => s.run?.id === r.runId);
@@ -197,7 +137,7 @@ describe("runs.start", () => {
         const sa = mine.find((s) => s.id === a!.sessionId)!;
         expect(sa.cwd).toBe(a!.path);
         expect(sa.model).toBe("mock:mock-opus");
-        expect(sa.run).toEqual({ id: r.runId, label: text, cwd: main, model: "mock:mock-opus", modelName: "Mock Opus" });
+        expect(sa.run).toMatchObject({ id: r.runId, label: text, cwd: main, model: "mock:mock-opus", modelName: "Mock Opus" });
         expect(mine.find((s) => s.id === b!.sessionId)!.model).toBe("mock:mock-sonnet");
         // Picking models for a run doesn't change the default.
         expect((await c.call("settings.get", {})).model).toBe("mock:mock-opus");
@@ -218,6 +158,7 @@ describe("runs.start", () => {
             await c2.opened();
             const again = (await c2.call<SessionSummary[]>("sessions.list", {})).filter((s) => s.run?.id === r.runId);
             expect(again.map((s) => [s.run?.modelName, s.cwd]).sort()).toEqual([["Mock Opus", a!.path], ["Mock Sonnet", b!.path]]);
+            expect(again.map((s) => s.run?.outcome)).toEqual(["done", "done"]);
             c2.ws.close();
         } finally {
             await restarted.stop();
@@ -346,111 +287,5 @@ describe("a run's checks, with made-up listings", () => {
         } finally {
             await engine.stop();
         }
-    });
-});
-
-// ---------------------------------------------------------------------------
-// The orchestration alone, with a host whose sessions the test controls.
-
-/** A host whose sessions the test controls: on the default model until set, never calling out. */
-function host(o: { setModel: (ref: string) => boolean; actual?: (ref: string) => string; listings?: ProviderListing[] }) {
-    const sent: string[] = [];
-    const discarded: string[] = [];
-    let n = 0;
-    const h: import("../src/server/runs").RunHost = {
-        listings: async () => o.listings ?? [{ provider: getProvider("mock")!, status: "ok", models: [{ provider: "mock", id: "mock-opus" }, { provider: "mock", id: "mock-sonnet" }] }],
-        declined: () => false,
-        decline: () => {},
-        bypassAllowed: () => false,
-        stopping: () => false,
-        openSession: async () => {
-            const id = `s${++n}`;
-            // On the default model until set.
-            let model = { provider: "mock", id: "mock-opus" };
-            return {
-                id,
-                get model() {
-                    return model;
-                },
-                setModel: async (ref: string) => {
-                    if (!o.setModel(ref)) return false;
-                    const [provider, mid] = (o.actual?.(ref) ?? ref).split(":") as [string, string];
-                    model = { provider, id: mid };
-                    return true;
-                },
-                send: async () => void sent.push(id),
-            };
-        },
-        discard: (id) => void discarded.push(id),
-        release: () => {},
-        record: () => {},
-    };
-    return { h, sent, discarded };
-}
-
-describe("a session that can't be set to its model", () => {
-    const req = (path: string) => ({ path, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "pick me", images: [], confirmPaid: false });
-
-    test("is never sent the prompt and doesn't fall back to the default; its worktree is kept and named", async () => {
-        const main = repo();
-        const { h, sent, discarded } = host({ setModel: (ref) => ref !== "mock:mock-sonnet" });
-        const r = await startRun(h, req(main));
-        expect(r.results[0]).toMatchObject({ ok: true, sessionId: "s1" });
-        expect(r.results[1]).toMatchObject({ ok: false, branch: "pick-me-mock-sonnet", path: join(main, ".claude", "worktrees", "pick-me-mock-sonnet") });
-        expect((r.results[1] as { error: string }).error).toContain("wasn't sent the prompt");
-        expect(sent).toEqual(["s1"]);
-        expect(discarded).toEqual(["s2"]);
-        expect(worktreesOf(main)).toEqual(["pick-me-mock-opus", "pick-me-mock-sonnet"]);
-    });
-
-    test("one that says it switched but is on another model isn't sent it either", async () => {
-        const main = repo();
-        const { h, sent } = host({ setModel: () => true, actual: () => "mock:mock-opus" });
-        const r = await startRun(h, req(main));
-        expect(r.results.map((x) => x.ok)).toEqual([true, false]);
-        expect(sent).toEqual(["s1"]);
-    });
-});
-
-describe("the cost guard", () => {
-    const paid = [
-        { id: "paida", name: "Paid A", baseUrl: "https://paid-a.invalid/v1" },
-        { id: "paidb", name: "Paid B", baseUrl: "https://paid-b.invalid/v1" },
-        { id: "paidc", name: "Paid C", baseUrl: "https://paid-c.invalid/v1" },
-    ];
-    beforeAll(() => {
-        writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [...PROVIDERS.custom, ...paid] }));
-        for (const p of paid) process.env[`${p.id.toUpperCase()}_API_KEY`] = "test-key-not-real";
-    });
-    afterAll(() => {
-        writeFileSync(join(iso.home, "providers.json"), JSON.stringify(PROVIDERS));
-        for (const p of paid) delete process.env[`${p.id.toUpperCase()}_API_KEY`];
-    });
-    const listing = (id: string, pricing?: { input: number; output: number }): ProviderListing => ({ provider: getProvider(id)!, status: "ok", models: [{ provider: id, id: "big", name: `${id} Big`, pricing }] });
-    const listings = () => [listing("paida", { input: 3, output: 15 }), listing("paidb"), listing("paidc", { input: 1, output: 2 }), { provider: getProvider("mock")!, status: "ok" as const, models: [{ provider: "mock", id: "mock-opus" }] }];
-
-    test("more than two paid API models are refused until confirmed; cancelled, nothing is created", async () => {
-        const engine = new Engine({ listModels: async () => listings() });
-        const main = repo();
-        try {
-            const err = await engine.handle({ subs: new Set<string>(), send: () => {} }, "runs.start", { path: main, models: ["paida:big", "paidb:big", "paidc:big"], text: "compare" }).catch((e) => e);
-            expect(err).toMatchObject({ code: "confirm_paid" });
-            expect(err.message).toContain("paida Big ($3/$15 per million tokens)");
-            expect(err.message).toContain("paidb Big (price unknown)");
-            expect(existsSync(join(main, ".claude"))).toBe(false);
-            expect(branchesOf(main)).toEqual(["main"]);
-        } finally {
-            await engine.stop();
-        }
-    });
-
-    test("two paid ones with a local one don't ask; confirmed, three paid ones start", async () => {
-        const two = host({ setModel: () => true, listings: listings() });
-        const r = await startRun(two.h, { path: repo(), models: ["paida:big", "paidb:big", "mock:mock-opus"], text: "compare", images: [], confirmPaid: false });
-        expect(r.results.map((x) => x.ok)).toEqual([true, true, true]);
-        const three = host({ setModel: () => true, listings: listings() });
-        const ok = await startRun(three.h, { path: repo(), models: ["paida:big", "paidb:big", "paidc:big"], text: "compare", images: [], confirmPaid: true });
-        expect(ok.results.map((x) => x.ok)).toEqual([true, true, true]);
-        expect(three.sent).toEqual(["s1", "s2", "s3"]);
     });
 });

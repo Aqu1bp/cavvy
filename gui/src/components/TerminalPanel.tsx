@@ -1,18 +1,19 @@
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { Plus, RotateCw, SquareTerminal, X } from "lucide-solid";
+import { Play, Plus, RotateCw, SquareTerminal, X } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles/terminal.css";
-import { app, reportError, rpc } from "../state/app";
+import { app, reportError, rpc, toast } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen } from "../state/ui";
 import { basename, tildify } from "../lib/format";
-import { terminalInputChunks } from "../lib/terminal";
+import { EarlyInput, terminalInputChunks } from "../lib/terminal";
 import { copyText, isMod, isTerminalToggle, terminalShortcut } from "../lib/platform";
 
-interface Tab { id: string; cwd: string; number: number }
+/** `script`: the project script the tab was opened to run (once: restarting it gives a plain shell). */
+interface Tab { id: string; cwd: string; number: number; script?: { id: string; name: string } }
 const MAX_TABS = 12;
 
 /** Mounted while hidden: each tab keeps its emulator and shell across chat navigation. */
@@ -30,6 +31,17 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
     };
+    // A click on a project script: its own tab, shown, with the command typed into its shell.
+    const runScript = (cwd: string, script: { id: string; name: string }) => {
+        if (app.conn !== "open") return toast(`Not connected to the harness server, so “${script.name}” can't start.`, "error");
+        if (full()) return toast(`${MAX_TABS} terminals are open in this window, some maybe in other projects. Close one to run “${script.name}”.`, "error");
+        const tab = { id: crypto.randomUUID(), cwd, number: next++, script: { id: script.id, name: script.name } };
+        setTabs((all) => [...all, tab]);
+        setSelected(tab.id);
+        setTerminalOpen(true);
+    };
+    terminalActions.runScript = runScript;
+    onCleanup(() => { if (terminalActions.runScript === runScript) delete terminalActions.runScript; });
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
     createEffect(on(terminalOpen, (open) => { if (open && !p.hidden && !currentTabs().length) add(); }, { defer: true }));
     const close = (tab: Tab) => {
@@ -57,8 +69,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                 <SquareTerminal size={14} /><span class="terminal-label">Terminal</span>
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.cwd}>{basename(tab.cwd)} {tab.number}</button>
-                        <button class="hb sm" title="Close terminal and stop its shell" aria-label={`Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button class="hb sm" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
                 <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={app.conn !== "open" || full()} onClick={add}><Plus size={15} /></button>
@@ -83,6 +95,14 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
     let disposed = false;
     let opened = false;
     let id = p.tab.id;
+    // Typed by the first shell only: a restart, or a reconnect, never runs it again by itself.
+    let script = p.tab.script;
+    const early = new EarlyInput();
+    const send = (data: string) => {
+        // A pasted command may exceed one RPC's input limit. Preserve order.
+        // Typed as the shell exits: it's gone, which the exit message says.
+        for (const chunk of terminalInputChunks(data)) void rpc.call("terminal.write", { id, data: chunk }).catch((e) => { if (!(e instanceof RpcError && e.code === "terminal_not_open")) reportError(e); });
+    };
     let fitting = 0;
     // Flow control: the server holds output back until what it sent has been drawn.
     let drawn = 0;
@@ -117,16 +137,31 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         if (opened && !ended() && app.conn === "open") void rpc.call("terminal.resize", { id, cols: Math.min(500, term.cols), rows: Math.min(300, term.rows) }).catch(() => {});
     };
     const start = async () => {
-        if (app.conn !== "open") return;
+        const run = script;
+        script = undefined;
+        if (app.conn !== "open") {
+            if (run) setEnded(`Couldn't run “${run.name}”: not connected to the harness server.`);
+            return;
+        }
         setEnded(undefined);
         fitNow();
+        early.begin();
         try {
-            await rpc.call("terminal.open", { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) });
+            const shell = { id, cwd: p.tab.cwd, cols: Math.max(2, Math.min(500, term.cols)), rows: Math.max(1, Math.min(300, term.rows)) };
+            if (run) await rpc.call("scripts.run", { ...shell, script: run.id });
+            else await rpc.call("terminal.open", shell);
             opened = true;
+            const typed = early.take();
             if (disposed) { if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {}); return; }
+            if (typed && app.conn === "open") send(typed);
+            // Only after what was typed meanwhile (the socket keeps the order): a Ctrl+C there cancels the script first.
+            if (run && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});
             fitNow();
             if (p.visible) term.focus();
-        } catch (e) { if (!disposed) setEnded((e as Error).message); }
+        } catch (e) {
+            early.take();
+            if (!disposed) setEnded(run ? `Couldn't run “${run.name}”: ${(e as Error).message}` : (e as Error).message);
+        }
     };
     onMount(() => {
         term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: 12, cursorBlink: true, scrollback: 5000, allowProposedApi: false });
@@ -150,10 +185,9 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
             return true;
         });
         const input = term.onData((data) => {
+            if (early.hold(data)) return;
             if (!opened || ended() || app.conn !== "open") return;
-            // A pasted command may exceed one RPC's input limit. Preserve order.
-            // Typed as the shell exits: it's gone, which the exit message says.
-            for (const chunk of terminalInputChunks(data)) void rpc.call("terminal.write", { id, data: chunk }).catch((e) => { if (!(e instanceof RpcError && e.code === "terminal_not_open")) reportError(e); });
+            send(data);
         });
         const off = rpc.onEvent((e) => {
             if (e.type === "terminal.data" && e.id === id) {

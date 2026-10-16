@@ -1,5 +1,7 @@
 import type { TodoItem, Tool } from "./types";
 import { MODE_INFO } from "../permissions/modes";
+import { redact } from "../util/redact";
+import { cleanPurpose, requestSecret, secretNameError, SECRET_NAME_RULE } from "../agent/secrets";
 
 export const TodoWriteTool: Tool<{ todos: TodoItem[] }> = {
     name: "TodoWrite",
@@ -119,6 +121,40 @@ export const AskUserQuestionTool: Tool<{ question: string; options: { label: str
     },
 };
 
+export const RequestSecretTool: Tool<{ name: string; purpose: string }> = {
+    name: "RequestSecret",
+    category: "meta",
+    readOnly: true,
+    description: `Asks the user to type in a secret (an API token, a password) that a shell command needs, without its value ever reaching you. The user sees the name and your purpose and types the value into a masked field.
+
+- name is the environment variable it becomes, e.g. GITHUB_TOKEN. ${SECRET_NAME_RULE} Bash commands in this session then see it as $GITHUB_TOKEN; write the variable in the command, never the value.
+- purpose is one or two sentences on what it's for, shown to the user as you write it.
+- You get back whether it was provided, never the value. If the user declines, don't ask again unless they bring it up.
+- Asking again for the same name replaces the value.
+- Its value is replaced with [REDACTED <name>] wherever it appears in tool output (as is, URL-encoded or base64). Redaction can't catch a value that's been deliberately transformed (split, reversed, re-encoded), so never transform it to print it, and don't write it into files.
+- Use it only when the task needs a credential the user hasn't set up some other way (check the environment and config first), and never to ask for ordinary information.`,
+    parameters: {
+        type: "object",
+        properties: {
+            name: { type: "string", description: `The environment variable it becomes: capital letters, digits and underscores (e.g. GITHUB_TOKEN). ${SECRET_NAME_RULE}` },
+            purpose: { type: "string", description: "One or two sentences on what it's for" },
+        },
+        required: ["name", "purpose"],
+    },
+    title: (i) => `RequestSecret(${typeof i.name === "string" ? i.name.slice(0, 64) : ""})`,
+    validate(input) {
+        const p = cleanPurpose(input.purpose);
+        return secretNameError(input.name) ?? ("error" in p ? p.error : undefined);
+    },
+    async run(input, ctx) {
+        const p = cleanPurpose(input.purpose);
+        if ("error" in p) return { content: p.error, isError: true };
+        const ask = ctx.ui.requestSecret?.bind(ctx.ui);
+        const r = await requestSecret({ store: ctx.state.secrets, ask, name: input.name, purpose: redact(p.text), signal: ctx.signal, using: "bash" });
+        return { content: r.text, isError: r.isError, display: { summary: r.provided ? "Provided" : "Not provided" } };
+    },
+};
+
 export const TaskTool: Tool<{ description: string; prompt: string; subagent_type?: string; model?: string }> = {
     name: "Task",
     category: "meta",
@@ -127,7 +163,7 @@ export const TaskTool: Tool<{ description: string; prompt: string; subagent_type
 
 Agent types:
 - "general-purpose": full tool access (subject to the same permissions) for multi-step research or implementation.
-- "explore": read-only (Read, Glob, Grep, LS, WebFetch, WebSearch) for searching a codebase broadly and reporting findings.
+- "explore": read-only (Read, Glob, Grep, LS, WebFetch, WebSearch, and read-only shell commands; no edits, tests, builds or scripts) for searching a codebase broadly and reporting findings.
 - Custom agents defined in .harness/agents/*.md are also available by name.
 
 Models: a sub-agent runs on your model unless its agent type sets one or you pass model. That can be any model set up in this harness, from any provider (API models, and Claude Code or Codex when they're turned on): for a second opinion, a review, or a task another model is better at. Call ListModels to see the agent types and models.

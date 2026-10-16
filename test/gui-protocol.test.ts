@@ -4,19 +4,21 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "path";
+import { readFileSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
-const { agentsFromTurns, replay, runsAgent, UiLog, withoutActionsNote } = await import("../src/server/history");
+const { agentHead, agentStep, agentsFromTurns, cutOffPrompt, promptKey, replay, runsAgent, shownStep, toolBlockFromCall, UiLog, withoutActionsNote } = await import("../src/server/history");
+const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { DELEGATE_TOOL } = await import("../src/agent/delegation");
 const { mergePath } = await import("../src/server/login-env");
 const { Session, listAllSessions, findSessionAnywhere } = await import("../src/agent/session");
 const { Engine } = await import("../src/server/engine");
 const { getProvider } = await import("../src/providers/registry");
-import type { AgentRun, SessionState, SessionSummary, Turn } from "../src/server/protocol";
-import type { Message } from "../src/providers/types";
+import type { AgentRun, Block, SessionState, SessionSummary, ToolBlock, Turn } from "../src/server/protocol";
+import type { Message, UserMessage } from "../src/providers/types";
 
 afterAll(() => iso.cleanup());
 
@@ -123,6 +125,30 @@ describe("sub-agent ops", () => {
     });
 });
 
+test("a reopened backend sub-agent's long report comes back without the actions note, with how long it ran", async () => {
+    const { backendActionsNote } = await import("../src/agent/agent");
+    const report = "x".repeat(5000);
+    const note = backendActionsNote("Codex", Array.from({ length: 300 }, (_, i) => `Bash(nl -ba src/server/file-${i}.ts | sed -n '1,340p')`));
+    const messages: Message[] = [
+        { role: "user", content: [{ type: "text", text: "review it" }], meta: { kind: "prompt" } },
+        { role: "assistant", provider: "anthropic", model: "m", stopReason: "tool_use", content: [{ type: "tool_call", id: "ag", name: "Task", input: { description: "Review", prompt: "p", model: "codex:gpt" } }] },
+        { role: "user", content: [{ type: "tool_result", toolCallId: "ag", content: `${report}\n\n${note}` }], meta: { kind: "tool_results" } },
+        { role: "assistant", provider: "anthropic", model: "m", stopReason: "end_turn", content: [{ type: "text", text: "Reviewed." }] },
+    ] as Message[];
+    const ui = new UiLog(join(tempDir(), "n.jsonl"), "n");
+    ui.write({ t: "turn", seg: 0, index: 0, at: 1000 });
+    ui.write({ t: "tool", id: "ag", durationMs: 4200 });
+    let n = 0;
+    const turns = replay({ segments: [{ messages }], current: messages, ui, meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+    const [a] = agentsFromTurns(turns, "mock:mock-opus");
+    // Clipped for the row, but the note went first: none of it is left.
+    expect(a!.report).toContain("characters omitted");
+    expect(a!.report).not.toContain("used:");
+    expect(a!.report).not.toContain("Bash(");
+    expect(a!.report!.endsWith("x")).toBe(true);
+    expect(a!.endedAt! - a!.startedAt).toBe(4200);
+});
+
 describe("timeline ops", () => {
     test("append, patch and remove build a turn", () => {
         const v = view();
@@ -176,6 +202,96 @@ describe("timeline ops", () => {
             { op: "state", patch: { busy: true, cost: 1 } },
             { op: "append", turnId: "t", blockId: "b", field: "text", text: "c" },
         ]);
+    });
+
+    type SessionOp = Parameters<typeof coalesce>[0][number];
+
+    test("patches to one block in a batch go out as one: a tool's input as it streams, a delegate's row as its sub-agent works", () => {
+        const receiving = Array.from({ length: 40 }, (_, i) => ({ op: "block.patch" as const, turnId: "t", blockId: "w", patch: { receiving: (i + 1) * 30 } }));
+        expect(coalesce(receiving)).toEqual([{ op: "block.patch", turnId: "t", blockId: "w", patch: { receiving: 1200 } }]);
+        const sub = (n: number) => ({ label: "Review", tools: [], toolCount: n, tokens: 0, startedAt: 1 });
+        expect(
+            coalesce([
+                { op: "agent.block", id: "d", block: { t: "tool", id: "x1", name: "Bash", title: "Bash(ls)", status: "running" } },
+                { op: "block.patch", turnId: "t", blockId: "d", patch: { sub: sub(1) } },
+                { op: "agent.block.patch", id: "d", blockId: "x1", patch: { status: "ok" } },
+                { op: "state", patch: { busy: true } },
+                { op: "block.patch", turnId: "t", blockId: "w", patch: { receiving: 3 } },
+                { op: "block.patch", turnId: "t", blockId: "d", patch: { sub: sub(2), status: "running" } },
+            ]),
+        ).toEqual([
+            { op: "agent.block", id: "d", block: { t: "tool", id: "x1", name: "Bash", title: "Bash(ls)", status: "running" } },
+            { op: "block.patch", turnId: "t", blockId: "d", patch: { sub: sub(2), status: "running" } },
+            { op: "agent.block.patch", id: "d", blockId: "x1", patch: { status: "ok" } },
+            { op: "state", patch: { busy: true } },
+            { op: "block.patch", turnId: "t", blockId: "w", patch: { receiving: 3 } },
+        ]);
+        // Not across what changes the block, or might: its text, its removal, a new turn, another turn's block of the same id.
+        for (const between of [
+            { op: "append", turnId: "t", blockId: "w", field: "output", text: "x" },
+            { op: "block.remove", turnId: "t", blockId: "w" },
+            { op: "block", turnId: "t", block: { t: "tool", id: "w", name: "Bash", title: "Bash", status: "running" } },
+            { op: "turn", turn: { id: "t2", blocks: [], status: "running" } },
+            { op: "reset", turns: [] },
+        ] as SessionOp[]) {
+            const ops: SessionOp[] = [{ op: "block.patch", turnId: "t", blockId: "w", patch: { output: "a" } }, between, { op: "block.patch", turnId: "t", blockId: "w", patch: { output: "b" } }];
+            expect(coalesce(ops)).toEqual(ops);
+        }
+    });
+
+    test("coalescing never changes what a batch builds", () => {
+        // Seeded: the same sequences every run.
+        // 32-bit arithmetic (a plain multiply loses digits past 2^53), and the high bits (the low ones repeat soon).
+        let seed = 7;
+        const rnd = (n: number) => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0), (seed >>> 16) % n);
+        const ids = ["a", "b", "c"];
+        const turns = ["t1", "t2"];
+        const pick = <T,>(xs: T[]) => xs[rnd(xs.length)]!;
+        const randomOp = (): SessionOp => {
+            switch (rnd(12)) {
+                case 0:
+                    return { op: "block", turnId: pick(turns), block: { t: "tool", id: pick(ids), name: "Bash", title: "Bash", status: "running" } };
+                case 1:
+                    return { op: "block.remove", turnId: pick(turns), blockId: pick(ids) };
+                case 2:
+                    return { op: "append", turnId: pick(turns), blockId: pick(ids), field: pick(["output", "progress"] as const), text: String(rnd(10)) };
+                case 3:
+                    return { op: "turn.patch", turnId: pick(turns), patch: { status: "done" } };
+                case 4:
+                    return { op: "state", patch: { contextTokens: rnd(100) } };
+                case 5:
+                    return { op: "agent.patch", id: "s", patch: { toolCount: rnd(9) } };
+                case 6:
+                    return { op: "agent.block", id: "s", block: { t: "tool", id: pick(ids), name: "Read", title: "Read", status: "running" } };
+                default: {
+                    const patch = pick([{ receiving: rnd(500) }, { status: "ok" as const }, { output: String(rnd(10)), summary: undefined }, { receiving: undefined, status: "running" as const }]);
+                    return { op: "block.patch", turnId: pick(turns), blockId: pick(ids), patch };
+                }
+            }
+        };
+        const start = (): Parameters<typeof applyOp>[0] => ({
+            state: { id: "s", cwd: "/", projectName: "p", createdAt: 0, persisted: false, trusted: true, mode: "default", bypassAllowed: false, effort: "high", fastMode: false, status: "idle", busy: false, contextTokens: 0, cost: 0, tokensIn: 0, tokensOut: 0, todos: [], queued: [], queueIds: [], interactions: [], mcp: [], filesChanged: 0, shells: [] },
+            turns: turns.map((id) => ({ id, status: "running" as const, blocks: ids.map((b) => ({ t: "tool" as const, id: b, name: "Bash", title: "Bash", status: "running" as const })) })),
+            agents: [{ id: "s", turnId: "t1", description: "sub", agentType: "general-purpose", status: "running", startedAt: 0, toolCount: 0, tokens: 0, blocks: [] }],
+        });
+        let merged = 0;
+        const seen = new Set<string>();
+        for (let run = 0; run < 400; run++) {
+            const ops = Array.from({ length: 2 + rnd(30) }, randomOp);
+            for (const op of ops) seen.add(op.op === "block.patch" ? `block.patch:${Object.keys(op.patch).join(",")}` : op.op);
+            const plain = start();
+            const batched = start();
+            // As sent: JSON on the wire (undefined becomes null, which clears).
+            for (const op of ops) applyOp(plain, JSON.parse(JSON.stringify(op, wireReplacer)));
+            const out = coalesce(structuredClone(ops));
+            const patches = (xs: SessionOp[]) => xs.filter((o) => o.op === "block.patch").length;
+            merged += patches(ops) - patches(out);
+            for (const op of out) applyOp(batched, JSON.parse(JSON.stringify(op, wireReplacer)));
+            expect(batched).toEqual(plain);
+        }
+        // Every kind of op came up (each patch too), and it does merge patches (not only leave them as they were).
+        expect([...seen].sort()).toEqual(["agent.block", "agent.patch", "append", "block", "block.patch:output,summary", "block.patch:receiving", "block.patch:receiving,status", "block.patch:status", "block.remove", "state", "turn.patch"]);
+        expect(merged).toBeGreaterThan(300);
     });
 });
 
@@ -235,6 +351,43 @@ describe("replay", () => {
         expect([edit.diff?.added, edit.diff?.removed]).toEqual([1, 1]);
     });
 
+    test("snapshot ids survive replay, steering and compaction independently of UI turn ids", () => {
+        const first = user("first", "prompt", { meta: { kind: "prompt", checkpoint: 101 } } as Partial<Message>);
+        const steered = user("The user sent this message while you were working:\nsecond", "tool_results", { meta: { kind: "tool_results", checkpoint: 102 } } as Partial<Message>);
+        const current = [user("third", "prompt", { meta: { kind: "prompt", checkpoint: 103 } } as Partial<Message>), user("legacy")];
+        const segments = [{ messages: [first, steered] }, { summary: "Summary", messages: current }];
+        let n = 0;
+        const turns = replay({ segments, current, ui: new UiLog(join(tempDir(), "snapshots.jsonl"), "snapshots", false), meta: (c) => ({ title: c.name }), newId: () => `ui${++n}` });
+        expect(turns.filter((t) => t.prompt).map((t) => [t.prompt!.text, t.snapshotId])).toEqual([["first", 101], ["second", 102], ["third", 103], ["legacy", undefined]]);
+        expect(turns.find((t) => t.snapshotId === 101)?.archived).toBe(true);
+        expect(turns.find((t) => t.snapshotId === 102)?.prompt?.index).toBeUndefined();
+    });
+
+    test("a cut-off steering turn keeps its snapshot id and main's interrupted status on replay", () => {
+        const first = user("first", "prompt", { meta: { kind: "prompt", checkpoint: 101 } } as Partial<Message>);
+        const calling: Message = { role: "assistant", content: [{ type: "tool_call", id: "read", name: "Read", input: { file_path: "a.txt" } }] };
+        const steered: Message = { role: "user", content: [
+            { type: "tool_result", toolCallId: "read", toolName: "Read", content: "read it" },
+            { type: "text", text: "The user sent this message while you were working:\nsecond" },
+        ], meta: { kind: "tool_results", checkpoint: 102 } };
+        const messages = [first, calling, steered];
+        const ui = new UiLog(join(tempDir(), "steering-cutoff.jsonl"), "steering-cutoff", false);
+        ui.write({ t: "turn", seg: 0, index: 0, at: 10 });
+        ui.write({ t: "turn", seg: 0, index: 0, at: 10, end: 20, status: "done" });
+        ui.write({ t: "turn", seg: 0, index: 2, at: 20 });
+        ui.write({ t: "turn", seg: 0, index: 2, at: 20, prompt: promptKey(steered) });
+        expect(cutOffPrompt(ui, 0, messages)).toBe(2);
+        messages.push(user("[Request interrupted by user]", "interrupt"));
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui, meta: (c) => ({ title: c.name }), newId: () => `cut${++n}` });
+        expect(turns.map((t) => [t.prompt?.text, t.snapshotId, t.status, t.startedAt, t.endedAt])).toEqual([
+            ["first", 101, "done", 10, 20],
+            ["second", 102, "aborted", 20, undefined],
+        ]);
+        expect(cutOffPrompt(ui, 0, messages)).toBeUndefined();
+        ui.close();
+    });
+
     test("a backend's note of what it did stays in history but not in the transcript", () => {
         const note = "[Claude Code used: Bash(bun test), Edit(src/a.ts)]";
         const segs = [
@@ -260,6 +413,200 @@ describe("replay", () => {
         expect(withoutActionsNote("It was stopped. Its last message:\nHalf done.\n\n[Codex used: Bash(ls)]\n\n(It stopped at its limit of 200 model turns.)")).toBe("It was stopped. Its last message:\nHalf done.\n\n(It stopped at its limit of 200 model turns.)");
         expect(withoutActionsNote("[Claude Code used: Bash(ls)]")).toBe("");
         for (const kept of ["See [Codex used: x] in the log.", "[Gemini used: Read(a.ts)]", "Done.\n[Codex used: Bash(ls)]"]) expect(withoutActionsNote(kept)).toBe(kept);
+    });
+
+    test("a backend's turn comes back as it was shown: its steps in order, their timings and diffs, and its sub-agents", () => {
+        const file = join(tempDir(), "s.jsonl");
+        const log = new UiLog(file, "s", false);
+        const diff = fileDiff("a.ts", "x\n", "y\n");
+        const blocks: Block[] = [
+            { t: "text", id: "b2", text: "Looking first." },
+            { t: "tool", id: "tu1", name: "Bash", title: "Bash(ls)", category: "execute", status: "ok", input: { command: "ls" }, output: "a.ts", startedAt: 10, durationMs: 5, progress: "a.ts", approval: "sandboxed" },
+            { t: "thinking", id: "b3", text: "Hmm.", startedAt: 20, durationMs: 3 },
+            { t: "tool", id: "tu2", name: "Edit", title: "Edit(a.ts)", category: "edit", status: "ok", summary: "+1 −1", diff, startedAt: 30, durationMs: 2 },
+            { t: "tool", id: "tu3", name: "Task", title: "Task(Map auth)", category: "meta", status: "ok", agent: true, input: { description: "Map auth", prompt: "Read it" }, output: "One list.", sub: { label: "Map auth", tools: [{ t: "tool", id: "s0", name: "Glob", title: "Glob", status: "running" }], toolCount: 1, tokens: 9, startedAt: 31 } },
+            { t: "tool", id: "tu4", name: "Task", title: "Task(Background)", category: "meta", status: "ok", agent: true, input: { description: "Background" } },
+            { t: "notice", id: "b4", level: "info", text: "Attached a.ts" },
+            { t: "text", id: "b5", text: "Done." },
+        ];
+        log.write({ t: "turn", seg: 0, index: 0, at: 1 });
+        log.write({ t: "tool", id: "tu2", summary: "+1 −1", diff, durationMs: 2 });
+        // Written as they're shown: a call as it starts and again as it ends, one taken back, one written late (it goes where it was).
+        const step = (b: Block, after: string | null) => log.write({ t: "step", seg: 0, index: 0, block: shownStep(b)!, after });
+        const [first, ran, thought, ...rest] = blocks;
+        step(first!, null);
+        step({ ...(ran as ToolBlock), status: "running", output: undefined, durationMs: undefined }, "b2");
+        step(ran!, "b2");
+        step({ t: "text", id: "b7", text: "Retried." }, "tu1");
+        log.write({ t: "step", seg: 0, index: 0, drop: "b7" });
+        step(rest[0]!, "b3");
+        step(thought!, "tu1");
+        // A notice isn't a step.
+        expect(shownStep(rest[3]!)).toBeUndefined();
+        for (const [i, b] of rest.entries()) if (i > 0 && shownStep(b)) step(b, rest[i - 1]!.id === "b4" ? "tu4" : rest[i - 1]!.id);
+        // The sub-agents: what changed of them, and their steps.
+        const subRead: Block = { t: "tool", id: "s1", name: "Read", title: "Read(a.ts)", status: "ok", output: "x".repeat(5000), diff, progress: "x" };
+        log.write({ t: "agent", id: "tu3", head: agentHead({ ...agent("tu3"), turnId: "b1", activity: "Reading" }) });
+        log.write({ t: "agent", id: "tu3", block: agentStep({ t: "text", id: "b9", text: "Reading." }), after: null });
+        log.write({ t: "agent", id: "tu3", block: agentStep(subRead), after: "b9" });
+        log.write({ t: "agent", id: "tu3", head: { status: "done", endedAt: 40, toolCount: 1, tokens: 9, report: "One list.", taskId: "task-1" } });
+        log.write({ t: "agent", id: "tu4", head: agentHead({ ...agent("tu4"), turnId: "b1", activity: "Thinking" }) });
+        log.write({ t: "agent", id: "tu4", block: agentStep({ t: "tool", id: "s2", name: "Grep", title: "Grep", status: "running" }), after: null });
+        log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 100, status: "done" });
+        const messages = [
+            user("fix it"),
+            { role: "assistant", provider: "claude-code", model: "opus", content: [{ type: "text", text: "Looking first.Done." }, { type: "text", text: "[Claude Code used: Bash(ls), Edit(a.ts), Task(Map auth), Task(Background)]" }] },
+        ] as Message[];
+        const ui = new UiLog(file, "s");
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui, meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+        expect(turns).toHaveLength(1);
+        const t = turns[0]!;
+        expect([t.startedAt, t.endedAt, t.status, t.prompt?.index]).toEqual([1, 100, "done", 0]);
+        // Each step where it was, without the transcript's text again; notices aren't kept.
+        expect(t.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" || b.t === "thinking" ? b.text : b.t))).toEqual(["Looking first.", "Bash:ok", "Hmm.", "Edit:ok", "Task:ok", "Task:ok", "Done."]);
+        // Text and thinking get ids of this run; calls keep theirs.
+        expect(t.blocks.map((b) => b.id)).toEqual(["i2", "tu1", "i3", "tu2", "tu3", "tu4", "i4"]);
+        const [, bash, thinking, edit, task] = t.blocks as [Block, ToolBlock, Extract<Block, { t: "thinking" }>, ToolBlock, ToolBlock];
+        expect([bash.title, bash.input, bash.output, bash.startedAt, bash.durationMs, bash.approval, bash.progress]).toEqual(["Bash(ls)", { command: "ls" }, "a.ts", 10, 5, "sandboxed", undefined]);
+        expect(thinking.durationMs).toBe(3);
+        // The diff is the log's (written once, with the call's result).
+        expect(edit.diff).toEqual(diff);
+        // Nothing is left running after a reopen.
+        expect([task.agent, task.sub?.toolCount, task.sub?.tools[0]?.status]).toEqual([true, 1, "error"]);
+
+        const agents = agentsFromTurns(turns, "claude-code:opus", ui.agents);
+        expect(agents.map((a) => [a.id, a.turnId, a.status, a.replayed, a.taskId, a.activity, a.report, a.endedAt])).toEqual([
+            ["tu3", t.id, "done", true, undefined, undefined, "One list.", 40],
+            // One the log last saw running was stopped with the session.
+            ["tu4", t.id, "stopped", true, undefined, undefined, undefined, 100],
+        ]);
+        const [text, read] = agents[0]!.blocks as [Block, ToolBlock];
+        expect(text.t === "text" && text.text).toBe("Reading.");
+        // What it did is kept short: outputs cut, no diffs or live output.
+        expect([read.name, read.status, read.outputTruncated, read.diff, read.progress]).toEqual(["Read", "ok", true, undefined, undefined]);
+        expect(read.output!.length).toBeLessThan(1200);
+        expect(agents[1]!.blocks.map((b) => b.t === "tool" && b.status)).toEqual(["error"]);
+    });
+
+    test("a turn started again where an earlier one was (after a rewind) doesn't get that one's steps", () => {
+        const file = join(tempDir(), "r.jsonl");
+        const log = new UiLog(file, "r", false);
+        log.write({ t: "turn", seg: 0, index: 0, at: 1 });
+        log.write({ t: "step", seg: 0, index: 0, block: { t: "text", id: "b1", text: "The old reply." }, after: null });
+        log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 5, status: "done" });
+        // Rewound, and asked again of another model.
+        log.write({ t: "turn", seg: 0, index: 0, at: 9 });
+        const messages = [user("again"), { role: "assistant", provider: "p", model: "m", content: [{ type: "text", text: "The new reply." }] }] as Message[];
+        let n = 0;
+        const turns = replay({ segments: [{ messages }], current: messages, ui: new UiLog(file, "r"), meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+        expect(turns.map((x) => [x.startedAt, x.endedAt, x.blocks.map((b) => (b.t === "text" ? b.text : b.t))])).toEqual([[9, undefined, ["The new reply."]]]);
+    });
+
+    test("steps recorded for another prompt at that place (one sent where the log wasn't kept) aren't shown for this one", () => {
+        const file = join(tempDir(), "p.jsonl");
+        const log = new UiLog(file, "p", false);
+        const asked = user("the first question") as UserMessage;
+        log.write({ t: "step", seg: 0, index: 0, block: { t: "text", id: "b1", text: "The first answer." }, after: null, prompt: promptKey(asked) });
+        const reply = { role: "assistant", provider: "claude-code", model: "opus", content: [{ type: "text", text: "The second answer." }] } as Message;
+        let n = 0;
+        const run = (prompt: Message) => replay({ segments: [{ messages: [prompt, reply] }], current: [prompt, reply], ui: new UiLog(file, "p"), meta: (c) => ({ title: c.name }), newId: () => `i${++n}` });
+        expect(run(user("another question"))[0]!.blocks.map((b) => b.t === "text" && b.text)).toEqual(["The second answer."]);
+        // The same words sent again are another prompt.
+        expect(run({ ...asked, meta: { kind: "prompt", checkpoint: 7 } })[0]!.blocks.map((b) => b.t === "text" && b.text)).toEqual(["The second answer."]);
+        expect(run(asked)[0]!.blocks.map((b) => b.t === "text" && b.text)).toEqual(["The first answer."]);
+    });
+
+    test("the log keeps the session's last mode, effort and context; nothing is written once it's closed", () => {
+        const file = join(tempDir(), "m.jsonl");
+        const log = new UiLog(file, "m", false);
+        log.write({ t: "state", mode: "auto", effort: "low" });
+        log.write({ t: "state", contextTokens: 1234, messages: 2 });
+        log.write({ t: "state", mode: "plan", effort: "high" });
+        // Its session let go of (another process may have it now).
+        log.close();
+        log.write({ t: "state", mode: "acceptEdits" });
+        expect(new UiLog(file, "m").state).toEqual({ mode: "plan", effort: "high", contextTokens: 1234, messages: 2 });
+    });
+
+    test("a sub-agent's log keeps its latest steps, counting the rest, and what's no longer so about it", () => {
+        const file = join(tempDir(), "a.jsonl");
+        const log = new UiLog(file, "a", false);
+        log.write({ t: "agent", id: "tu1", head: agentHead({ ...agent("tu1"), status: "done", endedAt: 5, report: "First." }) });
+        let after: string | null = null;
+        for (let i = 0; i < 130; i++) {
+            log.write({ t: "agent", id: "tu1", block: { t: "text", id: `x${i}`, text: `step ${i}` }, after });
+            after = `x${i}`;
+        }
+        // Running again (Codex's, messaged after it answered): it hasn't ended, and has no report yet.
+        log.write({ t: "agent", id: "tu1", head: { status: "running", endedAt: null, report: null } });
+        // A step of one never seen isn't anyone's; one no longer kept changing (a long call ending) doesn't come back.
+        log.write({ t: "agent", id: "tu9", block: { t: "text", id: "y", text: "?" }, after: null });
+        log.write({ t: "agent", id: "tu1", block: { t: "text", id: "x10", text: "step 10, ended" }, after: "x9" });
+        const a = new UiLog(file, "a").agents;
+        expect([...a.keys()]).toEqual(["tu1"]);
+        const run = a.get("tu1")!;
+        expect([run.status, "endedAt" in run, "report" in run, run.description, run.blocks.length, run.dropped, run.blocks[0]!.t === "text" && run.blocks[0]!.text]).toEqual(["running", false, false, "Review auth", 100, 30, "step 30"]);
+    });
+
+    test("steps and sub-agents written by this change's first versions (all at once, at the turn's end) are still read", () => {
+        const file = join(tempDir(), "o.jsonl");
+        const log = new UiLog(file, "o", false);
+        log.write({ t: "blocks", seg: 0, index: 0, blocks: [{ t: "text", id: "b1", text: "Old." }] });
+        log.write({ t: "agent", agent: { ...agent("tu1"), status: "done", blocks: [{ t: "text", id: "b2", text: "Did it." }] } });
+        const ui = new UiLog(file, "o");
+        expect(ui.shown(0, 0, user("q") as UserMessage)?.map((b) => b.t === "text" && b.text)).toEqual(["Old."]);
+        expect([ui.agents.get("tu1")?.status, ui.agents.get("tu1")?.blocks.length]).toEqual(["done", 1]);
+    });
+
+    test("a turn the log saw start and never end, with nothing after its prompt that says how it ended, was cut off", () => {
+        const file = join(tempDir(), "c.jsonl");
+        const log = new UiLog(file, "c", false);
+        const answered = { role: "assistant", provider: "p", model: "m", content: [{ type: "text", text: "Done." }] } as Message;
+        const calling = { role: "assistant", provider: "p", model: "m", content: [{ type: "tool_call", id: "c1", name: "Bash", input: {} }] } as Message;
+        const results = { role: "user", content: [{ type: "tool_result", toolCallId: "c1", toolName: "Bash", content: "ok" }], meta: { kind: "tool_results" } } as Message;
+        log.write({ t: "turn", seg: 0, index: 0, at: 1 });
+        log.write({ t: "turn", seg: 0, index: 0, at: 1, end: 2, status: "done" });
+        log.write({ t: "turn", seg: 0, index: 2, at: 3 });
+        const ui = new UiLog(file, "c");
+        const at = (messages: Message[], seg = 0) => cutOffPrompt(ui, seg, messages);
+        const before = [user("first"), answered];
+        expect(at([...before, user("second")])).toBe(2);
+        // Part way through its tools (a model's own turn).
+        expect(at([...before, user("second"), calling, results])).toBe(2);
+        // It said how it ended.
+        expect(at([...before, user("second"), user("[Request interrupted by user]", "interrupt")])).toBeUndefined();
+        expect(at([...before, user("second"), calling, { ...results, content: [...results.content, { type: "text", text: "[Request interrupted by user for tool use]" }] } as Message])).toBeUndefined();
+        expect(at([...before, user("second"), answered])).toBeUndefined();
+        // It went on where the log isn't kept (a terminal).
+        expect(at([...before, user("second"), user("third")])).toBeUndefined();
+        // Rewound past it, or compacted since.
+        expect(at(before)).toBeUndefined();
+        expect(at([...before, user("second")], 1)).toBeUndefined();
+        // The one that ended isn't.
+        log.write({ t: "turn", seg: 0, index: 2, at: 3, end: 4, status: "error" });
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...before, user("second")])).toBeUndefined();
+        // A message sent while tools ran starts a turn where it rides along with their results: that one can be cut off, or end.
+        const steering = { ...results, content: [...results.content, { type: "text", text: "The user sent this message while you were working:\nand the docs" }] } as Message;
+        const went = [...before, user("second"), calling, steering];
+        log.write({ t: "turn", seg: 0, index: 4, at: 5 });
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...went, calling])).toBe(4);
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...went, calling, steering])).toBeUndefined();
+        log.write({ t: "turn", seg: 0, index: 4, at: 5, end: 6, status: "denied" });
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, went)).toBeUndefined();
+        // Once its prompt is known, another sent there (in a terminal, after a rewind) isn't it.
+        const third = user("third") as UserMessage;
+        log.write({ t: "turn", seg: 0, index: 6, at: 7 });
+        log.write({ t: "turn", seg: 0, index: 6, at: 7, prompt: promptKey(third) });
+        const after = [...went, answered];
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third])).toBe(6);
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, user("something else")])).toBeUndefined();
+        // A note of how it ended (an error) says it did.
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third], [{ index: 7, level: "error", text: "Boom.", at: 8 }])).toBeUndefined();
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third], [{ index: 6, level: "error", text: "Earlier.", at: 6 }])).toBe(6);
+        // Not one it went on after (a Stop hook kept it going after a warning).
+        const kept = user("<system-reminder>A Stop hook asked you to keep going</system-reminder>", "prompt", { meta: { kind: "reminder" } } as Partial<Message>);
+        expect(cutOffPrompt(new UiLog(file, "c"), 0, [...after, third, kept, calling], [{ index: 7, level: "warn", text: "Output limit.", at: 8 }])).toBe(6);
     });
 
     test("turns from before a compaction are kept, marked archived and not rewindable", () => {
@@ -372,4 +719,83 @@ describe("engine", () => {
         expect(await find()).toMatchObject({ settled: false });
         await engine.stop();
     });
+});
+
+
+test.each(["scalar", "object", "array"])("backend history redacts %s input before its display cut", (shape) => {
+    const value = "rJ8wQ3nL6tV9xK2m";
+    const wrap = (text: string): unknown => shape === "scalar" ? text : shape === "object" ? { text } : [text];
+    const prefix = shape === "scalar" ? 0 : JSON.stringify(wrap("SENTINEL")).indexOf("SENTINEL");
+    const input = { content: wrap("a".repeat(3994 - prefix) + value + "b".repeat(5000)) };
+    const dir = tempDir();
+    const file = join(dir, "s.jsonl");
+    registerSecret(value, "HISTORY_TOKEN");
+    try {
+        const block = toolBlockFromCall({ type: "tool_call", id: "call", name: "Write", input }, { title: "Write(file)" });
+        const log = new UiLog(file, "s", false);
+        log.write({ t: "step", seg: 0, index: 0, block: shownStep(block)!, after: null });
+        log.close();
+        const reopened = new UiLog(file, "s");
+        const texts = [JSON.stringify(block), readFileSync(join(dir, "ui", "s.jsonl"), "utf8"), JSON.stringify(reopened.steps.get("0:0"))];
+        for (const text of texts) {
+            for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));
+        }
+        expect(reopened.steps.get("0:0")?.blocks).toHaveLength(1);
+        // Short nested input still uses its original structure, with string values redacted.
+        expect(trimInput({ nested: { text: value }, list: [value] })).toEqual({ nested: { text: "[REDACTED HISTORY_TOKEN]" }, list: ["[REDACTED HISTORY_TOKEN]"] });
+    } finally {
+        unregisterSecret(value);
+    }
+});
+
+test("a delegated task's effective effort is set once and survives agent-head replay", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    const runtime = await engine.createSession(tempDir("effort-row-"));
+    await runtime.ready;
+    const session = runtime.session;
+    session.meta.system = "Test";
+    session.setTitle("Delegation effort test");
+    const call = { type: "tool_call" as const, id: "delegated", name: DELEGATE_TOOL, input: { description: "Review", model: "gemini:test" } };
+    const task = { id: "task-1", callId: call.id, model: "gemini:test", effort: "high", status: "done", delivered: true };
+    Object.assign(runtime, {
+        model: { provider: "codex", id: "test" },
+        agent: {
+            delegatedTasks: [task],
+            dispose: async () => {},
+            run: async () => {
+                session.push({ role: "user", content: [{ type: "text", text: "Delegate a review" }] });
+                (runtime as any).onEvent({ type: "tool_start", call, title: "Review" });
+                (runtime as any).onEvent({ type: "subagent", parentId: call.id, label: "Review", event: { type: "request_start" } });
+                runtime.flush();
+                task.effort = "low";
+                (runtime as any).onEvent({ type: "subagent", parentId: call.id, label: "Review", event: { type: "request_start" } });
+                (runtime as any).onEvent({ type: "tool_end", call, result: { content: "Done" }, durationMs: 1 });
+                session.push({ role: "assistant", provider: "codex", content: [{ type: "text", text: "Done" }], stopReason: "end_turn" });
+                (runtime as any).onEvent({ type: "turn_end", reason: "done" });
+                return "done";
+            },
+        },
+    });
+    await runtime.startTurn("Delegate a review");
+    expect(runtime.snapshot().agents[0]!.effort).toBe("high");
+    let next = 0;
+    const ui = new UiLog(session.path, session.meta.id);
+    const turns = replay({ segments: [{ messages: session.messages }], current: session.messages, ui, meta: (c) => ({ title: c.name }), newId: () => `r${++next}` });
+    expect(agentsFromTurns(turns, undefined, ui.agents)[0]!.effort).toBe("high");
+    const records = readFileSync(join(session.path, "..", "ui", `${session.meta.id}.jsonl`), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(records.filter((r) => r.t === "agent" && r.head?.effort)).toHaveLength(1);
+    expect(records.filter((r) => r.t === "step").every((r) => r.block?.effort === undefined)).toBe(true);
+    await engine.stop();
+});
+
+test("a reopened task comes back with its own sub-agents, whose calls are in its steps, not in a turn", () => {
+    const run = (id: string, parentId?: string): AgentRun => ({ id, turnId: "old", parentId, description: id, agentType: "general-purpose", status: "running", startedAt: 1, toolCount: 0, tokens: 0, blocks: [] });
+    const turns: Turn[] = [{ id: "t1", status: "done", endedAt: 50, blocks: [{ t: "tool", id: "task", name: "delegate", title: "delegate", status: "ok", agent: true }] }];
+    const recorded = new Map([run("task"), run("inner", "task"), run("innermost", "inner"), run("stray", "elsewhere")].map((a) => [a.id, a]));
+    const agents = agentsFromTurns(turns, undefined, recorded);
+    expect(agents.map((a) => [a.id, a.turnId, a.parentId, a.status, a.replayed])).toEqual([
+        ["task", "t1", undefined, "stopped", true],
+        ["inner", "t1", "task", "stopped", true],
+        ["innermost", "t1", "inner", "stopped", true],
+    ]);
 });

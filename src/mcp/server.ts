@@ -40,7 +40,7 @@ export const SERVER_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-
 export const serverTiming = { keepAliveMs: 15_000 };
 
 interface Entry {
-    tools: ServerTool[];
+    tools: () => ServerTool[];
     instructions?: () => string | undefined;
     calls: Map<string, AbortController>;
 }
@@ -61,13 +61,13 @@ function ensureServer(): Server<undefined> {
     return server;
 }
 
-/** Offer these tools under a new token; `instructions` are read when a client connects. */
-export function registerTools(tools: ServerTool[], instructions?: () => string | undefined): Registration {
+/** Offer these tools under a new token; `instructions` are read when a client connects. A function is read on each request (the set can change). */
+export function registerTools(tools: ServerTool[] | (() => ServerTool[]), instructions?: () => string | undefined): Registration {
     const srv = ensureServer();
     const token = randomBytes(32).toString("base64url");
     registerSecret(token, `${APP_NAME} MCP token`);
     const key = hash(token);
-    const entry: Entry = { tools, instructions, calls: new Map() };
+    const entry: Entry = { tools: typeof tools === "function" ? tools : () => tools, instructions, calls: new Map() };
     entries.set(key, entry);
     return {
         url: `http://127.0.0.1:${srv.port}/mcp`,
@@ -140,7 +140,7 @@ async function handle(req: Request, srv: Server<undefined>): Promise<Response> {
             return json({
                 jsonrpc: "2.0",
                 id,
-                result: { tools: entry.tools.map((t) => ({ name: t.name, ...(t.title ? { title: t.title } : {}), description: t.description, inputSchema: t.inputSchema, ...(t.annotations ? { annotations: t.annotations } : {}) })) },
+                result: { tools: entry.tools().map((t) => ({ name: t.name, ...(t.title ? { title: t.title } : {}), description: t.description, inputSchema: t.inputSchema, ...(t.annotations ? { annotations: t.annotations } : {}) })) },
             });
         case "tools/call":
             return callTool(req, srv, entry, id, params);
@@ -151,7 +151,7 @@ async function handle(req: Request, srv: Server<undefined>): Promise<Response> {
 
 function callTool(req: Request, srv: Server<undefined>, entry: Entry, id: unknown, params: Record<string, any>): Response {
     const name = String(params.name ?? "");
-    const tool = entry.tools.find((t) => t.name === name);
+    const tool = entry.tools().find((t) => t.name === name);
     if (!tool) return rpcError(id, -32602, `Unknown tool: ${name}`);
     const args = params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments) ? params.arguments : {};
     const meta = params._meta && typeof params._meta === "object" ? params._meta : {};
