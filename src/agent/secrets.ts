@@ -5,6 +5,7 @@
 // the backstop for output that prints it.
 
 import { knownSecrets, redactionMarkers, registerSecret } from "../util/redact";
+import { allProviders, SEARCH_PROVIDERS } from "../providers/registry";
 import { secretEnvVarNames } from "../auth/credentials";
 
 export const MAX_SECRET_BYTES = 8 * 1024;
@@ -12,6 +13,8 @@ export const MAX_SECRET_BYTES = 8 * 1024;
 export const MIN_SECRET_LENGTH = 8;
 export const MAX_PURPOSE = 500;
 
+export const SECRET_NAME_RULE = "Names must end in TOKEN, KEY, SECRET, PASSWORD, PASSWD, PASS, PWD, PAT, CREDENTIAL, CREDENTIALS or AUTH (with or without an underscore before the ending). DATABASE_URL is the only exception. Reserved names are still refused.";
+const CREDENTIAL_NAME = /_?(TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|PWD|PAT|CREDENTIAL|CREDENTIALS|AUTH)$/;
 const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 // Variables that change how a shell, a runtime or a tool runs, or that the
@@ -33,6 +36,7 @@ export function secretNameError(name: unknown): string | undefined {
     if (RESERVED.has(name) || RESERVED_PREFIXES.some((p) => name.startsWith(p)) || secretEnvVarNames().includes(name)) {
         return `${name} changes how programs run or belongs to Harness, so it can't hold a secret. Pick a name of its own (e.g. MY_SERVICE_TOKEN) and use it in the command.`;
     }
+    if (name !== "DATABASE_URL" && !CREDENTIAL_NAME.test(name)) return SECRET_NAME_RULE;
     return undefined;
 }
 
@@ -45,10 +49,13 @@ export function secretValueError(value: unknown, name?: string): string | undefi
     if (!value.isWellFormed()) return "The value must be well-formed Unicode text.";
     // Streaming redaction needs unbroken values; terminal controls can also alter their displayed text.
     if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) return "The value can't contain control characters, line breaks or NUL characters.";
+    // A replacement must never rebuild another secret out of surrounding text.
+    if (/\[REDACTED|REDACTED\]/i.test(value)) return "The value can't contain redaction marker text. Use a different value.";
     // Markers are visible output too. Check both directions so registering a later
     // label cannot expose an older value (including one supplied by another session).
     const marker = name === undefined ? undefined : `[REDACTED ${name}]`;
-    const markers = redactionMarkers();
+    // Include labels whose keys/tokens may not be loaded until later.
+    const markers = redactionMarkers([...allProviders(), ...SEARCH_PROVIDERS].map((p) => p.id));
     if (marker) markers.push(marker);
     if (forms(value).some((form) => markers.some((text) => text.includes(form))) || (marker && knownSecrets().some((secret) => marker.includes(secret)))) {
         return "The value or name conflicts with redaction marker text. Use a different value or ask for a different name.";

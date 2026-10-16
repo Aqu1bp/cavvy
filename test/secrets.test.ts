@@ -55,8 +55,8 @@ const bash = (ctx: any, command: string, more: Record<string, unknown> = {}) => 
 
 describe("names, values and purposes", () => {
     test("a name is an environment variable name of its own", () => {
-        for (const ok of ["GITHUB_TOKEN", "NPM_TOKEN", "MY_SERVICE_TOKEN", "A", "RUBYGEMS_API_KEY", `A${"B".repeat(63)}`]) expect(secretNameError(ok)).toBeUndefined();
-        for (const bad of ["", "github_token", "1TOKEN", "_TOKEN", "MY-TOKEN", "MY TOKEN", "TOKEN=1", `A${"B".repeat(64)}`, 42, undefined, null]) expect(secretNameError(bad)).toMatch(/environment variable name/);
+        for (const ok of ["GITHUB_TOKEN", "NPM_TOKEN", "MY_SERVICE_TOKEN", "TOKEN", "RUBYGEMS_API_KEY", `${"A".repeat(58)}_TOKEN`]) expect(secretNameError(ok)).toBeUndefined();
+        for (const bad of ["", "github_token", "1TOKEN", "_TOKEN", "MY-TOKEN", "MY TOKEN", "TOKEN=1", `${"A".repeat(59)}_TOKEN`, 42, undefined, null]) expect(secretNameError(bad)).toMatch(/environment variable name/);
     });
 
     test("names that change how processes run, or that Harness owns, are refused", () => {
@@ -87,17 +87,17 @@ describe("names, values and purposes", () => {
 describe("the store and redaction", () => {
     test("a stored value, and its URL-encoded and base64 forms, are redacted everywhere", () => {
         const s = new SecretStore();
-        s.set("REDACT_ME", "p@ss word/1234");
-        expect(redact("token=p@ss word/1234")).toBe("token=[REDACTED REDACT_ME]");
-        expect(redact(`?t=${encodeURIComponent("p@ss word/1234")}`)).toBe("?t=[REDACTED REDACT_ME]");
-        expect(redact(Buffer.from("p@ss word/1234").toString("base64"))).toStartWith("[REDACTED REDACT_ME]");
-        expect(redact(Buffer.from("p@ss word/1234\n").toString("base64"))).toStartWith("[REDACTED REDACT_ME]");
+        s.set("REDACT_ME_TOKEN", "p@ss word/1234");
+        expect(redact("token=p@ss word/1234")).toBe("token=[REDACTED REDACT_ME_TOKEN]");
+        expect(redact(`?t=${encodeURIComponent("p@ss word/1234")}`)).toBe("?t=[REDACTED REDACT_ME_TOKEN]");
+        expect(redact(Buffer.from("p@ss word/1234").toString("base64"))).toStartWith("[REDACTED REDACT_ME_TOKEN]");
+        expect(redact(Buffer.from("p@ss word/1234\n").toString("base64"))).toStartWith("[REDACTED REDACT_ME_TOKEN]");
         // Python's quote leaves "/" alone; a form uses "+" for spaces; base64url swaps two characters.
-        expect(redact("p%40ss%20word/1234")).toBe("[REDACTED REDACT_ME]");
-        expect(redact("p%40ss+word%2F1234")).toBe("[REDACTED REDACT_ME]");
+        expect(redact("p%40ss%20word/1234")).toBe("[REDACTED REDACT_ME_TOKEN]");
+        expect(redact("p%40ss+word%2F1234")).toBe("[REDACTED REDACT_ME_TOKEN]");
         const tricky = "test-secret-~>?>~-1";
-        s.set("URL_SAFE", tricky);
-        expect(redact(Buffer.from(tricky).toString("base64url"))).toBe("[REDACTED URL_SAFE]");
+        s.set("URL_SAFE_TOKEN", tricky);
+        expect(redact(Buffer.from(tricky).toString("base64url"))).toBe("[REDACTED URL_SAFE_TOKEN]");
         expect(Buffer.from(tricky).toString("base64url")).not.toBe(Buffer.from(tricky).toString("base64").replace(/=+$/, ""));
     });
 
@@ -105,7 +105,7 @@ describe("the store and redaction", () => {
         const a = new SecretStore();
         const b = new SecretStore();
         a.set("SHARED_TOKEN", "test-shared-value-789");
-        b.set("OTHER_NAME", "test-shared-value-789");
+        b.set("OTHER_NAME_TOKEN", "test-shared-value-789");
         expect(a.forget("SHARED_TOKEN")).toBe(true);
         expect(a.forget("SHARED_TOKEN")).toBe(false);
         b.clear();
@@ -117,9 +117,9 @@ describe("the store and redaction", () => {
     test("set refuses bad names and values without quoting the value", () => {
         const s = new SecretStore();
         expect(() => s.set("PATH", VALUE)).toThrow(/can't hold a secret/);
-        expect(() => s.set("SHORT_ONE", "abc")).toThrow(/too short/);
+        expect(() => s.set("SHORT_ONE_TOKEN", "abc")).toThrow(/too short/);
         try {
-            s.set("SHORT_ONE", "abcdef1");
+            s.set("SHORT_ONE_TOKEN", "abcdef1");
         } catch (e) {
             expect((e as Error).message).not.toContain("abcdef1");
         }

@@ -3,6 +3,8 @@
 // shown, stored, or sent to a model. Known-format keys that the harness does
 // not own (e.g. a teammate's key in a .env file) are caught by pattern.
 
+import { APP_NAME } from "../config/paths";
+
 const exact = new Map<string, { label: string; prefix?: Uint32Array }>();
 
 const PATTERNS: [RegExp, string][] = [
@@ -41,8 +43,8 @@ export function knownSecrets(): string[] {
     return [...exact.keys()];
 }
 
-export function redactionMarkers(): string[] {
-    const labels = new Set(["secret", ...PATTERNS.map(([, label]) => label), ...[...exact.values()].map(({ label }) => label)]);
+export function redactionMarkers(extraLabels: string[] = []): string[] {
+    const labels = new Set(["secret", "gui-token", `${APP_NAME} MCP token`, ...extraLabels, ...PATTERNS.map(([, label]) => label), ...[...exact.values()].map(({ label }) => label)]);
     return [...labels].map((label) => `[REDACTED ${label}]`);
 }
 

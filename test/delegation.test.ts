@@ -1445,9 +1445,9 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
 
     test("in auto mode it asks, rather than applying the sandbox's rules to a command that runs outside it", async () => {
         const secrets = new SecretStore();
-        secrets.set("API_TOKEN_X", "test-secret-mcp-005");
+        secrets.set("API_X_TOKEN", "test-secret-mcp-005");
         process.env.FAKE_SCENARIO = "mcp";
-        calls([{ tool: "run_with_secrets", args: { command: `curl -s -H "Authorization: Bearer $API_TOKEN_X" https://api.example.invalid/v1/me`, secrets: ["API_TOKEN_X"] } }]);
+        calls([{ tool: "run_with_secrets", args: { command: `curl -s -H "Authorization: Bearer $API_X_TOKEN" https://api.example.invalid/v1/me`, secrets: ["API_X_TOKEN"] } }]);
         const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => undefined }, ask: () => ({ allow: false }) });
         t.switchMode("auto");
         await t.run("go");
@@ -1462,7 +1462,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         calls([
             { tool: "request_secret", args: { name: "PATH", purpose } },
             { tool: "request_secret", args: { name: "OK_TOKEN", purpose: "x".repeat(501) } },
-            { tool: "run_with_secrets", args: { command: "echo $NOT_HELD", secrets: ["NOT_HELD"] } },
+            { tool: "run_with_secrets", args: { command: "echo $NOT_HELD_TOKEN", secrets: ["NOT_HELD_TOKEN"] } },
             { tool: "run_with_secrets", args: { command: "echo hi", secrets: [] } },
         ]);
         const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (asked++, "test-secret-never") } });
@@ -1470,7 +1470,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         const results = mcpResults();
         expect(results.map((r) => r.isError)).toEqual([true, true, true, true]);
         expect(results[0].text).toContain("PATH changes how programs run");
-        expect(results[2].text).toContain("doesn't hold NOT_HELD");
+        expect(results[2].text).toContain("doesn't hold NOT_HELD_TOKEN");
         expect(asked).toBe(0);
         expect(t.asked).toHaveLength(0);
     });

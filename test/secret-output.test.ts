@@ -75,7 +75,7 @@ test("foreground cap cannot expose an unfinished outer secret after an inner mat
     const inner = "vR8kD2mN";
     const value = "qP7tL4sW9xF" + inner + "uA6jH2rK8";
     const { ctx, dir, progress } = setup(value);
-    ctx.state.secrets!.set("A".repeat(64), inner);
+    ctx.state.secrets!.set("A".repeat(58) + "_TOKEN", inner);
     const command = script(dir, `await write('a'.repeat(600001 - token.length + 1) + token.slice(0, -1)); await pause(); await write(token.slice(-1) + '\\n');`);
     const out = await BashTool.run({ command }, ctx);
     noFragments(JSON.stringify(out), value);

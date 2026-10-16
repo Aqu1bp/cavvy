@@ -4,7 +4,10 @@ import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
 const { SecretStore, secretNameError, secretValueError } = await import("../src/agent/secrets");
-const { knownSecrets, registerSecret, unregisterSecret } = await import("../src/util/redact");
+const { knownSecrets, registerSecret, unregisterSecret, redact, redactedJson } = await import("../src/util/redact");
+const { allProviders, SEARCH_PROVIDERS } = await import("../src/providers/registry");
+const { setKey } = await import("../src/auth/credentials");
+const { RequestSecretTool } = await import("../src/tools/meta-tools");
 const { secretTools, SECRET_INSTRUCTIONS } = await import("../src/agent/secret-tools");
 afterAll(() => iso.cleanup());
 
@@ -69,7 +72,7 @@ test("markers from other registrations and new names cannot expose values", () =
     registerSecret("marker-fixture-C2k8R9v6N3z1D7p4", "PREVIOUS_LABEL_TOKEN");
     registerSecret("NEWLABELSECRET", "EXISTING_TOKEN");
     try {
-        for (const [name, value] of [["NEXT_TOKEN", "PREVIOUS_LABEL"], ["PREFIX_NEWLABELSECRET", "k8Vp3Qn7Xr2Lm6Wz"]]) {
+        for (const [name, value] of [["NEXT_TOKEN", "PREVIOUS_LABEL"], ["PREFIX_NEWLABELSECRET_TOKEN", "k8Vp3Qn7Xr2Lm6Wz"]]) {
             expect(secretValueError(value, name)).toMatch(/redaction marker/);
             const store = new SecretStore();
             expect(() => store.set(name, value)).toThrow(/redaction marker/);
@@ -77,5 +80,67 @@ test("markers from other registrations and new names cannot expose values", () =
         }
     } finally {
         for (const secret of knownSecrets()) if (!before.has(secret)) unregisterSecret(secret);
+    }
+});
+
+test.each(["abc[REDACTED OTHER]xyz", "abc[redacted OTHER]xyz", "abcReDaCtEd]xyz"])("values cannot contain marker text (%s)", (value) => {
+    expect(secretValueError(value, "REBUILD_TOKEN")).toMatch(/redaction marker/);
+    expect(() => new SecretStore().set("REBUILD_TOKEN", value)).toThrow(/redaction marker/);
+});
+
+test("provider and fixed labels are reserved before they are registered", async () => {
+    const before = new Set(knownSecrets());
+    const key = "q7Vt9Lm2Zx6Pn4Rc";
+    try {
+        for (const label of [...allProviders(), ...SEARCH_PROVIDERS].map((p) => p.id).concat(["gui-token", "harness MCP token"])) {
+            if (label.length < 8) continue;
+            expect(secretValueError(label, "LATER_TOKEN")).toMatch(/redaction marker/);
+            expect(() => new SecretStore().set("LATER_TOKEN", label)).toThrow(/redaction marker/);
+        }
+        await setKey("deepseek", key);
+        expect(redact(key)).toBe("[REDACTED deepseek]");
+    } finally {
+        for (const secret of knownSecrets()) if (!before.has(secret)) unregisterSecret(secret);
+    }
+});
+
+test("redactedJson cannot reconstruct an accepted value from a marker", () => {
+    const before = new Set(knownSecrets());
+    const store = new SecretStore();
+    const value = "abc[REDACTED OTHER]xyz";
+    try {
+        // On the old validator this value is accepted, then JSON output rebuilds it.
+        if (!secretValueError(value, "REBUILD_TOKEN")) store.set("REBUILD_TOKEN", value);
+        registerSecret("q7Vt9Lm2", "OTHER");
+        const json = redactedJson({ text: "abcq7Vt9Lm2xyz" });
+        for (const accepted of Object.values(store.env())) expect(json).not.toContain(accepted);
+        expect(store.names()).toEqual([]);
+        expect(JSON.parse(json)).toEqual({ text: "abc[REDACTED OTHER]xyz" });
+    } finally {
+        for (const secret of knownSecrets()) if (!before.has(secret)) unregisterSecret(secret);
+    }
+});
+
+const endings = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "PASS", "PWD", "PAT", "CREDENTIAL", "CREDENTIALS", "AUTH"];
+test.each(["RUSTC", "CARGO_BUILD_RUSTC", "SERVICE_URL", "OTHER_DATABASE_URL", "MY_TOKEN_FILE"])("ordinary executable/config name %s is refused", (name) => {
+    const error = secretNameError(name);
+    expect(error).toContain("end");
+    for (const ending of endings) expect(error).toContain(ending);
+    expect(error).toContain("DATABASE_URL");
+    expect(() => new SecretStore().set(name, "zq7Xv9Lr2Wm4Kp8T")).toThrow();
+});
+
+test("credential endings and the sole DATABASE_URL exception are accepted", () => {
+    for (const name of [...endings.map((e) => `SERVICE_${e}`), "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "PGPASSWORD", "MYSQL_PWD", "NPM_TOKEN", "DATABASE_URL"]) {
+        expect(secretNameError(name)).toBeUndefined();
+    }
+    for (const name of ["NODE_AUTH_TOKEN", "OPENAI_API_KEY", "GIT_PASSWORD", "PWD"]) expect(secretNameError(name)).toMatch(/changes how programs run/);
+});
+
+test("secret tool descriptions and README explain credential endings", () => {
+    const tools = secretTools({ store: new SecretStore(), ask: async () => undefined, run: async () => ({ text: "unused" }) });
+    for (const text of [RequestSecretTool.description, ...tools.map((t) => t.description), SECRET_INSTRUCTIONS, readFileSync(new URL("../README.md", import.meta.url), "utf8")]) {
+        for (const ending of endings) expect(text).toContain(ending);
+        expect(text).toContain("DATABASE_URL");
     }
 });

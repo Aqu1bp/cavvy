@@ -1,7 +1,7 @@
 import type { TodoItem, Tool } from "./types";
 import { MODE_INFO } from "../permissions/modes";
 import { redact } from "../util/redact";
-import { cleanPurpose, requestSecret, secretNameError } from "../agent/secrets";
+import { cleanPurpose, requestSecret, secretNameError, SECRET_NAME_RULE } from "../agent/secrets";
 
 export const TodoWriteTool: Tool<{ todos: TodoItem[] }> = {
     name: "TodoWrite",
@@ -127,7 +127,7 @@ export const RequestSecretTool: Tool<{ name: string; purpose: string }> = {
     readOnly: true,
     description: `Asks the user to type in a secret (an API token, a password) that a shell command needs, without its value ever reaching you. The user sees the name and your purpose and types the value into a masked field.
 
-- name is the environment variable it becomes, e.g. GITHUB_TOKEN. Bash commands in this session then see it as $GITHUB_TOKEN; write the variable in the command, never the value.
+- name is the environment variable it becomes, e.g. GITHUB_TOKEN. ${SECRET_NAME_RULE} Bash commands in this session then see it as $GITHUB_TOKEN; write the variable in the command, never the value.
 - purpose is one or two sentences on what it's for, shown to the user as you write it.
 - You get back whether it was provided, never the value. If the user declines, don't ask again unless they bring it up.
 - Asking again for the same name replaces the value.
@@ -136,7 +136,7 @@ export const RequestSecretTool: Tool<{ name: string; purpose: string }> = {
     parameters: {
         type: "object",
         properties: {
-            name: { type: "string", description: "The environment variable it becomes: capital letters, digits and underscores (e.g. GITHUB_TOKEN)" },
+            name: { type: "string", description: `The environment variable it becomes: capital letters, digits and underscores (e.g. GITHUB_TOKEN). ${SECRET_NAME_RULE}` },
             purpose: { type: "string", description: "One or two sentences on what it's for" },
         },
         required: ["name", "purpose"],

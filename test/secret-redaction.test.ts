@@ -58,13 +58,13 @@ test("Bash returns no fragments when a shorter secret was registered first", asy
     const short = "cK6mJ8sF3vT9wQ2a";
     const long = short + "uN4pR7dL5yB8gH2e";
     const secrets = new SecretStore();
-    secrets.set("OVERLAP_SHORT", short);
-    secrets.set("OVERLAP_LONG", long);
+    secrets.set("OVERLAP_SHORT_TOKEN", short);
+    secrets.set("OVERLAP_LONG_TOKEN", long);
     const cwd = process.cwd();
     const state = { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets };
-    const result = await BashTool.run({ command: 'printf %s "$OVERLAP_LONG"' }, { state, settings: {}, signal: new AbortController().signal, mode: () => "default", setMode() {}, ui: {} } as any);
+    const result = await BashTool.run({ command: 'printf %s "$OVERLAP_LONG_TOKEN"' }, { state, settings: {}, signal: new AbortController().signal, mode: () => "default", setMode() {}, ui: {} } as any);
     noFragments(result.content, [short, long]);
-    expect(result.content).toContain("[REDACTED OVERLAP_LONG]");
+    expect(result.content).toContain("[REDACTED OVERLAP_LONG_TOKEN]");
 });
 
 

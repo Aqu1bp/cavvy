@@ -7,7 +7,7 @@
 
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { redact } from "../util/redact";
-import { cleanPurpose, requestSecret, secretNameError, type SecretAsk, type SecretStore } from "./secrets";
+import { cleanPurpose, requestSecret, secretNameError, SECRET_NAME_RULE, type SecretAsk, type SecretStore } from "./secrets";
 import { MCP_SERVER_NAME } from "./delegation";
 
 export const MAX_COMMAND = 20_000;
@@ -24,7 +24,7 @@ export interface SecretToolHost {
 
 export const SECRET_INSTRUCTIONS = `# Secrets (${MCP_SERVER_NAME})
 
-When a command needs a credential the user hasn't set up (an API token, a password), don't ask for it in the chat: call request_secret with the environment variable it becomes and what it's for. The user types it into a masked field and you get its name back, never the value. Your own shell doesn't have it: run commands that need it with run_with_secrets, writing $NAME in the command. Each such command is checked like a shell command and usually needs the user's approval. Its output comes back with the value replaced by [REDACTED …]; never try to print, encode or copy the value. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command.`;
+When a command needs a credential the user hasn't set up (an API token, a password), don't ask for it in the chat: call request_secret with the environment variable it becomes and what it's for. ${SECRET_NAME_RULE} The user types it into a masked field and you get its name back, never the value. Your own shell doesn't have it: run commands that need it with run_with_secrets, writing $NAME in the command. Each such command is checked like a shell command and usually needs the user's approval. Its output comes back with the value replaced by [REDACTED …]; never try to print, encode or copy the value. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command.`;
 
 const fail = (text: string): ServerToolResult => ({ text, isError: true });
 
@@ -33,12 +33,11 @@ export function secretTools(h: SecretToolHost): ServerTool[] {
         {
             name: "request_secret",
             title: "Ask the user for a secret",
-            description:
-                "Asks the user to type in a secret (an API token, a password) a command needs, without its value reaching you. name is the environment variable it becomes (e.g. GITHUB_TOKEN); purpose is one or two sentences on what it's for, shown to the user. You get back whether it was provided, never the value; use it with run_with_secrets. If the user declines, don't ask again unless they bring it up. Asking again for the same name replaces the value. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command.",
+            description: `Asks the user to type in a secret (an API token, a password) a command needs, without its value reaching you. name is the environment variable it becomes (e.g. GITHUB_TOKEN). ${SECRET_NAME_RULE} purpose is one or two sentences on what it's for, shown to the user. You get back whether it was provided, never the value; use it with run_with_secrets. If the user declines, don't ask again unless they bring it up. Asking again for the same name replaces the value. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command.`,
             inputSchema: {
                 type: "object",
                 properties: {
-                    name: { type: "string", description: "The environment variable it becomes: capital letters, digits and underscores (e.g. GITHUB_TOKEN)" },
+                    name: { type: "string", description: `The environment variable it becomes: capital letters, digits and underscores (e.g. GITHUB_TOKEN). ${SECRET_NAME_RULE}` },
                     purpose: { type: "string", description: "One or two sentences on what it's for" },
                 },
                 required: ["name", "purpose"],
@@ -58,7 +57,7 @@ export function secretTools(h: SecretToolHost): ServerTool[] {
         {
             name: "run_with_secrets",
             title: "Run a command with secrets",
-            description: `Runs one shell command in the session's folder with Harness's shell, with the named secrets (from request_secret) in its environment, and returns its output with their values redacted. Write $NAME in the command, never a value. It's checked like any shell command: deny rules and plan mode refuse it, and anything no rule allows asks the user, who sees the command as written. Redaction can't catch a value that's been deliberately transformed (split, reversed, re-encoded), so don't. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command. timeout is in milliseconds (default 120000, max ${MAX_TIMEOUT_MS}).`,
+            description: `Runs one shell command in the session's folder with Harness's shell, with the named secrets (from request_secret) in its environment, and returns its output with their values redacted. Write $NAME in the command, never a value. ${SECRET_NAME_RULE} It's checked like any shell command: deny rules and plan mode refuse it, and anything no rule allows asks the user, who sees the command as written. Redaction can't catch a value that's been deliberately transformed (split, reversed, re-encoded), so don't. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Harness can't redact. Use secrets only in the command. timeout is in milliseconds (default 120000, max ${MAX_TIMEOUT_MS}).`,
             inputSchema: {
                 type: "object",
                 properties: {

@@ -109,15 +109,15 @@ test("Grep does not pull an incomplete preview tail into view when earlier secre
     const block = "rU6pD3hW8nS2eJ5f".repeat(MAX_SECRET_BYTES / 16);
     const previewLimit = 3 * (500 + MAX_SECRET_BYTES);
     const padding = "vC2kY9wH4gM7aP6d".repeat(100).slice(0, previewLimit - 3 * block.length - 8);
-    secrets.set("COMPRESSED_FILE_BLOCK", block);
-    secrets.set("COMPRESSED_FILE_PADDING", padding);
+    secrets.set("COMPRESSED_FILE_BLOCK_TOKEN", block);
+    secrets.set("COMPRESSED_FILE_PADDING_TOKEN", padding);
     secrets.set("COMPRESSED_FILE_TOKEN", value);
     // Model rg's byte-limited preview: all preceding content collapses into
     // short markers, but the final secret is incomplete and cannot match.
     const preview = block.repeat(3) + padding + value.slice(0, 8) + " [... omitted end of line]";
     const result = filterRgOutput(`${root}/compressed.txt\0${preview}\n`, "content", () => false);
     noFragment(result, value);
-    expect(result).toContain("[REDACTED COMPRESSED_FILE_BLOCK]");
+    expect(result).toContain("[REDACTED COMPRESSED_FILE_BLOCK_TOKEN]");
     expect(result.length).toBeLessThan(600);
 });
 
