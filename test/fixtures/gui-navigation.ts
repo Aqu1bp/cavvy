@@ -70,7 +70,9 @@ if (mode === "navigate") hold = true;
 const second = await import(`../../gui/src/state/app.ts?reload=${mode}`);
 Object.assign(second.rpc, { credentials: async () => ({ url: "ws://test", token: "test" }) });
 const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "utf8");
-const widgets = ["Header", "Home", "Sidebar", "SessionView", "Reconnecting", "Disconnected", "TerminalPanel", "CommandPalette", "RewindDialog", "McpDialog", "FolderPicker", "TrustDialog", "DeleteSessionDialog", "CommitDialog", "Toasts"];
+// Every component App renders, except Solid's control flow, is a stub; new ones need no listing here.
+const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense"]);
+const widgets = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
     app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
     prefs: { sidebar: false }, isTauri: mode === "desktop", os: "other",
