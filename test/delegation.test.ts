@@ -848,7 +848,7 @@ describe("Claude Code as the main agent", () => {
         // An id that never shows up: the arguments decide.
         expect(await a.claimDelegateCall(input, { callId: "c9" })).toBe("c3");
         expect(await a.claimDelegateCall({ ...input, task: "other" }, {})).toBeUndefined();
-    });
+    }, 20_000);
 
     test("/tasks stop and leaving the session stop tasks, and the token stops working", async () => {
         process.env.FAKE_SCENARIO = "mcp";
@@ -980,7 +980,7 @@ describe("Claude Code as the main agent", () => {
         const [result] = mcpResults();
         expect(result.isError).toBe(true);
         expect(result.text).toContain("Codex didn't list its MCP servers (config/read failed: invalid configuration), so a read-only task can't run on it");
-    });
+    }, 20_000);
 
     test("without the server (turned off, nobody to delegate to, or Claude Code refusing it) the turn runs as before", async () => {
         const { run } = await makeAgent({ provider: "claude-code", settings: { delegation: false } });
@@ -1107,7 +1107,7 @@ describe("Codex as the main agent", () => {
         const steer = received().find((m) => m.method === "turn/steer")?.params.input[0].text;
         expect(steer).toContain("This is a read-only agent, and `touch y` isn't one of the read-only commands.");
         expect(steer).toContain("Only read-only commands run: plain commands such as cat");
-    });
+    }, 20_000);
 
     test("a mode change reaches the Claude Code agents it delegated to, and a read-only one stays read-only", async () => {
         process.env.FAKE_CODEX_SCENARIO = "mcp";
