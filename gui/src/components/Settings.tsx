@@ -2,7 +2,7 @@
 // setting is one row: what it is, what it does, its control, and a reset
 // when it's been changed.
 
-import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createSignal, For, Match, on, Show, Switch, type JSX } from "solid-js";
 import { ArrowLeft, ArrowUp, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
@@ -122,7 +122,9 @@ const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium
 function General() {
     const [confirmBypass, setConfirmBypass] = createSignal(false);
     const s = () => app.settings;
-    onMount(() => void refreshEditors());
+    createEffect(on(() => app.conn, (conn) => {
+        if (conn === "open") void refreshEditors();
+    }));
     // The chosen editor stays listed when it's gone, so the choice isn't silently lost.
     const editorChoices = () => editors().filter((e) => e.installed || e.id === s().editor);
     return (
