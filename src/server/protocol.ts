@@ -565,6 +565,27 @@ export interface ProviderModels {
     models: ModelSummary[];
 }
 
+/** Plan windows reported by the CLI; no identity or credential data. */
+export interface LimitWindow {
+    id: string;
+    label: string;
+    usedPercent?: number;
+    resetsAt?: number;
+    reached?: boolean;
+}
+
+export interface PlanLimits {
+    provider: string;
+    accountId: string;
+    windows: LimitWindow[];
+    reached?: boolean;
+    resetsAt?: number;
+    at: number;
+}
+
+/** Account ids are local metadata, independent of a CLI's private account identity. */
+export const planLimitKey = (provider: string, accountId = "default") => JSON.stringify([provider, accountId]);
+
 export interface CommandInfo {
     name: string;
     description: string;
@@ -703,7 +724,8 @@ export type ServerEvent =
     | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
     | { type: "models.changed" }
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
-    | { type: "scripts.changed"; project: string };
+    | { type: "scripts.changed"; project: string }
+    | { type: "limits"; limits: PlanLimits };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -815,6 +837,7 @@ export interface Methods {
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
     "commands.list": { params: { cwd: string }; result: CommandInfo[] };
+    "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
 }

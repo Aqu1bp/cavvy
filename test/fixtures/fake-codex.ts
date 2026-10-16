@@ -139,6 +139,11 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "", ...phase("commentary") } });
     notify("item/agentMessage/delta", { threadId, turnId, itemId: `msg-${turnId}`, delta: "Running it." });
     notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "Running it.", ...phase("commentary") } });
+    if (process.env.FAKE_CODEX_LIMIT_UPDATE) notify("account/rateLimits/updated", JSON.parse(process.env.FAKE_CODEX_LIMIT_UPDATE));
+    if (process.env.FAKE_LIMIT_ERROR === "1") {
+        notify("turn/completed", { threadId, turn: { id: turnId, status: "failed", error: { message: "Usage cap", codexErrorInfo: "usageLimitExceeded" } } });
+        return;
+    }
     if (scenario === "slow" && turnSeq === 1) {
         // The first turn works until interrupted (or a while).
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(5000)]);
@@ -355,6 +360,8 @@ async function handle(m: any) {
             const a = process.env.FAKE_ACCOUNT ?? "chatgpt";
             return reply(a === "none" ? { account: null, requiresOpenaiAuth: true } : a === "apikey" ? { account: { type: "apiKey" }, requiresOpenaiAuth: true } : { account: { type: "chatgpt", email: process.env.FAKE_EMAIL ?? "me@example.com", planType: process.env.FAKE_PLAN ?? "plus" }, requiresOpenaiAuth: true });
         }
+        case "account/rateLimits/read":
+            return reply(process.env.FAKE_CODEX_LIMIT_READ ? JSON.parse(process.env.FAKE_CODEX_LIMIT_READ) : {});
         case "model/list":
             return reply({
                 data: [

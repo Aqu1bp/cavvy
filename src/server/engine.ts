@@ -5,7 +5,8 @@
 
 import { account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
-import type { AccountInfo } from "./protocol";
+import { planLimitKey, type AccountInfo, type PlanLimits } from "./protocol";
+import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { RpcError } from "./rpc-error";
@@ -761,6 +762,18 @@ export class Engine {
     // -----------------------------------------------------------------------
     // Providers
 
+    private limits = new Map<string, PlanLimits>();
+
+    /** Never let a delayed report or a different account replace this account's meter. */
+    limitsReported(limits: PlanLimits, partial: boolean) {
+        const key = planLimitKey(limits.provider, limits.accountId);
+        const prev = this.limits.get(key);
+        if (prev && prev.at > limits.at) return;
+        const merged = mergeLimits(prev, limits, partial);
+        this.limits.set(key, merged);
+        this.broadcast({ type: "limits", limits: merged });
+    }
+
     private accountStatus = new Map<string, Partial<AccountInfo>>();
 
     private accountProjects(): string[] {
@@ -1296,6 +1309,8 @@ export class Engine {
                 }
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
+                this.limits.delete(planLimitKey(provider, id));
+                this.broadcast({ type: "limits", limits: { provider, accountId: id, windows: [], reached: false, at: Date.now() } });
                 this.broadcast({ type: "models.changed" });
                 return null;
             }
@@ -1367,6 +1382,8 @@ export class Engine {
                 return this.pathsExist(p);
             case "commands.list":
                 return this.commandsFor(str(p.cwd, "cwd"));
+            case "limits.get":
+                return [...this.limits.values()];
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":

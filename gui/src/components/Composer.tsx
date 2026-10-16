@@ -12,6 +12,7 @@ import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { Popover } from "./ui/Popover";
 import { Ring } from "./ui/bits";
+import { PlanMeter } from "./PlanMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 
@@ -501,6 +502,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         <Paperclip size={16} />
                     </button>
                     <Show when={p.sessionId}>
+                        <PlanMeter sessionId={p.sessionId!} />
                         <ContextRing sessionId={p.sessionId!} />
                     </Show>
                     <Show

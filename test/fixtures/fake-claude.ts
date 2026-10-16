@@ -427,6 +427,11 @@ async function turn(content: any[], uuid?: string) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
     }
+    if (process.env.FAKE_CLAUDE_LIMIT_INFO) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_LIMIT_INFO) });
+    if (process.env.FAKE_LIMIT_ERROR === "1") {
+        out({ type: "assistant", error: "rate_limit", message: { role: "assistant", content: [] } });
+        return result("error_during_execution", { is_error: true, result: "Limit reached" });
+    }
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
     text("Working on it.");

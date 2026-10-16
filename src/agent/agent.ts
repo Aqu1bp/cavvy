@@ -72,6 +72,7 @@ import { suggestBashRules } from "../permissions/bash-safety";
 import { trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { expandPath } from "../util/files";
+import type { PlanLimits } from "../server/protocol";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -90,6 +91,7 @@ export type AgentEvent =
     | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number; /** Its title now, when what it did was only known at its end (a backend's web search). */ title?: string }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
+    | { type: "limits"; limits: PlanLimits; partial: boolean }
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number }
     | { type: "compact_start"; auto: boolean }
     | { type: "compact_end"; summary: string }
@@ -1179,7 +1181,7 @@ export class Agent {
         this.emit({ type: "compact_start", auto: opts.auto });
         const host: BackendHost = {
             emit: (e) => {
-                if (e.type === "notice" || e.type === "retry") this.emit(e);
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
             },
             mode: () => this.o.mode.get(),
             permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),

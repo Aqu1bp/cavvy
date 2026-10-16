@@ -4,6 +4,7 @@
 
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
+import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
@@ -51,6 +52,7 @@ export function reportError(e: unknown) {
 // App store
 
 export interface AppState {
+    limits: Record<string, PlanLimits>;
     conn: ConnectionState;
     hello?: HelloResult;
     sessions: SessionSummary[];
@@ -82,6 +84,7 @@ function loadSeen(): Record<string, number> {
 }
 
 export const [app, setApp] = createStore<AppState>({
+    limits: {},
     conn: "connecting",
     sessions: [],
     archived: [],
@@ -293,6 +296,11 @@ export async function refreshProjects() {
 
 let watchingEditor = false;
 
+export async function refreshLimits() {
+    const limits = await rpc.call("limits.get", {});
+    setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), l]))));
+}
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
@@ -384,6 +392,9 @@ function onEvent(ev: ServerEvent) {
         case "toast":
             toast(ev.message, ev.level);
             return;
+        case "limits":
+            setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(ev.limits));
+            return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
@@ -409,7 +420,7 @@ export function start() {
         void (async () => {
             try {
                 setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
+                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshLimits()]);
                 void refreshModels().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));

@@ -16,6 +16,8 @@ import { dirname, isAbsolute, join, resolve } from "path";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
+import type { PlanLimits } from "../server/protocol";
+import { codexReachedType, limitAccountLabel, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
@@ -229,8 +231,18 @@ export function codexFastTier(m: { serviceTiers?: { id: string }[]; additionalSp
     return tiers.find((t) => FAST_TIERS.has(t));
 }
 
+type LimitOrdering = { revision: number; reads: number; acceptedRead: number };
+
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
+    private limitUpdates = new Map<string, LimitOrdering>();
+
+    private limitOrdering(accountId = "default"): LimitOrdering {
+        let state = this.limitUpdates.get(accountId);
+        if (!state) this.limitUpdates.set(accountId, state = { revision: 0, reads: 0, acceptedRead: 0 });
+        return state;
+    }
+
 
     constructor(readonly def: ProviderDef) {}
 
@@ -274,7 +286,7 @@ export class CodexBackend implements AgentBackendClient {
     private labels = new Map<string, string>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = new CodexTurn(this.def, t, this.labels);
+        const turn = new CodexTurn(this.def, t, this.labels, this.limitOrdering(t.accountId));
         this.turns.add(turn);
         try {
             return await turn.run();
@@ -286,7 +298,7 @@ export class CodexBackend implements AgentBackendClient {
     /** Codex's own compaction of the thread. */
     async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
         if (!t.resumeId) return { reason: "done", text: "", actions: [] };
-        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }).run({ compact: true });
+        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }, this.labels, this.limitOrdering(t.accountId)).run({ compact: true });
     }
 
     /**
@@ -384,6 +396,8 @@ class CodexTurn {
     private status?: string;
     private billedToPlan = false;
     private limitNoted = false;
+    private limitHit = false;
+    private limits?: PlanLimits;
     /** Reviewer noes shown from item/autoApprovalReview/completed, by thread and reason, whose guardianWarning hasn't come yet. */
     private noesShown = new Map<string, number>();
     /** What the user said when declining something, when it can't go into the running turn: it starts the next one. */
@@ -402,6 +416,7 @@ class CodexTurn {
         private t: BackendTurn,
         /** Sub-agents' labels by thread, kept across turns (the client's). */
         private labels = new Map<string, string>(),
+        private limitUpdates: LimitOrdering = { revision: 0, reads: 0, acceptedRead: 0 },
     ) {}
 
     modeChanged(m: PermissionMode) {
@@ -447,6 +462,7 @@ class CodexTurn {
                 return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.` };
             }
             this.billedToPlan = account.type === "chatgpt";
+            if (this.billedToPlan) void this.readLimits();
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
             const model = t.model.id === "default" ? undefined : t.model.id;
             const o = t.orchestrator;
@@ -546,8 +562,38 @@ class CodexTurn {
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.failure };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure };
         return { reason: "done", text, answer, actions: this.actions };
+    }
+
+    private async readLimits() {
+        const revision = this.limitUpdates.revision;
+        const read = ++this.limitUpdates.reads;
+        const at = Date.now();
+        try {
+            const report = await withTimeout(this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex did not report plan limits");
+            if (revision !== this.limitUpdates.revision || read < this.limitUpdates.acceptedRead) return;
+            const parsed = parseCodexRateLimits(report, { at, accountId: this.t.accountId ?? "default" });
+            if (parsed) {
+                this.limitUpdates.acceptedRead = read;
+                this.noteLimits(parsed.limits, parsed.partial);
+            }
+        } catch {
+            // Older CLIs may only push updates, or have no limits to report.
+        }
+    }
+
+    private noteLimits(limits: PlanLimits, partial: boolean) {
+        this.limits = mergeLimits(this.limits, limits, partial);
+        this.host.emit({ type: "limits", limits, partial });
+    }
+
+    private fail(error: any, fallback: string) {
+        this.failure = redact(String(error?.message ?? fallback));
+        if (error?.codexErrorInfo !== "usageLimitExceeded") return;
+        this.limitHit = true;
+        this.limitUpdates.revision++;
+        this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
     }
 
     private input(text: string, images: BackendTurn["images"]): unknown[] {
@@ -616,7 +662,7 @@ class CodexTurn {
             case "turn/completed":
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
                 this.status = p.turn?.status;
-                if (p.turn?.status === "failed") this.failure = redact(String(p.turn?.error?.message ?? "Codex reported a failed turn"));
+                if (p.turn?.status === "failed") this.fail(p.turn?.error, "Codex reported a failed turn");
                 this.turnDone?.();
                 break;
             case "thread/compacted":
@@ -626,7 +672,7 @@ class CodexTurn {
                 break;
             case "error":
                 if (p.willRetry) this.host.emit({ type: "retry", attempt: 1, delayMs: 0, reason: redact(String(p.error?.message ?? "Codex is retrying")) });
-                else this.failure = redact(String(p.error?.message ?? "Codex reported an error"));
+                else this.fail(p.error, "Codex reported an error");
                 break;
             case "warning":
             case "configWarning":
@@ -670,10 +716,13 @@ class CodexTurn {
                 this.host.emit({ type: "notice", level: "info", message: `Codex switched models: ${String(p.reason ?? p.toModel ?? "").trim() || "rerouted"}` });
                 break;
             case "account/rateLimits/updated": {
-                const reached = p.rateLimits?.rateLimitReachedType;
+                this.limitUpdates.revision++;
+                const parsed = parseCodexRateLimits(p, { update: true, accountId: this.t.accountId ?? "default" });
+                if (parsed) this.noteLimits(parsed.limits, parsed.partial);
+                const reached = codexReachedType(p.rateLimits);
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
-                    this.host.emit({ type: "notice", level: "warn", message: `Your Codex usage limit has been reached (${String(reached)}).` });
+                    this.host.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
                 }
                 break;
             }

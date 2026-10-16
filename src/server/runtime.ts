@@ -1040,8 +1040,12 @@ export class Runtime {
             case "compact_end":
                 this.compacted(e.summary);
                 break;
+            case "limits":
+                this.engine.limitsReported(e.limits, e.partial);
+                break;
             case "subagent":
-                this.subagentEvent(e.parentId, e.label, e.event);
+                if (e.event.type === "limits") this.engine.limitsReported(e.event.limits, e.event.partial);
+                else this.subagentEvent(e.parentId, e.label, e.event);
                 break;
             case "turn_end":
                 this.closeOpen();

@@ -29,6 +29,8 @@ import { homedir } from "os";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
+import type { PlanLimits } from "../server/protocol";
+import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
@@ -143,6 +145,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
      * resumed run after one counts the earlier runs' spend again.)
      */
     private spent = new Map<string, number>();
+    private limitSeen = new Map<string, string>();
 
     constructor(readonly def: ProviderDef) {}
 
@@ -188,7 +191,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined);
+        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
         this.turns.add(turn);
         try {
             const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
@@ -243,6 +246,8 @@ class ClaudeTurn {
     private failure?: string;
     private reason?: BackendResult["reason"];
     private signedOut = false;
+    private limits?: PlanLimits;
+    private limitHit = false;
     /** Control requests sent to Claude Code, waiting for its answer. */
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
@@ -284,6 +289,7 @@ class ClaudeTurn {
         private t: BackendTurn,
         /** What the session it resumes had spent before (its totals include that). */
         private spent?: number,
+        private limitSeen = new Map<string, string>(),
     ) {}
 
     /** The session's spend so far, as its last result put it. */
@@ -748,7 +754,11 @@ class ClaudeTurn {
         if (error === "authentication_failed") {
             this.signedOut = true;
             this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
-        } else if (error === "rate_limit") this.failure = "Your Claude usage limit was reached. Claude Code says when it resets; switch models with /model meanwhile.";
+        } else if (error === "rate_limit") {
+            this.limitHit = true;
+            this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+            this.failure = this.limitFailure();
+        }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
         else this.failure = `Claude Code reported an error: ${error}`;
     }
@@ -891,12 +901,25 @@ class ClaudeTurn {
         this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started });
     }
 
+    private noteLimits(limits: PlanLimits, partial: boolean) {
+        this.limits = mergeLimits(this.limits, limits, partial);
+        this.host.emit({ type: "limits", limits, partial });
+    }
+
+    private limitFailure(): string {
+        return `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")} Choose another account with /account or the plan meter, then send again.`;
+    }
+
     private onRateLimit(info: Record<string, any>) {
-        if (info.status !== "rejected" && info.status !== "allowed_warning") return;
-        const when = typeof info.resetsAt === "number" ? ` It resets ${new Date(info.resetsAt * 1000).toLocaleString()}.` : "";
-        const which = typeof info.rateLimitType === "string" ? ` (${info.rateLimitType.replace(/_/g, " ")})` : "";
-        if (info.status === "rejected") this.host.emit({ type: "notice", level: "warn", message: `Your Claude usage limit${which} has been reached.${when}` });
-        else this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude usage limit${which}.${when}` });
+        const parsed = parseClaudeRateLimit(info, Date.now(), this.t.accountId ?? "default");
+        if (parsed) this.noteLimits(parsed.limits, parsed.partial);
+        if (this.limitHit) this.failure = this.limitFailure();
+        const window = parsed?.limits.windows.find((w) => w.id === info.rateLimitType);
+        const key = `${this.t.accountId ?? "default"}:${window?.id ?? ""}`;
+        const news = ["allowed", "allowed_warning", "rejected"].includes(info.status) && limitNews(this.limitSeen, key, info.status, window?.resetsAt);
+        if (!news || (info.status !== "rejected" && info.status !== "allowed_warning")) return;
+        const reached = info.status === "rejected";
+        this.host.emit({ type: "notice", level: reached ? "warn" : "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${reached ? "usage limit reached" : "close to the usage limit"}${window ? ` (${window.label})` : ""}. ${resetSentence(this.limits?.resetsAt ?? window?.resetsAt, "Claude Code")}` });
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */

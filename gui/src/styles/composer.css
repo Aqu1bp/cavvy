@@ -1083,3 +1083,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
 }
+
+/* The active account's quota, independent of the conversation's context size. */
+.account-plan-meter { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.plan-meter { gap: 6px; font-size: 11px; }
+.plan-meter.danger { color: var(--danger); }
+.plan-gauge { width: 22px; height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.plan-gauge > span { display: block; height: 100%; background: currentColor; }
+.plan-window { margin: 12px 0; }
+.plan-account-hint { color: var(--muted); font-size: 11px; }
