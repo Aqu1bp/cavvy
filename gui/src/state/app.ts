@@ -279,8 +279,12 @@ export async function refreshProjects() {
     }
 }
 
+let watchingEditor = false;
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
+    // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
+    if (!watchingEditor) (watchingEditor = true), createRoot(() => createEffect(() => paths.editorIs(app.settings.editor)));
 }
 
 function upsertSession(s: SessionSummary) {
@@ -339,7 +343,6 @@ function onEvent(ev: ServerEvent) {
 }
 
 let connectedOnce = false;
-let watchingEditor = false;
 
 export function start() {
     rpc.onEvent(onEvent);
@@ -350,8 +353,6 @@ export function start() {
             try {
                 setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
-                // Every change of the chosen editor (Settings here, another window's seen on refresh) re-asks which paths are links.
-                if (!watchingEditor) (watchingEditor = true), createRoot(() => createEffect(() => paths.editorIs(app.settings.editor)));
                 void refreshModels().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 if (connectedOnce) for (const h of [...handles.values()]) await rpc.call("session.open", { id: h.id }).then(adopt, () => handles.delete(h.id));
