@@ -320,6 +320,8 @@ describe("harness and git config edits", () => {
         join(W, ".mcp.json"),
         join(W, ".git", "hooks", "pre-commit"),
         join(W, ".git", "config"),
+        join(W, ".claude", "settings.json"),
+        join(W, ".codex", "config.toml"),
         paths.userSettings(),
         join(paths.userCommands(), "x.md"),
     ];
@@ -336,6 +338,28 @@ describe("harness and git config edits", () => {
 
     test("allowed in bypass mode", () => {
         for (const p of configPaths()) expect(check(T("Write"), write(p), "bypassPermissions").behavior).toBe("allow");
+    });
+
+    test("a Claude Code worktree (.claude/worktrees/<name>/) is a project of its own: its files are normal edits, its own config still asks", () => {
+        const tree = join(W, ".claude", "worktrees", "feature");
+        mkdirSync(tree, { recursive: true });
+        writeFileSync(join(tree, ".git"), "gitdir: ../../../.git/worktrees/feature\n");
+        const inner = join(tree, ".claude", "worktrees", "inner");
+        mkdirSync(inner, { recursive: true });
+        writeFileSync(join(inner, ".git"), "gitdir: x\n");
+        for (const p of [join(tree, "src", "a.ts"), join(tree, "test", "fixtures", "fake-codex.ts"), join(inner, "README.md")]) {
+            expect(check(T("Write"), write(p), "acceptEdits").behavior).toBe("allow");
+        }
+        for (const p of [join(tree, ".claude", "settings.json"), join(tree, ".git"), join(tree, ".mcp.json"), join(tree, ".harness", "settings.json"), join(tree, ".codex", "config.toml"), join(inner, ".claude", "settings.json")]) {
+            const d = check(T("Write"), write(p), "auto");
+            expect(d.behavior).toBe("ask");
+            expect(d.reason).toMatch(/configures the harness or git/);
+        }
+        // Not a checkout (no .git): still the project's .claude folder.
+        const odd = join(W, ".claude", "worktrees", "not-a-checkout");
+        mkdirSync(odd, { recursive: true });
+        expect(check(T("Write"), write(join(odd, "a.ts")), "acceptEdits").behavior).toBe("ask");
+        expect(check(T("Write"), write(join(W, ".claude", "hooks.json")), "acceptEdits").behavior).toBe("ask");
     });
 
     test.each([".gitignore", ".gitattributes", ".github/workflows/ci.yml", "harness/settings.json", ".mcp.json.bak", "src/.git-keep"])("look-alike %p is a normal edit", (rel) => {
