@@ -407,6 +407,8 @@ export interface SessionState {
     filesChanged: number;
     /** Background shells started by the agent. */
     shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number }[];
+    /** Forked from this session (its title then). */
+    forkOf?: { id: string; title: string };
     /** The names of the secrets the user gave this session (never their values). */
     secrets: string[];
 }
@@ -737,6 +739,8 @@ export interface RewindTargetInfo {
     /** Files Harness's own tools changed answering it. */
     files: number;
     tracked: boolean;
+    /** From before this session was forked: files changed then are restored from the original session, not here. */
+    forked?: boolean;
     /** Agent backends that answered it (Claude Code, Codex): what they changed isn't tracked, so it isn't in `files`. */
     backends?: string[];
 }
@@ -748,6 +752,8 @@ export interface RewindPlanInfo {
     restore: { path: string; action: "write" | "delete"; outside: boolean }[];
     skipped: { path: string; reason: string }[];
     tracked: boolean;
+    /** From before the fork: `restore` has only what this session changed since. */
+    forked?: boolean;
     /** Agent backends that answered since then: their changes to files aren't in `restore`, and rewinding leaves them. */
     backends?: string[];
 }
@@ -994,6 +1000,8 @@ export interface Methods {
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
+    /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
+    "session.fork": { params: { id: string; index: number; text: string; turn: string }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
     "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number }; result: GitChangesInfo };
     "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
