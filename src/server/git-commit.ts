@@ -92,7 +92,7 @@ async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
     return { out, err, code };
 }
 
-/** Compare entries and all flags, excluding the stat cache that Git may refresh. */
+/** Compare entries and stored flags, excluding stat cache and in-memory bookkeeping. */
 async function unselectedEntries(root: string, index: string, selected: Set<string>, options: GitOptions = {}): Promise<string> {
     const { out } = await runGit(root, ["ls-files", "--stage", "--debug", "-z"], { ...options, index });
     const entries: string[] = [];
@@ -111,7 +111,11 @@ async function unselectedEntries(root: string, index: string, selected: Set<stri
         }
         const flags = /\bflags: ([0-9a-f]+)\n/.exec(block)?.[1];
         if (!flags) throw new RpcError("Cannot verify the unchanged index flags.", "git");
-        if (!selected.has(entry.slice(entry.indexOf("\t") + 1))) entries.push(`${entry}\0${flags}\0`);
+        // CE_VALID (assume-unchanged), CE_INTENT_TO_ADD and CE_SKIP_WORKTREE
+        // are stored flags. Split-index's CE_UPDATE_IN_BASE is memory-only.
+        // Stage and path, including name length, are already covered by entry.
+        const storedFlags = Number.parseInt(flags, 16) & (0x8000 | 0x20000000 | 0x40000000);
+        if (!selected.has(entry.slice(entry.indexOf("\t") + 1))) entries.push(`${entry}\0${storedFlags}\0`);
     }
     return entries.join("");
 }

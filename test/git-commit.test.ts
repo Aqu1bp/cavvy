@@ -58,6 +58,25 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("split-index reconciliation preserves unchecked entries and stored flags", async () => {
+        const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n", "flagged.txt": "old\n" });
+        git(dir, "config", "core.splitIndex", "true");
+        git(dir, "config", "splitIndex.maxPercentChange", "0");
+        git(dir, "update-index", "--assume-unchanged", "--", "flagged.txt");
+        write(dir, "unchecked.txt", "staged\n");
+        git(dir, "add", "--", "unchecked.txt");
+        write(dir, "unchecked.txt", "working\n");
+        write(dir, "selected.txt", "new\n");
+        const before = untouched(dir, ["unchecked.txt", "flagged.txt"]);
+        const flags = git(dir, "ls-files", "-v", "--", "unchecked.txt", "flagged.txt");
+
+        await gitCommit(dir, ["selected.txt"], "selected only");
+
+        expect(untouched(dir, ["unchecked.txt", "flagged.txt"])).toEqual(before);
+        expect(git(dir, "ls-files", "-v", "--", "unchecked.txt", "flagged.txt")).toBe(flags);
+        expect(changed(dir)).toEqual(["selected.txt"]);
+    });
+
     test("internal reconciliation disables config-defined post-index-change hooks", async () => {
         const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n" });
         write(dir, "selected.txt", "new\n");
