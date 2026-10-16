@@ -58,6 +58,24 @@ const changed = (dir: string) => git(dir, "diff-tree", "--no-commit-id", "--name
 const index = (dir: string) => readFileSync(join(dir, ".git", "index")).toString("base64");
 
 describe("git commit from Review", () => {
+    test("internal index reconciliation cannot run post-index-change hooks", async () => {
+        const dir = repo({ "selected.txt": "old\n", "unchecked.txt": "old\n", "flagged.txt": "old\n" });
+        write(dir, "selected.txt", "new\n");
+        write(dir, "unchecked.txt", "staged\n");
+        git(dir, "add", "--", "unchecked.txt");
+        write(dir, "unchecked.txt", "working\n");
+        git(dir, "update-index", "--assume-unchanged", "--", "flagged.txt");
+        const before = untouched(dir, ["unchecked.txt", "flagged.txt"]);
+        const flags = git(dir, "ls-files", "-v", "--", "unchecked.txt", "flagged.txt");
+        hook(dir, "post-index-change", `if (process.env.GIT_INDEX_FILE?.endsWith("index.lock")) {\n    const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "add", "--", "unchecked.txt"]), { env: gitEnv() });\n    process.exit(r.exitCode);\n}`);
+
+        await gitCommit(dir, ["selected.txt"], "selected only");
+
+        expect(untouched(dir, ["unchecked.txt", "flagged.txt"])).toEqual(before);
+        expect(git(dir, "ls-files", "-v", "--", "unchecked.txt", "flagged.txt")).toBe(flags);
+        expect(changed(dir)).toEqual(["selected.txt"]);
+    });
+
     test("submodule ignore config cannot hide an unchecked hook-staged gitlink", async () => {
         const dir = repo({ "selected.txt": "old\n" });
         const oldLink = git(dir, "rev-parse", "HEAD").trim();

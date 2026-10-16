@@ -14,13 +14,15 @@ const REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIR
 /** Bound repository hooks, filters and signing prompts; mutable for isolated tests. */
 export const gitCommitTiming = { commandMs: 120_000, killGraceMs: 1_000 };
 
-async function git(cwd: string, args: string[], opts: { index?: string; input?: string; allowFailure?: boolean; literal?: boolean; author?: Record<string, string> } = {}) {
+async function git(cwd: string, args: string[], opts: { index?: string; input?: string; allowFailure?: boolean; literal?: boolean; hooks?: boolean; author?: Record<string, string> } = {}) {
     const env = gitEnv();
     for (const key of REPO_VARS) delete env[key];
     for (const key of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) delete env[key];
     if (opts.index) env.GIT_INDEX_FILE = opts.index;
     Object.assign(env, opts.author);
-    const proc = Bun.spawn(gitArgv([...(opts.literal ? ["--literal-pathspecs"] : []), ...args]), {
+    // Only explicit commit hooks and reference transactions run repository hooks.
+    // Internal index writes must not let post-index-change mutate the install copy.
+    const proc = Bun.spawn(gitArgv([...(opts.hooks ? [] : ["-c", "core.hooksPath=/dev/null"]), ...(opts.literal ? ["--literal-pathspecs"] : []), ...args]), {
         cwd,
         env,
         detached: true,
@@ -59,6 +61,30 @@ async function git(cwd: string, args: string[], opts: { index?: string; input?: 
     if (stopping) throw new RpcError(`${err}${out}${err || out ? "\n" : ""}Git ${args[0]} timed out; its process group was stopped.`, "git_timeout");
     if (code && !opts.allowFailure) throw new RpcError(err + out || `git ${args[0]} exited with status ${code}`, "git");
     return { out, err, code };
+}
+
+/** Compare entries and all flags, excluding the stat cache that Git may refresh. */
+async function unselectedEntries(root: string, index: string, selected: Set<string>): Promise<string> {
+    const { out } = await git(root, ["ls-files", "--stage", "--debug", "-z"], { index });
+    const entries: string[] = [];
+    let pos = 0;
+    while (pos < out.length) {
+        const nul = out.indexOf("\0", pos);
+        if (nul < 0) throw new RpcError("Cannot verify the unchanged index entries.", "git");
+        const entry = out.slice(pos, nul);
+        pos = nul + 1;
+        let block = "";
+        while (out.startsWith("  ", pos)) {
+            const end = out.indexOf("\n", pos);
+            if (end < 0) throw new RpcError("Cannot verify the unchanged index flags.", "git");
+            block += out.slice(pos, end + 1);
+            pos = end + 1;
+        }
+        const flags = /\bflags: ([0-9a-f]+)\n/.exec(block)?.[1];
+        if (!flags) throw new RpcError("Cannot verify the unchanged index flags.", "git");
+        if (!selected.has(entry.slice(entry.indexOf("\t") + 1))) entries.push(`${entry}\0${flags}\0`);
+    }
+    return entries.join("");
 }
 
 async function selection(cwd: string, paths: string[]): Promise<GitFileDiff[]> {
@@ -129,6 +155,12 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         const selected = new Set(
             files.flatMap((f) => [f.path, ...(f.from ? [f.from] : [])]).map((p) => relative(root, resolve(cwd, p))),
         );
+        const originalEntries = await unselectedEntries(root, lock, selected);
+        const validateUnselected = async () => {
+            if (await unselectedEntries(root, lock, selected) !== originalEntries) {
+                throw new RpcError("Unchecked index entries or flags changed while preparing the commit. Reopen the dialog.", "git");
+            }
+        };
         const oidLength = (await git(root, ["rev-parse", "--show-object-format"])).out.trim() === "sha256" ? 64 : 40;
         const zero = "0".repeat(oidLength);
         // NUL-delimited index-info removes/replaces only exact entries, even for
@@ -169,7 +201,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
         const messageFile = join(dir, "COMMIT_EDITMSG");
         await writeFile(messageFile, message, { mode: 0o600 });
         const hook = (name: string, args: string[] = [], allowFailure = false) =>
-            git(root, ["hook", "run", "--ignore-missing", name, "--", ...args], { index: privateIndex, author, allowFailure });
+            git(root, ["hook", "run", "--ignore-missing", name, "--", ...args], { index: privateIndex, author, allowFailure, hooks: true });
         // Run Git's normal -F hook sequence, without replacing its hook configuration.
         // Porcelain commit moves HEAD immediately after hooks, leaving no opportunity
         // to reject a hook that stages unchecked files. Plumbing lets us validate the
@@ -201,12 +233,13 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
             )
         ).out.trim();
         const subject = (await git(root, ["log", "-1", "--format=%s", hash])).out.trimEnd();
+        await validateUnselected();
         if ((await git(root, ["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true })).out.trimEnd() !== headRef) throw new RpcError("The checked-out branch changed. Refresh the Review pane and try again.", "git");
         try {
             await git(
                 root,
                 ["update-ref", "-m", `commit${oldHead.code ? " (initial)" : ""}: ${subject}`, "HEAD", hash, oldHead.code ? zero : oldHead.out.trim()],
-                { index: privateIndex, author },
+                { index: privateIndex, author, hooks: true },
             );
         } catch (e) {
             // A reference-transaction hook runs again AFTER publication. Its
@@ -215,6 +248,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string): 
             if (published.out.trim() !== hash) throw e;
         }
         try {
+            await validateUnselected();
             await rename(lock, index);
             ownsLock = false;
         } catch (e) {
