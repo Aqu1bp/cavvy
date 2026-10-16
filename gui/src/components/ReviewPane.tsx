@@ -280,6 +280,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                 </Show>
                 <Show when={!noRepo()}><button class="btn sm" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>Push…</button></Show>
                 <Segmented
+                    label="Diff layout"
                     size="sm"
                     value={split() ? "split" : "unified"}
                     onChange={(v) => setSplit(v === "split")}
@@ -306,6 +307,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             <div class="review-bar">
                 <Show when={!noRepo()} fallback={<span class="review-scope-note">{git()?.reason}</span>}>
                     <Segmented
+                        label="Changes scope"
                         size="sm"
                         value={scope()}
                         onChange={setScope}
@@ -355,7 +357,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </div>
                 }
             >
-                <div class="review-body">
+                <div class="review-body" aria-busy={loading()}>
                     <nav class="review-files" aria-label="Changed files">
                         <For each={files()}>{(f) => <FileRow file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted"} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} />}</For>
                         <Show when={more()}>
@@ -404,7 +406,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </div>
                 </div>
             </Show>
-            <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}><div class="review-note">{git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}{git()?.notes?.join(" ")}</div></Show>
+            <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}><div class="review-note" role="status">{git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}{git()?.notes?.join(" ")}</div></Show>
             <div class="review-note">{SCOPE_NOTE[shownScope()]}</div>
         </section>
     );

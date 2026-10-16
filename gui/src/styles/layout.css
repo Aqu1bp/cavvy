@@ -268,13 +268,13 @@
     color: var(--link);
 }
 
-/* Working in the background: it recedes until you look. */
-.card.rec {
-    opacity: 0.75;
+/* Keep background sessions quieter without fading their metadata below AA. */
+.card.rec .l2 {
+    color: var(--fg-muted);
 }
 
-.card.rec:hover {
-    opacity: 1;
+.card.rec:hover .l2 {
+    color: var(--fg);
 }
 
 .card-rename {
@@ -484,7 +484,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
     flex: none;
 }
 
@@ -864,7 +864,7 @@ a.prow:hover,
     height: 8px;
     border-radius: 50%;
     box-shadow: 0 0 0 2px var(--bg-card);
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
 }
 
 .nd.st-running {
@@ -884,7 +884,7 @@ a.prow:hover,
 }
 
 .nd.st-stopped {
-    background: var(--fg-subtle);
+    background: var(--fg-faint);
 }
 
 .lt {
@@ -2362,6 +2362,17 @@ button.strip-ctl[aria-expanded="true"] {
     display: flex;
 }
 
+/* The name, and a label on the setup script (the one that runs in each new worktree). */
+.script-name {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.script-badge {
+    flex: none;
+}
+
 /* ---- Settings → Usage ------------------------------------------------------ */
 
 .usage-bar {
@@ -2442,4 +2453,97 @@ button.strip-ctl[aria-expanded="true"] {
 .usage-unknown {
     color: var(--fg-muted);
     font-style: italic;
+}
+
+/* ---- Runs: one prompt's sessions, together ------------------------------- */
+
+.run-group {
+    display: flex;
+    flex-direction: column;
+    margin: 4px 0;
+    padding: 2px 0 2px 6px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.run-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 10px 0 4px;
+    font-size: 0.786rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+    min-width: 0;
+}
+
+.run-head svg {
+    flex: none;
+    color: var(--fg-subtle);
+}
+
+.run-count {
+    margin-left: auto;
+    flex: none;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-subtle);
+}
+
+/* The header's switcher between a run's sessions. */
+.run-switch {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    margin-right: 6px;
+    padding: 2px;
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+    overflow: hidden;
+}
+
+.run-switch .rs {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    min-width: 0;
+    max-width: 180px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 0.786rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+}
+
+.run-switch .rs svg {
+    flex: none;
+}
+
+.run-switch .rs:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+
+.run-switch .rs.on {
+    background: var(--bg-active);
+    color: var(--fg);
+}
+
+.rs-st {
+    flex: none;
+    font-weight: 400;
+    color: var(--fg-subtle);
+}
+
+.rs-st.st-running {
+    color: var(--link);
+}
+
+.rs-st.st-waiting {
+    color: var(--warning);
+}
+
+.rs-st.st-stopped {
+    color: var(--danger);
 }

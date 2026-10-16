@@ -72,24 +72,24 @@ export function trustForSession(dir: string) {
  * (hooks, skills, sub-agents, commands, permission rules). Claude Code also
  * reads .mcp.json, which the harness's own check already covers.
  */
-export function agentProjectConfig(cwd: string, provider: "claude-code" | "codex"): string[] {
+export function agentProjectConfig(cwd: string, provider: "claude-code" | "codex", has: (path: string) => boolean = existsSync): string[] {
     const found: string[] = [];
     if (provider === "claude-code") {
-        for (const f of ["settings.json", "settings.local.json"]) if (existsSync(join(cwd, ".claude", f))) found.push(`.claude/${f}`);
-        for (const d of ["skills", "agents", "commands"]) if (existsSync(join(cwd, ".claude", d))) found.push(`.claude/${d}/`);
-    } else if (existsSync(join(cwd, ".codex"))) found.push(".codex/");
+        for (const f of ["settings.json", "settings.local.json"]) if (has(join(cwd, ".claude", f))) found.push(`.claude/${f}`);
+        for (const d of ["skills", "agents", "commands"]) if (has(join(cwd, ".claude", d))) found.push(`.claude/${d}/`);
+    } else if (has(join(cwd, ".codex"))) found.push(".codex/");
     return found;
 }
 
-/** Whether the folder has anything that trust would unlock. */
-export function projectConfigSummary(cwd: string): string[] {
+/** Whether the folder has anything that trust would unlock. `has` says whether a path exists (a commit's tree, for a checkout yet to be made). */
+export function projectConfigSummary(cwd: string, has: (path: string) => boolean = existsSync): string[] {
     const found: string[] = [];
-    if (existsSync(paths.projectSettings(cwd))) found.push(".harness/settings.json");
-    if (existsSync(paths.localSettings(cwd))) found.push(".harness/settings.local.json");
-    if (existsSync(paths.projectMcp(cwd))) found.push(".mcp.json");
-    if (existsSync(paths.projectCommands(cwd))) found.push(".harness/commands/");
-    if (existsSync(paths.projectAgents(cwd))) found.push(".harness/agents/");
+    if (has(paths.projectSettings(cwd))) found.push(".harness/settings.json");
+    if (has(paths.localSettings(cwd))) found.push(".harness/settings.local.json");
+    if (has(paths.projectMcp(cwd))) found.push(".mcp.json");
+    if (has(paths.projectCommands(cwd))) found.push(".harness/commands/");
+    if (has(paths.projectAgents(cwd))) found.push(".harness/agents/");
     // Agent CLIs that are turned on load their own project configuration only in a folder the user trusted.
-    for (const p of ["claude-code", "codex"] as const) if (readAgentConfig(p)) found.push(...agentProjectConfig(cwd, p));
+    for (const p of ["claude-code", "codex"] as const) if (readAgentConfig(p)) found.push(...agentProjectConfig(cwd, p, has));
     return found;
 }

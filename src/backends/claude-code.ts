@@ -29,16 +29,18 @@ import { homedir } from "os";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
+import type { PlanLimits } from "../server/protocol";
+import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { accountEnv, defaultAccount } from "../providers/accounts";
+import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
-import type { PlanLimits } from "../server/protocol";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
 import { paths } from "../config/paths";
 import { redact } from "../util/redact";
-import { limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { cliCommandNames } from "../commands/custom";
-import { CLAUDE_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
+import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
@@ -46,15 +48,59 @@ import type { TurnEndReason } from "../agent/agent";
 /** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
 
-/** Waiting on Claude Code's background sub-agents once the prompt is answered (changeable for tests). */
+/** Waiting on Claude Code's background work once the prompt is answered (changeable for tests). */
 export const backgroundTiming = {
-    /** At most this long; then they're stopped with Claude Code, and the user is told. */
+    /** Overall background wait cap, including across automatic report turns. */
     maxWaitMs: 60 * 60_000,
+    /** Shells and monitors get a shorter grace; dev servers should not hold a turn open. */
+    commandWaitMs: 10 * 60_000,
+    /** A selective stop must answer promptly, or shutdown is the only safe fallback. */
+    stopTimeoutMs: 5000,
     /** After one ends, how long Claude Code has to start its turn with the report before the run ends without it. */
     settleMs: 3000,
     /** How often to look for messages the user sent meanwhile (they go to Claude Code in the same run). */
     pollMs: 300,
 };
+
+export function claudeBackgroundWaitMs(seconds: unknown): number {
+    return typeof seconds === "number" && seconds >= 0 && Number.isFinite(seconds * 1000) ? seconds * 1000 : backgroundTiming.commandWaitMs;
+}
+
+/** Deliberately conservative command heuristic, never run on an agent's prose. */
+export function longLivedClaudeCommand(command: string): boolean {
+    return command.split(/(?:&&|\|\||[;\n])/).some((part) => {
+        const words = part.trim().split(/\s+/).map((w) => w.replace(/^["']|["']$/g, ""));
+        while (words[0] === "env" || /^[A-Za-z_][A-Za-z_0-9]*=/.test(words[0] ?? "")) words.shift();
+        const exe = words[0]?.split("/").at(-1);
+        if (["echo", "printf"].includes(exe ?? "")) return false;
+        // Honor explicit disabling values and later overrides (e.g. --watch --no-watch).
+        let watch = false;
+        for (const word of words) {
+            if (word === "--no-watch") watch = false;
+            else if (word === "--watch") watch = true;
+            else if (word.startsWith("--watch=")) watch = !["", "false", "0"].includes(word.slice(8).replace(/^["']|["']$/g, "").toLowerCase());
+        }
+        if (watch) return true;
+        if (exe === "tail") return words.some((w) => /^-(?:[^-]*[fF]|-follow)(?:$|=)/.test(w));
+        if (["dev", "serve", "start", "watch"].includes(exe ?? "")) return true;
+        if (exe === "vite") return !words.slice(1).some((w) => ["build", "optimize", "--help", "--version", "-h", "-v"].includes(w));
+        if (["bun", "npm", "pnpm", "yarn"].includes(exe ?? "")) {
+            const script = words[1] === "run" ? words[2] : words[1];
+            return /^(?:dev|serve|start|watch)(?::[\w-]+)?$/.test(script ?? "");
+        }
+        return false;
+    });
+}
+
+interface BackgroundWork {
+    id?: string;
+    agent: boolean;
+    /** Shell or Monitor: subject to the shorter grace. */
+    commandTask?: boolean;
+    monitor?: boolean;
+    command?: string;
+    label: string;
+}
 
 /** What a background sub-agent's Agent call says when it ends without a report. */
 const LAUNCH_END: Record<string, string> = {
@@ -97,9 +143,9 @@ export interface ClaudeStatus {
 }
 
 /** `claude auth status --json`: Claude Code's own report of its sign-in. */
-export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal): Promise<ClaudeStatus> {
+export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<ClaudeStatus> {
     const bin = requireCli(providerId, CLAUDE_CLI);
-    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000 });
+    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: accountEnv(providerId, accountId) });
     let j: Record<string, unknown> | undefined;
     try {
         j = JSON.parse(r.stdout);
@@ -107,10 +153,11 @@ export async function claudeStatus(providerId = "claude-code", signal?: AbortSig
         // older versions print text
     }
     if (!j || typeof j !== "object") {
+        if (/not (logged|signed) in/i.test(r.stdout || r.stderr)) return { loggedIn: false };
         if (r.code !== 0) throw new ProviderError(`claude auth status failed: ${cliMessage(r.stderr || r.stdout) || `exit ${r.code}`}`);
         return { loggedIn: !/not (logged|signed) in/i.test(r.stdout) };
     }
-    const str = (k: string) => (typeof j![k] === "string" ? (j![k] as string) : undefined);
+    const str = (k: string) => cliStatusString(j![k]);
     return { loggedIn: j.loggedIn === true, authMethod: str("authMethod"), apiProvider: str("apiProvider"), email: str("email"), subscriptionType: str("subscriptionType") };
 }
 
@@ -124,11 +171,15 @@ export function describeClaudeAuth(s: ClaudeStatus): string {
 
 /** Noninteractive fast mode via --settings was added in 2.1.205. */
 export function claudeFastModeVersion(version: unknown): boolean {
+    return claudeVersionAtLeast(version, 205);
+}
+
+function claudeVersionAtLeast(version: unknown, minPatch: number): boolean {
     if (typeof version !== "string") return false;
     const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
     if (!m) return false;
     const [major, minor, patch] = m.slice(1).map(Number) as [number, number, number];
-    return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 205)));
+    return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= minPatch)));
 }
 
 let requestSeq = 0;
@@ -160,7 +211,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         // No settings, MCP servers or session file: this only asks for the list.
-        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir() });
+        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
         const kill = () => void proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, 30_000);
@@ -190,7 +241,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(t.resumeId) : undefined, this.limitSeen);
+        const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
+        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
         this.turns.add(turn);
         try {
             const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
@@ -198,7 +250,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
-            if (s) this.spent.set(s.sessionId, s.total);
+            if (s) this.spent.set(key(s.sessionId), s.total);
         }
     }
 
@@ -244,6 +296,8 @@ class ClaudeTurn {
     private contextTokens?: number;
     private aborted = false;
     private failure?: string;
+    /** CLI-generated assistant error prose, kept out of model history. */
+    private diagnostic?: string;
     private reason?: BackendResult["reason"];
     private signedOut = false;
     /** The turn failed on the plan's usage limit; when that resets (ms), if Claude Code said. */
@@ -255,6 +309,8 @@ class ClaudeTurn {
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
     private prompted = false;
+    /** Verified UUID aggregation for mid-turn input (older CLIs keep between-turn delivery). */
+    private midTurnInput = false;
     /** Prompts sent and not answered yet, by the uuid they were sent with (a result names the ones it answers). */
     private unanswered = new Set<string>();
     /** A result has answered the run's prompts. */
@@ -279,6 +335,15 @@ class ClaudeTurn {
     private agentTokens = new Map<string, number>();
     /** Waiting on the background, since. */
     private waitingSince?: number;
+    /** Each command's grace starts after an answer, or when it joins the wait. */
+    private commandWaitingSince = new Map<string, number>();
+    private waitingLabel?: string;
+    private taskCommands = new Map<string, string>();
+    private shellCommands = new Map<string, string>();
+    private stoppedTaskIds = new Set<string>();
+    private stoppedBackground = new Set<string>();
+    private pendingStops = new Map<string, { task: BackgroundWork; since: number }>();
+    private stopFailed = false;
     private pollTimer?: ReturnType<typeof setInterval>;
     private settleTimer?: ReturnType<typeof setTimeout>;
     /** The run is being ended (its process stopped). */
@@ -315,26 +380,31 @@ class ClaudeTurn {
         const a = [...extraArgs(this.def.id), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
         if (t.model.id !== "default") a.push("--model", t.model.id);
         if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
-        if (t.resumeId) a.push("--resume", t.resumeId);
+        if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
-        if (t.appendSystemPrompt) a.push("--append-system-prompt", t.appendSystemPrompt);
+        a.push("--append-system-prompt", [t.appendSystemPrompt,
+            `Harness waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after an answer for reported background commands and monitors; sub-agents retain their 60-minute limit. Background commands and monitors do not survive process shutdown, a user interrupt, or their grace timeout. Recognized dev servers/watchers are stopped without waiting after the answer. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+        ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
         if (!t.trusted) a.push("--setting-sources", "user");
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
+        const sandbox = claudeAccountSandbox();
+        // Also check excluded commands, which the CLI may run outside its sandbox.
+        if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
         // Always override external preferences: an unsupported model must not silently switch to Opus.
         const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
         const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
         if (mcp.strict) a.push("--strict-mcp-config");
         if (mcp.warning) this.host.emit({ type: "notice", level: "warn", message: mcp.warning });
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
         a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false } };
+        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false } };
         a.push("--settings", JSON.stringify(settings));
         return a;
     }
@@ -347,6 +417,8 @@ class ClaudeTurn {
         if (this.aborted || this.finishing) return;
         this.prompted = true;
         this.busy = true;
+        this.commandWaitingSince.clear();
+        this.clearWaitStatus();
         // Its answer is waited for now, not a report turn.
         clearTimeout(this.settleTimer);
         this.settleTimer = undefined;
@@ -368,23 +440,24 @@ class ClaudeTurn {
             for (const id of ids) this.unanswered.delete(id);
             return true;
         }
-        if (typeof m.origin?.kind === "string" && m.origin.kind !== "human") return false;
+        // A late/duplicate result naming other prompts cannot acknowledge a newer send.
+        if (ids.length || (typeof m.origin?.kind === "string" && m.origin.kind !== "human")) return false;
         this.unanswered.clear();
         return true;
     }
 
     /**
-     * What runs in the background that the turn waits for: sub-agents (and
-     * workflows), not shell commands, which may never end (a dev server).
+     * All reported background work, including shell commands and monitors.
+     * Shells/monitors have a separate grace; all waits can be interrupted.
      */
-    private inBackground(): { agent: boolean; label: string }[] {
+    private inBackground(): BackgroundWork[] {
         // Its sub-agents until Claude Code says each is over, listed or not (the list can drop one before that comes).
         const agents = this.unreported();
         const tasks = new Set(agents.map((id) => this.agentTasks.get(id)));
         const labels = new Set(agents.filter((id) => !this.agentTasks.has(id)).map((id) => this.agentLabels.get(id) ?? "sub-agent"));
         // And what else it lists (a sub-agent there that's one of those once only).
-        const listed = (this.background ?? []).filter((t) => t.type !== "local_bash" && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
-        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ agent: t.type === "local_agent", label: t.description || "background task" }))];
+        const listed = (this.background ?? []).filter((t) => !this.stoppedTaskIds.has(t.id) && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
+        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? this.taskCommands.get(t.id) ?? t.description : undefined, label: t.description || "background task" }))];
     }
 
     /** Background sub-agents Claude Code hasn't said are over. */
@@ -409,17 +482,42 @@ class ClaudeTurn {
 
     private async checkIdle(): Promise<boolean> {
         if (this.busy || this.unanswered.size || !this.answered || this.aborted || this.finishing) return false;
-        const queued = await this.host.drainQueued();
+        if (await this.deliverQueued()) return false;
         if (this.aborted || this.finishing) return false;
-        if (queued.length) {
-            // The turn now ends with the queued prompt's result; without one, it failed.
-            this.reason = undefined;
-            this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
-            return false;
-        }
         // A timer may have awaited a snapshot while the message loop received fresh work.
         if (this.busy || this.unanswered.size || !this.answered) return false;
         const left = this.inBackground();
+        if (this.stopFailed || [...this.pendingStops.values()].some((p) => Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
+            this.noteStopped(left, "Claude Code did not confirm a task stop; ending its process");
+            this.toldStopped = true;
+            return true;
+        }
+        if (this.pendingStops.size) return false;
+        const commands = left.filter((t) => t.commandTask);
+        const now = Date.now();
+        const grace = claudeBackgroundWaitMs(this.t.backgroundWaitSec);
+        for (const id of this.commandWaitingSince.keys()) {
+            if (!commands.some((t) => t.id === id)) this.commandWaitingSince.delete(id);
+        }
+        const stopping: { task: BackgroundWork; why: string }[] = [];
+        for (const task of commands) {
+            // Command tasks come from the CLI's list and have task IDs.
+            const id = task.id!;
+            if (!this.commandWaitingSince.has(id)) this.commandWaitingSince.set(id, now);
+            if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "recognized long-lived server/watcher" });
+            else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `background grace expired after ${grace / 1000}s` });
+        }
+        if (stopping.length) {
+            if (stopping.length === left.length) {
+                for (const { task, why } of stopping) this.noteStopped([task], why);
+                this.toldStopped = true;
+                return true;
+            }
+            // Keep agents and other finite work alive: stop only these task IDs.
+            this.waitFor(left);
+            for (const { task, why } of stopping) this.stopTask(task, why);
+            return false;
+        }
         if (left.length) {
             // Work it lists after a report came: the report turn is waited for with it, not before it's done.
             clearTimeout(this.settleTimer);
@@ -429,6 +527,7 @@ class ClaudeTurn {
             // Waited long enough (only between Claude Code's turns, so none is cut short): what's left stops with it.
             const ms = backgroundTiming.maxWaitMs;
             this.toldStopped = true;
+            this.rememberStopped(left);
             this.host.emit({ type: "notice", level: "warn", message: `Stopped waiting for ${describeBackground(left)} after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.ceil(ms / 1000)}s`}. ${left.length === 1 ? "It was" : "They were"} stopped with Claude Code, so ${left.length === 1 ? "its report" : "their reports"} won't come.` });
             return true;
         }
@@ -453,7 +552,61 @@ class ClaudeTurn {
         return true;
     }
 
-    private waitFor(left: { agent: boolean; label: string }[]) {
+    /** Serialized with idle checks: snapshot/record the preceding output before the new user row. */
+    private deliveryPending?: Promise<boolean>;
+
+    private deliverQueued(): Promise<boolean> {
+        return (this.deliveryPending ??= this.forwardQueued().finally(() => { this.deliveryPending = undefined; }));
+    }
+
+    private async forwardQueued(): Promise<boolean> {
+        if (this.aborted || this.finishing) return false;
+        const queued = await this.host.drainQueued(() => ({
+            reason: "done", text: this.texts.splice(0).join("\n\n"), actions: this.actions.splice(0),
+        }));
+        if (!queued.length || this.aborted || this.finishing) return false;
+        this.reason = undefined;
+        this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
+        return true;
+    }
+
+    private rememberStopped(tasks: BackgroundWork[]) {
+        for (const t of tasks) this.stoppedBackground.add(`${t.agent ? "sub-agent" : t.monitor ? "background monitor" : t.commandTask ? "background command" : "background task"}: ${t.label}`);
+    }
+
+    private noteStopped(tasks: BackgroundWork[], why: string) {
+        if (!tasks.length) return;
+        this.rememberStopped(tasks);
+        this.host.emit({ type: "notice", level: "warn", message: `Stopped ${describeBackground(tasks)} (${why}). They will not produce further results.` });
+    }
+
+    private stopTask(task: BackgroundWork, why: string) {
+        if (!task.id) { this.stopFailed = true; return; }
+        const id = task.id;
+        const request = requestId();
+        this.pendingStops.set(id, { task, since: Date.now() });
+        this.controls.set(request, (response) => {
+            this.controls.delete(request);
+            this.pendingStops.delete(id);
+            if (response.subtype !== "success") { this.stopFailed = true; return; }
+            this.stoppedTaskIds.add(id);
+            this.noteStopped([task], why);
+        });
+        this.proc.send({ type: "control_request", request_id: request, request: { subtype: "stop_task", task_id: id } });
+    }
+
+    private clearWaitStatus() {
+        if (this.waitingLabel === undefined) return;
+        this.waitingLabel = undefined;
+        this.host.emit({ type: "activity" });
+    }
+
+    private waitFor(left: BackgroundWork[]) {
+        const label = `Waiting for ${left.map((t) => `${t.agent ? "background sub-agent" : t.monitor ? "background monitor" : t.commandTask ? "background command" : "background task"}: ${t.label}`).join("; ")} · Esc to stop ${left.length === 1 ? "it" : "them"}`;
+        if (label !== this.waitingLabel) {
+            this.waitingLabel = label;
+            this.host.emit({ type: "activity", text: label });
+        }
         if (this.waitingSince !== undefined) return;
         this.waitingSince = Date.now();
         this.host.emit({ type: "notice", level: "info", message: `Waiting for ${describeBackground(left)} to report back: the turn ends once Claude Code has the results (Esc stops them).` });
@@ -469,6 +622,8 @@ class ClaudeTurn {
         clearInterval(this.pollTimer);
         this.pollTimer = undefined;
         this.waitingSince = undefined;
+        this.commandWaitingSince.clear();
+        this.clearWaitStatus();
     }
 
     /** End the run from outside its loop: Claude Code is stopped (it would otherwise wait on its background work), and its output ends. */
@@ -516,7 +671,12 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd });
+        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId) });
+        const stopAccountWatch = watchAccountFolders(() => {
+            this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
+            this.reason = "error";
+            void this.proc.kill();
+        });
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -533,6 +693,7 @@ class ClaudeTurn {
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {
+                    this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
                     this.onResult(m, ours);
@@ -541,10 +702,17 @@ class ClaudeTurn {
                     continue;
                 }
                 this.onMessage(m);
+                // stream-json accepts user messages while running; Claude Code consumes
+                // them between tool rounds. Await recording/snapshots before reading
+                // subsequent frames so the timeline stays in delivery order.
+                if (this.midTurnInput && this.unanswered.size < 64 && m.type === "user" && !m.parent_tool_use_id && Array.isArray(m.message?.content) && m.message.content.some((b: any) => b?.type === "tool_result")) {
+                    await this.deliverQueued();
+                }
                 // Between turns, what changes in the background can end the run.
                 if (!this.busy && (await this.idle())) break;
             }
         } finally {
+            stopAccountWatch();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
@@ -552,6 +720,7 @@ class ClaudeTurn {
             await this.proc.stop(this.aborted ? 1000 : 3000);
             // Polling may still be recording a queued prompt's start. Finish it before Agent records the end.
             await this.idlePending;
+            await this.deliveryPending;
             if (killTimer) clearTimeout(killTimer);
         }
         // Anything still open never got a result. Sub-agents still working (in the background) stopped with Claude Code.
@@ -560,25 +729,26 @@ class ClaudeTurn {
             const what = describeBackground(lost.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })));
             this.host.emit({ type: "notice", level: "warn", message: `${what} stopped with Claude Code before reporting back.` });
         }
-        // Commands it left running in the background (the turn doesn't wait for them) stop with it too.
-        const commands = (this.background ?? []).filter((t) => t.type === "local_bash");
-        if (commands.length && !this.aborted) this.host.emit({ type: "notice", level: "info", message: `${plural(commands.length, "background command")} (${commands.map((t) => t.description || "command").slice(0, 3).join(", ")}) stopped with Claude Code at the end of the turn.` });
+        const remaining = this.inBackground().filter((t) => !t.agent);
+        if (remaining.length && !this.toldStopped) this.noteStopped(remaining, this.aborted ? "interrupted by user" : "Claude Code process ended");
+        const backgroundStopped = this.stoppedBackground.size ? [...this.stoppedBackground] : undefined;
         for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
-        if (this.aborted) return { reason: "aborted", text, actions: this.actions };
+        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped };
+        const error = this.failure && this.diagnostic && !this.failure.includes(this.diagnostic) ? `${this.failure} ${this.diagnostic}` : this.failure;
         // A session it can't find ends with an error result (or exit) before init.
         const err = this.proc.stderr();
         const resumeFailed = Boolean(this.t.resumeId && !this.sessionId && /no conversation found|session.{0,40}(not found|doesn't exist|does not exist)/i.test(`${this.failure ?? ""}\n${err}`));
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
-            const why = (resumeFailed && this.failure) || cliMessage(err) || `claude exited with code ${code}`;
-            return { reason: "error", text, actions: this.actions, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
+            const why = [error, cliMessage(err)].filter(Boolean).join(": ") || `claude exited with code ${code}`;
+            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
         }
         const reason = this.reason ?? "done";
         // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.
         if (reason === "done" && !text.trim() && !this.actions.length && !this.t.prompt.trimStart().startsWith("/")) this.host.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
-        return { reason, text, actions: this.actions, error: this.failure };
+        return { reason, text, actions: this.actions, error, backgroundStopped };
     }
 
     private fastModeNotice?: string;
@@ -601,6 +771,12 @@ class ClaudeTurn {
             case "control_response": {
                 const r = m.response ?? {};
                 this.reportFastMode(r.response ?? {});
+                // 2.1.301's results acknowledge all folded input UUIDs, capped at 64.
+                // Do not exceed that window or assume older producers aggregate them.
+                if (Array.isArray(r.response?.models)) {
+                    this.midTurnInput = claudeVersionAtLeast(r.response.claude_code_version, 301);
+                    if (!this.midTurnInput) this.host.emit({ type: "notice", level: "info", message: "This Claude Code version has no verified mid-turn input acknowledgements. Queued messages will be delivered when its current turn ends." });
+                }
                 this.controls.get(String(r.request_id ?? ""))?.(r);
                 break;
             }
@@ -627,6 +803,8 @@ class ClaudeTurn {
         this.reportFastMode(m);
         switch (m.subtype) {
             case "init":
+                this.commandWaitingSince.clear();
+                this.clearWaitStatus();
                 // Each turn starts with one, a turn Claude Code takes itself (with background reports) too.
                 this.busy = true;
                 this.reportsDue = 0;
@@ -643,7 +821,16 @@ class ClaudeTurn {
                 if (cliCommandNames(m.slash_commands)) this.host.emit({ type: "cli_commands", provider: this.def.id, names: cliCommandNames(m.slash_commands)! });
                 break;
             case "background_tasks_changed":
-                if (Array.isArray(m.tasks)) this.background = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
+                if (Array.isArray(m.tasks)) {
+                    const next = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
+                    // A shell/Monitor may leave the list before its notification and
+                    // automatic report turn. Give that turn the same grace as agents.
+                    this.reportsDue += (this.background ?? []).filter((t) => t.type !== "local_agent" && !this.pendingStops.has(t.id) && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)).length;
+                    for (const id of this.commandWaitingSince.keys()) {
+                        if (!next.some((t: { id: string }) => t.id === id)) this.commandWaitingSince.delete(id);
+                    }
+                    this.background = next;
+                }
                 break;
             case "task_progress":
                 this.agentUsage(String(m.tool_use_id ?? ""), m.usage);
@@ -659,18 +846,26 @@ class ClaudeTurn {
                 break;
             case "task_started": {
                 const id = String(m.tool_use_id ?? "");
+                if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, this.shellCommands.get(id)!);
                 if (this.agentLabels.has(id) && typeof m.task_id === "string") this.agentTasks.set(id, m.task_id);
                 if (m.is_backgrounded === true && this.agentLabels.has(id)) this.backgroundAgents.add(id);
                 this.agentStarted(id);
                 break;
             }
             case "task_notification": {
+                this.commandWaitingSince.delete(m.task_id);
                 // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
                 // ran even if nothing of it showed. A later one replaces what this one said (the report it
                 // was waiting on, or how it ended).
                 const id = String(m.tool_use_id ?? "");
                 const summary = typeof m.summary === "string" ? m.summary.trim() : "";
-                if (!id) {
+                if (this.pendingStops.has(m.task_id) || this.stoppedTaskIds.has(m.task_id)) break;
+                const listed = this.background?.find((t) => t.id === m.task_id);
+                if (listed && !this.agentLabels.has(id)) {
+                    this.background = this.background!.filter((t) => t.id !== m.task_id);
+                    this.reportsDue++;
+                }
+                if (!this.agentLabels.has(id)) {
                     // One an earlier run left behind (stopped with it, said when the session is resumed).
                     if (summary && (m.status === "stopped" || m.status === "failed")) this.host.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
                     break;
@@ -742,6 +937,7 @@ class ClaudeTurn {
                 if (over) continue;
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
                 this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
                 this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
             }
@@ -754,7 +950,14 @@ class ClaudeTurn {
             if (tokens && tokens !== this.contextTokens) this.host.context?.(tokens);
             this.contextTokens = tokens;
         }
-        if (m.error) this.onAssistantError(String(m.error));
+        if (m.error) {
+            this.onAssistantError(String(m.error));
+            // These blocks are CLI diagnostics, not model prose. Preserve genuine
+            // earlier replies; the Agent records failure as a notice, outside history.
+            const detail = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
+            if (detail.trim()) this.diagnostic = redact(detail);
+            return;
+        }
         for (const b of blocks) {
             if (b?.type === "text" && typeof b.text === "string" && b.text.trim()) {
                 this.texts.push(b.text);
@@ -763,6 +966,7 @@ class ClaudeTurn {
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
                 this.host.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }
@@ -775,6 +979,7 @@ class ClaudeTurn {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
+            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
             this.failure = this.limitFailure();
         }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
@@ -919,8 +1124,17 @@ class ClaudeTurn {
         this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started });
     }
 
+    private noteLimits(limits: PlanLimits, partial: boolean) {
+        this.limits = mergeLimits(this.limits, limits, partial);
+        this.host.emit({ type: "limits", limits, partial });
+    }
+
+    private limitFailure(): string {
+        return `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")} Choose another account with /account or the plan meter, then send again.`;
+    }
+
     private onRateLimit(info: Record<string, any>) {
-        const parsed = parseClaudeRateLimit(info);
+        const parsed = parseClaudeRateLimit(info, Date.now(), this.t.accountId ?? "default");
         if (parsed) {
             // A sparse rejection must not forget another window that still blocks this turn.
             this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
@@ -928,7 +1142,7 @@ class ClaudeTurn {
         }
         const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
         // Every status counts, so a warning after the window was fine again (or reset) is news again.
-        const news = typeof info.status === "string" && limitNews(this.limitSeen, String(info.rateLimitType ?? ""), info.status, w?.resetsAt);
+        const news = typeof info.status === "string" && limitNews(this.limitSeen, `${this.t.accountId ?? "default"}:${String(info.rateLimitType ?? "")}`, info.status, w?.resetsAt);
         if (info.status !== "rejected" && info.status !== "allowed_warning") return;
         const which = w ? `${w.label.charAt(0).toLowerCase()}${w.label.slice(1)} ` : "";
         if (info.status === "rejected") {
@@ -936,13 +1150,8 @@ class ClaudeTurn {
             if (this.limitHit) this.failure = this.limitFailure();
             if (this.reachedNoted) return;
             this.reachedNoted = true;
-            this.host.emit({ type: "notice", level: "warn", message: `Your Claude ${which}usage limit has been reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
-        } else if (news) this.host.emit({ type: "notice", level: "info", message: `You're close to your Claude ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
-    }
-
-    /** A turn that failed on the plan's limit: when it resets, if Claude Code said. */
-    private limitFailure(): string {
-        return `Your Claude usage limit was reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")} Switch models with /model meanwhile.`;
+            this.host.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
+        } else if (news) this.host.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
@@ -1092,8 +1301,9 @@ export function claudeRule(raw: string, root: string): string[] {
 /** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
 export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
     const store = [paths.credentialsFile(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const accounts = accountProtectionFolders().flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
-    return { deny: [...map(r.deny), ...store], ask: map(r.ask) };
+    return { deny: [...map(r.deny), ...store, ...accounts], ask: map(r.ask) };
 }
 
 /** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */

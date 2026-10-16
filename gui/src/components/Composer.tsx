@@ -4,17 +4,18 @@ import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
+import { comparePicks, setComparePicks, contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
 import { cost, tokens } from "../lib/format";
 import { isMod, mod } from "../lib/platform";
-import { EffortMenu, FastModeToggle, ModelPicker } from "./ModelPicker";
+import { EffortMenu, FastModeToggle, ModelPicker, type CompareOption } from "./ModelPicker";
+import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { Popover } from "./ui/Popover";
 import { Ring } from "./ui/bits";
+import { PlanMeter } from "./PlanMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
-import { PlanMeter } from "./PlanMeter";
 import { contextView } from "../lib/context";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
@@ -93,7 +94,7 @@ function ContextRing(p: { sessionId: string }) {
     );
 }
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element }) {
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
     const whileMounted = createLifetimeGuard();
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
@@ -116,6 +117,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
     const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
     const shell = () => text().startsWith("!");
+    /** Compare is only available on Home in a Git project. */
+    const runPicks = () => (!p.sessionId && p.compare?.available ? comparePicks() : undefined);
     const resize = () => {
         if (!ta) return;
         ta.style.height = "auto";
@@ -218,6 +221,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (app.conn !== "open") return toast("Not sent: not connected");
         const t = text();
         if (!canSend() || sending()) return;
+        const picks = runPicks();
+        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2 to 4 models, or turn off Compare in the model picker." : "Choose a project folder first.", "warn");
         setSending(true);
         const submitted = draft.capture();
         const { attachments: atts } = submitted.draft;
@@ -234,8 +239,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             setMenu([]);
             requestAnimationFrame(resize);
         });
-        const ok = await send(t, atts, { sent });
+        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { sent });
         if (ok) {
+            if (picks) setComparePicks(undefined);
             draft.clearSent(submitted, ok === "command");
             if (t.trim() && (ok === true || !atts.length)) {
                 history.push(t);
@@ -331,7 +337,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
     /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
     const model = () => st()?.model ?? app.models.flatMap((g) => g.models).find((m) => m.ref === app.settings.model);
-    const readsPdf = () => model()?.supportsPdf !== false;
+    // Run members are validated separately by the server; the default model is irrelevant.
+    const readsPdf = () => Boolean(runPicks()) || model()?.supportsPdf !== false;
     const blocked = createMemo(() => blockedBy(attachments(), readsPdf()));
 
     /** A queued message back into the box, out of the queue. */
@@ -494,7 +501,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             input.value = "";
                         }}
                     />
-                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} />
+                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
                     <FastModeToggle current={st()?.model} currentRef={app.settings.model} enabled={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy} />
                     <EffortMenu current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
@@ -502,7 +509,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="hb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
-                    <PlanMeter provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
+                    <PlanMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show when={p.sessionId}>
                         <ContextRing sessionId={p.sessionId!} />
                     </Show>
@@ -510,13 +517,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         when={busy() && !hasContent()}
                         fallback={
                             <button
-                                class="send"
-                                disabled={app.conn !== "open" || !canSend() || sending()}
+                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""}`}
+                                disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={() => void submit()}
-                                title={app.conn !== "open" ? "Not connected" : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
+                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
                                 aria-description={app.conn !== "open" ? "Not connected" : undefined}
-                                aria-label="Send"
+                                aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : "Send"}
                             >
+                                <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>
                                 <ArrowUp size={17} stroke-width={2.4} />
                             </button>
                         }

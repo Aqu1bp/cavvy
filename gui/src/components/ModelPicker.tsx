@@ -1,10 +1,10 @@
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
-import { Brain, ChevronDown, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
+import { Brain, Check, ChevronDown, Layers, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import type { EffortLevel, ModelSummary } from "@shared/protocol";
-import { app, refreshModels } from "../state/app";
-import { setEffort, setModel, setFastMode } from "../state/actions";
+import { app, handleFor, refreshModels, toast } from "../state/app";
+import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { setSettingsTab } from "../state/ui";
+import { comparePicks, setComparePicks, setSettingsTab } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
 import { Popover } from "./ui/Popover";
 import { Spinner } from "./ui/bits";
@@ -49,7 +49,15 @@ export interface ComposerMenu {
     placement?: "top" | "bottom";
 }
 
-export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string }) {
+/** Home only: picking several models for one prompt, or why that isn't possible here. */
+export interface CompareOption {
+    available: boolean;
+    why?: string;
+}
+
+const MAX_COMPARE = 4;
+
+export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; compare?: CompareOption }) {
     let anchor: HTMLButtonElement | undefined;
     let input: HTMLInputElement | undefined;
     let list: HTMLDivElement | undefined;
@@ -59,6 +67,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const currentRef = () => p.current?.ref ?? p.currentRef;
     const currentModel = createMemo(() => resolve(p.current, currentRef()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
+
+    const accountInfo = (provider = currentProvider()) => app.providers.find((p) => p.id === provider)?.agentCli;
+    const selectedAccount = (provider = currentProvider()) => app.activeId ? handleFor(app.activeId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
+    const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
+    const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
+    const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
+    const accountName = () => accountChoices().find((a) => a.id === selectedAccount())?.name ?? "Removed account";
 
     // Providers with something to pick, or an error worth seeing.
     const groups = createMemo(() =>
@@ -80,6 +95,16 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const label = () => (q() ? "Results" : rail() === FAVORITES ? "Favorites" : (group()?.providerName ?? ""));
     const isFav = (ref: string) => prefs.favoriteModels.includes(ref);
     const toggleFav = (ref: string) => setPrefs("favoriteModels", (list) => (list.includes(ref) ? list.filter((r) => r !== ref) : [...list, ref]));
+    // Several models: rows toggle, and the default model stays as it is.
+    const multi = () => Boolean(p.compare?.available && comparePicks());
+    const picks = () => comparePicks() ?? [];
+    const picked = (ref: string) => multi() && picks().includes(ref);
+    const togglePick = (ref: string) => {
+        if (picks().includes(ref)) return setComparePicks(picks().filter((r) => r !== ref));
+        if (picks().length >= MAX_COMPARE) return toast(`Up to ${MAX_COMPARE} models at once`, "warn");
+        setComparePicks([...picks(), ref]);
+    };
+    const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() ? [currentRef()!] : []);
 
     createEffect(
         on(
@@ -102,6 +127,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     createEffect(on([q, rail], () => setSel(0), { defer: true }));
 
     const choose = (m: ModelSummary) => {
+        if (multi()) return togglePick(m.ref);
         p.setOpen(false);
         void setModel(m.ref);
     };
@@ -134,13 +160,31 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
 
     return (
         <>
-            <button ref={anchor} class="ctl model" aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={`${currentModel()?.name ?? currentRef() ?? "Model"} (${mod}+/)`}>
-                <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
-                {/* What an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */}
-                <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
-                <ChevronDown size={14} class="chv" />
-            </button>
+            <Show
+                when={multi()}
+                fallback={
+                    <button ref={anchor} class="ctl model" aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={`${currentModel()?.name ?? currentRef() ?? "Model"} (${mod}+/)`}>
+                        <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
+                        {/* What an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */}
+                        <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
+                        <Show when={showAccounts()}><span> · {accountName() ?? "Default"}</span></Show>
+                        <ChevronDown size={14} class="chv" />
+                    </button>
+                }
+            >
+                <button ref={anchor} class="ctl model on" aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models"}>
+                    <Layers size={16} />
+                    <span class="truncate">{picks().length >= 2 ? `${picks().length} models` : "Pick 2–4 models"}</span>
+                    <ChevronDown size={14} class="chv" />
+                </button>
+            </Show>
             <Popover open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
+                <Show when={showAccounts(rail())}>
+                    <label class="small">{providerName(rail())} · Account <select aria-label="Session account" value={selectedAccount(rail())} onChange={(e) => void setAccount(rail(), e.currentTarget.value)}>
+                        <Show when={missingAccount(rail())}><option value={selectedAccount(rail())} disabled>Removed account — choose another</option></Show>
+                        <For each={accountChoices(rail())}>{(a) => <option value={a.id}>{a.name}</option>}</For>
+                    </select></label>
+                </Show>
                 <div class="mp-wrap" role="dialog" aria-label="Choose a model" onKeyDown={onKey}>
                     <div class="mp-rail" role="tablist" aria-label="Providers">
                         <button class={`rb ${rail() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={rail() === FAVORITES} title="Favorites" aria-label="Favorites" onClick={() => (setQ(""), setRail(FAVORITES))}>
@@ -161,6 +205,21 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                         </For>
                     </div>
                     <div class="mp-main">
+                        <Show when={p.compare}>
+                            {(c) => (
+                                <div class="mp-compare">
+                                    <button class={`mp-compare-btn ${multi() ? "on" : ""}`} role="switch" aria-checked={multi()} disabled={!c().available} onClick={toggleCompare}>
+                                        <Layers size={14} />
+                                        <span class="grow">Compare models</span>
+                                        <Show when={multi()}>
+                                            <span class="mp-note">{picks().length} picked</span>
+                                        </Show>
+                                        <span class={`mp-switch ${multi() ? "on" : ""}`} aria-hidden="true" />
+                                    </button>
+                                    <div class="mp-compare-note">{!c().available ? c().why : multi() ? "Each model works in a new worktree from HEAD. Uncommitted changes here aren't carried over." : "Send one prompt to 2–4 models, each in a worktree of its own."}</div>
+                                </div>
+                            )}
+                        </Show>
                         <div class="mp-search">
                             <Search size={14} />
                             <input ref={input} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
@@ -183,12 +242,19 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                 </span>
                             </Show>
                         </div>
-                        <div class="mp-list" ref={list} role="listbox" aria-label={label()}>
+                        <div class="mp-list" ref={list} role="listbox" aria-label={label()} aria-multiselectable={multi()}>
                             <Show when={rows().length} fallback={<div class="mp-empty">{empty()}</div>}>
                                 <For each={rows()}>
                                     {(r, i) => (
-                                        <div class={`mr ${i() === sel() ? "sel" : ""} ${r.m.ref === currentRef() ? "on" : ""}`} onMouseMove={() => setSel(i())}>
-                                            <button class="mr-pick" role="option" aria-selected={r.m.ref === currentRef()} onClick={() => choose(r.m)}>
+                                        <div class={`mr ${i() === sel() ? "sel" : ""} ${(multi() ? picked(r.m.ref) : r.m.ref === currentRef()) ? "on" : ""}`} onMouseMove={() => setSel(i())}>
+                                            <button class="mr-pick" role="option" aria-selected={multi() ? picked(r.m.ref) : r.m.ref === currentRef()} onClick={() => choose(r.m)}>
+                                                <Show when={multi()}>
+                                                    <span class={`mr-check ${picked(r.m.ref) ? "on" : ""}`} aria-hidden="true">
+                                                        <Show when={picked(r.m.ref)}>
+                                                            <Check size={11} stroke-width={3} />
+                                                        </Show>
+                                                    </span>
+                                                </Show>
                                                 <span class="mr-text">
                                                     <span class="mr-name truncate">{r.m.name}</span>
                                                     <Show when={r.sub}>

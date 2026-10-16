@@ -9,6 +9,8 @@
 //   "slow"           streams a long answer slowly
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
+//   "first message"  says what the user's first message was, and how many they've sent
+//   "pause"          a short answer after a moment's wait (time to queue a message meanwhile)
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
 //   "hangforever"    nothing is ever sent back (until the request is cancelled)
 //   "emptyreply"     a response with no text and no tool calls
@@ -202,6 +204,15 @@ function titleFor(prompt: string): string {
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
+/** What a model would answer from the conversation it was sent: the user's first message, and every one of theirs. */
+function recall(messages: Json[]): string {
+    const said = messages
+        .filter((m) => m.role === "user")
+        .map((m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim())
+        .filter(Boolean);
+    return `Your first message was "${said[0] ?? ""}". You've said: ${said.map((s) => `"${s}"`).join(", ")}.`;
+}
+
 /** Split text into small chunks the way a model streams it. */
 function chunks(text: string): string[] {
     return text.match(/\S+\s*|\s+/g) ?? [];
@@ -210,8 +221,8 @@ function chunks(text: string): string[] {
 export function startMockLlm(o: MockOptions = {}) {
     const delay = o.delayMs ?? 12;
     let calls = 0;
-    /** Each completion asked for: the model, what it was for, and the request body as sent. */
-    const requests: { model: string; kind: "title" | "summary" | "turn"; body: string }[] = [];
+    /** Each completion asked for, including the prompt/attachments and raw body sent. */
+    const requests: { model: string; kind: "title" | "summary" | "turn"; body: string; prompt: string; images: number }[] = [];
     /** The latest requests' bodies as they arrived, for tests that check what the model was sent. */
     const bodies: Json[] = [];
     const server = Bun.serve({
@@ -243,6 +254,7 @@ export function startMockLlm(o: MockOptions = {}) {
             const promptMsg = messages[promptIdx] ?? {};
             // The harness's own notes ride along with prompts; only the user's words pick the script.
             const prompt = (typeof promptMsg.content === "string" ? promptMsg.content : (promptMsg.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+            const images = Array.isArray(promptMsg.content) ? promptMsg.content.filter((c: Json) => c.type === "image_url").length : 0;
             const after = messages.slice(promptIdx + 1);
             const toolRounds = after.filter((m) => m.role === "assistant").length;
             const lastResult = String([...after].reverse().find((m) => m.role === "tool")?.content ?? "");
@@ -250,15 +262,15 @@ export function startMockLlm(o: MockOptions = {}) {
 
             const isTitle = /name coding-assistant sessions/.test(system);
             if (isTitle && /\buntitled\b/i.test(prompt)) {
-                requests.push({ model: body.model ?? "mock-haiku", kind: "title" });
+                requests.push({ model: body.model ?? "mock-haiku", kind: "title", body: raw, prompt, images });
                 return Response.json({ error: { message: "No title for this one", code: 400 } }, { status: 400 });
             }
             if (!isTitle && /\breject400\b/i.test(prompt)) {
-                requests.push({ model: body.model ?? "mock-opus", kind: body.tools?.length ? "turn" : "summary" });
+                requests.push({ model: body.model ?? "mock-opus", kind: body.tools?.length ? "turn" : "summary", body: raw, prompt, images });
                 return Response.json({ error: { message: "Invalid request: the mock refuses this one", code: 400 } }, { status: 400 });
             }
             if (!isTitle && /\bhangforever\b/i.test(prompt)) {
-                requests.push({ model: body.model ?? "mock-opus", kind: "turn" });
+                requests.push({ model: body.model ?? "mock-opus", kind: "turn", body: raw, prompt, images });
                 // Headers and all held back, until the client gives up.
                 await new Promise<void>((r) => req.signal.addEventListener("abort", () => r(), { once: true }));
                 return new Response(null, { status: 499 });
@@ -267,13 +279,17 @@ export function startMockLlm(o: MockOptions = {}) {
             let step: Step;
             if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
-            else if (/\bemptyreply\b/i.test(prompt)) step = {};
+            else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
+            else if (/\bpause\b/i.test(prompt)) {
+                await Bun.sleep(400);
+                step = { text: "Done waiting." };
+            } else if (/\bemptyreply\b/i.test(prompt)) step = {};
             else step = scenario(prompt, toolRounds, lastResult) ?? { text: "Done." };
 
             const enc = new TextEncoder();
             const id = `chatcmpl-${calls}`;
             const model = body.model ?? "mock-opus";
-            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary", body: raw });
+            requests.push({ model, kind: /name coding-assistant sessions/.test(system) ? "title" : body.tools?.length ? "turn" : "summary", body: raw, prompt, images });
             const stream = new ReadableStream({
                 async start(ctrl) {
                     const send = (obj: Json) => ctrl.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));

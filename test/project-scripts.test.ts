@@ -5,7 +5,7 @@ import type { ServerEvent } from "../src/server/protocol";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { deleteScript, findScript, forgetProjectKeys, listScripts, lockFiles, markUsed, projectFolder, projectKey, updateProject, reorderScripts, saveScript, scriptsFile, validateScript } = await import("../src/server/scripts");
+const { deleteScript, findScript, findSetupScript, forgetProjectKeys, listScripts, lockFiles, markUsed, projectFolder, projectKey, updateProject, reorderScripts, saveScript, scriptsFile, validateScript } = await import("../src/server/scripts");
 const { Terminals, Typist, isTerminalReply } = await import("../src/server/terminals");
 const { EarlyInput } = await import("../gui/src/lib/terminal");
 const { gitArgv, gitEnv } = await import("../src/util/git");
@@ -869,6 +869,64 @@ describe("arming, and when typing happens", () => {
                 shells.stop();
             }
         }, 20_000);
+
+        const KEY = "0123456789abcdef0123456789abcdef";
+        function windowShell() {
+            const events: ServerEvent[] = [];
+            const owner = { window: KEY, send: (e: ServerEvent) => events.push(e) };
+            const output = () => events.filter((e) => e.type === "terminal.data").map((e) => (e as { data: string }).data).join("");
+            return { owner, output };
+        }
+        const times = (text: string, part: string) => text.split(part).length - 1;
+        async function until(check: () => boolean) {
+            const deadline = Date.now() + 8000;
+            while (!check()) {
+                if (Date.now() > deadline) throw new Error("Terminal timed out");
+                await Bun.sleep(20);
+            }
+        }
+
+        test("a script's tab comes back after a reload with its name, and its command isn't typed again", async () => {
+            const shells = new Terminals();
+            const first = windowShell();
+            try {
+                shells.open(first.owner, "dev", folder(), 90, 28, { input: COMMAND, script: { id: "s1", name: "dev" } });
+                shells.arm(first.owner, "dev");
+                await until(() => first.output().includes("__ran__\r\n"));
+                shells.drop(first.owner);
+                const back = windowShell();
+                expect(shells.list(back.owner)).toEqual([{ id: "dev", cwd: expect.any(String), script: { id: "s1", name: "dev" } }]);
+                expect(shells.attach(back.owner, "dev")).toMatchObject({ id: "dev", script: { id: "s1", name: "dev" } });
+                // Not even if the window armed it again.
+                shells.arm(back.owner, "dev");
+                await Bun.sleep(3400);
+                expect(times(back.output(), "__ran__")).toBe(1);
+                expect(times(back.output(), "' ran")).toBe(1);
+                // Still the shell it was, and still the user's.
+                shells.write(back.owner, "dev", "printf '__%s__\\n' mine\r");
+                await until(() => back.output().includes("__mine__\r\n"));
+                expect(times(back.output(), "__ran__")).toBe(1);
+            } finally {
+                shells.stop();
+            }
+        }, 15_000);
+
+        test("a script whose window went away before arming it is never typed, even once a window attaches and arms it", async () => {
+            const shells = new Terminals();
+            const first = windowShell();
+            try {
+                shells.open(first.owner, "unarmed", folder(), 90, 28, { input: COMMAND, script: { id: "s1", name: "dev" } });
+                shells.drop(first.owner);
+                const back = windowShell();
+                shells.attach(back.owner, "unarmed");
+                shells.arm(back.owner, "unarmed");
+                await Bun.sleep(3400);
+                expect(back.output()).not.toContain("__ran__");
+                expect(first.output()).not.toContain("__ran__");
+            } finally {
+                shells.stop();
+            }
+        }, 15_000);
     });
 });
 
@@ -961,4 +1019,108 @@ describe("the lock, where there are no hard links", () => {
             rmSync(lock(), { force: true });
         }
     }, 20_000);
+});
+
+describe("the setup script (run when a worktree is created)", () => {
+    const write = (data: unknown) => writeFileSync(scriptsFile(), JSON.stringify(data, null, 2));
+    const file = () => JSON.parse(readFileSync(scriptsFile(), "utf-8"));
+    afterAll(resetStore);
+
+    test("the flag round-trips through save and list, and is written only when on", async () => {
+        resetStore();
+        const dir = folder();
+        const plain = (await saveScript(dir, { name: "dev", command: "bun run dev" })).script;
+        expect(plain.runOnWorktreeCreate).toBeUndefined();
+        const setup = (await saveScript(dir, { name: "install", command: "bun install", runOnWorktreeCreate: true })).script;
+        expect(setup).toEqual({ id: setup.id, name: "install", command: "bun install", runOnWorktreeCreate: true });
+        expect((await listScripts(dir)).scripts).toEqual([plain, setup]);
+        expect(file().projects[dir].scripts[1].runOnWorktreeCreate).toBe(true);
+        expect("runOnWorktreeCreate" in file().projects[dir].scripts[0]).toBe(false);
+        expect((await findSetupScript(dir)).script).toEqual(setup);
+        // An edit that doesn't say keeps it; unchecking the box turns it off and leaves nothing behind.
+        expect((await saveScript(dir, { id: setup.id, name: "install", command: "bun i" })).script.runOnWorktreeCreate).toBe(true);
+        const off = (await saveScript(dir, { id: setup.id, name: "install", command: "bun i", runOnWorktreeCreate: false })).script;
+        expect(off).toEqual({ id: setup.id, name: "install", command: "bun i" });
+        expect("runOnWorktreeCreate" in file().projects[dir].scripts[1]).toBe(false);
+        expect((await findSetupScript(dir)).script).toBeUndefined();
+        for (const bad of ["yes", 1, {}, null]) await expect(saveScript(dir, { name: "x", command: "x", runOnWorktreeCreate: bad })).rejects.toMatchObject({ code: "invalid" });
+    });
+
+    test("turning it on for one script turns it off for the one that had it", async () => {
+        resetStore();
+        const dir = folder();
+        const a = (await saveScript(dir, { name: "a", command: "echo a", runOnWorktreeCreate: true })).script;
+        const b = (await saveScript(dir, { name: "b", command: "echo b" })).script;
+        await saveScript(dir, { id: b.id, name: "b", command: "echo b", runOnWorktreeCreate: true });
+        const listed = (await listScripts(dir)).scripts;
+        expect(listed.find((s) => s.id === a.id)!.runOnWorktreeCreate).toBeUndefined();
+        expect(listed.find((s) => s.id === b.id)!.runOnWorktreeCreate).toBe(true);
+        expect(file().projects[dir].scripts.filter((s: { runOnWorktreeCreate?: unknown }) => "runOnWorktreeCreate" in s)).toHaveLength(1);
+        // A new script can take it over too.
+        const c = (await saveScript(dir, { name: "c", command: "echo c", runOnWorktreeCreate: true })).script;
+        expect((await listScripts(dir)).scripts.filter((s) => s.runOnWorktreeCreate).map((s) => s.id)).toEqual([c.id]);
+    });
+
+    test("only a literal true is on; any other value is off and stays in the file as written", async () => {
+        const dir = folder();
+        const entries = [
+            { id: "none", name: "none", command: "echo none" },
+            { id: "text", name: "text", command: "echo text", runOnWorktreeCreate: "true" },
+            { id: "one", name: "one", command: "echo one", runOnWorktreeCreate: 1 },
+            { id: "no", name: "no", command: "echo no", runOnWorktreeCreate: false },
+        ];
+        write({ version: 1, projects: { [dir]: { scripts: entries } } });
+        const listed = (await listScripts(dir)).scripts;
+        expect(listed.map((s) => s.id)).toEqual(["none", "text", "one", "no"]);
+        expect(listed.every((s) => s.runOnWorktreeCreate === undefined)).toBe(true);
+        expect((await findSetupScript(dir)).script).toBeUndefined();
+        // Writes elsewhere in the project, and an edit of that very script, keep the value.
+        await saveScript(dir, { name: "new", command: "echo new" });
+        await saveScript(dir, { id: "text", name: "text", command: "echo edited" });
+        const f = file().projects[dir].scripts;
+        expect(f.find((s: { id: string }) => s.id === "text").runOnWorktreeCreate).toBe("true");
+        expect(f.find((s: { id: string }) => s.id === "one").runOnWorktreeCreate).toBe(1);
+        expect(f.find((s: { id: string }) => s.id === "no").runOnWorktreeCreate).toBe(false);
+        expect("runOnWorktreeCreate" in f.find((s: { id: string }) => s.id === "none")).toBe(false);
+        // Turning it on writes true.
+        await saveScript(dir, { id: "one", name: "one", command: "echo one", runOnWorktreeCreate: true });
+        expect(file().projects[dir].scripts.find((s: { id: string }) => s.id === "one").runOnWorktreeCreate).toBe(true);
+    });
+
+    test("reorder, delete and unknown fields leave it as it was", async () => {
+        const dir = folder();
+        write({ version: 1, projects: { [dir]: { scripts: [
+            { id: "a", name: "a", command: "echo a", future: { x: 1 } },
+            { id: "setup", name: "setup", command: "bun install", runOnWorktreeCreate: true, future: "kept" },
+            { id: "c", name: "c", command: "echo c" },
+        ] } } });
+        await reorderScripts(dir, ["setup", "c", "a"]);
+        let f = file().projects[dir].scripts;
+        expect(f[0]).toEqual({ id: "setup", name: "setup", command: "bun install", runOnWorktreeCreate: true, future: "kept" });
+        expect(f[2]).toEqual({ id: "a", name: "a", command: "echo a", future: { x: 1 } });
+        await deleteScript(dir, "c");
+        f = file().projects[dir].scripts;
+        expect(f.map((s: { id: string }) => s.id)).toEqual(["setup", "a"]);
+        expect(f[0].runOnWorktreeCreate).toBe(true);
+        // An edit of another script, and of the setup script itself, keeps its unknown fields.
+        await saveScript(dir, { id: "setup", name: "setup", command: "bun i" });
+        expect(file().projects[dir].scripts[0]).toEqual({ id: "setup", name: "setup", command: "bun i", runOnWorktreeCreate: true, future: "kept" });
+        // Deleting the setup script leaves the project without one.
+        await deleteScript(dir, "setup");
+        expect((await findSetupScript(dir)).script).toBeUndefined();
+    });
+
+    test("a worktree gets its main checkout's setup script; two marked by hand is an error, not a pick", async () => {
+        const { main, linked } = repoWithWorktree();
+        const s = (await saveScript(main, { name: "install", command: "bun install", runOnWorktreeCreate: true })).script;
+        expect(await findSetupScript(linked)).toEqual({ project: main, script: s });
+        write({ version: 1, projects: { [main]: { scripts: [
+            { id: "a", name: "a", command: "echo a", runOnWorktreeCreate: true },
+            { id: "b", name: "b", command: "echo b", runOnWorktreeCreate: true },
+        ] } } });
+        await expect(findSetupScript(linked)).rejects.toMatchObject({ code: "conflict" });
+        // Saving one with the box checked fixes it.
+        await saveScript(main, { id: "b", name: "b", command: "echo b", runOnWorktreeCreate: true });
+        expect((await findSetupScript(linked)).script?.id).toBe("b");
+    });
 });

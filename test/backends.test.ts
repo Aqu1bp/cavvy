@@ -27,6 +27,7 @@ const { stopTiming } = await import("../src/backends/cli");
 const { backendActionsNote } = await import("../src/agent/agent");
 const { withoutActionsNote } = await import("../src/server/history");
 const { backgroundTiming } = await import("../src/backends/claude-code");
+const { forkSession, forkCut } = await import("../src/agent/fork");
 const { framedText, pdfPlaceholder } = await import("../src/providers/files");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
@@ -64,7 +65,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -998,6 +999,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(usageOf(session).inputTokens).toBe(200 + 400);
     });
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP tool call Codex asks about goes to the harness's rules and the user, not declined unasked", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         const yes = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
@@ -1043,6 +1045,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
     }, 20_000);
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP server's form goes to the question dialog, its answers typed as the form asks; with nobody to ask it's declined", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         process.env.FAKE_ELICIT = "form";
@@ -1587,6 +1590,221 @@ describe("fast mode backend wiring", () => {
     }
 });
 
+// A forked session and its original never go on with the same backend
+// session: whichever goes on with a shared one first forks it (natively), and
+// one that saw past the fork point isn't shared at all.
+describe("forked sessions", () => {
+    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
+        const { addAccount, removeAccount } = await import("../src/providers/accounts");
+        const selected = addAccount(provider, { id: "fork-work", name: "Fork work" });
+        const other = addAccount(provider, { id: "fork-other", name: "Fork other" });
+        const source = Session.create(cwd);
+        source.setAccount(provider, selected.id);
+        const settings = { delegation: false, permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider, session: source, settings, ask: () => ({ allow: true }) });
+        let fork: Awaited<ReturnType<typeof makeAgent>> | undefined;
+        let replacement = selected;
+        try {
+            await orig.run("first on work");
+            const shared = source.backends.get(provider)!.id;
+            if (change === "folder") {
+                // A catalog change before forking must not relabel the source thread's owner.
+                removeAccount(provider, selected.id, selected.folder);
+                replacement = addAccount(provider, { id: selected.id, name: selected.name, folder: join(bin, `${provider}-replacement`) });
+            }
+            const session = forkSession(source, { cut: source.messages.length });
+            expect(session.accountId(provider)).toBe(selected.id);
+            expect(session.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            if (change === "selection") session.setAccount(provider, other.id);
+            session.release();
+            fork = await makeAgent({ provider, session: Session.load(session.path), settings, ask: () => ({ allow: true }) });
+            rmSync(LOG, { force: true });
+            expect(await fork.run("in the fork")).toBe("done");
+            const folder = change === "selection" ? other.folder : replacement.folder;
+            expect(starts()[0][provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(folder);
+            if (provider === "claude-code") {
+                expect(resumes()).toEqual([change === "none" ? `${shared} (fork)` : "new"]);
+                if (change !== "none") expect(userTexts().at(-1)).toContain("User: first on work");
+            } else {
+                const threads = received().filter((m) => m.method?.startsWith("thread/"));
+                expect(threads.map((m) => m.method)).toEqual([change === "none" ? "thread/fork" : "thread/start"]);
+                if (change === "none") expect(threads[0].params.threadId).toBe(shared);
+                else expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first on work");
+            }
+            expect(fork.session.backendSession(provider, folder)?.fork).toBeUndefined();
+            expect(source.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+        } finally {
+            await fork?.agent.dispose();
+            fork?.session.release();
+            await orig.agent.dispose();
+            source.release();
+            removeAccount(provider, replacement.id, replacement.folder);
+            removeAccount(provider, other.id, other.folder);
+        }
+    });
+
+    /** Each Claude Code start: the session it resumed, and whether as a fork. */
+    const resumes = () => starts().map((s) => {
+        const a = s.argv as string[];
+        const i = a.indexOf("--resume");
+        return i < 0 ? "new" : `${a[i + 1]}${a.includes("--fork-session") ? " (fork)" : ""}`;
+    });
+
+    test("Claude Code: the fork's first turn forks the shared session (--resume … --fork-session), and so does the original's next one", async () => {
+        const orig = await makeAgent({ provider: "claude-code", session: Session.create(cwd), ask: () => ({ allow: true }) });
+        await orig.run("first");
+        const shared = orig.session.backends.get("claude-code")!.id;
+        const fork = await makeAgent({ provider: "claude-code", session: forkSession(orig.session, { cut: orig.session.messages.length }), ask: () => ({ allow: true }) });
+        rmSync(LOG, { force: true });
+
+        expect(await fork.run("in the fork")).toBe("done");
+        const forkId = fork.session.backends.get("claude-code")!;
+        expect(resumes()).toEqual([`${shared} (fork)`]);
+        expect(forkId.id).toMatch(/^fork-/);
+        expect(forkId.fork).toBeUndefined();
+        // It had everything already: no conversation handed over.
+        expect(userTexts().at(-1)).toBe("in the fork");
+
+        await orig.run("in the original");
+        const origId = orig.session.backends.get("claude-code")!.id;
+        expect(origId).toMatch(/^fork-/);
+        expect(origId).not.toBe(forkId.id);
+        await orig.run("again");
+        await fork.run("again in the fork");
+        // From then on each goes on with its own; the shared one is never continued in place.
+        expect(resumes()).toEqual([`${shared} (fork)`, `${shared} (fork)`, origId, forkId.id]);
+        expect(resumes()).not.toContain(shared);
+    });
+
+    test("Claude Code: a compaction of a shared session compacts a copy of it", async () => {
+        const orig = await makeAgent({ provider: "claude-code", session: Session.create(cwd), ask: () => ({ allow: true }) });
+        await orig.run("first");
+        const shared = orig.session.backends.get("claude-code")!.id;
+        forkSession(orig.session, { cut: orig.session.messages.length }).release();
+        rmSync(LOG, { force: true });
+        expect(await orig.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(resumes()).toEqual([`${shared} (fork)`]);
+        expect(orig.session.backends.get("claude-code")!.id).not.toBe(shared);
+    });
+
+    test("Claude Code: a fork from before the backend's last turn starts a new session with the conversation up to the fork", async () => {
+        const orig = await makeAgent({ provider: "claude-code", session: Session.create(cwd), ask: () => ({ allow: true }) });
+        await orig.run("first");
+        await orig.run("second");
+        const shared = orig.session.backends.get("claude-code")!;
+        const session = forkSession(orig.session, { cut: forkCut(orig.session.messages, 0) });
+        expect(session.backends.size).toBe(0);
+        const fork = await makeAgent({ provider: "claude-code", session, ask: () => ({ allow: true }) });
+        rmSync(LOG, { force: true });
+        await fork.run("in the fork");
+        expect(resumes()).toEqual(["new"]);
+        const prompt = userTexts().at(-1)!;
+        expect(prompt).toContain("<conversation-so-far>");
+        expect(prompt).toContain("User: first");
+        expect(prompt).not.toContain("second");
+        // The original's own goes on as before: it saw nothing of the fork.
+        expect(orig.session.backends.get("claude-code")).toEqual(shared);
+        await orig.run("third");
+        expect(resumes().at(-1)).toBe(shared.id);
+    });
+
+    test("Codex: the fork's first turn forks the shared thread (thread/fork), and so does the original's next one", async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings });
+        await orig.run("one");
+        expect(orig.session.backends.get("codex")?.id).toBe("thr-new");
+        const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: orig.session.messages.length }), settings });
+        rmSync(LOG, { force: true });
+        await fork.run("in the fork");
+        const threads = () => received().filter((m) => m.method?.startsWith("thread/")).map((m) => `${m.method} ${m.params.threadId ?? ""}`.trim());
+        expect(threads()).toEqual(["thread/fork thr-new"]);
+        const forkThread = fork.session.backends.get("codex")!.id;
+        expect(forkThread).toMatch(/^thr-fork-/);
+        expect(received().find((m) => m.method === "turn/start")?.params.threadId).toBe(forkThread);
+        // The forked thread's total includes the original's spend; only the fork's own turn is counted here.
+        const tokensOf = (s: typeof orig.session) => [...s.usageByModel.values()].reduce((n, x) => n + x.usage.inputTokens + x.usage.outputTokens + (x.usage.cacheReadTokens ?? 0), 0);
+        expect(tokensOf(fork.session)).toBeGreaterThan(0);
+        expect(tokensOf(fork.session)).toBe(tokensOf(orig.session));
+
+        await orig.run("in the original");
+        const origThread = orig.session.backends.get("codex")!.id;
+        expect(origThread).toMatch(/^thr-fork-/);
+        expect(origThread).not.toBe(forkThread);
+        await orig.run("again");
+        expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new", `thread/resume ${origThread}`]);
+    });
+
+    test("Codex: a compaction of a shared thread compacts its own copy", async () => {
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings: { permissions: { allow: ["Bash(touch:*)"] } } });
+        await orig.run("first");
+        const shared = orig.session.backends.get("codex")!.id;
+        forkSession(orig.session, { cut: orig.session.messages.length }).release();
+        rmSync(LOG, { force: true });
+        expect(await orig.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        const own = orig.session.backends.get("codex")!.id;
+        expect(own).not.toBe(shared);
+        expect(received().find((m) => m.method === "thread/fork")?.params.threadId).toBe(shared);
+        expect(received().find((m) => m.method === "thread/compact/start")?.params.threadId).toBe(own);
+    });
+
+    test("an interrupted native fork leaves its shared source's synced position unchanged", async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings });
+        await orig.run("first");
+        const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: orig.session.messages.length }), settings });
+        const shared = { ...fork.session.backends.get("codex")! };
+        process.env.FAKE_HANG_INIT = "1";
+        const ac = new AbortController();
+        try {
+            const done = fork.run("the interrupted prompt", ac.signal);
+            await Bun.sleep(300);
+            ac.abort();
+            expect(await done).toBe("aborted");
+        } finally {
+            delete process.env.FAKE_HANG_INIT;
+        }
+        expect(fork.session.backends.get("codex")).toEqual(shared);
+        rmSync(LOG, { force: true });
+        expect(await fork.run("try again")).toBe("done");
+        expect(received().find((m) => m.method === "thread/fork")?.params.threadId).toBe(shared.id);
+        expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("the interrupted prompt");
+    });
+
+    for (const provider of ["claude-code", "codex"] as const) test(`${provider}: a missing native fork source falls back to fresh context`, async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider, session: Session.create(cwd), settings, ask: () => ({ allow: true }) });
+        await orig.run("first");
+        orig.session.setBackendSession(provider, "gone-source", orig.session.messages.length);
+        const fork = await makeAgent({ provider, session: forkSession(orig.session, { cut: orig.session.messages.length }), settings, ask: () => ({ allow: true }) });
+        rmSync(LOG, { force: true });
+        expect(await fork.run("in the fork")).toBe("done");
+        if (provider === "claude-code") {
+            expect(resumes()).toEqual(["gone-source (fork)", "new"]);
+            expect(userTexts().at(-1)).toContain("User: first");
+        } else {
+            expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/fork", "thread/start"]);
+            expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first");
+        }
+        expect(fork.session.backends.get(provider)?.fork).toBeUndefined();
+        expect(orig.session.backends.get(provider)).toEqual({ id: "gone-source", synced: orig.session.messages.length, fork: true });
+    });
+
+    test("Codex: a fork from before the thread's last turn starts a new thread with the conversation as context", async () => {
+        const settings = { permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider: "codex", session: Session.create(cwd), settings });
+        await orig.run("one");
+        await orig.run("two");
+        const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: forkCut(orig.session.messages, 0) }), settings });
+        rmSync(LOG, { force: true });
+        await fork.run("in the fork");
+        expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/start"]);
+        const input = JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input);
+        expect(input).toContain("conversation-so-far");
+        expect(input).toContain("User: one");
+        expect(input).not.toContain("User: two");
+        expect(orig.session.backends.get("codex")?.fork).toBeUndefined();
+    });
+});
 
 describe("Claude Code project MCP settings", () => {
     test("trusted turns retain native user MCP while passing project approval names only", async () => {
@@ -1848,5 +2066,301 @@ describe("attachments", () => {
         expect(start.input[0].type).toBe("text");
         expect(start.input[0].text).toContain(`read these\n\n${framedText(file)}\n\n${pdfPlaceholder(pdf)}`);
         expect(JSON.stringify(start)).not.toContain(pdf.data);
+    });
+});
+
+describe("Claude Code turn reliability (#60, #61, #64)", () => {
+    test("queued messages reach the running turn at a tool result, in order and before its result", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const a = await makeAgent({ provider: "claude-code", queued: [["first correction", "second correction"]] });
+        expect(await a.run("start")).toBe("done");
+        expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual(["first correction\n\nsecond correction"]);
+        const timeline = a.session.messages.map((m) => [m.role, m.content.map((p: any) => p.text ?? "").join("\n")]);
+        expect(timeline.map(([role]) => role)).toEqual(["user", "assistant", "user", "assistant"]);
+        expect(timeline[1]![1]).toContain("Working on it.");
+        expect(timeline[2]![1]).toBe("first correction\n\nsecond correction");
+        expect(timeline[3]![1]).toContain("Adjusted: first correction");
+        expect(timeline[3]![1]).not.toContain("Working on it.");
+        expect(starts()).toHaveLength(1);
+    });
+
+    for (const version of ["2.1.200", "unknown"]) test(`${version}: unverified CLI versions retain between-turn delivery without losing queued input`, async () => {
+        process.env.FAKE_CLAUDE_VERSION = version;
+        process.env.FAKE_SCENARIO = "steering";
+        process.env.FAKE_SECOND_SCENARIO = "none";
+        const a = await makeAgent({ provider: "claude-code", queued: [["queued correction"]] });
+        expect(await a.run("start")).toBe("done");
+        expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual([]);
+        expect(userTexts()).toEqual(["start", "queued correction"]);
+        expect(JSON.stringify(a.session.messages)).toContain("All done.");
+        expect(notices(a.events).join("\n")).toContain("Queued messages will be delivered when its current turn ends");
+    });
+
+    test("mid-turn delivery stays within the CLI's 64-UUID acknowledgement window", async () => {
+        process.env.FAKE_SCENARIO = "steering-many";
+        const a = await makeAgent({ provider: "claude-code", queued: Array.from({ length: 65 }, (_, i) => [`correction ${i}`]) });
+        expect(await a.run("start")).toBe("done");
+        expect(userTexts()).toEqual(["start", ...Array.from({ length: 65 }, (_, i) => `correction ${i}`)]);
+        expect(logLines().filter((l) => l.foldedBeforeResult).map((l) => l.foldedBeforeResult.length)).toEqual([63, 1]);
+    });
+
+    test("separately answered queued input waits for both results", async () => {
+        process.env.FAKE_SCENARIO = "write";
+        const a = await makeAgent({ provider: "claude-code", mode: "acceptEdits", queued: [["queued correction"]] });
+        expect(await a.run("start")).toBe("done");
+        expect(userTexts()).toEqual(["start", "queued correction"]);
+        expect(a.events.filter((e) => e.type === "text" && e.text === "All done.")).toHaveLength(2);
+    });
+
+    for (const scenario of ["shell-background", "monitor-background"]) test(`${scenario} keeps the turn alive through completion and the report turn`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.run("run checks and wait")).toBe("done");
+        expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+        expect(notices(a.events).join("\n")).toContain("Waiting for 1 background");
+        expect(notices(a.events).join("\n")).not.toContain("stopped with Claude Code");
+    });
+
+    test("a never-ending shell has a bounded wait and the model knows its lifetime", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { commandWaitMs: 100, pollMs: 20 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            expect(await a.run("run checks and wait")).toBe("done");
+            expect(notices(a.events).join("\n")).toMatch(/warn: Stopped 1 background/);
+            const args = starts()[0].argv;
+            expect(args[args.indexOf("--append-system-prompt") + 1]).toContain("Background commands and monitors");
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
+    test("a result-only CLI error persists as a notice and is absent from reopened model history", async () => {
+        process.env.FAKE_SCENARIO = "result-error";
+        const session = Session.create(cwd, { system: "test" });
+        try {
+            const a = await makeAgent({ provider: "claude-code", session });
+            expect(await a.run("check it")).toBe("error");
+            const saved = readFileSync(session.file, "utf-8");
+            expect(saved).toContain("CLI diagnostic: execution failed");
+            session.release();
+            const reopened = Session.load(session.file);
+            try {
+                expect(reopened.messages.filter((m) => m.role === "assistant")).toEqual([]);
+                expect(reopened.notices.some((n) => n.level === "error" && n.text.includes("CLI diagnostic: execution failed"))).toBe(true);
+            } finally { reopened.release(); }
+        } finally { session.release(); }
+    });
+
+    for (const scenario of ["rate-limit", "partial-error", "partial-error-exit"]) test(`${scenario}: errors are notices, genuine partial replies survive and handoff excludes error prose`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.run("check it")).toBe("error");
+        expect(JSON.stringify(a.session.messages)).not.toContain("You've hit your limit");
+        expect(a.events.some((e) => e.type === "assistant" && JSON.stringify(e).includes("You've hit your limit"))).toBe(false);
+        expect(a.session.notices.some((n) => n.level === "error" && /usage limit/.test(n.text) && n.text.includes("You've hit your limit"))).toBe(true);
+        if (scenario.startsWith("partial-error")) expect(JSON.stringify(a.session.messages)).toContain("The first check passed.");
+        process.env.FAKE_SCENARIO = "none";
+        const b = await makeAgent({ provider: "codex", session: a.session });
+        expect(await b.run("continue")).toBe("done");
+        const handoff = JSON.stringify(received().find((m) => m.method === "turn/start")?.params);
+        expect(handoff).not.toContain("You've hit your limit");
+        expect(handoff).not.toContain("usage limit was reached");
+        if (scenario.startsWith("partial-error")) expect(handoff).toContain("The first check passed.");
+    });
+});
+
+
+describe("Claude Code background grace (#60 follow-up)", () => {
+    test("default grace is ten minutes, invalid settings fall back, and zero disables waiting", async () => {
+        const { claudeBackgroundWaitMs } = await import("../src/backends/claude-code");
+        expect(claudeBackgroundWaitMs(undefined)).toBe(600_000);
+        for (const value of [-1, Infinity, NaN, "10"]) expect(claudeBackgroundWaitMs(value)).toBe(600_000);
+        expect(claudeBackgroundWaitMs(0)).toBe(0);
+        expect(claudeBackgroundWaitMs(12)).toBe(12_000);
+    });
+
+    for (const scenario of ["shell-background-stuck", "monitor-background-stuck"]) test(`${scenario}: configured grace ends normally, names stopped work and sends a durable next-prompt reminder`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const saved = { ...backgroundTiming };
+        backgroundTiming.pollMs = 10;
+        const session = Session.create(cwd, { system: "test" });
+        try {
+            const a = await makeAgent({ provider: "claude-code", session, settings: { claudeCode: { backgroundWaitSec: 0.04 } } });
+            const start = Date.now();
+            expect(await a.run("wait for checks")).toBe("done");
+            expect(Date.now() - start).toBeLessThan(3000);
+            expect(notices(a.events).join("\n")).toMatch(/Stopped.*Wait for checks.*grace expired/);
+            expect(JSON.stringify(session.messages)).toContain("Waiting for checks.");
+            const label = `Waiting for background ${scenario.startsWith("shell") ? "command" : "monitor"}: Wait for checks · Esc to stop it`;
+            expect(a.events.some((e) => e.type === "activity" && e.text === label)).toBe(true);
+            expect(session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" } });
+            session.release();
+            const reopened = Session.load(session.file);
+            try {
+                expect(reopened.notices.some((n) => n.text.includes("Wait for checks"))).toBe(true);
+                process.env.FAKE_SCENARIO = "none";
+                const b = await makeAgent({ provider: "claude-code", session: reopened });
+                expect(await b.run("continue")).toBe("done");
+                expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks");
+                expect(userTexts().at(-1)).toContain("Wait for checks");
+                expect(userTexts().at(-1)).toContain("do not wait for their old task IDs");
+            } finally { reopened.release(); }
+        } finally { session.release(); Object.assign(backgroundTiming, saved); }
+    });
+
+    test("a Stop hook continuation receives the stopped-task reminder on that next prompt", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const a = await makeAgent({ provider: "claude-code", settings: {
+            claudeCode: { backgroundWaitSec: 0 },
+            hooks: { Stop: [{ command: "if [ ! -f hook-ran ]; then touch hook-ran; printf 'Keep going' >&2; exit 2; fi" }] },
+        } });
+        expect(await a.run("wait for checks")).toBe("done");
+        expect(userTexts()).toHaveLength(2);
+        expect(userTexts()[1]).toContain("A Stop hook asked you to keep going");
+        expect(userTexts()[1]).toContain("Harness stopped these Claude Code background tasks");
+        expect(userTexts()[1]).toContain("Wait for checks");
+    });
+
+    test("a zero shell grace does not shorten a background agent's limit", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0 } } });
+        expect(await a.run("map auth")).toBe("done");
+        expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+        expect(notices(a.events).some((n) => n.includes("Stopped"))).toBe(false);
+    });
+
+    test("Esc stops the wait promptly while preserving output and the next-prompt reminder", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const a = await makeAgent({ provider: "claude-code" });
+        const ac = new AbortController();
+        const done = a.run("wait for checks", ac.signal);
+        while (!a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for background command"))) await Bun.sleep(10);
+        const start = Date.now();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(Date.now() - start).toBeLessThan(1500);
+        expect(JSON.stringify(a.session.messages)).toContain("Waiting for checks.");
+        expect(notices(a.events).join("\n")).toContain("interrupted by user");
+        process.env.FAKE_SCENARIO = "none";
+        expect(await a.run("continue")).toBe("done");
+        expect(userTexts().at(-1)).toContain("background command: Wait for checks");
+    });
+
+    for (const command of ["bun run dev", "npm start", "pnpm run serve", "yarn watch", "vite", "tail -f out.log", "node --watch server.js"]) test(`long-lived command ends without the grace: ${command}`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_COMMAND = command;
+        const a = await makeAgent({ provider: "claude-code" });
+        const start = Date.now();
+        expect(await a.run("start the server")).toBe("done");
+        expect(Date.now() - start).toBeLessThan(3000);
+        expect(a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for"))).toBe(false);
+        expect(notices(a.events).join("\n")).toContain("recognized long-lived server/watcher");
+        process.env.FAKE_SCENARIO = "none";
+        await a.run("continue");
+        expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks");
+    });
+
+    test("finite commands are not classified by a word in output or a Vite build", async () => {
+        const { longLivedClaudeCommand } = await import("../src/backends/claude-code");
+        for (const command of ["bun test", "vite build", "echo start", "printf dev", "tail -n 20 out.log", "npm run restart-checks"]) expect(longLivedClaudeCommand(command)).toBe(false);
+    });
+
+    for (const [command, scenario] of [["sleep 150", "shell-background-mixed"], ["bun run dev", "shell-background-mixed"], ["bun run dev", "shell-background-nested"]]) test(`mixed shell/agent work stops only the shell and keeps the agent limit: ${scenario} ${command}`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        process.env.FAKE_COMMAND = command;
+        process.env.FAKE_BACKGROUND_MS = "220";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.pollMs = 10;
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.04 } } });
+            expect(await a.run("start both")).toBe("done");
+            expect(received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id)).toEqual(["background-1"]);
+            if (command === "bun run dev") expect(notices(a.events).join("\n")).toContain("recognized long-lived server/watcher");
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+            expect(a.events.some((e) => e.type === "subagent" && e.event.type === "turn_end" && e.event.reason === "done")).toBe(true);
+            expect(a.events.some((e) => e.type === "activity" && e.text === "Waiting for background sub-agent: Map auth · Esc to stop it")).toBe(true);
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
+    for (const failure of ["reject", "hang"]) test(`an unconfirmed selective stop cannot leave the turn stuck (${failure})`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "bun run dev";
+        process.env.FAKE_STOP_TASK = failure;
+        process.env.FAKE_BACKGROUND_MS = "10000";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { stopTimeoutMs: 40, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            expect(await a.run("start both")).toBe("done");
+            expect(notices(a.events).join("\n")).toContain("did not confirm a task stop");
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("Map auth");
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+});
+
+describe("Claude Code reviewed grace fixes", () => {
+    test("repeated Monitor report turns cannot extend the overall background cap", async () => {
+        process.env.FAKE_SCENARIO = "monitor-repeated-reports";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { maxWaitMs: 350, pollMs: 10 });
+        const abort = new AbortController();
+        const timeout = setTimeout(() => abort.abort(), 4000);
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.2 } } });
+            const outcome = await a.run("monitor checks", abort.signal);
+            expect(outcome).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Monitor notification 2.");
+            expect(notices(a.events).join("\n")).toMatch(/Stopped waiting for.*Watch checks.*after 1s/);
+            expect(notices(a.events).join("\n")).not.toContain("grace expired");
+            expect(a.session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" } });
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("background monitor: Watch checks");
+            process.env.FAKE_SCENARIO = "none";
+            const b = await makeAgent({ provider: "claude-code", session: a.session });
+            expect(await b.run("continue")).toBe("done");
+            expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks: background monitor: Watch checks");
+        } finally {
+            clearTimeout(timeout);
+            Object.assign(backgroundTiming, saved);
+        }
+    });
+
+    for (const flags of ["--watch=false", "--watch=0", '--watch="false"', "--watch='0'", "--no-watch", "--watch --no-watch", "--watch --watch=false", "--watch=true --watch=0"]) test(`disabled watch flags preserve finite command results: ${flags}`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_COMMAND = `npm test -- ${flags}`;
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.run("run tests")).toBe("done");
+        expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+        expect(notices(a.events).some((n) => n.includes("recognized long-lived"))).toBe(false);
+    });
+
+    test("only enabling watch flags count, with the last flag taking precedence", async () => {
+        const { longLivedClaudeCommand } = await import("../src/backends/claude-code");
+        for (const flags of ["--watch", "--watch=true", "--watch=src", "--no-watch --watch", "--watch=0 --watch=src"]) expect(longLivedClaudeCommand(`npm test -- ${flags}`)).toBe(true);
+        expect(longLivedClaudeCommand("npm test -- --watch=")).toBe(false);
+    });
+
+    for (const scenario of ["shell-grace-queued", "shell-grace-turn", "shell-grace-overlap", "shell-grace-replace", "shell-grace-renew"]) test(`${scenario}: each task gets its own full grace after its answer`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const saved = { ...backgroundTiming };
+        backgroundTiming.pollMs = 10;
+        let queueReady = false;
+        let sent = false;
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.3 } }, drainQueued: () => {
+                if (!queueReady || sent) return [];
+                sent = true;
+                return ["start command B"];
+            } });
+            const done = a.run("start command A");
+            if (scenario === "shell-grace-queued") {
+                while (!a.events.some((e) => e.type === "activity" && e.text?.includes("Command A"))) await Bun.sleep(5);
+                queueReady = true;
+            }
+            expect(await done).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Command B completed with its results.");
+            expect(notices(a.events).some((n) => /Stopped.*Command B/.test(n))).toBe(false);
+            const stops = received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+            expect(stops).toEqual(scenario === "shell-grace-overlap" ? ["A"] : []);
+        } finally { Object.assign(backgroundTiming, saved); }
     });
 });

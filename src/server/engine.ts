@@ -3,8 +3,13 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
+import { loginCommand } from "../backends/account-login";
+import { planLimitKey, type AccountInfo } from "./protocol";
+import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
-import { deleteScript, findScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
+import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
+import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { readdirSync, realpathSync, statSync } from "fs";
@@ -15,6 +20,7 @@ import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, write
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError } from "../agent/session";
+import { forkSession } from "../agent/fork";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
@@ -27,23 +33,26 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktree, listWorktrees, planRemoval, runRemoval } from "./worktrees";
+import { createWorktree, listWorktrees, mainCheckoutOf, planRemoval, runRemoval } from "./worktrees";
+import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
 import { expandPath, isInside } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
+import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions } from "./search";
 import { usageDays, usageSummary } from "./usage";
-import { mergeLimits } from "../backends/limits";
 import type {
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
+    CreateWorktreeParams,
+    CreateWorktreeResult,
     EditorInfo,
     EffortLevel,
     GuiSettings,
@@ -59,12 +68,14 @@ import type {
     ProviderInfo,
     ProviderModels,
     ServerEvent,
+    RunMember,
+    RunOutcome,
     SessionOp,
     SessionSnapshot,
     SessionSearchResult,
     SessionSummary,
 } from "./protocol";
-import { PROTOCOL_VERSION } from "./protocol";
+import { PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
 
@@ -79,6 +90,8 @@ export interface EngineOptions {
     listModels?: typeof listAllModels;
     /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
     unloadAfterMs?: number;
+    /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
+    terminalGraceMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
     log?: (message: string) => void;
     /** Where to look for editors (tests point it at fake launchers). */
@@ -114,6 +127,8 @@ export interface EngineClient {
     send(ev: ServerEvent): void;
     /** Sessions this client has open. */
     subs: Set<string>;
+    /** The window's key, when its connection presented one: its terminals are the window's, not this connection's. */
+    window?: string;
 }
 
 
@@ -125,6 +140,23 @@ interface GuiStore {
     pinned?: string[];
     archived?: string[];
     settled?: string[];
+    /** Sessions started together from one prompt (runs.start), newest first. */
+    runs?: RunRecord[];
+}
+
+/** Runs remembered; an older run's sessions are listed on their own. */
+const MAX_RUNS = 50;
+
+/** Each session's place in a run. */
+function runMembers(store: GuiStore): Map<string, RunMember> {
+    const out = new Map<string, RunMember>();
+    for (const r of store.runs ?? []) for (const s of r.sessions) out.set(s.id, { id: r.id, label: r.label, cwd: r.cwd, model: s.model, modelName: s.modelName, ...(s.outcome ? { outcome: s.outcome === "working" ? "stopped" : s.outcome } : {}) });
+    return out;
+}
+
+function runOutcome(rt: Runtime): RunOutcome {
+    if (rt.status === "running" || rt.status === "waiting") return "working";
+    return rt.lastTurnStatus === "done" ? "done" : "stopped";
 }
 
 const storeFile = () => join(harnessHome(), "gui.json");
@@ -242,7 +274,11 @@ export class Workspace {
 // ---------------------------------------------------------------------------
 
 export class Engine {
-    private terminals = new Terminals();
+    private terminals: Terminals;
+    /** Script lookup is asynchronous: a tab can close before its shell exists. */
+    private openingTerminals = new Map<string, { window: string | EngineClient; cancelled: boolean }>();
+    /** Setup runs that a window may start, once, in the worktree it just created (see setup.ts). */
+    readonly setups = new SetupTickets();
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
@@ -263,13 +299,12 @@ export class Engine {
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     private purgeTimer?: ReturnType<typeof setInterval>;
-    /** The agent CLIs' plan limits as last reported, by provider: the account's, so every session shares them. */
-    private limits = new Map<string, PlanLimits>();
     /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
     private cliCommandNames = new Map<string, Set<string>>();
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
+        this.terminals = new Terminals({ graceMs: o.terminalGraceMs });
     }
 
     log(msg: string) {
@@ -285,11 +320,13 @@ export class Engine {
 
     async stop() {
         this.stopping = true;
-        this.terminals.stop();
+        for (const pending of this.openingTerminals.values()) pending.cancelled = true;
+        const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
+        await terminalsStopped;
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
     }
 
@@ -298,15 +335,6 @@ export class Engine {
 
     broadcast(ev: ServerEvent) {
         for (const c of this.clients) c.send(ev);
-    }
-
-    /** An agent CLI reported where the plan stands (an older report doesn't replace a newer one). */
-    limitsReported(l: PlanLimits, partial: boolean) {
-        const prev = this.limits.get(l.provider);
-        if (prev && prev.at > l.at) return;
-        const merged = mergeLimits(prev, l, partial);
-        this.limits.set(l.provider, merged);
-        this.broadcast({ type: "limits", limits: merged });
     }
 
     cliCommandsReported(provider: string, cwd: string, names: string[]) {
@@ -336,6 +364,12 @@ export class Engine {
 
     sessionChanged(rt: Runtime) {
         if (!rt.session.messages.length && !rt.busy) return;
+        const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
+        const outcome = runOutcome(rt);
+        if (member && member.outcome !== outcome) updateStore((s) => {
+            const saved = s.runs?.flatMap((r) => r.sessions).find((m) => m.id === rt.id);
+            if (saved) saved.outcome = outcome;
+        });
         this.broadcast({ type: "sessions.upsert", session: this.summaryOf(rt) });
     }
 
@@ -398,10 +432,10 @@ export class Engine {
         return p;
     }
 
-    private modelsList(): ProviderModels[] {
-        return this.listings
+    private modelsList(): Promise<ProviderModels[]> {
+        return Promise.all(this.listings
             .filter((l) => l.status !== "offline")
-            .map((l) => ({ provider: l.provider.id, providerName: l.provider.name, status: l.status, error: l.error ? redact(l.error) : undefined, models: l.models.map(modelSummary) }));
+            .map(async (l) => ({ provider: l.provider.id, providerName: l.provider.name, status: l.status, error: l.error ? redact(l.error) : undefined, billing: await billingOf(l.provider), models: l.models.map(modelSummary) })));
     }
 
     // -----------------------------------------------------------------------
@@ -462,6 +496,28 @@ export class Engine {
     }
 
     /**
+     * The worktree at `path` was just created for `client`, which asked for its setup: may the setup script run
+     * there? Never throws: the worktree is made either way, and the window says why the script didn't run.
+     */
+    private async grantSetup(client: EngineClient, path: string, preview: CreateWorktreeParams["setupScript"]): Promise<Pick<CreateWorktreeResult, "setup" | "setupError">> {
+        try {
+            const main = mainCheckoutOf(path);
+            if (!setupTrusted(main, path)) return { setupError: "The setup script didn't run: you haven't trusted this repository." };
+            const { project, script } = await findSetupScript(path);
+            if (!script) return { setupError: "The setup script didn't run: no script is marked to run when a worktree is created (it may have changed in another window)." };
+            if (!preview || script.id !== preview.id || script.command !== preview.command) {
+                return { setupError: "The setup script didn't run: it no longer matches the script and command previewed when you clicked Create. Review it in the project scripts menu before running it." };
+            }
+            // Nobody would see it start.
+            if (!this.clients.has(client)) return {};
+            const ticket = this.setups.issue({ owner: client, path, main, project, script: script.id, command: script.command });
+            return { setup: { ticket, script } };
+        } catch (e) {
+            return { setupError: `The setup script didn't run: ${redact((e as Error).message)}` };
+        }
+    }
+
+    /**
      * Refused while a session is open inside it: one here (or still closing),
      * or one in another process (a terminal) once it has sent a message and
      * so holds its lock. From the check until Git is done no session can
@@ -514,6 +570,7 @@ export class Engine {
 
     summaryOf(rt: Runtime): SessionSummary {
         const store = readStore();
+        const run = runMembers(store).get(rt.id);
         return {
             id: rt.id,
             cwd: rt.ws.cwd,
@@ -528,6 +585,7 @@ export class Engine {
             settled: (store.settled ?? []).includes(rt.id),
             model: rt.session.model,
             live: true,
+            run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
         };
     }
 
@@ -536,9 +594,10 @@ export class Engine {
         const pinned = new Set(store.pinned ?? []);
         const arch = new Set(store.archived ?? []);
         const settled = new Set(store.settled ?? []);
+        const runs = runMembers(store);
         const out = new Map<string, SessionSummary>();
         for (const s of listAllSessions(limit + arch.size)) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
             if (!rt.session.messages.length && !rt.busy) continue;
@@ -598,6 +657,66 @@ export class Engine {
         this.remember(p);
         await rt.ready.catch(() => undefined);
         if (opts.model) await rt.setModel(opts.model);
+        return rt;
+    }
+
+    /** What a run (runs.ts) does through the engine. */
+    private runHost(): RunHost {
+        return {
+            listings: async () => {
+                if (!this.listed) await this.firstListings();
+                return this.listings;
+            },
+            declined: (path) => this.declined.has(resolve(path)),
+            decline: (path) => void this.declined.add(resolve(path)),
+            bypassAllowed: (cwd) => this.bypassAllowed(cwd),
+            stopping: () => this.stopping,
+            openSession: (cwd, mode) => this.createSession(cwd, { mode }),
+            discard: (id) => this.unloadIfUnused(id),
+            release: (id) => this.unloadLater(id),
+            record: (run) => {
+                const saved = updateStore((s) => {
+                    // A preceding model can finish while the next worktree is made.
+                    const previous = s.runs?.find((r) => r.id === run.id);
+                    const sessions = run.sessions.map((m) => previous?.sessions.find((p) => p.id === m.id) ?? m);
+                    s.runs = [{ ...run, sessions }, ...(s.runs ?? []).filter((r) => r.id !== run.id)].slice(0, MAX_RUNS);
+                });
+                if (!saved) throw new RpcError("Harness couldn't save this run.");
+            },
+            log: this.o.log,
+        };
+    }
+
+    /**
+     * Fork an open session at the end of the turn of its prompt `index`
+     * (src/agent/fork.ts), and open the fork with the original's model,
+     * speed, mode and effort.
+     */
+    async forkSession(original: Runtime, index: unknown, text: string, turnId: string): Promise<Runtime> {
+        const cut = original.forkPoint(index, text, turnId);
+        // As they are now: the original may go on while the fork's model is set up.
+        const notes = original.notesAt(cut);
+        const effort = original.effort;
+        let session: Session;
+        try {
+            session = forkSession(original.session, { cut, model: original.model && modelRef(original.model), title: original.title ?? original.firstPrompt(), shareBackends: !original.busy });
+        } catch (e) {
+            throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
+        }
+        forkUiLog({ file: original.session.path, id: original.id }, { file: session.path, id: session.meta.id });
+        // The original's folder, already trusted to open it; bypass mode still needs allowing (the constructor checks).
+        let rt: Runtime;
+        try {
+            rt = new Runtime(this, original.ws, session, { mode: original.mode, resumed: true });
+        } catch (e) {
+            session.release();
+            throw e;
+        }
+        this.runtimes.set(rt.id, rt);
+        await rt.ready.catch(() => undefined);
+        if (effort) rt.setEffort(effort);
+        rt.forkedFrom(notes);
+        this.sessionChanged(rt);
         return rt;
     }
 
@@ -763,10 +882,11 @@ export class Engine {
         this.unloadTimers.set(id, t);
     }
 
-    /** A window went away (closed, reloading, or lost its connection). */
+    /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         this.terminals.drop(client);
+        this.setups.drop(client);
         for (const id of client.subs) this.unloadLater(id);
     }
 
@@ -861,6 +981,40 @@ export class Engine {
     // -----------------------------------------------------------------------
     // Providers
 
+    private limits = new Map<string, PlanLimits>();
+
+    /** Never let a delayed report or a different account replace this account's meter. */
+    limitsReported(limits: PlanLimits, partial: boolean) {
+        const key = planLimitKey(limits.provider, limits.accountId);
+        const prev = this.limits.get(key);
+        if (prev && prev.at > limits.at) return;
+        const merged = mergeLimits(prev, limits, partial);
+        this.limits.set(key, merged);
+        this.broadcast({ type: "limits", limits: merged });
+    }
+
+    private accountStatus = new Map<string, Partial<AccountInfo>>();
+
+    private accountProjects(): string[] {
+        return [...this.workspaces.keys(), ...(this.o.startCwd ? [this.o.startCwd] : [])];
+    }
+
+    private async accountsList(provider: string, refresh = false): Promise<AccountInfo[]> {
+        accountProvider(provider);
+        return Promise.all(listAccounts(provider).map(async (a) => {
+            const key = `${provider}:${a.id}`;
+            if (refresh) {
+                try {
+                    const status = await checkAgentCli(provider, undefined, a.id);
+                    this.accountStatus.set(key, { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan });
+                } catch (e) {
+                    this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
+                }
+            }
+            return { ...a, ...this.accountStatus.get(key) };
+        }));
+    }
+
     private async providersList(): Promise<ProviderInfo[]> {
         const out: ProviderInfo[] = [];
         for (const p of allProviders()) {
@@ -881,7 +1035,7 @@ export class Engine {
                     source: on ? "your plan" : undefined,
                     keyUrl: p.keyUrl,
                     requiresKey: false,
-                    agentCli: { installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
+                    agentCli: { accounts: listAccounts(p.id).length > 1 ? await this.accountsList(p.id) : undefined, defaultAccount: defaultAccount(p.id), installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
                 });
                 continue;
             }
@@ -1104,6 +1258,7 @@ export class Engine {
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
+            { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
             { name: "tasks", description: "Sub-agents and tasks delegated to other models (/tasks stop stops them)", args: "[stop [task-id]]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
@@ -1136,6 +1291,13 @@ export class Engine {
         switch (method) {
             case "terminal.open":
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                if (p.login !== undefined) {
+                    if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
+                    const provider = str(p.login.provider, "provider");
+                    const accountId = str(p.login.accountId, "accountId");
+                    const command = loginCommand(provider, accountId);
+                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
                 this.terminals.write(client, str(p.id, "id"), str(p.data, "data"));
@@ -1146,16 +1308,29 @@ export class Engine {
             case "terminal.resize":
                 this.terminals.resize(client, str(p.id, "id"), p.cols, p.rows);
                 return null;
-            case "terminal.close":
-                this.terminals.close(client, str(p.id, "id"));
+            case "terminal.close": {
+                const id = str(p.id, "id");
+                const pending = this.openingTerminals.get(id);
+                const cancelled = pending?.window === (client.window ?? client);
+                if (cancelled) pending!.cancelled = true;
+                try { this.terminals.close(client, id); }
+                catch (e) {
+                    if (!cancelled || !(e instanceof RpcError && e.code === "terminal_not_open")) throw e;
+                }
                 return null;
+            }
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
+            case "terminal.list":
+                return this.terminals.list(client);
+            case "terminal.attach":
+                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                return this.terminals.attach(client, str(p.id, "id"), p.have);
             case "scripts.list":
                 return await listScripts(p.cwd);
             case "scripts.save": {
-                const { project, script } = await saveScript(p.cwd, { id: p.id, name: p.name, command: p.command, icon: p.icon });
+                const { project, script } = await saveScript(p.cwd, { id: p.id, name: p.name, command: p.command, icon: p.icon, runOnWorktreeCreate: p.runOnWorktreeCreate });
                 this.broadcast({ type: "scripts.changed", project });
                 return script;
             }
@@ -1171,14 +1346,33 @@ export class Engine {
             }
             case "scripts.run": {
                 // Only ever from a click in the GUI: the stored command, typed into a terminal the window can see and stop.
+                // Or, with `setup`, the setup script, once, in the worktree this window just created (see setup.ts).
                 if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
-                const { project, script } = await findScript(p.cwd, p.script);
-                // The window may have gone while the script was looked up.
-                if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
-                const opened = this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, { input: `${script.command}\r` });
-                // It's running; remembering it for the header button needn't hold up the reply, and may fail quietly.
-                void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
-                return { ...opened, script };
+                const grant = p.setup === undefined ? undefined : this.setups.take(client, p.setup);
+                const id = str(p.id, "id");
+                if (!/^[a-zA-Z0-9-]{1,80}$/.test(id) || this.openingTerminals.has(id)) throw new RpcError("Invalid or duplicate terminal id", "invalid");
+                const pending = { window: client.window ?? client, cancelled: false };
+                this.openingTerminals.set(id, pending);
+                try {
+                    const cwd = str(p.cwd, "cwd");
+                    const found = await findScript(cwd, p.script);
+                    const { project, script } = found;
+                    // A close from the reloaded window also cancels this old connection's pending lookup.
+                    if (pending.cancelled) throw new RpcError("That terminal was closed", "terminal_not_open");
+                    if (!this.clients.has(client)) throw new RpcError("Disconnected", "disconnected");
+                    if (grant) checkGrant(grant, cwd, found);
+                    const opened = this.terminals.open(client, id, grant ? grant.path : cwd, p.cols, p.rows, { input: `${script.command}\r`, script: { id: script.id, name: script.name } });
+                    // A setup run must not change the header button's last-used script.
+                    if (!grant) void markUsed(project, script.id).then(() => this.broadcast({ type: "scripts.changed", project }), () => undefined);
+                    return { ...opened, script };
+                } finally { this.openingTerminals.delete(id); }
+            }
+            case "scripts.setupInfo": {
+                if (typeof p.cwd !== "string") throw new RpcError("cwd must be a string", "invalid");
+                const cwd = resolve(expandHome(text(p.cwd, "cwd", 4096)));
+                const main = mainCheckoutOf(cwd);
+                const { script } = await findSetupScript(cwd);
+                return { main, ...(script ? { script } : {}), trusted: setupTrusted(main, main) };
             }
             case "hello": {
                 const startCwd = this.o.startCwd && this.o.startCwd !== homedir() ? this.o.startCwd : undefined;
@@ -1297,6 +1491,11 @@ export class Engine {
                 return this.runtime(p.id).rewindPlan(num(p.index, -1));
             case "session.rewind":
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
+            case "session.fork": {
+                const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
+                this.watch(client, rt.id);
+                return rt.snapshot();
+            }
             case "session.changes":
                 return this.runtime(p.id).changes();
             case "session.gitChanges": {
@@ -1401,6 +1600,43 @@ export class Engine {
                 if (p.refresh) await this.refreshListings(true);
                 else if (!this.listed) await this.firstListings();
                 return this.modelsList();
+            case "session.setAccount":
+                this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
+                return null;
+            case "accounts.list":
+                return this.accountsList(str(p.provider, "provider"), p.refresh === true);
+            case "accounts.add": {
+                const provider = str(p.provider, "provider");
+                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
+                const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
+                forgetClient(provider);
+                await this.refreshListings(true);
+                this.broadcast({ type: "models.changed" });
+                return added;
+            }
+            case "accounts.rename":
+                renameAccount(str(p.provider, "provider"), str(p.id, "id"), str(p.name, "name"));
+                this.broadcast({ type: "models.changed" });
+                return null;
+            case "accounts.setDefault":
+                setDefaultAccount(str(p.provider, "provider"), str(p.id, "id"));
+                await this.refreshListings(true);
+                this.broadcast({ type: "models.changed" });
+                return null;
+            case "accounts.remove": {
+                const provider = str(p.provider, "provider");
+                const id = str(p.id, "id");
+                account(provider, id);
+                for (const rt of this.runtimes.values()) {
+                    if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn before removing it", "busy");
+                }
+                removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
+                this.accountStatus.delete(`${provider}:${id}`);
+                this.limits.delete(planLimitKey(provider, id));
+                this.broadcast({ type: "limits", limits: { provider, accountId: id, windows: [], reached: false, at: Date.now() } });
+                this.broadcast({ type: "models.changed" });
+                return null;
+            }
             case "providers.list":
                 return this.providersList();
             // Awaited here: these can reject before their first await, and a promise handed back unawaited is
@@ -1412,6 +1648,8 @@ export class Engine {
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");
                 if (getProvider(id)?.auth === "cli") {
+                    // Keep account folders registered and protected until explicitly removed.
+                    if ((readAgentConfig(id)?.accounts?.length ?? 0) > 0) throw new RpcError("Remove named accounts before turning off this CLI", "invalid");
                     // Turns it off here; the CLI stays signed in.
                     removeAgentConfig(id);
                     forgetClient(id);
@@ -1431,8 +1669,18 @@ export class Engine {
                 return this.inspectProject(str(p.path, "path"));
             case "projects.worktrees":
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
-            case "projects.createWorktree":
-                return createWorktree(
+            case "projects.createWorktree": {
+                if (p.setup !== undefined && typeof p.setup !== "boolean") throw new RpcError("setup must be true or false", "invalid");
+                // Copy the client's accepted preview before checkout yields; never select a replacement later.
+                let preview: CreateWorktreeParams["setupScript"];
+                if (p.setup === true && p.setupScript !== undefined) {
+                    const s = p.setupScript;
+                    if (!s || typeof s !== "object" || Array.isArray(s) || typeof s.id !== "string" || typeof s.command !== "string") {
+                        throw new RpcError("setupScript must contain the previewed id and command", "invalid");
+                    }
+                    preview = { id: text(s.id, "setupScript.id", 64), command: text(s.command, "setupScript.command", SCRIPT_LIMITS.command) };
+                }
+                const made = await createWorktree(
                     {
                         path: resolve(expandHome(text(p.path, "path", 4096))),
                         branch: text(p.branch, "branch", 200),
@@ -1442,8 +1690,13 @@ export class Engine {
                     },
                     this.o.log,
                 );
+                // The worktree is there whatever its setup does: only asked for, by this request, may it run.
+                return p.setup === true ? { ...made, ...(await this.grantSetup(client, made.path, preview)) } : made;
+            }
             case "projects.removeWorktree":
                 return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));
+            case "runs.start":
+                return await startRun(this.runHost(), parseRunRequest(p, { validImage, resolvePath: (path) => resolve(expandHome(path)) }));
             case "projects.trust":
                 return this.trustProject(str(p.path, "path"), Boolean(p.trust));
             case "projects.forget": {

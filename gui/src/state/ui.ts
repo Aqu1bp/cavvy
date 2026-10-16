@@ -21,6 +21,8 @@ export const [modelPickerOpen, setModelPickerOpen] = createSignal(false);
 export const [modePickerOpen, setModePickerOpen] = createSignal(false);
 /** The composer's context card (/context opens it). */
 export const [contextCardOpen, setContextCardOpen] = createSignal(false);
+/** Setup must be visible; an overlay opened during checkout leaves it for a manual run. */
+export const setupObscured = () => Boolean(settingsTab() || paletteOpen() || rewindOpen() || deleteRequest() || commitRequest() || folderPickerOpen() || mcpOpen() || modelPickerOpen() || modePickerOpen() || contextCardOpen());
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */
 export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */
@@ -32,8 +34,13 @@ export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
 /** Bottom panel; hiding it keeps its shells running. */
 export const [terminalOpen, setTerminalOpen] = createSignal(false);
 
-/** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there. */
-export const terminalActions: { runScript?: (cwd: string, script: { id: string; name: string }) => void } = {};
+/** The models Home's next prompt goes to, each in a worktree of its own (Compare in the model picker); undefined while that's off. */
+export const [comparePicks, setComparePicks] = createSignal<string[] | undefined>();
+/** A worktree's setup run: the server's single-use ticket, the tab's name, and the command for its tooltip. */
+export interface SetupRun { ticket: string; label: string; command: string }
+
+/** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
+export const terminalActions: { loginAccount?: (provider: string, accountId: string, name: string) => void; runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void } = {};
 
 /** The find bar over the conversation (⌘F), what it looks for, and a bump to take focus again. */
 export const [findOpen, setFindOpen] = createSignal(false);

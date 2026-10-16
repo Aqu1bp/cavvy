@@ -4,10 +4,11 @@
 
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
-import type { GuiSettings, HelloResult, PermissionModeId, PlanLimits, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import { planLimitKey, type PlanLimits } from "@shared/protocol";
+import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isTauri } from "../lib/platform";
+import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
 import { prefs } from "./prefs";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
@@ -18,7 +19,7 @@ import { afterFailedReopen } from "../lib/reopen";
 import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
 import { composerDrafts } from "../lib/composer-draft";
 
-export const rpc = new Rpc(credentials);
+export const rpc = new Rpc(credentials, windowKey);
 rpc.retriesCredentials = isTauri;
 
 // ---------------------------------------------------------------------------
@@ -152,11 +153,25 @@ export interface AppState {
     /** The mode picked on the home screen, which new sessions start in; the saved default until then. */
     homeMode?: PermissionModeId;
     seen: Record<string, number>;
-    /** The agent CLIs' plan limits, by provider (claude-code, codex): the account's, shared by its sessions. */
+    /** The agent CLIs' plan limits, by provider and account: the account's, shared by its sessions. */
     limits: Record<string, PlanLimits>;
 }
 
 const SEEN_KEY = "harness.seen";
+const NAVIGATION_KEY = "harness.navigation";
+
+/** Per webview/tab, separate from device-wide preferences and auth links. */
+function loadNavigation(): Pick<AppState, "activeId" | "homeCwd"> {
+    try {
+        const saved = JSON.parse(sessionStorage.getItem(NAVIGATION_KEY) ?? "null");
+        return {
+            activeId: typeof saved?.activeId === "string" && saved.activeId ? saved.activeId : undefined,
+            homeCwd: typeof saved?.homeCwd === "string" && saved.homeCwd ? saved.homeCwd : undefined,
+        };
+    } catch {
+        return {};
+    }
+}
 
 function loadSeen(): Record<string, number> {
     try {
@@ -179,7 +194,19 @@ export const [app, setApp] = createStore<AppState>({
     settings: {},
     seen: loadSeen(),
     limits: {},
+    ...loadNavigation(),
 });
+
+// Observe the store so all navigation paths (Home, send, import, deletion and
+// sidebar activation) persist together, including direct setApp callers.
+createRoot(() => createEffect(() => {
+    const saved = JSON.stringify({ activeId: app.activeId, homeCwd: app.homeCwd });
+    try {
+        sessionStorage.setItem(NAVIGATION_KEY, saved);
+    } catch {
+        // Storage can be disabled; navigation still works in memory.
+    }
+}));
 
 function saveSeen() {
     try {
@@ -319,6 +346,14 @@ export async function createSession(cwd: string, mode?: PermissionModeId): Promi
     return adopt(snap);
 }
 
+/** Fork a session at the end of the turn `turn` of its prompt `index` (shown as `text`), and show the fork. */
+export async function forkSession(id: string, at: { index: number; text: string; turn: string }): Promise<SessionHandle> {
+    const snap = await rpc.call("session.fork", { id, ...at });
+    const h = adopt(snap);
+    await activate(h.id);
+    return h;
+}
+
 /** Show a session in the main view. `cwd` is its project, for one not in the lists (an old one found by search). */
 export async function activate(id: string | undefined, cwd?: string) {
     // A jump waiting for another session doesn't wait any more.
@@ -342,6 +377,31 @@ export async function activate(id: string | undefined, cwd?: string) {
         if (e instanceof RpcError && e.code === "not_found") forgetSession(id);
         if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
         reportError(e);
+    }
+}
+
+/** Restore only after bootstrap. Lists are capped, so absence is not deletion. */
+export async function restoreActiveSession() {
+    const id = app.activeId;
+    if (!id || handles.has(id)) return;
+    const cwd = app.homeCwd;
+    const current = () => app.activeId === id && app.homeCwd === cwd;
+    try {
+        const h = await openSession(id);
+        // A slow restore must not undo navigation performed in the meantime.
+        if (!current()) return;
+        setApp("homeCwd", h.view.state.cwd);
+        markSeen(id);
+    } catch (e) {
+        if (!current()) return;
+        if (e instanceof RpcError && e.code === "not_found") {
+            forgetSession(id);
+        } else if (e instanceof RpcError && e.code === "needs_trust" && cwd) {
+            requestTrust(cwd, () => { if (current()) void restoreActiveSession(); });
+        } else {
+            // Keep the selection on transient failures for the next reconnect.
+            reportError(e);
+        }
     }
 }
 
@@ -401,8 +461,8 @@ export async function refreshProjects() {
 let watchingEditor = false;
 
 export async function refreshLimits() {
-    const all = await rpc.call("limits.get", {});
-    setApp("limits", reconcile(Object.fromEntries(all.map((l) => [l.provider, l]))));
+    const limits = await rpc.call("limits.get", {});
+    setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), l]))));
 }
 
 export async function refreshSettings() {
@@ -505,9 +565,10 @@ function onEvent(ev: ServerEvent) {
             toast(ev.message, ev.level);
             return;
         case "limits":
-            setApp("limits", ev.limits.provider, reconcile(ev.limits));
+            setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(ev.limits));
             return;
         case "models.changed":
+            void refreshProviders().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;
@@ -541,6 +602,7 @@ export function start() {
                 void refreshLimits().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
+                await restoreActiveSession();
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();
             } catch (e) {

@@ -45,7 +45,9 @@ import { attachmentsNote } from "../providers/files";
 import { getKey, removeKey, setKey, storageDescription } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { maskKey, redact } from "../util/redact";
-import { listSessions, findSession } from "../agent/session";
+import { listSessions, findSession, type Session } from "../agent/session";
+import { forkSession, forkTargets } from "../agent/fork";
+import { forkUiLog } from "../server/history";
 import { loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
 import { estimateTokens } from "../agent/compact";
@@ -58,7 +60,9 @@ import { expandCommand, type CustomCommand } from "./custom";
 import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
-import { clockTime, limitLines } from "../backends/limits";
+import { account, addAccount, listAccounts } from "../providers/accounts";
+import { loginCommand as accountLoginCommand } from "../backends/account-login";
+import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
@@ -310,6 +314,13 @@ async function modelCommand(app: App, args: string) {
 // /login, /logout, /providers
 
 async function loginCommand(app: App, args: string) {
+    const accountArgs = args.trim().split(/\s+/);
+    if ((accountArgs[0] === "claude-code" || accountArgs[0] === "codex") && accountArgs.length > 1) {
+        const provider = accountArgs[0];
+        if (accountArgs[1] === "add" && accountArgs.length === 2) return addCliAccount(app, provider);
+        if (accountArgs.length === 2) return signInCliAccount(app, provider, accountArgs[1]!);
+        throw new Error(`Use /login ${provider} add or /login ${provider} <account-id>.`);
+    }
     let providerId: string | undefined = args.trim().toLowerCase() || undefined;
     if (providerId === "custom") return addCustomProvider(app);
     if (providerId && getProvider(providerId)?.auth === "gcloud") return vertexLogin(app);
@@ -475,6 +486,55 @@ async function agentLogin(app: App, providerId: string) {
     if (!app.model) await app.setModel(modelRef(pick), { persist: true });
     else if (app.model.provider !== providerId && (await confirm(app, `Switch to ${pick.name ?? pick.id} in ${def.name}?`, [theme.muted(`Now: ${app.model.name ?? app.model.id} (${app.model.provider})`)], "Switch", "Keep the current model"))) {
         await app.setModel(modelRef(pick), { persist: true });
+    }
+}
+
+/** Launch only the vendor's own flow; credentials never pass through a Harness input dialog. */
+async function signInCliAccount(app: App, provider: string, id: string) {
+    const selected = account(provider, id);
+    const command = accountLoginCommand(provider, selected.id);
+    await app.screen.suspend(() => {
+        spawnSync(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] });
+    });
+    const status = await withProgress(app, [theme.muted("Checking sign-in…")], (signal) => checkAgentCli(provider, signal, selected.id));
+    if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : "not signed in"}`);
+    await app.refreshListings();
+}
+
+async function addCliAccount(app: App, provider: string) {
+    const id = await app.showDialog(new InputDialog({ title: "Account id", header: [theme.muted("A short id using letters, numbers, hyphens or underscores.")], placeholder: "personal" }));
+    if (id === undefined) return;
+    const name = await app.showDialog(new InputDialog({ title: "Account name", placeholder: "Personal" }));
+    if (name === undefined) return;
+    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a private folder in Harness's accounts directory."), theme.muted("A new folder starts with separate CLI settings and history.")], placeholder: "/absolute/path" }));
+    if (folder === undefined) return;
+    const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
+    app.notice(`Created ${selected.name}: ${selected.folder}`);
+    if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");
+    await signInCliAccount(app, provider, selected.id);
+}
+
+async function accountCommand(app: App, args: string) {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    const providers = ["claude-code", "codex"];
+    if (parts.length) {
+        const provider = providers.includes(parts[0]!) ? parts.shift()! : app.model?.provider;
+        if (!provider || !providers.includes(provider) || parts.length > 1) throw new Error("Use /account [claude-code|codex] [account-id].");
+        if (parts.length) return app.setAccount(provider, parts[0]!);
+        return pickAccount(app, [provider]);
+    }
+    return pickAccount(app, providers);
+}
+
+async function pickAccount(app: App, providers: string[]) {
+    const items = providers.flatMap((provider) => listAccounts(provider).map((a) => ({
+        label: a.name, value: `${provider}:${a.id}`, group: getProvider(provider)!.name,
+        description: a.folder || "The CLI's normal configuration", detail: app.session.accountId(provider) === a.id ? "current" : undefined,
+    })));
+    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("A switch starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
+    if (choice) {
+        const [provider, id] = choice.split(":");
+        app.setAccount(provider!, id!);
     }
 }
 
@@ -957,6 +1017,25 @@ async function resumeCommand(app: App, args: string) {
     app.resume(file);
 }
 
+/** A new session with this conversation so far, switched to; the original stays as it is (/resume goes back). */
+function forkCommand(app: App) {
+    const origin = app.session;
+    if (!forkTargets(origin.messages).length) return app.notice("Nothing to fork yet.");
+    let fork: Session;
+    try {
+        fork = forkSession(origin, { cut: origin.messages.length, model: app.model && modelRef(app.model) });
+    } catch (e) {
+        return app.notice(`Couldn't fork the session: ${(e as Error).message}`, "error");
+    }
+    // Its timeline, for when the app opens it.
+    forkUiLog({ file: origin.path, id: origin.meta.id }, { file: fork.path, id: fork.meta.id });
+    app.resume(fork);
+    // Resume creates a new agent; tell it the current mode, as GUI forks do.
+    if (app.mode === "plan") app.agent?.noteModeChange("default", "plan");
+    else app.agent?.addReminder(`The permission mode is "${MODE_INFO[app.mode].label}": ${MODE_INFO[app.mode].description}`);
+    app.notice(`Forked into "${fork.title}" (${fork.meta.id}). /resume ${origin.meta.id} goes back to the original.`);
+}
+
 function costCommand(app: App) {
     const s = app.session;
     const lines = ["", heading("Session cost")];
@@ -973,7 +1052,7 @@ function costCommand(app: App) {
     if (s.costUnknown) lines.push(theme.subtle("  No price is known for some of the models used, so their usage isn't in the total."));
     lines.push(theme.subtle("  Prices come from each provider's model listing (or OpenRouter's catalog when marked ~); treat them as estimates."));
     for (const l of app.planLimits.values()) {
-        const name = getProvider(l.provider)?.name ?? l.provider;
+        const name = limitAccountLabel(l.provider, l.accountId);
         lines.push("", heading(`${name} plan limits`));
         for (const line of limitLines(l)) lines.push(`  ${line}`);
         lines.push(theme.subtle(`  As ${name} reported them at ${clockTime(l.at)}.`));
@@ -1572,7 +1651,8 @@ export function reviewPrompt(args: string): string {
 const BUILTIN: Command[] = [
     { name: "help", aliases: ["?"], description: "Show commands and shortcuts", whileBusy: true, run: (app) => helpCommand(app) },
     { name: "model", description: "Pick a model from every configured provider", args: "[provider:model]", run: modelCommand },
-    { name: "login", description: "Add an API key (any provider, auto-detected)", args: "[provider|custom]", run: loginCommand },
+    { name: "login", description: "Add an API key or CLI account", args: "[provider|custom] [add|account-id]", run: loginCommand },
+    { name: "account", description: "Choose the session account for Claude Code or Codex", args: "[provider] [account-id]", run: accountCommand },
     { name: "logout", description: "Remove a stored API key", run: logoutCommand },
     { name: "providers", description: "Providers, key status and endpoints", whileBusy: true, run: (app) => providersCommand(app) },
     { name: "fast", description: "Toggle fast service on supported models (higher usage/cost)", args: "[on|off|status]", run: fastCommand },
@@ -1629,6 +1709,7 @@ const BUILTIN: Command[] = [
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },
     { name: "rewind", description: "Go back to before an earlier prompt: restore files, the conversation, or both", noEcho: true, run: rewindCommand },
+    { name: "fork", description: "Continue in a new session from here, keeping this one as it is", run: forkCommand },
     { name: "rename", description: "Name this conversation", args: "<title>", run: (app, args) => (args ? (app.session.setTitle(args), app.notice(`Renamed to "${args}"`)) : app.notice("Usage: /rename <title>", "error")) },
     { name: "export", description: "Save the conversation as markdown (or --copy)", args: "[file|--copy]", run: exportCommand },
     {
