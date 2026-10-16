@@ -3,6 +3,7 @@ import { dirname, join } from "path";
 import { isDeepStrictEqual } from "util";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import { MCP_SERVER_NAME } from "../agent/delegation";
+import { serverCwd } from "../mcp/approval";
 
 interface ClaudeMcpPolicy {
     strict: boolean;
@@ -18,6 +19,21 @@ const record = (value: unknown): value is Record<string, unknown> => value !== n
  * an approval doesn't bind, so a definition with any other field isn't passed on.
  */
 const BOUND_FIELDS = new Set(["command", "args", "env", "cwd", "url", "headers", "type", "disabled"]);
+
+/** Claude Code expands ${VAR} in definitions; Harness doesn't, so an approval binds only the literal text. */
+const expands = (v: unknown): boolean => typeof v === "string" ? v.includes("${") : Array.isArray(v) ? v.some(expands) : record(v) ? Object.values(v).some(expands) : false;
+
+/** One transport, as Claude Code will read it: `type` isn't fingerprinted, so it may not pick between a command and a URL. */
+function oneTransport(config: Record<string, unknown>): boolean {
+    const command = config.command !== undefined, url = config.url !== undefined;
+    if (config.type === undefined) return command !== url;
+    if (config.type === "stdio") return command && !url;
+    if (config.type === "http" || config.type === "sse") return url && !command;
+    return false;
+}
+
+/** What Claude Code would run is exactly what the approval covers. */
+const bound = (config: Record<string, unknown>) => Object.keys(config).every((k) => BOUND_FIELDS.has(k)) && oneTransport(config) && !expands(config);
 
 function exists(file: string): boolean {
     try {
@@ -65,11 +81,11 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
                 if (!record(config)) return fallback("a project MCP server definition is malformed");
                 const entry = Object.hasOwn(approved.servers, name) ? approved.servers[name] : undefined;
                 // These names convey the manager's config-bound approvals to Claude, never legacy name-only approvals.
-                const bound = Object.keys(config).every((k) => BOUND_FIELDS.has(k));
-                if (!bound && entry?.source === "project") unboundField = true;
-                if (name !== MCP_SERVER_NAME && entry?.source === "project" && bound && isDeepStrictEqual(config, entry.config)) {
-                    // Claude ignores server cwd; compare the directory Harness would actually use.
-                    if (realpathSync(entry.config.cwd ?? approved.cwd) === real) enabled.push(name);
+                const covered = bound(config);
+                if (!covered && entry?.source === "project") unboundField = true;
+                if (name !== MCP_SERVER_NAME && entry?.source === "project" && covered && isDeepStrictEqual(config, entry.config)) {
+                    // Claude ignores server cwd; compare the directory Harness would actually use (a relative one is the project's).
+                    if (serverCwd(entry.config, approved.cwd) === real) enabled.push(name);
                     else {
                         disabled.add(name);
                         incompatibleCwd = true;
@@ -84,7 +100,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
             settings: { enabledMcpjsonServers: enabled.sort(), disabledMcpjsonServers: [...disabled].sort() },
             ...(incompatibleCwd || unboundField ? { warning: [
                 incompatibleCwd && "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd.",
-                unboundField && "Claude Code skipped approved project MCP servers whose .mcp.json definitions use fields a Harness approval doesn't cover (such as headersHelper or oauth).",
+                unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Harness approved: fields an approval doesn't cover (such as headersHelper or oauth), ${VAR} expansion, or a type that doesn't match a single command or URL.",
             ].filter(Boolean).join(" ") } : {}),
         };
     } catch {

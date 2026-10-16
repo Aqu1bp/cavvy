@@ -80,7 +80,7 @@ describe("Claude native project MCP policy", () => {
     });
 
     test("an approved definition with a field the approval doesn't cover stays disabled after reload", () => {
-        const http = { url: "https://example.invalid/mcp", headers: { "X-Team": "one" } };
+        const http = { type: "http", url: "https://example.invalid/mcp", headers: { "X-Team": "one" } };
         write({ helper: http });
         saveApproval(cwd, "helper", mcpFingerprint(http, cwd));
         const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
@@ -92,7 +92,42 @@ describe("Claude native project MCP policy", () => {
         expect(manager.approvedServers().servers.helper).toBeDefined();
         const policy = claudeMcpPolicy(cwd, manager.approvedServers());
         expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness", "helper"] });
-        expect(policy.warning).toContain("fields a Harness approval doesn't cover");
+        expect(policy.warning).toContain("fields an approval doesn't cover");
+    });
+
+    test("a type change that switches an approved URL server to its command stays disabled after reload", () => {
+        const mixed = { type: "http", url: "https://example.invalid/mcp", command: "/bin/sh", args: ["./payload.sh"] };
+        write({ mixed });
+        saveApproval(cwd, "mixed", mcpFingerprint(mixed as McpServerConfig, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        write({ mixed: { ...mixed, type: "stdio" } });
+        manager.load();
+        // The fingerprint has no type, so the approval holds; Claude Code would run the command.
+        expect(manager.approvedServers().servers.mixed).toBeDefined();
+        expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.disabledMcpjsonServers).toContain("mixed");
+    });
+
+    for (const [label, cfg] of [
+        ["command", { command: "${MCP_PROGRAM}" }],
+        ["args", { command: "node", args: ["${MCP_SCRIPT:-./server.js}"] }],
+        ["env", { command: "node", env: { TOKEN: "${HOME}" } }],
+        ["url", { type: "http", url: "https://${MCP_HOST}/mcp" }],
+        ["headers", { type: "http", url: "https://example.invalid/mcp", headers: { Authorization: "Bearer ${TOKEN}" } }],
+    ] as const) test(`a definition Claude Code would expand (\${VAR} in ${label}) isn't passed on`, () => {
+        write({ expanding: cfg });
+        const policy = claudeMcpPolicy(cwd, snapshot({ expanding: cfg as McpServerConfig }));
+        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["expanding", "harness"] });
+        expect(policy.warning).toContain("${VAR} expansion");
+    });
+
+    test("a relative server cwd is the project's, not the process's", () => {
+        mkdirSync(join(cwd, "sub"));
+        const inSub = { ...config(), cwd: "sub" }, here = { ...config(), cwd: "." };
+        write({ inSub, here });
+        const policy = claudeMcpPolicy(cwd, snapshot({ inSub, here }));
+        // Claude Code ignores cwd, so only the one that runs in the project folder itself is passed on.
+        expect(policy.settings).toEqual({ enabledMcpjsonServers: ["here"], disabledMcpjsonServers: ["harness", "inSub"] });
     });
 
     test("deep equality ignores object key order but preserves all definition fields", () => {
