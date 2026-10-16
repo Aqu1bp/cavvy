@@ -36,6 +36,8 @@ import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
+import { account } from "../providers/accounts";
+import { RpcError } from "../server/rpc-error";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
@@ -363,6 +365,20 @@ export class App {
             }
         }
         return this.listings;
+    }
+
+    /** Keep account changes between turns, like model changes. */
+    setAccount(provider: string, id: string) {
+        if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
+        const selected = account(provider, id);
+        if (!this.session.setAccount(provider, selected.id)) return;
+        const name = getProvider(provider)?.name ?? provider;
+        const text = this.session.messages.length
+            ? `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.`
+            : `Using ${name} · ${selected.name}.`;
+        this.session.recordNotice("info", text);
+        this.notice(text);
+        this.renderLive();
     }
 
     /** Switch the active model. Returns false if the provider isn't usable. */
