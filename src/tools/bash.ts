@@ -253,8 +253,10 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         let out = truncateMiddle(cleanOutput(res.output), MAX_OUTPUT);
         const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
         // A last grep that found nothing exits 1: that's the answer, not a failure of what came before it.
-        // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have.
-        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command) : undefined;
+        // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have,
+        // or the shell stopped before the end of the script (errexit, a failed special builtin): then it's not
+        // the last command's 1. The line after the command records the cwd, so a cwd means it got there.
+        const search = res.exitCode === 1 && !res.timedOut && !res.aborted && res.newCwd !== undefined && res.output.length < MAX_KEPT && !shellComplained(stripAnsi(res.output)) ? finalSearch(input.command) : undefined;
         if (res.timedOut) out += `\n\nCommand timed out after ${Math.round(timeoutMs / 1000)}s and was killed.`;
         else if (res.aborted) out += `\n\n[Command interrupted by user]`;
         else if (search) {

@@ -485,6 +485,24 @@ describe("a last grep that finds nothing isn't an error", () => {
         expect(midLine.content).not.toContain("found no matches");
     });
 
+    test("a shell that stopped before the end of the script: its 1 isn't the search's", async () => {
+        // A user's startup file can turn on errexit; here the env does (bash reads BASH_ENV).
+        const env = join(realpathSync(tempDir()), "errexit.sh");
+        writeFileSync(env, "set -e\n");
+        const saved = { SHELL: process.env.SHELL, BASH_ENV: process.env.BASH_ENV };
+        process.env.SHELL = "/bin/bash";
+        process.env.BASH_ENV = env;
+        try {
+            const r = await bash("false; grep x /dev/null");
+            expect(r.isError).toBe(true);
+            expect(r.content).not.toContain("found no matches");
+        } finally {
+            process.env.SHELL = saved.SHELL;
+            if (saved.BASH_ENV === undefined) delete process.env.BASH_ENV;
+            else process.env.BASH_ENV = saved.BASH_ENV;
+        }
+    });
+
     test("in bash too: a descriptor closed, then copied", async () => {
         const saved = process.env.SHELL;
         process.env.SHELL = "/bin/bash";
