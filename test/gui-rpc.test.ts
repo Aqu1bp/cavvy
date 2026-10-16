@@ -207,3 +207,34 @@ test("reconnect during a one-time credential exchange keeps the successful resul
     expect(rpc.state).toBe("open");
     expect(states).not.toContain("unauthorized");
 });
+
+
+test("a window presents the same private key after reconnect, only in handshake protocols", async () => {
+    setup();
+    const handshakes: { url: string; protocols?: string | string[] }[] = [];
+    class WindowSocket extends Socket {
+        constructor(url: string, protocols?: string | string[]) {
+            super();
+            handshakes.push({ url, protocols });
+        }
+    }
+    globalThis.WebSocket = WindowSocket as unknown as typeof WebSocket;
+    const key = "0123456789abcdef0123456789abcdef";
+    rpc = new Rpc(async () => ({ url: "ws://test/ws", token: "test-token" }), () => key);
+    await rpc.connect();
+    const first = Socket.instances[0]!;
+    first.open();
+    const list = rpc.call("terminal.list", {});
+    first.message({ id: first.sent[0]!.id, result: [] });
+    expect(await list).toEqual([]);
+    first.close();
+    rpc.reconnectNow();
+    await Promise.resolve();
+    const back = Socket.instances[1]!;
+    back.open();
+    expect(handshakes).toEqual(Array(2).fill({
+        url: "ws://test/ws", protocols: ["harness.v1", "auth.test-token", `window.${key}`],
+    }));
+    expect(JSON.stringify(first.sent)).not.toContain(key);
+    expect(back.sent).toEqual([]);
+});

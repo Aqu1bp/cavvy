@@ -79,8 +79,9 @@ export interface BackendHost {
     context?(contextTokens: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
-    /** Messages the user typed while the backend was working. */
-    drainQueued(): string[] | Promise<string[]>;
+    /** Messages the user typed while the backend was working. If any are drained,
+     * consume and record preceding output before recording the queued prompt. */
+    drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
 }
 
 export interface BackendTurn {
@@ -96,6 +97,8 @@ export interface BackendTurn {
     effort?: Effort;
     fastMode?: boolean;
     appendSystemPrompt?: string;
+    /** Grace for Claude Code background shells/monitors (seconds, default 600). */
+    backgroundWaitSec?: number;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
@@ -148,6 +151,8 @@ export interface BackendResult {
     /** What the backend did, e.g. Bash(npm test). */
     actions: string[];
     error?: string;
+    /** Background work stopped by this run, for a durable next-prompt reminder. */
+    backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
 }
