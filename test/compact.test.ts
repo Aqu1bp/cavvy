@@ -86,8 +86,11 @@ test("after the initial task, newer user messages get the remaining budget first
     const result = handoffTranscript([user(initial), user(older), user(latest)], 1000);
     expect(result.text).toContain(initial);
     expect(result.text).toContain(latest);
+    // The older one is cut to what's left.
+    expect(result.text.length).toBeLessThanOrEqual(1000);
+    expect(result.text).toContain("OLDER x");
     expect(result.text).not.toContain(older);
-    expect(result.shortenedChars).toBe("User: ".length + older.length);
+    expect(result.shortenedChars).toBe(800 - (result.text.match(/x/g) ?? []).length);
 });
 
 test("assistant and tool parts keep their caps and count only original characters", () => {
@@ -145,4 +148,14 @@ test("a paste bigger than the whole budget keeps its head and tail inside its fr
     const body = r.text.slice(r.text.indexOf("\nHEAD "), r.text.lastIndexOf(" TAIL\n"));
     const kept = (body.match(/x/g) ?? []).length + "HEAD  TAIL".length;
     expect(r.shortenedChars).toBe(text.length - kept);
+});
+
+test("a later message too big for what's left is cut to it, keeping its head and tail, not left out", () => {
+    for (const later of [user("HEAD " + "x".repeat(90_000) + " TAIL"), { role: "user" as const, content: [{ type: "file" as const, kind: "text" as const, name: "Pasted text", size: 90_010, lines: 1, text: "HEAD " + "x".repeat(90_000) + " TAIL", pasted: true }] }]) {
+        const r = handoffTranscript([user("Original task"), assistant("ok"), later], 60_000);
+        expect(r.text.length).toBeLessThanOrEqual(60_000);
+        expect(r.text).toContain("Original task");
+        expect(r.text).toContain("HEAD ");
+        expect(r.text).toContain(" TAIL");
+    }
 });

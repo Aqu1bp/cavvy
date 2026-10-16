@@ -58,11 +58,11 @@ export function compactTranscriptText(messages: Message[], maxChars: number): st
 /** Handoffs keep the initial task, then whole recent user messages, before other history. */
 export function handoffTranscript(messages: Message[], maxChars: number): { text: string; shortenedChars: number } {
     // Queued user instructions can share a message with a batch of tool results.
-    const blocks = messages.flatMap((m) => {
+    const blocks = messages.flatMap((m): (Rendered & { user: boolean; words?: Message })[] => {
         if (m.role !== "user") return [{ ...renderForTranscript(m, maxChars), user: false }];
         const results = m.content.filter((p) => p.type === "tool_result");
-        const content = m.content.filter((p) => p.type !== "tool_result");
-        return [{ ...renderForTranscript({ ...m, content: results }, maxChars), user: false }, { ...renderForTranscript({ ...m, content }, maxChars, true), user: true }];
+        const words = { ...m, content: m.content.filter((p) => p.type !== "tool_result") };
+        return [{ ...renderForTranscript({ ...m, content: results }, maxChars), user: false }, { ...renderForTranscript(words, maxChars, true), user: true, words }];
     });
     const first = blocks.findIndex((b) => b.user && b.text);
     const recent = blocks.map((_, i) => i).reverse();
@@ -73,11 +73,13 @@ export function handoffTranscript(messages: Message[], maxChars: number): { text
     for (const i of order) {
         const b = blocks[i];
         if (!b?.text) continue;
-        // Each fits the whole budget (a user message is cut to it, in its parts): one that doesn't fit what's left is left out.
-        if (b.text.length > remaining - (selected.size ? 2 : 0)) continue;
-        selected.set(i, b.text);
-        remaining -= b.text.length + (selected.size > 1 ? 2 : 0);
-        shortenedChars -= b.keptChars;
+        const available = remaining - (selected.size ? 2 : 0);
+        // A user message is cut to what's left, in its parts; anything else that doesn't fit is left out.
+        const fitted = b.text.length > available && b.words ? renderForTranscript(b.words, available, true) : b;
+        if (!fitted.text || fitted.text.length > available) continue;
+        selected.set(i, fitted.text);
+        remaining -= fitted.text.length + (selected.size > 1 ? 2 : 0);
+        shortenedChars -= fitted.keptChars;
     }
     return { text: [...selected].sort(([a], [b]) => a - b).map(([, text]) => text).join("\n\n"), shortenedChars };
 }
@@ -106,7 +108,13 @@ const wrapping = (x: EntryPart) => x.wrap(truncateMiddle(x.source, x.max)).lengt
  * first) rather than shortening the message through a frame; for a handoff
  * (`fit`), the user's words are then cut in the middle, inside their frame.
  */
-function renderForTranscript(m: Message, cap: number, fit = false): { text: string; originalChars: number; keptChars: number } {
+interface Rendered {
+    text: string;
+    originalChars: number;
+    keptChars: number;
+}
+
+function renderForTranscript(m: Message, cap: number, fit = false): Rendered {
     const parts: EntryPart[] = [];
     const add = (source: string, max: number, wrap = (t: string) => t, more: Partial<EntryPart> = {}) => parts.push({ source, max, wrap, ...more });
     const ownWords = fit && m.role === "user";
