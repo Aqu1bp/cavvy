@@ -130,6 +130,8 @@ export class Session {
     readonly meta: SessionMeta;
     messages: Message[] = [];
     fastMode?: boolean;
+    /** The speed the file has (a chat from before speeds were saved has it only in memory, until one is chosen). */
+    private savedFastMode?: boolean;
     model?: string;
     title?: string;
     /** The latest compaction summary (/summary). */
@@ -239,12 +241,16 @@ export class Session {
         return m;
     }
 
+    // Re-choosing what it already has writes nothing: a line per pick would only repeat it.
     setFastMode(enabled: boolean) {
         this.fastMode = enabled;
+        if (this.savedFastMode === enabled) return;
+        this.savedFastMode = enabled;
         this.write({ t: "fastMode", enabled });
     }
 
     setModel(ref: string) {
+        if (this.model === ref) return;
         this.model = ref;
         this.write({ t: "model", model: ref });
     }
@@ -400,7 +406,7 @@ export class Session {
                 else s.backends.delete(l.provider);
             }
             else if (l.t === "model") s.model = l.model;
-            else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = l.enabled;
+            else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = s.savedFastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
