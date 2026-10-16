@@ -95,15 +95,22 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
         // The server knows the shell before it sends any output, and ignores acks for one that has gone.
         if (chars && app.conn === "open") void rpc.call("terminal.ack", { id, chars }).catch(() => {});
     };
+    const [ended, setEnded] = createSignal<string>();
+    const [restarting, setRestarting] = createSignal(false);
     const restart = () => {
+        if (restarting()) return;
         clearTimeout(acking);
         acking = undefined;
         drawn = 0;
+        // Nothing more from the old shell is written; what xterm still has queued from it is drawn
+        // first, so the reset goes in after it (RIS, as term.reset() does) and the new shell after that.
         id = crypto.randomUUID();
-        term.reset();
-        void start();
+        setRestarting(true);
+        term.write("\x1bc", () => {
+            setRestarting(false);
+            if (!disposed) void start();
+        });
     };
-    const [ended, setEnded] = createSignal<string>();
     const fitNow = () => {
         if (disposed || !p.visible || !container?.clientHeight || !term) return;
         fit.fit();
@@ -180,6 +187,6 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
     createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); term.focus(); } }); });
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
         <div class="terminal-emulator" ref={container} />
-        <Show when={ended()}><div class="terminal-message"><span>{ended()}</span><button class="btn secondary sm" disabled={app.conn !== "open"} onClick={restart}><RotateCw size={12} /> Restart shell</button></div></Show>
+        <Show when={ended()}><div class="terminal-message"><span>{ended()}</span><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart shell</button></div></Show>
     </div>;
 }

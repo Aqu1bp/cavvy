@@ -103,7 +103,7 @@ async function resolveModel(ref: string) {
     const id = ref.slice(i + 1);
     if (provider === "gemini" && ["gemini-test", "gemini-other"].includes(id)) return { model: { ...GEMINI, id }, client: childClient as any };
     if (provider === "gemini" && id === "gemini-fast") return { model: { ...GEMINI, id, supportsFastMode: true }, client: childClient as any };
-    if (provider === "codex") return { model: { provider: "codex", id }, client: await clientFor("codex") };
+    if (provider === "codex") return { model: { provider: "codex", id, ...(id === "gpt-fast" ? { supportsFastMode: true, fastModeTier: "priority" } : {}) }, client: await clientFor("codex") };
     if (provider === "claude-code") return { model: { provider: "claude-code", id }, client: await clientFor("claude-code") };
     return undefined;
 }
@@ -116,6 +116,7 @@ const agents: InstanceType<typeof Agent>[] = [];
 beforeEach(() => {
     cwd = realpathSync(tempDir("deleg-proj-"));
     rmSync(LOG, { force: true });
+    rmSync(LOG + ".tiers.json", { force: true });
     process.env.FAKE_LOG = LOG;
     for (const k of ["FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
@@ -1163,6 +1164,38 @@ describe("harness models", () => {
         expect(mainRequests.map((r) => r.fastMode)).toEqual([true, true, true]);
         // Fast where the sub-agent's model has it; standard on one without.
         expect(childRequests.map((r) => [r.model.id, r.fastMode])).toEqual([["gemini-fast", true], ["gemini-test", false]]);
+    });
+
+    test("a Claude Code or Codex sub-agent kept going (a Stop hook) takes up a speed change made meanwhile", async () => {
+        const flag = join(cwd, "stopped-once");
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "On Codex", prompt: "a", model: "codex:gpt-fast" } }], "tool_use"), main([{ type: "text", text: "ok" }])];
+        let n = 0;
+        const client = { stream: async () => steps[n++], listModels: async () => [] };
+        const settings = { hooks: { Stop: [{ command: `[ -f '${flag}' ] || { touch '${flag}'; sleep 1; echo "keep going" >&2; exit 2; }` }] } };
+        const { run, session } = await makeAgent({ provider: "anthropic", model: { id: "claude-main", supportsFastMode: true }, client, settings });
+        session.setFastMode(true);
+        const done = run("go");
+        await until(() => existsSync(flag));
+        session.setFastMode(false);
+        expect(await done).toBe("done");
+        const turns = received().filter((m) => m.method === "turn/start");
+        expect(turns.length).toBe(2);
+        expect(turns[0].params.serviceTier).toBe("priority");
+        // Standard now: the thread comes off the fast tier.
+        expect(turns[1].params.serviceTier).toBeNull();
+    });
+
+    test("a session showing standard (its model has no fast mode) doesn't run sub-agents fast", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Fast-capable", prompt: "a", model: "gemini:gemini-fast", subagent_type: "explore" } }], "tool_use"), main([{ type: "text", text: "ok" }])];
+        let n = 0;
+        const client = { stream: async () => steps[n++], listModels: async () => [] };
+        // Fast was chosen on another model; this one has none.
+        const { run, session } = await makeAgent({ provider: "anthropic", model: { id: "claude-main", supportsFastMode: false }, client });
+        session.setFastMode(true);
+        expect(await run("go")).toBe("done");
+        expect(childRequests.map((r) => r.fastMode)).toEqual([false]);
     });
 
     test("a harness model gets no MCP server: delegation is its Task tool", async () => {

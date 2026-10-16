@@ -66,8 +66,9 @@ let turnSeq = 0;
 // Codex keeps a thread's tier with the thread, so it outlives this process: kept beside the log.
 const tierFile = process.env.FAKE_LOG ? process.env.FAKE_LOG + ".tiers.json" : undefined;
 const tiers = new Map<string, string | null>(tierFile && existsSync(tierFile) ? Object.entries(JSON.parse(readFileSync(tierFile, "utf8"))) : []);
+// As 0.163 does: no tier (or null, which clears one) is reported as "default".
 const setTier = (id: string, tier: unknown) => {
-    tiers.set(id, typeof tier === "string" ? tier : null);
+    tiers.set(id, typeof tier === "string" ? tier : "default");
     if (tierFile) writeFileSync(tierFile, JSON.stringify(Object.fromEntries(tiers)));
 };
 let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void } | undefined;
@@ -229,14 +230,14 @@ async function handle(m: any) {
         case "thread/start":
             await startMcp(p.config);
             setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
-            return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? null });
+            return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? "default" });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
             await startMcp(p.config);
             if (!tiers.has(p.threadId)) setTier(p.threadId, process.env.FAKE_THREAD_TIER ?? null);
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
-            return reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(p.threadId) ?? null });
+            return reply({ thread: { id: p.threadId }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(p.threadId) ?? "default" });
         case "turn/start": {
             // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
