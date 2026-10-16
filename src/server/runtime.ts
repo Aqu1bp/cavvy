@@ -605,7 +605,8 @@ export class Runtime {
     }
 
     rename(title: string) {
-        const t = cleanTitle(title);
+        // Shown and listed as it is: a key in the prompt it was made from stays out (on disk it's redacted anyway).
+        const t = cleanTitle(redact(title));
         // A title still being made when it was closed.
         if (!t || this.closed) return;
         this.session.setTitle(t);
@@ -1365,7 +1366,8 @@ export class Runtime {
         if (!this.client) return;
         this.titleAsked = true;
         this.titleTries++;
-        this.titleFrom ??= prompt;
+        // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
+        this.titleFrom ??= redact(prompt);
         let title: string | undefined;
         // Claude Code and Codex run whole turns only, so they can't be asked for one: without a
         // smallModel on another provider the prompt names the session.

@@ -133,6 +133,8 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
 
     const endWord = () => {
         if (wordStarted) {
+            // A lone `[` matches nothing (it's the test command): no glob.
+            if (word === "[" && !wordQuoted) wordGlobbed = false;
             if (wordGlobbed && wordLead === "unknown") globStart.push(argv.length);
             if (wordExpands) expands.push(argv.length);
             if (wordGlobbed) globbed.push(argv.length);
@@ -581,12 +583,12 @@ export function isReadOnlyCommand(cmd: string): boolean {
             if (a.commands.slice(i + 1).some((d) => d.argv.some((w) => use.test(w)))) return false;
         }
     }
-    if (a.commands.some(globTurnsUnsafe)) return false;
+    if (a.commands.some((c) => globTurnsUnsafe(c) || mathRuns(c))) return false;
     return a.commands.every((c) => isReadOnlySimple(c.argv));
 }
 
 /** Read-only whatever options or operands they're given (none runs a program or writes a file). */
-const GLOB_SAFE = new Set(["cat", "head", "tail", "wc", "ls", "echo", "printf", "stat", "du", "df", "grep", "egrep", "fgrep", "cut", "tr", "diff", "cmp", "comm", "nl", "column", "basename", "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "sha1sum", "hexdump", "od", "strings", "test", "[", "true", "false", "which", "whereis", "type", "sleep", "seq", "expr", "cd", "pwd"]);
+const GLOB_SAFE = new Set(["cat", "head", "tail", "wc", "ls", "echo", "stat", "du", "df", "grep", "egrep", "fgrep", "cut", "tr", "diff", "cmp", "comm", "nl", "column", "basename", "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "sha1sum", "hexdump", "od", "strings", "true", "false", "which", "whereis", "type", "sleep", "seq", "expr", "cd", "pwd"]);
 
 /**
  * The read-only checks see the words as written, but a glob becomes the
@@ -602,9 +604,55 @@ function globTurnsUnsafe(c: SimpleCommand): boolean {
     const words = effectiveArgv(c.argv);
     const base = (words[0] ?? "").split("/").pop()!;
     if (base === "uniq" || base === "xxd") return true;
-    if (GLOB_SAFE.has(base)) return false;
-    const end = c.argv.indexOf("--");
+    // printf takes options only before its format, which mathRuns checks with its arguments.
+    if (GLOB_SAFE.has(base) || base === "printf") return false;
+    // find takes `-delete` and `-exec` after its paths, `--` or not.
+    const end = base === "find" ? -1 : optionsEnd(c);
     return c.globbed.some((i) => (end < 0 || i < end) && (c.globStart?.includes(i) || c.argv[i]!.startsWith("-")));
+}
+
+/** printf conversions that print their argument as text; zsh evaluates any other's (and `*`'s) as arithmetic. */
+const TEXT_CONVERSION = /^%(?:%|[-+ #0'0-9.$]*[sbqc])$/;
+/** An argument arithmetic can only read: a plain number. */
+const PLAIN_NUMBER = /^[-+]?(?:0[xX][0-9a-fA-F]+|\d+\.?\d*|\.\d+)$/;
+
+/**
+ * zsh evaluates some builtins' arguments as arithmetic, and arithmetic can
+ * assign: `printf %d 'a[$(cmd)]=1'` runs cmd, `printf %d PATH=1` empties
+ * PATH for what follows. So do printf's `%n` and `*`, and `test -t`. Such an
+ * argument must be a plain number, written out (not an expansion or glob).
+ * A format that's an expansion or glob can be anything, `%n` too.
+ */
+function mathRuns(c: SimpleCommand): boolean {
+    const words = effectiveArgv(c.argv);
+    const base = (words[0] ?? "").split("/").pop()!;
+    const off = c.argv.length - words.length;
+    const plain = (i: number) => i < words.length && !c.expands?.includes(off + i) && !c.globbed?.includes(off + i) && PLAIN_NUMBER.test(words[i]!);
+    if (base === "test" || base === "[") return words.some((w, i) => w === "-t" && !plain(i + 1) && words[i + 1] !== "]" && i + 1 < words.length);
+    if (base !== "printf") return false;
+    const f = words[1] === "--" ? 2 : 1;
+    if (f >= words.length) return false;
+    if (c.expands?.includes(off + f) || c.globbed?.includes(off + f)) return true;
+    const specs = words[f]!.match(/%[^a-zA-Z%]*[a-zA-Z%]?/g) ?? [];
+    if (specs.every((sp) => TEXT_CONVERSION.test(sp))) return false;
+    return words.slice(f + 1).some((_, k) => !plain(f + 1 + k));
+}
+
+/**
+ * Where the options surely end: at a `--` no option could take as its value
+ * (`git grep -e -- *` searches for `--`, and the `*` can still be options).
+ * Only after a word that isn't an option, a `--`, or a `--name=value`, and
+ * isn't an expansion (`-e $empty -- *` is `-e -- *`).
+ */
+function optionsEnd(c: SimpleCommand): number {
+    const { argv } = c;
+    for (let i = 1; i < argv.length; i++) {
+        if (argv[i] !== "--") continue;
+        const prev = argv[i - 1]!;
+        if (c.expands?.includes(i - 1)) continue;
+        if (!prev.startsWith("-") || prev === "-" || prev === "--" || (prev.startsWith("--") && prev.includes("="))) return i;
+    }
+    return -1;
 }
 
 // Not zgrep: it exits 1 for errors of its own (macOS: "Illegal seek" on a bad stream).
@@ -662,8 +710,14 @@ const SEARCH_OPTIONS: Record<string, SearchOptions> = {
     },
 };
 
-/** Every option in `args` is one of `o`'s, and none is a max count of 0 (then it doesn't look). */
-function plainSearch(args: string[], o: SearchOptions): boolean {
+/** A max count that makes it look: a plain number above 0 (`-m 0`, `+0`, `-0` and `0x0` don't, or aren't plain). */
+const searchingCount = (value: string | undefined) => value === undefined || (/^\d+$/.test(value) && Number(value) > 0);
+
+/**
+ * Every option in `args` is one of `o`'s, and none is a max count of 0 (then
+ * it doesn't look). The long options it takes as options go in `seen`.
+ */
+function plainSearch(args: string[], o: SearchOptions, seen = new Set<string>()): boolean {
     for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
         if (a === "--") return true;
@@ -673,22 +727,22 @@ function plainSearch(args: string[], o: SearchOptions): boolean {
             const eq = a.indexOf("=");
             const name = a.slice(2, eq < 0 ? undefined : eq);
             let value = eq < 0 ? undefined : a.slice(eq + 1);
+            seen.add(name);
             if (eq < 0 && o.long.has(name)) continue;
             if (!o.longValued.has(name)) return false;
             // --color and --context take theirs only after `=`.
             if (value === undefined && !["color", "colour", "context"].includes(name)) value = args[++i];
-            if (name === "max-count" && value !== undefined && Number(value) === 0) return false;
+            if (name === "max-count" && !searchingCount(value)) return false;
             continue;
         }
         for (let k = 1; k < a.length; k++) {
             const ch = a[k]!;
             if (/[0-9]/.test(ch)) continue;
             if (o.valued.includes(ch)) {
-                // A count (-A, -B, -C, -m) only takes the next word when it's a number: BSD grep's -C
-                // takes its own only in the same word, so in `-C -v` the -v is an option.
-                const count = "ABCm".includes(ch);
-                const value = k + 1 < a.length ? a.slice(k + 1) : !count || /^\d+$/.test(args[i + 1] ?? "") ? args[++i] : undefined;
-                if (ch === "m" && value !== undefined && Number(value) === 0) return false;
+                // -C only takes the next word when it's a number: BSD grep's takes its own only in the
+                // same word, so in `-C -v` the -v is an option. The others always take the next word (`-m +0`).
+                const value = k + 1 < a.length ? a.slice(k + 1) : ch !== "C" || /^\d+$/.test(args[i + 1] ?? "") ? args[++i] : undefined;
+                if (ch === "m" && !searchingCount(value)) return false;
                 break;
             }
             if (!o.flags.includes(ch)) return false;
@@ -731,12 +785,13 @@ export function finalSearch(cmd: string, env: Record<string, string | undefined>
     // Only options known to leave status 1 meaning "no match" (not -v, -L, git's --not, decompressing, -m 0).
     const kind = name === "git grep" ? "git" : name === "rg" ? "rg" : "grep";
     const args = name === "git grep" ? argv.slice(gitSubcommand(argv).index + 1) : argv.slice(1);
-    if (!plainSearch(args, SEARCH_OPTIONS[kind]!)) return undefined;
+    const seen = new Set<string>();
+    if (!plainSearch(args, SEARCH_OPTIONS[kind]!, seen)) return undefined;
     // Options from the environment count too: BSD grep reads GREP_OPTIONS, rg its config file (one per
     // line) unless told --no-config. A relative config path is the shell's cwd's, which isn't known here.
     if (kind === "grep" && env.GREP_OPTIONS?.trim() && !plainSearch(env.GREP_OPTIONS.trim().split(/\s+/), SEARCH_OPTIONS.grep!)) return undefined;
-    const end = args.indexOf("--");
-    if (kind === "rg" && env.RIPGREP_CONFIG_PATH && !(end < 0 ? args : args.slice(0, end)).includes("--no-config")) {
+    // --no-config as an option, not a pattern (`-e --no-config`).
+    if (kind === "rg" && env.RIPGREP_CONFIG_PATH && !seen.has("no-config")) {
         // All of it, or not at all: options past what's read would go unseen.
         const config = env.RIPGREP_CONFIG_PATH.startsWith("/") ? readSmallFile(env.RIPGREP_CONFIG_PATH, 65537) : undefined;
         if (config === undefined || Buffer.byteLength(config) > 65536) return undefined;

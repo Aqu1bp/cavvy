@@ -401,6 +401,32 @@ describe("connecting", () => {
         }
     }, 30_000);
 
+    test("a title made from the prompt has no key in it, cut or capitalized", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const secret = "abcdefghijklmnopqrstuvwx";
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "silent";
+        registerSecret(secret, "test-key");
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: "claude-code:default", persist: false });
+            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+            // First (it would be capitalized), and long enough to be cut in the middle.
+            await engine.handle(c, "session.send", { id, text: `${secret} investigate auth, then ${secret}${secret} and more words after it` });
+            for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
+            const title = rt.session.title!;
+            expect(title).toStartWith("[REDACTED test-key] investigate auth");
+            expect(title.toLowerCase()).not.toContain(secret.slice(0, 8));
+        } finally {
+            await engine.stop();
+            unregisterSecret(secret);
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }, 30_000);
+
     test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id } = await engineWithSession();

@@ -469,6 +469,12 @@ describe("a last grep that finds nothing isn't an error", () => {
         ["grep -n 'foo$' f", "grep"],
         ["grep -n \"foo$\" f", "grep"],
         ["grep -C -v x f", undefined],
+        // A max count of 0 however it's spelled; a count's value is always its next word.
+        ["grep -m +0 . f", undefined],
+        ["grep -m -0 . f", undefined],
+        ["grep -m ' 0' . f", undefined],
+        ["grep --max-count=+0 . f", undefined],
+        ["grep -m 3 . f", "grep"],
         ["grep -C 2 x f", "grep"],
         ["grep x /dev/null 2>&- >/dev/stderr", undefined],
         ["grep x /dev/null 2>/dev/null 1>&- >/dev/stdout", undefined],
@@ -492,6 +498,8 @@ describe("a last grep that finds nothing isn't an error", () => {
         // --no-config: the file isn't read. A relative path is the shell's cwd's; a file too long to read whole could hide one.
         expect(finalSearch("rg --no-config x", { RIPGREP_CONFIG_PATH: join(dir, "inverted") })?.name).toBe("rg");
         expect(finalSearch("rg x -- --no-config", { RIPGREP_CONFIG_PATH: join(dir, "inverted") })).toBeUndefined();
+        // There it's a pattern, and rg reads its config.
+        expect(finalSearch("rg -e --no-config -e . f", { RIPGREP_CONFIG_PATH: join(dir, "inverted") })).toBeUndefined();
         expect(finalSearch("rg x", { RIPGREP_CONFIG_PATH: "plain" })).toBeUndefined();
         writeFileSync(join(dir, "long"), "--hidden\n".repeat(8000) + "--invert-match\n");
         expect(finalSearch("rg x", { RIPGREP_CONFIG_PATH: join(dir, "long") })).toBeUndefined();
