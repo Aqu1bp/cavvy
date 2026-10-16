@@ -40,6 +40,10 @@
 //                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
 //                    Claude Code sends one per request)
 // FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
+// Reliability cases: steering / steering-many fold stdin input between tool rounds;
+// shell-background / shell-background-stuck / monitor-background report live tasks;
+// partial-error / partial-error-exit / result-error separate diagnostics from replies.
+// FAKE_CLAUDE_VERSION overrides the initialize version for compatibility tests.
 
 import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -150,6 +154,9 @@ let seq = 0;
 let prompts = 0;
 /** The prompt the turn under way answers (its user message's uuid); none for a turn Claude Code starts itself. */
 let answering: string | undefined;
+// A busy CLI folds these into the current turn, rather than starting concurrent turns.
+let steering: { uuid?: string; text: string }[] | undefined;
+let steeringWake: (() => void) | undefined;
 /**
  * What the session has spent so far: like Claude Code's, each result's
  * total_cost_usd includes the earlier ones, those of the runs it resumes too.
@@ -439,15 +446,52 @@ async function turn(content: any[], uuid?: string) {
         if (process.env.FAKE_RATE_LIMIT_FOLLOWUP) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT_FOLLOWUP, "utf-8")), session_id: sessionId });
     };
     if (process.env.FAKE_RATE_LIMIT_LATE !== "1") rateLimit();
-    if (scenario === "rate-limit") {
+    if (scenario === "rate-limit" || scenario.startsWith("partial-error")) {
+        if (scenario.startsWith("partial-error")) text("The first check passed.");
         out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "You've hit your limit" }] }, error: "rate_limit", parent_tool_use_id: null, session_id: sessionId });
         if (process.env.FAKE_RATE_LIMIT_LATE === "1") rateLimit();
+        if (scenario === "partial-error-exit") process.exit(3);
         return result("success", { is_error: true, result: "You've hit your limit" });
     }
+    if (scenario === "result-error") return result("error_during_execution", { errors: ["CLI diagnostic: execution failed"], usage: {} });
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
     text("Working on it.");
     let go = true;
+    if (scenario === "steering" || scenario === "steering-many") {
+        steering = [];
+        for (let round = 0; round < (scenario === "steering-many" ? 66 : 1); round++) {
+            const count = steering.length;
+            const next = new Promise<void>((r) => (steeringWake = r));
+            toolUse(`toolu_safe_${round}`, "Read", { file_path: join(cwd, "README.md") });
+            toolResult(`toolu_safe_${round}`, "read complete", false);
+            await Promise.race([next, Bun.sleep(scenario === "steering-many" ? 100 : 800)]);
+            if (steering.length === count) break;
+        }
+        const folded = steering;
+        steering = undefined;
+        steeringWake = undefined;
+        log({ foldedBeforeResult: folded.map((m) => m.text) });
+        text(folded.length ? `Adjusted: ${folded.map((m) => m.text).join(" | ")}` : "No steering received before result.");
+        return result("success", { user_message_uuids: [uuid, ...folded.map((m) => m.uuid)].slice(-64) });
+    }
+    if (scenario.startsWith("shell-background") || scenario === "monitor-background") {
+        const type = scenario === "monitor-background" ? "monitor_mcp" : "local_bash";
+        bgTasks.set("background-1", { task_id: "background-1", task_type: type, description: "Wait for checks" });
+        backgroundChanged();
+        text("Waiting for checks.");
+        result("success");
+        if (scenario !== "shell-background-stuck") setTimeout(async () => {
+            bgTasks.delete("background-1");
+            backgroundChanged();
+            await Bun.sleep(80);
+            // Shell/Monitor notifications may have no tool_use_id.
+            out({ type: "system", subtype: "task_notification", task_id: "background-1", status: "completed", summary: "Checks passed", session_id: sessionId });
+            await Bun.sleep(80);
+            followUp("Background checks passed.");
+        }, 150);
+        return;
+    }
     if (scenario === "write") go = await use("toolu_1", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" });
     else if (scenario === "write-config") go = await use("toolu_c", "Write", { file_path: join(cwd, ".claude", "settings.json"), content: "{}" });
     else if (scenario === "read-secret") go = await use("toolu_r", "Read", { file_path: join(cwd, "secret.txt") });
@@ -521,6 +565,7 @@ async function turn(content: any[], uuid?: string) {
     then?.();
 }
 
+let turnTail = Promise.resolve();
 let buf = "";
 for await (const chunk of Bun.stdin.stream()) {
     buf += new TextDecoder().decode(chunk);
@@ -540,7 +585,7 @@ for await (const chunk of Bun.stdin.stream()) {
                         subtype: "success",
                         request_id: m.request_id,
                         response: {
-                            claude_code_version: "2.1.301",
+                            claude_code_version: process.env.FAKE_CLAUDE_VERSION ?? "2.1.301",
                             models: [
                                 { value: "default", supportsFastMode: true, resolvedModel: "claude-test-1", displayName: "Default (recommended)", supportedEffortLevels: ["low", "high"] },
                                 { value: "sonnet", resolvedModel: "claude-test-2", displayName: "Sonnet", supportedEffortLevels: ["low", "high"] },
@@ -584,7 +629,12 @@ for await (const chunk of Bun.stdin.stream()) {
             const r = pending.get(m.response?.request_id);
             pending.delete(m.response?.request_id);
             r?.(m.response?.response ?? {});
-        } else if (m.type === "user") void turn(m.message?.content ?? [], typeof m.uuid === "string" ? m.uuid : undefined);
+        } else if (m.type === "user") {
+            if (steering) {
+                steering.push({ uuid: m.uuid, text: m.message.content.map((b: any) => b.text ?? "").join("") });
+                steeringWake?.();
+            } else turnTail = turnTail.then(() => turn(m.message?.content ?? [], typeof m.uuid === "string" ? m.uuid : undefined));
+        }
     }
 }
 // stdin closed: like the real CLI, exit once nothing's left to do (unless it's stuck).

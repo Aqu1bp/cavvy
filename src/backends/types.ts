@@ -79,8 +79,9 @@ export interface BackendHost {
     context?(contextTokens: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
-    /** Messages the user typed while the backend was working. */
-    drainQueued(): string[] | Promise<string[]>;
+    /** Messages the user typed while the backend was working. If any are drained,
+     * consume and record preceding output before recording the queued prompt. */
+    drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
 }
 
 export interface BackendTurn {

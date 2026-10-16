@@ -64,7 +64,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -1848,5 +1848,105 @@ describe("attachments", () => {
         expect(start.input[0].type).toBe("text");
         expect(start.input[0].text).toContain(`read these\n\n${framedText(file)}\n\n${pdfPlaceholder(pdf)}`);
         expect(JSON.stringify(start)).not.toContain(pdf.data);
+    });
+});
+
+describe("Claude Code turn reliability (#60, #61, #64)", () => {
+    test("queued messages reach the running turn at a tool result, in order and before its result", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const a = await makeAgent({ provider: "claude-code", queued: [["first correction", "second correction"]] });
+        expect(await a.run("start")).toBe("done");
+        expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual(["first correction\n\nsecond correction"]);
+        const timeline = a.session.messages.map((m) => [m.role, m.content.map((p: any) => p.text ?? "").join("\n")]);
+        expect(timeline.map(([role]) => role)).toEqual(["user", "assistant", "user", "assistant"]);
+        expect(timeline[1]![1]).toContain("Working on it.");
+        expect(timeline[2]![1]).toBe("first correction\n\nsecond correction");
+        expect(timeline[3]![1]).toContain("Adjusted: first correction");
+        expect(timeline[3]![1]).not.toContain("Working on it.");
+        expect(starts()).toHaveLength(1);
+    });
+
+    for (const version of ["2.1.200", "unknown"]) test(`${version}: unverified CLI versions retain between-turn delivery without losing queued input`, async () => {
+        process.env.FAKE_CLAUDE_VERSION = version;
+        process.env.FAKE_SCENARIO = "steering";
+        process.env.FAKE_SECOND_SCENARIO = "none";
+        const a = await makeAgent({ provider: "claude-code", queued: [["queued correction"]] });
+        expect(await a.run("start")).toBe("done");
+        expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual([]);
+        expect(userTexts()).toEqual(["start", "queued correction"]);
+        expect(JSON.stringify(a.session.messages)).toContain("All done.");
+        expect(notices(a.events).join("\n")).toContain("Queued messages will be delivered when its current turn ends");
+    });
+
+    test("mid-turn delivery stays within the CLI's 64-UUID acknowledgement window", async () => {
+        process.env.FAKE_SCENARIO = "steering-many";
+        const a = await makeAgent({ provider: "claude-code", queued: Array.from({ length: 65 }, (_, i) => [`correction ${i}`]) });
+        expect(await a.run("start")).toBe("done");
+        expect(userTexts()).toEqual(["start", ...Array.from({ length: 65 }, (_, i) => `correction ${i}`)]);
+        expect(logLines().filter((l) => l.foldedBeforeResult).map((l) => l.foldedBeforeResult.length)).toEqual([63, 1]);
+    });
+
+    test("separately answered queued input waits for both results", async () => {
+        process.env.FAKE_SCENARIO = "write";
+        const a = await makeAgent({ provider: "claude-code", mode: "acceptEdits", queued: [["queued correction"]] });
+        expect(await a.run("start")).toBe("done");
+        expect(userTexts()).toEqual(["start", "queued correction"]);
+        expect(a.events.filter((e) => e.type === "text" && e.text === "All done.")).toHaveLength(2);
+    });
+
+    for (const scenario of ["shell-background", "monitor-background"]) test(`${scenario} keeps the turn alive through completion and the report turn`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.run("run checks and wait")).toBe("done");
+        expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+        expect(notices(a.events).join("\n")).toContain("Waiting for 1 background");
+        expect(notices(a.events).join("\n")).not.toContain("stopped with Claude Code");
+    });
+
+    test("a never-ending shell has a bounded wait and the model knows its lifetime", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { maxWaitMs: 100, pollMs: 20 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            expect(await a.run("run checks and wait")).toBe("done");
+            expect(notices(a.events).join("\n")).toMatch(/warn: Stopped waiting for 1 background/);
+            const args = starts()[0].argv;
+            expect(args[args.indexOf("--append-system-prompt") + 1]).toContain("Background commands and monitors");
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
+    test("a result-only CLI error persists as a notice and is absent from reopened model history", async () => {
+        process.env.FAKE_SCENARIO = "result-error";
+        const session = Session.create(cwd, { system: "test" });
+        try {
+            const a = await makeAgent({ provider: "claude-code", session });
+            expect(await a.run("check it")).toBe("error");
+            const saved = readFileSync(session.file, "utf-8");
+            expect(saved).toContain("CLI diagnostic: execution failed");
+            session.release();
+            const reopened = Session.load(session.file);
+            try {
+                expect(reopened.messages.filter((m) => m.role === "assistant")).toEqual([]);
+                expect(reopened.notices.some((n) => n.level === "error" && n.text.includes("CLI diagnostic: execution failed"))).toBe(true);
+            } finally { reopened.release(); }
+        } finally { session.release(); }
+    });
+
+    for (const scenario of ["rate-limit", "partial-error", "partial-error-exit"]) test(`${scenario}: errors are notices, genuine partial replies survive and handoff excludes error prose`, async () => {
+        process.env.FAKE_SCENARIO = scenario;
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.run("check it")).toBe("error");
+        expect(JSON.stringify(a.session.messages)).not.toContain("You've hit your limit");
+        expect(a.events.some((e) => e.type === "assistant" && JSON.stringify(e).includes("You've hit your limit"))).toBe(false);
+        expect(a.session.notices.some((n) => n.level === "error" && /usage limit/.test(n.text) && n.text.includes("You've hit your limit"))).toBe(true);
+        if (scenario.startsWith("partial-error")) expect(JSON.stringify(a.session.messages)).toContain("The first check passed.");
+        process.env.FAKE_SCENARIO = "none";
+        const b = await makeAgent({ provider: "codex", session: a.session });
+        expect(await b.run("continue")).toBe("done");
+        const handoff = JSON.stringify(received().find((m) => m.method === "turn/start")?.params);
+        expect(handoff).not.toContain("You've hit your limit");
+        expect(handoff).not.toContain("usage limit was reached");
+        if (scenario.startsWith("partial-error")) expect(handoff).toContain("The first check passed.");
     });
 });
