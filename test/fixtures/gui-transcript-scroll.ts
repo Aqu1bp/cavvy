@@ -75,8 +75,8 @@ const scope = {
 const Transcript = component(readFileSync(new URL("../../gui/src/components/Transcript.tsx", import.meta.url), "utf8").replace(/^import .*;\n/gm, ""), "Transcript", scope);
 const turns = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `turn-${i}`, prompt: { text: `prompt ${i}` } }));
 const [aTurns, setATurns] = solid.createSignal(turns(45));
-const a = { id: "a", view: { get turns() { return aTurns(); } } };
-const b = { id: "b", view: { turns: turns(90) } };
+const a = { id: "a", view: { state: {}, get turns() { return aTurns(); } } };
+const b = { id: "b", view: { state: {}, turns: turns(90) } };
 const mount = (handle: any, runFrame = true) => { top = 0; root = node("root"); const dispose = renderer.render(() => Transcript({ handle }), root); if (runFrame) flush(); return dispose; };
 const scroller = () => all(root).find((n) => has(n, "transcript"))!;
 const scroll = (value: number) => { (scroller() as any).scrollTop = value; scroller().props.onScroll(); };
@@ -136,14 +136,14 @@ try {
     setATurns(turns(132)); flush(); scroll(0);
     assert.ok(button("jump"), "a send before initial restoration still enables scroll tracking");
     dispose();
-    const running = { id: "background", view: { turns: turns(45).map((t) => ({ ...t, status: "running" })) } };
+    const running = { id: "background", view: { state: {}, turns: turns(45).map((t) => ({ ...t, status: "running" })) } };
     dispose = mount(running); scroll(0); dispose();
     running.view.turns.forEach((t) => { t.status = "done"; });
     restoredOpen = false; dispose = mount(running);
     assert.ok(restoredOpen, "work that completed while unmounted restores open for an off-bottom reader");
     for (const missingPart of [false, true]) {
         dispose();
-        const promptSession = { id: `long-prompt-${missingPart}`, view: { turns: turns(45) } };
+        const promptSession = { id: `long-prompt-${missingPart}`, view: { state: {}, turns: turns(45) } };
         turnHeights.set("turn-5", 2000); // An expanded long prompt.
         dispose = mount(promptSession);
         scroll(1250); // Read deep inside turn 5, beyond its eventual clamped height.
