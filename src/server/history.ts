@@ -36,6 +36,8 @@ export interface Segment {
     messages: Message[];
     /** How its turns ended, where the messages don't say (errors, limits). */
     notices?: TurnNotice[];
+    /** Where its first messages were imported from (a Claude Code or Codex session). */
+    imported?: { source: string; startedAt?: number; omitted: number };
 }
 
 /** Every segment of a session file: a compaction starts a new one, a rewind cuts the current one. */
@@ -49,7 +51,7 @@ export function readSegments(file: string): Segment[] {
     }
     for (const raw of text.split("\n")) {
         if (!raw) continue;
-        let l: { t: string; m?: Message; summary?: string; count?: number } & Partial<TurnNotice>;
+        let l: { t: string; m?: Message; summary?: string; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
         try {
             l = JSON.parse(raw);
         } catch {
@@ -65,6 +67,7 @@ export function readSegments(file: string): Segment[] {
             const n = turnNotice(l);
             if (n) (cur.notices ??= []).push(n);
         }
+        else if (l.t === "import" && typeof l.source === "string") cur.imported = { source: l.source, startedAt: typeof l.startedAt === "number" ? l.startedAt : undefined, omitted: typeof l.omitted === "number" ? l.omitted : 0 };
     }
     return segments;
 }
@@ -207,13 +210,23 @@ let actionsNote: RegExp | undefined;
  * other models know what was done; the transcript shows the steps themselves.
  */
 export function withoutActionsNote(text: string): string {
+    return text.replace(actionsNoteRe(), "").trim();
+}
+
+function actionsNoteRe(): RegExp {
     if (!actionsNote) {
         const names = allProviders()
             .filter((p) => p.kind === "agent")
             .map((p) => p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-        actionsNote = new RegExp(`(^|\\n\\n)\\[(?:${names.join("|")}) used: [\\s\\S]*?\\](?=\\n\\n|$)`, "g");
+        actionsNote = new RegExp(`(^|\\n\\n)\\[(?:${names.join("|")}) used: ([\\s\\S]*?)\\](?=\\n\\n|$)`, "g");
     }
-    return text.replace(actionsNote, "").trim();
+    actionsNote.lastIndex = 0;
+    return actionsNote;
+}
+
+/** What the note lists ("Bash(npm test), Edit(src/x.ts)"), for turns whose steps weren't seen (imported ones). */
+export function actionsInNote(text: string): string[] {
+    return [...text.matchAll(actionsNoteRe())].map((m) => m[2]!.trim()).filter(Boolean);
 }
 
 /** A reopened session's sub-agents: their calls and results (what they did along the way isn't kept). */
@@ -246,7 +259,7 @@ export interface ReplayInput {
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
     const last = o.segments[o.segments.length - 1];
-    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, messages: o.current, notices: o.currentNotices ?? last?.notices }];
+    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
     segs.forEach((seg, si) => {
         const archived = si < segs.length - 1;
         let turn: Turn | undefined;
@@ -261,6 +274,12 @@ export function replay(o: ReplayInput): Turn[] {
         if (si > 0) {
             const t = start(undefined);
             t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false });
+            turn = undefined;
+        }
+        if (seg.imported) {
+            const t = start(undefined);
+            t.imported = true;
+            t.blocks.push({ t: "imported", id: o.newId(), source: getProvider(seg.imported.source)?.name ?? seg.imported.source, startedAt: seg.imported.startedAt, omitted: seg.imported.omitted });
             turn = undefined;
         }
         // Notices go to the turn they ended: the one before the message that came next.
@@ -296,7 +315,9 @@ export function replay(o: ReplayInput): Turn[] {
                 }
                 const images = m.content.filter((p) => p.type === "image").length;
                 const rec = o.ui.turn(si, index);
-                const t = start({ text: promptText(m), ...(images ? { images } : {}), ...(kind === "command" ? { command: true } : {}), ...(archived ? {} : { index }) }, rec?.at);
+                const imported = Boolean(m.meta?.imported);
+                const t = start({ text: promptText(m), ...(images ? { images } : {}), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at);
+                if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
                 if (rec?.status && rec.status !== "running") t.status = rec.status;
                 return;
@@ -309,6 +330,8 @@ export function replay(o: ReplayInput): Turn[] {
                 } else if (p.type === "text") {
                     const text = backend ? withoutActionsNote(p.text) : p.text;
                     if (text.trim()) t.blocks.push({ t: "text", id: o.newId(), text });
+                    // An imported turn has no steps to show: its note says what was used.
+                    else if (backend && t.imported) for (const used of actionsInNote(p.text)) t.blocks.push({ t: "notice", id: o.newId(), level: "info", text: `Used: ${used}` });
                 } else if (p.type === "tool_call") {
                     const b = toolBlockFromCall(p, o.meta(p));
                     const rec = o.ui.tools.get(p.id);

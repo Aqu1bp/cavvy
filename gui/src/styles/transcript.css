@@ -772,6 +772,16 @@ button.wrow:hover {
     font-weight: 500;
 }
 
+/* "Imported from Claude Code · date": the rule's label, not a line. */
+.compacted-rule .imported-label {
+    flex: none;
+    height: auto;
+    background: none;
+    color: var(--fg-muted);
+    font-weight: 500;
+    font-size: 0.857rem;
+}
+
 .compacted-summary {
     margin-top: 10px;
     padding: 12px 16px;

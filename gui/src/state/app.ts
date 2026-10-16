@@ -203,6 +203,12 @@ export async function openSession(id: string): Promise<SessionHandle> {
     return adopt(snap);
 }
 
+/** A Claude Code or Codex session of this folder, as a Harness session (a new one, or the one that already holds it). */
+export async function importCliSession(cwd: string, source: string, id: string): Promise<SessionHandle> {
+    const snap = await rpc.call("cliSessions.import", { cwd, source, id });
+    return adopt(snap);
+}
+
 export async function createSession(cwd: string, mode?: PermissionModeId): Promise<SessionHandle> {
     const snap = await rpc.call("session.create", { cwd, mode });
     return adopt(snap);

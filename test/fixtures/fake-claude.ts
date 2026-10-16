@@ -62,7 +62,8 @@ const flag = (name: string) => {
 };
 const resume = flag("--resume");
 const firstScenario = process.env.FAKE_SCENARIO ?? "write";
-if (resume?.startsWith("gone")) {
+// FAKE_GONE_ID: a session id (a real-looking UUID) that no longer exists.
+if (resume?.startsWith("gone") || (resume && resume === process.env.FAKE_GONE_ID)) {
     out({ type: "result", subtype: "error_during_execution", is_error: true, errors: [`No conversation found with session ID: ${resume}`], usage: {}, session_id: resume });
     process.exit(1);
 }

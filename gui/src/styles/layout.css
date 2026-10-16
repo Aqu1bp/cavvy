@@ -1472,6 +1472,105 @@ button.strip-ctl[aria-expanded="true"] {
     color: var(--accent);
 }
 
+/* Claude Code / Codex sessions of this project, to carry on here. */
+.cli-sessions {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.cli-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    color: var(--fg-muted);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.cli-head:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+
+.cli-head .chv {
+    transition: transform var(--dur-fast);
+}
+
+.cli-head .chv.open {
+    transform: rotate(90deg);
+}
+
+.cli-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 420px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+}
+
+.cli-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+}
+
+.cli-row + .cli-row {
+    border-top: 1px solid var(--border);
+}
+
+.cli-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.cli-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.cli-source {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--accent-softer);
+    color: var(--fg-muted);
+}
+
+.cli-meta {
+    margin-top: 2px;
+}
+
+.cli-warn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    color: var(--warning);
+}
+
+.cli-warn svg {
+    flex: none;
+}
+
+.cli-off {
+    flex: none;
+    max-width: 45%;
+    text-align: right;
+}
+
+.cli-more {
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+}
+
 /* ---- Splash, toasts ------------------------------------------------- */
 
 .splash {

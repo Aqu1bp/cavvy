@@ -12,7 +12,7 @@ const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { AgentRun, Block, InteractionResponse, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, CliSessionsList, InteractionResponse, ProjectScript, ServerEvent, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 
 const TOKEN = "test-token-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
@@ -84,7 +84,7 @@ class Client {
         return new Promise((resolve, reject) => this.waiting.set(id, { resolve, reject }));
     }
 
-    async open(method: "session.create" | "session.open", params: Record<string, unknown>): Promise<string> {
+    async open(method: "session.create" | "session.open" | "cliSessions.import", params: Record<string, unknown>): Promise<string> {
         const snap = await this.call<SessionSnapshot>(method, params);
         this.views.set(snap.state.id, { state: snap.state, turns: snap.turns, agents: snap.agents, seq: snap.seq });
         return snap.state.id;
@@ -968,6 +968,40 @@ describe("using a plan through an installed CLI", () => {
         process.env.PATH = PATH;
         c.close();
     });
+});
+
+describe("continuing a Claude Code session", () => {
+    test("the project's CLI sessions are listed, and one imports into an open session that resumes it", async () => {
+        const { claudeSession } = await import("./helpers/cli-stores");
+        const { realpathSync } = await import("fs");
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const cwd = project();
+        // The synthetic store isolate() set up; the CLI records the folder's real path.
+        const { id } = claudeSession(process.env.CLAUDE_CONFIG_DIR!, { cwd: realpathSync(cwd), turns: [{ prompt: "map the auth module", reply: "Here's the map.", tools: [["Read", { file_path: "src/auth.ts" }]] }], title: "Auth map" });
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        const c = await client();
+        try {
+            const list = await c.call<CliSessionsList>("cliSessions.list", { cwd });
+            expect(list.sources.map((s) => [s.source, s.enabled])).toEqual([["claude-code", true], ["codex", false]]);
+            expect(list.sessions).toEqual([expect.objectContaining({ source: "claude-code", id, title: "Auth map", messages: 3, recent: true })]);
+            const sid = await c.open("cliSessions.import", { cwd, source: "claude-code", id });
+            const v = c.view(sid);
+            expect(v.turns[0]!.blocks[0]).toMatchObject({ t: "imported", source: "Claude Code" });
+            expect(v.turns[1]).toMatchObject({ imported: true, prompt: { text: "map the auth module" } });
+            expect(v.turns[1]!.prompt!.index).toBeUndefined();
+            await expect(c.call("cliSessions.import", { cwd, source: "claude-code", id: "../etc" })).rejects.toThrow(/session id/);
+            const again = await c.call<CliSessionsList>("cliSessions.list", { cwd });
+            expect(again.sessions[0]!.harnessId).toBe(sid);
+            await c.call("session.send", { id: sid, text: "now the tests" });
+            await c.answer(sid, { kind: "permission", choice: "yes" });
+            await c.until(sid, (x) => done(x) && x.turns.length > 2, 30_000);
+            const t = lastTurn(c.view(sid));
+            expect(t.prompt).toMatchObject({ text: "now the tests", index: 2 });
+        } finally {
+            c.close();
+            removeAgentConfig("claude-code");
+        }
+    }, 45_000);
 });
 
 describe("sub-agents", () => {

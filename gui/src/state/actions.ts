@@ -1,9 +1,9 @@
 // What the user does, as calls to the server.
 
-import type { EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import type { CliSessionInfo, EffortLevel, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { copyText, pickFolder } from "../lib/platform";
-import { activate, app, createSession, handleFor, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import { prefs, setPrefs } from "./prefs";
 import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
@@ -32,6 +32,29 @@ export async function chooseFolder(o: { title?: string; action?: string; start?:
 /** Choose a project folder. */
 export function chooseProject(): Promise<string | undefined> {
     return chooseFolder();
+}
+
+/** Carry on with a Claude Code or Codex session in Harness: import it, or open the session that already holds it. */
+export async function continueCliSession(cwd: string, s: CliSessionInfo): Promise<boolean> {
+    try {
+        if (s.harnessId) {
+            await activate(s.harnessId);
+            return true;
+        }
+        const h = await importCliSession(cwd, s.source, s.id);
+        setApp("activeId", h.id);
+        if (h.view.state.cwd) setApp("homeCwd", h.view.state.cwd);
+        markSeen(h.id);
+        void refreshSessions();
+        return true;
+    } catch (e) {
+        if (e instanceof RpcError && e.code === "needs_trust") {
+            requestTrust(cwd, () => void continueCliSession(cwd, s));
+            return false;
+        }
+        reportError(e);
+        return false;
+    }
 }
 
 export async function openProject(path: string) {

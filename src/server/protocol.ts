@@ -156,6 +156,18 @@ export interface CompactBlock {
     auto: boolean;
 }
 
+/** Heads a conversation brought in from a Claude Code or Codex session. */
+export interface ImportedBlock {
+    t: "imported";
+    id: string;
+    /** "Claude Code" or "Codex". */
+    source: string;
+    /** When that session started. */
+    startedAt?: number;
+    /** Its earlier messages that weren't brought in. */
+    omitted: number;
+}
+
 export interface ShellBlock {
     t: "shell";
     id: string;
@@ -165,7 +177,7 @@ export interface ShellBlock {
     running: boolean;
 }
 
-export type Block = TextBlock | ThinkingBlock | ToolBlock | NoticeBlock | CompactBlock | ShellBlock;
+export type Block = TextBlock | ThinkingBlock | ToolBlock | NoticeBlock | CompactBlock | ImportedBlock | ShellBlock;
 
 export type TurnStatus = "running" | "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
 
@@ -187,6 +199,8 @@ export interface Turn {
     endedAt?: number;
     /** Before the last compaction: shown, but no longer in the model's context. */
     archived?: boolean;
+    /** From a Claude Code or Codex session started elsewhere: shown, can't be rewound to. */
+    imported?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +379,40 @@ export interface SessionSummary {
     model?: string;
     /** Loaded in the server right now. */
     live: boolean;
+}
+
+/** A conversation started in the Claude Code or Codex CLI, offered for import. */
+export interface CliSessionInfo {
+    source: "claude-code" | "codex";
+    id: string;
+    /** The CLI's own title, else the first prompt (cut short). Redacted. */
+    title: string;
+    startedAt?: number;
+    updatedAt: number;
+    /** Prompts and replies; at least this many when `partial`. */
+    messages: number;
+    partial: boolean;
+    model?: string;
+    /** The Harness session that already holds it. */
+    harnessId?: string;
+    /** Changed in the last couple of minutes: it may still be open in a terminal. */
+    recent: boolean;
+}
+
+export interface CliSourceInfo {
+    source: "claude-code" | "codex";
+    /** "Claude Code" or "Codex". */
+    name: string;
+    /** Turned on in Settings → Providers (import needs it). */
+    enabled: boolean;
+    /** Sessions of this folder not listed. */
+    more: number;
+}
+
+export interface CliSessionsList {
+    sources: CliSourceInfo[];
+    /** Both sources, newest first. */
+    sessions: CliSessionInfo[];
 }
 
 export interface ProjectInfo {
@@ -598,6 +646,10 @@ export interface Methods {
     "providers.removeKey": { params: { provider: string }; result: null };
     /** Turn on an agent CLI provider after checking (with the CLI) that it's installed and signed in. */
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
+    /** Recent Claude Code and Codex sessions that ran in this folder. */
+    "cliSessions.list": { params: { cwd: string }; result: CliSessionsList };
+    /** Import one into a Harness session (or open the one that already holds it). */
+    "cliSessions.import": { params: { cwd: string; source: string; id: string }; result: SessionSnapshot };
     "projects.recent": { params: Record<string, never>; result: ProjectInfo[] };
     "projects.inspect": { params: { path: string }; result: ProjectInfo };
     "projects.worktrees": { params: { path: string }; result: WorktreeInfo[] };

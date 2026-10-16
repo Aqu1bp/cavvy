@@ -637,7 +637,7 @@ export class Runtime {
         const t = this.turnId ? findTurn(this.view, this.turnId) : undefined;
         if (t) return t;
         const last = this.view.turns[this.view.turns.length - 1];
-        if (last && !last.prompt && !last.archived) return last;
+        if (last && !last.prompt && !last.archived && !last.imported) return last;
         const turn: Turn = { id: this.newId(), blocks: [], status: "done", startedAt: Date.now() };
         this.op({ op: "turn", turn });
         return findTurn(this.view, turn.id)!;

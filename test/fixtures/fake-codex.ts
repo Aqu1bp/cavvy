@@ -358,7 +358,7 @@ async function handle(m: any) {
             return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? "default" });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
-            if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
+            if (String(p.threadId).startsWith("gone") || p.threadId === process.env.FAKE_GONE_ID) return fail(`thread not found: ${p.threadId}`);
             await startMcp(p.config);
             if (!tiers.has(p.threadId)) setTier(p.threadId, process.env.FAKE_THREAD_TIER ?? null);
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);

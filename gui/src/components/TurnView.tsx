@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Index, Match, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, Info, MessageSquareText, RotateCcw, SquareTerminal } from "lucide-solid";
-import type { AgentRun, Block, CompactBlock, FileDiff as Diff, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
+import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { prefs } from "../state/prefs";
@@ -104,6 +104,24 @@ export function Notice(p: { block: NoticeBlock }) {
                 </Match>
             </Switch>
             <span>{p.block.text}</span>
+        </div>
+    );
+}
+
+/** Heads a conversation brought in from Claude Code or Codex: shown, but it can't be rewound or edited. */
+function Imported(p: { block: ImportedBlock }) {
+    const date = () => (p.block.startedAt ? new Date(p.block.startedAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : undefined);
+    return (
+        <div class="compacted imported">
+            <div class="compacted-rule">
+                <span />
+                <span class="imported-label">
+                    Imported from {p.block.source}
+                    <Show when={date()}> · {date()}</Show>
+                    <Show when={p.block.omitted}> · {plural(p.block.omitted, "earlier message")} not imported</Show>
+                </span>
+                <span />
+            </div>
         </div>
     );
 }
@@ -320,6 +338,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={running() && p.last && t().id === lastBlockId()} />}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
+                        <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
                         <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
                     </Switch>
                 )}
@@ -328,7 +347,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
     );
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""}`} data-turn={p.turn.id}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""}`} data-turn={p.turn.id}>
             <Show when={p.turn.prompt}>
                 <UserPrompt turn={p.turn} onRewind={p.onRewind} />
             </Show>
@@ -368,7 +387,7 @@ export function TurnView(p: { turn: Turn; state: SessionState; last: boolean; ag
                             </Show>
                         )}
                     </Index>
-                    <Show when={!running() && !p.turn.archived}>
+                    <Show when={!running() && !p.turn.archived && !p.turn.imported}>
                         <ChangesCard turn={p.turn} cwd={p.state.cwd} />
                     </Show>
                     <Show when={!running() && p.turn.prompt}>
