@@ -47,6 +47,7 @@ import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { redact } from "../util/redact";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
+import { account, accountRealPath } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
@@ -834,6 +835,7 @@ export class Agent {
         const s = this.o.settings();
         return {
             cwd: this.state.cwd,
+            accountId: this.session.accountId(this.model.provider),
             model: this.model,
             mode: this.o.mode.get(),
             effort: s.effort,
@@ -1021,6 +1023,7 @@ export class Agent {
     private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
+        const folder = accountRealPath(account(provider, this.session.accountId(provider)).folder);
         let promptIndex = this.session.messages.length - 1;
         const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
@@ -1055,7 +1058,7 @@ export class Agent {
             },
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
-            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
             drainQueued: () => {
                 const queued = this.o.host.drainQueued?.() ?? [];
                 if (!queued.length) return [];
@@ -1069,7 +1072,7 @@ export class Agent {
         let promptImages = images;
         let promptDocuments = documents;
         while (true) {
-            const resume = this.session.backends.get(provider);
+            const resume = this.backendResume(provider, folder);
             this.emit({ type: "request_start" });
             let result: BackendResult;
             try {
@@ -1137,6 +1140,18 @@ export class Agent {
     /** The last backend turn as its report, when this agent is a sub-agent on a backend. */
     private backendReport?: string;
 
+    private backendResume(provider: string, folder: string) {
+        const hadSession = this.session.backends.has(provider);
+        const resume = this.session.backendSession(provider, folder);
+        if (hadSession && !resume) {
+            const name = getProvider(provider)?.name ?? provider;
+            const message = `${name}'s account folder changed. Starting a new ${name} thread with this conversation as context.`;
+            this.session.recordNotice("info", message);
+            this.emit({ type: "notice", level: "info", message });
+        }
+        return resume;
+    }
+
     /** The backend session has now seen everything up to here (minus `pending` messages it hasn't been sent yet). */
     private syncBackend(provider: string, pending = 0) {
         const b = this.session.backends.get(provider);
@@ -1158,7 +1173,8 @@ export class Agent {
 
     private async compactBackend(backend: AgentBackendClient, opts: { auto: boolean; signal: AbortSignal; instructions?: string }): Promise<boolean> {
         const provider = this.model.provider;
-        const resume = this.session.backends.get(provider);
+        const folder = accountRealPath(account(provider, this.session.accountId(provider)).folder);
+        const resume = this.backendResume(provider, folder);
         if (!resume) return false;
         this.emit({ type: "compact_start", auto: opts.auto });
         const host: BackendHost = {
@@ -1171,7 +1187,7 @@ export class Agent {
             approvePlan: async () => ({ approved: false }),
             setMode: () => {},
             usage: (u, o) => this.recordBackendUsage(u, o),
-            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length),
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
             drainQueued: () => [],
         };
         const r = await backend.compact({ ...this.backendTurn(opts.signal, host), resumeId: resume.id, instructions: opts.instructions });
@@ -1728,6 +1744,7 @@ export class Agent {
         const session = Session.create(this.state.projectRoot, { persist: false, system });
         // Not saved itself: a Claude Code or Codex session it runs on is recorded in this one.
         session.runsFor = this.session;
+        for (const provider of ["claude-code", "codex"]) session.setAccount(provider, this.session.accountId(provider));
         // Prompts and progress name the model when it isn't this agent's.
         const label = other ? `${req.description} (${modelRef(model)})` : req.description;
         const parentHost = this.o.host;
