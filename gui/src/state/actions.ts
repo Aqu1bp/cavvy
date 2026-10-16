@@ -8,6 +8,7 @@ import { copyText, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
 import { activate, app, createSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
+import { refreshGitChanges } from "./changes";
 import { prefs, setPrefs } from "./prefs";
 import { requestComposerFocus, setAgentFocus, setFolderPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
 
@@ -277,6 +278,23 @@ export async function deleteSession(id: string) {
         return reportError(e);
     }
     toast("Session deleted", "info", { label: "Undo", run: () => void rpc.call("session.restore", { id }).catch(reportError) }, UNDO_DELETE_MS);
+}
+
+/** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */
+export async function gitCommit(id: string, paths: string[], message: string) {
+    try {
+        const result = await rpc.call("session.gitCommit", { id, paths, message });
+        toast(`Committed ${result.hash.slice(0, 7)} ${result.subject}`, "success");
+        return result;
+    } finally {
+        // Failed hooks can still edit working files; a post-publication error
+        // also needs a fresh view even though the dialog stays open.
+        refreshGitChanges();
+    }
+}
+
+export function gitCommitMessage(id: string, paths: string[]) {
+    return rpc.call("session.gitCommitMessage", { id, paths });
 }
 
 export async function archive(id: string, archived: boolean) {

@@ -1173,6 +1173,17 @@ export class Engine {
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
                 return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path });
             }
+            case "session.gitCommit":
+            case "session.gitCommitMessage": {
+                if (!Array.isArray(p.paths) || !p.paths.length || p.paths.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
+                    throw new RpcError("paths must contain 1 to 300 file paths", "invalid");
+                }
+                if (method === "session.gitCommitMessage") return this.runtime(p.id).gitCommitMessage(p.paths);
+                if (typeof p.message !== "string" || !p.message.trim() || Buffer.byteLength(p.message) > 65_536 || p.message.includes("\0")) {
+                    throw new RpcError("message must be nonempty, at most 64 KiB, and contain no NUL bytes", "invalid");
+                }
+                return this.runtime(p.id).gitCommit(p.paths, p.message);
+            }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.dequeue": {
