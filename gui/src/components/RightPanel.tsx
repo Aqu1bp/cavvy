@@ -114,17 +114,18 @@ function ProposedPlan(p: { handle: SessionHandle }) {
                                 <span class="truncate grow">{pl().title}</span>
                                 <span class={`meta ${waiting() ? "tone-warn" : ""}`}>{waiting() ? "Needs you" : ""}</span>
                             </button>
-                            <Popover open={menu()} anchor={() => row} onClose={() => setMenu(false)} width={260}>
-                                <button class="menu-item compact" onClick={() => open("view")}>
+                            <Menu label="Plan actions" open={menu()} anchor={() => row} onClose={() => setMenu(false)} width={260}>
+                                <button role="menuitem" class="menu-item compact" onClick={() => open("view")}>
                                     <ClipboardList size={14} /> Read the plan
                                 </button>
-                                <button class="menu-item compact" disabled={!info()?.git} title={info()?.notGit ?? (info()?.git ? "Implement the plan in a new worktree" : info.loading ? "Checking the repository…" : "Repository information unavailable")} onClick={() => open("worktree")}>
+                                <button role="menuitem" class="menu-item compact" disabled={!info()?.git} title={info()?.notGit ?? (info()?.git ? "Implement the plan in a new worktree" : info.loading ? "Checking the repository…" : "Repository information unavailable")} onClick={() => open("worktree")}>
                                     <FolderGit2 size={14} /> Implement in a new worktree…
                                 </button>
-                                <button class="menu-item compact" onClick={() => open("save")}>
+                                <button role="menuitem" class="menu-item compact" onClick={() => open("save")}>
                                     <Save size={14} /> Save plan…
                                 </button>
                                 <button
+                                    role="menuitem"
                                     class="menu-item compact"
                                     onClick={async () => {
                                         setMenu(false);
@@ -134,7 +135,7 @@ function ProposedPlan(p: { handle: SessionHandle }) {
                                 >
                                     <Copy size={14} /> Copy plan
                                 </button>
-                            </Popover>
+                            </Menu>
                         </>
                     )}
                 </Show>
