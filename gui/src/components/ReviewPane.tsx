@@ -116,7 +116,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const noRepo = () => git()?.repo === false;
     const shownScope = (): ReviewScope => (noRepo() ? "harness" : scope());
     const [harness, { refetch: refetchHarness }] = createResource(
-        () => app.conn === "open" && shownScope() === "harness" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
+        () => shownScope() === "harness" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
         ({ id }) => rpc.call("session.changes", { id }).catch((e) => (reportError(e), { files: [], added: 0, removed: 0, tracked: true })),
     );
     const view = () => (shownScope() === "harness" ? harness() : git());
@@ -149,7 +149,6 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
     const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
-            if (app.conn !== "open") return false;
             const key = unlistedKey();
             return key ? { key, id: id(), scope: gitScope(), base: base(), path: picked()! } : false;
         },
@@ -174,7 +173,6 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
     const [full, { refetch: refetchFull }] = createResource(
         () => {
-            if (app.conn !== "open") return false;
             const key = fullKey();
             return key ? { key, id: id(), scope: gitScope(), base: base(), path: file()!.path } : false;
         },
@@ -191,7 +189,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const shownFile = (): Row | undefined => (file()?.deferred ? (loaded()?.file ?? file()) : file());
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
     const [fallback] = createResource(
-        () => app.conn === "open" && gitScope() === "branch" && git()?.error && !git()?.bases.length && id(),
+        () => gitScope() === "branch" && git()?.error && !git()?.bases.length && id(),
         (id) => fetchGitChanges(id, "uncommitted"),
     );
     const bases = () => (git()?.bases.length ? git()!.bases : (fallback()?.bases ?? []));
