@@ -7,6 +7,8 @@ export type SettingsTab = "general" | "appearance" | "providers" | "shortcuts" |
 export const [paletteOpen, setPaletteOpen] = createSignal(false);
 export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>();
 export const [rewindOpen, setRewindOpen] = createSignal(false);
+/** The session the delete dialog asks about. */
+export const [deleteRequest, setDeleteRequest] = createSignal<{ id: string; title: string; projectName: string } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */
 export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string } | undefined>();
 /** Opened from the keyboard or a slash command; the composer's pickers watch these. */

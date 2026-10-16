@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { ArrowUp, FileText, Folder, ImagePlus, ListEnd, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
-import { app, handleFor, reportError, rpc, toast } from "../state/app";
+import { app, composerDrafts, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode, type Attachment } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
@@ -15,8 +15,6 @@ import { Ring } from "./ui/bits";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
-/** Unsent text and images per session, so switching sessions doesn't lose them. */
-const drafts = new Map<string, { text: string; attachments: Attachment[] }>();
 /** What was sent, for ↑ in an empty box. */
 const history: string[] = [];
 
@@ -120,13 +118,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     // Per-session drafts. Each session gets its own input box (it's made again
     // when another session is shown), so the draft is kept when it goes away.
     const keepDraft = (key: string) => {
-        if (text().trim() || attachments().length) drafts.set(key, { text: text(), attachments: attachments() });
-        else drafts.delete(key);
+        if (!wasDeleted(key) && (text().trim() || attachments().length)) composerDrafts.set(key, { text: text(), attachments: attachments() });
+        else composerDrafts.delete(key);
     };
     createEffect(
         on(draftKey, (key, prev) => {
             if (prev !== undefined) keepDraft(prev);
-            const d = drafts.get(key);
+            const d = composerDrafts.get(key);
             setText(d?.text ?? "");
             setAttachments(d?.attachments ?? []);
             requestAnimationFrame(resize);
@@ -235,7 +233,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         histIdx = -1;
         setText("");
         setAttachments([]);
-        drafts.delete(draftKey());
+        composerDrafts.delete(draftKey());
         setMenu([]);
         requestAnimationFrame(resize);
     };

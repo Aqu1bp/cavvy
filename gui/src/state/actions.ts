@@ -271,6 +271,16 @@ export async function settle(id: string, settled: boolean) {
     await rpc.call("session.settle", { id, settled }).catch(reportError);
 }
 
+/** After the confirm dialog. The server moves its files to the trash; Undo puts them back. */
+export async function deleteSession(id: string) {
+    try {
+        await rpc.call("session.delete", { id });
+    } catch (e) {
+        return reportError(e);
+    }
+    toast("Session deleted", "info", { label: "Undo", run: () => void rpc.call("session.restore", { id }).catch(reportError) });
+}
+
 export async function archive(id: string, archived: boolean) {
     await rpc.call("session.archive", { id, archived }).catch(reportError);
     if (archived && app.activeId === id) newSession(app.homeCwd);
