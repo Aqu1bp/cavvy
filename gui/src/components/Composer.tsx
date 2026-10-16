@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
@@ -20,10 +20,10 @@ import { contextView } from "../lib/context";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
 
-type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
+import { composerStorage } from "../lib/drafts";
+import { composingKey, revealMenuOption } from "../lib/composer-menu";
 
-/** What was sent, for ↑ in an empty box. */
-const history: string[] = [];
+type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
 
 /** The ring, and on hover what it stands for: tokens, spend, and compacting now. */
 function ContextRing(p: { sessionId: string }) {
@@ -109,6 +109,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [sending, setSending] = createSignal(false);
     const [effortOpen, setEffortOpen] = createSignal(false);
     let histIdx = -1;
+    let historyDraft = "";
+    const menuId = `composer-menu-${createUniqueId()}`;
+    let menuList: HTMLDivElement | undefined;
+    const [menuStatus, setMenuStatus] = createSignal<"loading" | "empty" | "error">();
+    const menuOpen = () => menu().length > 0 || !!menuStatus();
     let commands: CommandInfo[] = [];
 
     const h = () => handleFor(p.sessionId);
@@ -140,8 +145,28 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     });
     createEffect(on(focusComposer, () => requestAnimationFrame(() => ta?.focus()), { defer: true }));
 
-    onMount(() => {
-        if (p.autofocus) requestAnimationFrame(() => ta?.focus());
+    createEffect(on(draftKey, () => {
+        histIdx = -1;
+        historyDraft = "";
+        dismissMenu();
+        setMenuDismissedFor(undefined);
+        const frame = requestAnimationFrame(() => {
+            if (window.matchMedia("(max-width: 760px)").matches) return;
+            const active = document.activeElement;
+            if (active !== ta && active?.matches("input, textarea, select, [contenteditable='true']")) return;
+            if (document.querySelector('[role="dialog"]')) return;
+            ta?.focus();
+        });
+        onCleanup(() => cancelAnimationFrame(frame));
+    }));
+    createEffect(() => {
+        const selected = menuSel();
+        const items = menu();
+        const frame = requestAnimationFrame(() => {
+            const option = menuList?.children[selected] as HTMLElement | undefined;
+            if (items.length && menuList && option) revealMenuOption(menuList, option);
+        });
+        onCleanup(() => cancelAnimationFrame(frame));
     });
     createEffect(
         on(
@@ -164,7 +189,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         return m ? { query: m[1]!.replace(/^"/, ""), start: upto.length - m[1]!.length - 1 } : undefined;
     };
     let mentionTimer: ReturnType<typeof setTimeout> | undefined;
+    let mentionVersion = 0;
+    const dismissMenu = () => {
+        mentionVersion++;
+        clearTimeout(mentionTimer);
+        setMenu([]);
+        setMenuStatus(undefined);
+    };
     const updateMenu = () => {
+        dismissMenu();
+        const version = mentionVersion;
         const t = text();
         if (menuDismissedFor() === t) return setMenu([]);
         if (/^\/\S*$/.test(t)) {
@@ -180,25 +214,29 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const tok = token();
         const cwd = st()?.cwd ?? app.homeCwd;
         if (tok && cwd && p.sessionId) {
-            clearTimeout(mentionTimer);
+            setMenuStatus("loading");
             mentionTimer = setTimeout(async () => {
-                const found = await rpc.call("fs.mentions", { cwd, query: tok.query }).catch(() => []);
-                if (token()?.query === tok.query) {
+                try {
+                    const found = await rpc.call("fs.mentions", { cwd, query: tok.query });
+                    if (version !== mentionVersion) return;
                     setMenu(found.map((path) => ({ kind: "file" as const, path })));
                     setMenuSel(0);
+                    setMenuStatus(found.length ? undefined : "empty");
+                } catch {
+                    if (version === mentionVersion) setMenuStatus("error");
                 }
             }, 60);
             return;
         }
         setMenu([]);
     };
-    onCleanup(() => clearTimeout(mentionTimer));
+    onCleanup(dismissMenu);
 
     const apply = (item: MenuItem, run: boolean) => {
         if (item.kind === "command") {
             const next = `/${item.cmd.name}${item.cmd.args ? " " : ""}`;
             setText(next);
-            setMenu([]);
+            dismissMenu();
             if (run && !item.cmd.args) void submit();
         } else {
             const tok = token();
@@ -236,22 +274,35 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             setSending(false);
             if (!ok) return;
             histIdx = -1;
-            setMenu([]);
+            dismissMenu();
             requestAnimationFrame(resize);
         });
-        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { sent });
+        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { sent, accepted: (id) => {
+            if (!wasDeleted(id)) composerStorage.remember(id, t);
+        } });
         if (ok) {
-            if (picks) setComparePicks(undefined);
+            if (picks) {
+                composerStorage.remember(submitted.key, t);
+                setComparePicks(undefined);
+            }
             draft.clearSent(submitted, ok === "command");
-            if (t.trim() && (ok === true || !atts.length)) {
-                history.push(t);
-                if (history.length > 100) history.shift();
+            if (ok === "command" && t.trim() && !atts.length) {
+                if (!wasDeleted(submitted.key)) composerStorage.remember(submitted.key, t);
             }
         }
         finish(ok);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
+        if (composingKey(e)) return;
+        if (e.key === "Escape" && menuOpen()) {
+            e.preventDefault();
+            e.stopPropagation();
+            setMenuDismissedFor(text());
+            dismissMenu();
+            return;
+        }
+        const history = composerStorage.history(draftKey());
         const items = menu();
         if (items.length) {
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -264,20 +315,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 apply(items[menuSel()] ?? items[0]!, e.key === "Enter");
                 return;
             }
-            if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                setMenuDismissedFor(text());
-                setMenu([]);
-                return;
-            }
         }
         if (e.key === "Tab" && e.shiftKey) {
             e.preventDefault();
             void setMode(nextMode(mode(), bypassAllowed()));
             return;
         }
-        if (e.key === "Enter" && !e.isComposing) {
+        if (e.key === "Enter") {
             const sendKey = prefs.enterSends ? !e.shiftKey && !e.altKey : isMod(e);
             if (sendKey || (isMod(e) && !e.shiftKey)) {
                 e.preventDefault();
@@ -290,15 +334,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             interrupt(p.sessionId);
             return;
         }
-        if (e.key === "ArrowUp" && !text() && history.length) {
+        if (e.key === "ArrowUp" && (!text() || (histIdx >= 0 && (ta?.selectionStart ?? 0) === 0)) && history.length) {
             e.preventDefault();
+            if (histIdx < 0) historyDraft = text();
             histIdx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
             setText(history[histIdx]!);
             requestAnimationFrame(resize);
         } else if (e.key === "ArrowDown" && histIdx >= 0 && (ta?.selectionStart ?? 0) === text().length) {
             e.preventDefault();
             histIdx = histIdx + 1 >= history.length ? -1 : histIdx + 1;
-            setText(histIdx < 0 ? "" : history[histIdx]!);
+            setText(histIdx < 0 ? historyDraft : history[histIdx]!);
             requestAnimationFrame(resize);
         }
     };
@@ -419,11 +464,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             <Show when={p.sessionId && interactions().length}>
                 <InteractionTab sessionId={p.sessionId!} items={interactions()} />
             </Show>
-            <Show when={menu().length}>
-                <div class="composer-menu" role="listbox">
+            <Show when={menuOpen()}>
+                <div class="composer-menu" ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
                     <For each={menu()}>
                         {(item, i) => (
                             <button
+                                id={`${menuId}-${i()}`}
+                                role="option"
+                                aria-selected={i() === menuSel()}
+                                tabIndex={-1}
                                 class={`cm-item ${i() === menuSel() ? "sel" : ""}`}
                                 onMouseDown={(e) => {
                                     e.preventDefault();
@@ -458,6 +507,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             </button>
                         )}
                     </For>
+                    <Show when={menuStatus()}>
+                        <div class="cm-status" role="status">
+                            {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? "No matching files" : "Could not search files"}
+                        </div>
+                    </Show>
                 </div>
             </Show>
             <div class="composer-box" ref={box}>
@@ -477,15 +531,25 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         placeholder={placeholder()}
                         spellcheck={!shell()}
                         onInput={(e) => {
+                            histIdx = -1;
                             setText(e.currentTarget.value);
                             setMenuDismissedFor(undefined);
                             resize();
                             updateMenu();
                         }}
                         onKeyDown={onKeyDown}
+                        onKeyUp={(e) => {
+                            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) && !composingKey(e)) updateMenu();
+                        }}
                         onPaste={onPaste}
                         onClick={updateMenu}
                         aria-label="Message"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-haspopup="listbox"
+                        aria-expanded={menuOpen()}
+                        aria-controls={menuOpen() ? menuId : undefined}
+                        aria-activedescendant={menu().length ? `${menuId}-${menuSel()}` : undefined}
                     />
                 </div>
                 <div class="composer-bar">
