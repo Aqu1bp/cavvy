@@ -56,7 +56,7 @@ beforeEach(() => {
     symlinkSync(real, cwd);
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -446,6 +446,20 @@ describe("Codex backend", () => {
         expect(notices(a.events).filter((n) => /blocked|denied/.test(n))).toEqual(["warn: Codex's reviewer: Automatic approval review denied (risk: high, authorization: low): It sends the project to an unknown host."]);
         // A yes is never shown.
         expect(notices(a.events).some((n) => n.includes("approved (risk: "))).toBe(false);
+    });
+
+    test("auto mode: each verdict line is matched to the no it repeats by thread and reason, never just counted", async () => {
+        process.env.FAKE_REVIEW_DENY = "1";
+        process.env.FAKE_REVIEW_MIXED = "1";
+        const a = await makeAgent({ provider: "codex", mode: "auto", ask: () => ({ allow: true }) });
+        expect(await a.run("make x")).toBe("done");
+        const said = (why: string) => notices(a.events).filter((n) => n.includes(why));
+        const line = (why: string) => `warn: Codex's reviewer: Automatic approval review denied (risk: high, authorization: low): ${why}`;
+        // A's no once, from its finished event; B's and C's, which came only as verdict lines, once each.
+        expect(said("A: deletes the home folder.")).toEqual(["warn: Codex's reviewer blocked `touch x`: A: deletes the home folder.", line("A: deletes the home folder.")]);
+        expect(said("B: pushes to main.")).toEqual([line("B: pushes to main.")]);
+        expect(said("C: posts the token.")).toEqual([line("C: posts the token.")]);
+        expect(notices(a.events)).toContain("warn: Codex's reviewer ran out of time on `touch x`.");
     });
 
     test("headless: the command is declined with the reason, and the turn goes on", async () => {
