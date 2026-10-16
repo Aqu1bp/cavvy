@@ -1144,3 +1144,6 @@
     font-size: 0.786rem;
     color: var(--fg-muted);
 }
+
+.account-plan-meter { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.plan-account-hint { color: var(--fg-muted); font-size: 11px; }

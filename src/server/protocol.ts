@@ -370,6 +370,7 @@ export interface McpStatus {
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 export interface SessionState {
+    accounts?: Record<string, string>;
     id: string;
     cwd: string;
     projectName: string;
@@ -585,6 +586,17 @@ export interface CreateWorktreeParams {
     location?: string;
 }
 
+export interface AccountInfo {
+    id: string;
+    name: string;
+    folder: string;
+    managed: boolean;
+    signedIn?: boolean;
+    description?: string;
+    email?: string;
+    plan?: string;
+}
+
 export interface ProviderInfo {
     id: string;
     name: string;
@@ -600,6 +612,8 @@ export interface ProviderInfo {
     requiresKey: boolean;
     /** Used through the user's own installed CLI and plan (Claude Code, Codex) instead of a key. */
     agentCli?: {
+        accounts?: AccountInfo[];
+        defaultAccount?: string;
         installed: boolean;
         /** The CLI's own sign-in command, for when it isn't signed in. */
         signIn: string;
@@ -616,6 +630,9 @@ export interface ProviderModels {
     error?: string;
     models: ModelSummary[];
 }
+
+/** Account ids are local metadata, independent of a CLI's private account identity. */
+export const planLimitKey = (provider: string, accountId = "default") => JSON.stringify([provider, accountId]);
 
 export interface CommandInfo {
     name: string;
@@ -640,6 +657,8 @@ export interface LimitWindow {
 /** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
 export interface PlanLimits {
     provider: string;
+    /** Local account id; omitted reports belong to the default account. */
+    accountId?: string;
     windows: LimitWindow[];
     /** The CLI said a limit is reached (true) or that it isn't (false); absent when it didn't say. */
     reached?: boolean;
@@ -871,7 +890,7 @@ export interface HelloResult {
 }
 
 export interface Methods {
-    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number }; result: { id: string; cwd: string } };
+    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
     "terminal.ack": { params: { id: string; chars: number }; result: null };
@@ -930,6 +949,12 @@ export interface Methods {
     /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "models.list": { params: { refresh?: boolean }; result: ProviderModels[] };
+    "session.setAccount": { params: { id: string; provider: string; accountId: string }; result: null };
+    "accounts.list": { params: { provider: string; refresh?: boolean }; result: AccountInfo[] };
+    "accounts.add": { params: { provider: string; id: string; name: string; folder?: string }; result: AccountInfo };
+    "accounts.rename": { params: { provider: string; id: string; name: string }; result: null };
+    "accounts.remove": { params: { provider: string; id: string; confirmedFolder: string }; result: null };
+    "accounts.setDefault": { params: { provider: string; id: string }; result: null };
     "providers.list": { params: Record<string, never>; result: ProviderInfo[] };
     /** `model`: the default model it set, when there was none yet. */
     "providers.setKey": { params: { provider?: string; key: string }; result: { provider: string; masked: string; warning?: string; model?: string } };

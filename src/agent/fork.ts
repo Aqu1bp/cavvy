@@ -22,7 +22,7 @@ import { hold, letGo, newSessionId, redactedJson, Session, type ForkOrigin, type
  * Which of the original's records the fork copies, up to where it's cut. The
  * conversation and its shape (compactions and rewinds, so the timeline's
  * segments line up) are copied; what belongs to the original's own run isn't:
- * its titles, spend and backend sessions. The fork's model and speed are
+ * its titles, spend and backend sessions. The fork's model, speed and accounts are
  * written afresh from what the original has now. A new record type is listed
  * here (the type checker asks for it).
  */
@@ -33,6 +33,7 @@ const COPIED: Record<Line["t"], boolean> = {
     rewind: true,
     model: false,
     fastMode: false,
+    account: false,
     title: false,
     usage: false,
     backend: false,
@@ -204,7 +205,8 @@ export function forkSession(original: Session, o: ForkOptions): Session {
         { t: "title", title: forkTitle(shown) },
         ...(model ? [{ t: "model" as const, model }] : []),
         ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),
-        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true })),
+        ...Object.entries(original.accounts).map(([provider, id]) => ({ t: "account" as const, provider, id })),
+        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, folder: original.backendFolder(provider) })),
     ];
 
     // Claimed before it exists, so no other process opens it half way.

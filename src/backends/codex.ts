@@ -16,16 +16,18 @@ import { dirname, isAbsolute, join, resolve } from "path";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
+import type { PlanLimits } from "../server/protocol";
+import { codexReachedType, limitAccountLabel, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
-import { codexReachedType, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
-import type { PlanLimits } from "../server/protocol";
 import { gitRoot } from "../util/git";
 import { canonical } from "../util/files";
-import { CODEX_CLI, JsonLinesProcess, cliMessage, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
+import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
+import { accountEnv, defaultAccount } from "../providers/accounts";
+import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 
@@ -58,7 +60,7 @@ class Rpc {
                     const p = this.pending.get(m.id);
                     if (!p) continue;
                     this.pending.delete(m.id);
-                    if (m.error) p.reject(new ProviderError(`Codex: ${String(m.error.message ?? "request failed")}`));
+                    if (m.error) p.reject(new ProviderError(`Codex: ${cliMessage(String(m.error.message ?? "request failed"))}`));
                     else p.resolve(m.result);
                 }
             }
@@ -103,22 +105,22 @@ export function untrustedArgs(cwd: string): string[] {
 }
 
 /** Start app-server (no handshake yet). */
-function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean } = {}): Rpc {
+function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
     const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : [])];
-    return new Rpc(new JsonLinesProcess(bin, args, { cwd }), onNotification, onRequest);
+    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId) }), onNotification, onRequest);
 }
 
-async function handshake(rpc: Rpc) {
-    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
+async function handshake(rpc: Rpc, accountPermissions = false) {
+    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: accountPermissions ? { experimentalApi: true } : null });
     rpc.notify("initialized");
 }
 
 /** Start app-server and do the handshake; the signal (or the timeout) stops it at any point. */
-async function connect(providerId: string, cwd: string, signal?: AbortSignal): Promise<Rpc> {
+async function connect(providerId: string, cwd: string, signal?: AbortSignal, accountId?: string): Promise<Rpc> {
     const rpc = spawnRpc(providerId, cwd, () => {}, async () => {
         throw new Error("not supported");
-    });
+    }, { accountId });
     const kill = () => void rpc.proc.kill();
     signal?.addEventListener("abort", kill, { once: true });
     try {
@@ -143,7 +145,7 @@ export interface CodexAccount {
 
 function parseAccount(r: any): CodexAccount {
     const a = r?.account;
-    return { type: typeof a?.type === "string" ? a.type : undefined, email: typeof a?.email === "string" ? a.email : undefined, planType: typeof a?.planType === "string" ? a.planType : undefined, requiresAuth: r?.requiresOpenaiAuth === true };
+    return { type: cliStatusString(a?.type), email: cliStatusString(a?.email), planType: cliStatusString(a?.planType), requiresAuth: r?.requiresOpenaiAuth === true };
 }
 
 export function describeCodexAuth(a: CodexAccount): string {
@@ -154,8 +156,8 @@ export function describeCodexAuth(a: CodexAccount): string {
 }
 
 /** How Codex is signed in (account/read), from Codex itself. */
-export async function codexAccount(providerId = "codex", signal?: AbortSignal): Promise<CodexAccount> {
-    const rpc = await connect(providerId, homedir(), signal);
+export async function codexAccount(providerId = "codex", signal?: AbortSignal, accountId?: string): Promise<CodexAccount> {
+    const rpc = await connect(providerId, homedir(), signal, accountId);
     const kill = () => void rpc.proc.kill();
     signal?.addEventListener("abort", kill, { once: true });
     try {
@@ -234,10 +236,18 @@ export function codexFastTier(m: { serviceTiers?: { id: string }[]; additionalSp
     return tiers.find((t) => FAST_TIERS.has(t));
 }
 
+type LimitOrdering = { revision: number; reads: number; acceptedRead: number };
+
 export class CodexBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
-    /** Order account snapshots across sessions, including reads that finish in reverse order. */
-    private limitUpdates = { revision: 0, reads: 0, acceptedRead: 0 };
+    /** Order snapshots across sessions of each account, including reads answered in reverse order. */
+    private limitUpdates = new Map<string, LimitOrdering>();
+
+    private limitOrdering(accountId = "default"): LimitOrdering {
+        let state = this.limitUpdates.get(accountId);
+        if (!state) this.limitUpdates.set(accountId, state = { revision: 0, reads: 0, acceptedRead: 0 });
+        return state;
+    }
 
     constructor(readonly def: ProviderDef) {}
 
@@ -247,7 +257,7 @@ export class CodexBackend implements AgentBackendClient {
 
     /** Codex's model catalog (model/list), the default model first. */
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
-        const rpc = await connect(this.def.id, homedir(), signal);
+        const rpc = await connect(this.def.id, homedir(), signal, defaultAccount(this.def.id));
         const kill = () => void rpc.proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         try {
@@ -281,7 +291,7 @@ export class CodexBackend implements AgentBackendClient {
     private labels = new Map<string, string>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = new CodexTurn(this.def, t, this.labels, this.limitUpdates);
+        const turn = new CodexTurn(this.def, t, this.labels, this.limitOrdering(t.accountId));
         this.turns.add(turn);
         try {
             return await turn.run();
@@ -293,7 +303,7 @@ export class CodexBackend implements AgentBackendClient {
     /** Codex's own compaction of the thread. */
     async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
         if (!t.resumeId) return { reason: "done", text: "", actions: [] };
-        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }, this.labels, this.limitUpdates).run({ compact: true });
+        return new CodexTurn(this.def, { ...t, prompt: "", images: [] }, this.labels, this.limitOrdering(t.accountId)).run({ compact: true });
     }
 
     /**
@@ -418,7 +428,7 @@ class CodexTurn {
         private t: BackendTurn,
         /** Sub-agents' labels by thread, kept across turns (the client's). */
         private labels = new Map<string, string>(),
-        private limitUpdates = { revision: 0, reads: 0, acceptedRead: 0 },
+        private limitUpdates: LimitOrdering = { revision: 0, reads: 0, acceptedRead: 0 },
     ) {}
 
     modeChanged(m: PermissionMode) {
@@ -441,7 +451,12 @@ class CodexTurn {
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted });
+        const accountPermissions = accountPermissionConfig(t.additionalDirectories);
+        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId });
+        const stopAccountWatch = watchAccountFolders(() => {
+            this.failure = "Account folders changed while Codex was running. Send again to apply their updated protections.";
+            void this.rpc.proc.kill();
+        });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -453,7 +468,7 @@ class CodexTurn {
         };
         t.signal.addEventListener("abort", onAbort, { once: true });
         try {
-            await withTimeout(handshake(this.rpc), 30_000, "Codex didn't start (no answer to initialize)");
+            await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
                 return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.` };
@@ -473,7 +488,8 @@ class CodexTurn {
             }
             const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
-            const config = o && !t.readOnly ? { mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
+            let config: Record<string, unknown> | undefined = o && !t.readOnly ? { mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
+            if (accountPermissions) config = { ...config, ...accountPermissions };
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
             // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
@@ -481,13 +497,14 @@ class CodexTurn {
             const fastTier = tierFor(t.fastMode);
             /** The thread's tier as last reported or set. */
             let tierNow: string | null | undefined;
-            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(this.host.mode(), t.readOnly) } : { sandbox: policy.sandbox }), approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
                     return await this.rpc.request(method, params);
                 } catch (e) {
-                    if (this.aborted || !o) throw e;
+                    // Never fall back by dropping account denies: fail closed instead.
+                    if (this.aborted || !o || accountPermissions) throw e;
                     const r = await this.rpc.request(method, { ...params, config: off, developerInstructions: baseInstructions });
                     this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
                     return r;
@@ -533,7 +550,7 @@ class CodexTurn {
                     // Queued and restarted turns explicitly request this model again, even after a reroute.
                     if (model) this.threadModels.set(this.threadId!, model);
                     await this.waitFor(async () => {
-                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+                        const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                         if (this.turnId) this.turnsSeen.add(this.turnId);
                     });
@@ -559,6 +576,7 @@ class CodexTurn {
         } catch (e) {
             if (!this.aborted) this.failure = redact((e as Error).message);
         } finally {
+            stopAccountWatch();
             t.signal.removeEventListener("abort", onAbort);
             if (abortTimer) clearTimeout(abortTimer);
             await this.rpc.proc.stop(1000);
@@ -569,38 +587,38 @@ class CodexTurn {
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${this.failure.replace(/[\s.]*$/, ".")} ${resetSentence(this.limits?.resetsAt, "Codex")}` : this.failure };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure };
         return { reason: "done", text, answer, actions: this.actions };
     }
 
-    /** Ask Codex where the plan stands (account/rateLimits/read); an older Codex without it is left be. */
     private async readLimits() {
         const revision = this.limitUpdates.revision;
         const read = ++this.limitUpdates.reads;
         const at = Date.now();
         try {
-            const r = await withTimeout(this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex didn't answer account/rateLimits/read");
-            // A newer push or successful read may already have replaced this snapshot in another session.
+            const report = await withTimeout(this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex did not report plan limits");
             if (revision !== this.limitUpdates.revision || read < this.limitUpdates.acceptedRead) return;
-            const parsed = parseCodexRateLimits(r, { at });
+            const parsed = parseCodexRateLimits(report, { at, accountId: this.t.accountId ?? "default" });
             if (parsed) {
                 this.limitUpdates.acceptedRead = read;
-                this.noteLimits(parsed);
+                this.noteLimits(parsed.limits, parsed.partial);
             }
         } catch {
-            // Not known, then: the meter waits for an update.
+            // Older CLIs may only push updates, or have no limits to report.
         }
     }
 
-    private noteLimits(parsed: { limits: PlanLimits; partial: boolean }) {
-        this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
-        this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+    private noteLimits(limits: PlanLimits, partial: boolean) {
+        this.limits = mergeLimits(this.limits, limits, partial);
+        this.host.emit({ type: "limits", limits, partial });
     }
 
-    /** A failed turn's error (TurnError: message, codexErrorInfo). */
-    private fail(err: any, fallback: string) {
-        this.failure = redact(String(err?.message ?? fallback));
-        if (err?.codexErrorInfo === "usageLimitExceeded") this.limitHit = true;
+    private fail(error: any, fallback: string) {
+        this.failure = redact(String(error?.message ?? fallback));
+        if (error?.codexErrorInfo !== "usageLimitExceeded" || this.limitHit) return;
+        this.limitHit = true;
+        this.limitUpdates.revision++;
+        if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
     }
 
     private input(text: string, images: BackendTurn["images"]): unknown[] {
@@ -747,12 +765,12 @@ class CodexTurn {
                 break;
             case "account/rateLimits/updated": {
                 this.limitUpdates.revision++;
-                const parsed = parseCodexRateLimits(p, { update: true });
-                if (parsed) this.noteLimits(parsed);
-                const reached = codexReachedType(p?.rateLimits);
+                const parsed = parseCodexRateLimits(p, { update: true, accountId: this.t.accountId ?? "default" });
+                if (parsed) this.noteLimits(parsed.limits, parsed.partial);
+                const reached = codexReachedType(p.rateLimits);
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
-                    this.host.emit({ type: "notice", level: "warn", message: `Your Codex usage limit has been reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
+                    this.host.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
                 }
                 break;
             }

@@ -63,7 +63,8 @@ const log = (o: unknown) => {
 };
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
-log({ argv, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY) });
+log({ argv, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
+if (argv[0] === "login") process.exit(0);
 if (argv[0] !== "app-server") {
     console.error("fake codex: only app-server");
     process.exit(2);
@@ -159,6 +160,11 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "", ...phase("commentary") } });
     notify("item/agentMessage/delta", { threadId, turnId, itemId: `msg-${turnId}`, delta: "Running it." });
     notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "Running it.", ...phase("commentary") } });
+    if (process.env.FAKE_CODEX_LIMIT_UPDATE) notify("account/rateLimits/updated", JSON.parse(process.env.FAKE_CODEX_LIMIT_UPDATE));
+    if (process.env.FAKE_LIMIT_ERROR === "1") {
+        notify("turn/completed", { threadId, turn: { id: turnId, status: "failed", error: { message: "Usage cap", codexErrorInfo: "usageLimitExceeded" } } });
+        return;
+    }
     if (scenario === "slow" && turnSeq === 1) {
         // The first turn works until interrupted (or a while).
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(5000)]);
@@ -404,7 +410,7 @@ async function handle(m: any) {
             return;
         case "account/read": {
             const a = process.env.FAKE_ACCOUNT ?? "chatgpt";
-            return reply(a === "none" ? { account: null, requiresOpenaiAuth: true } : a === "apikey" ? { account: { type: "apiKey" }, requiresOpenaiAuth: true } : { account: { type: "chatgpt", email: "me@example.com", planType: "plus" }, requiresOpenaiAuth: true });
+            return reply(a === "none" ? { account: null, requiresOpenaiAuth: true } : a === "apikey" ? { account: { type: "apiKey" }, requiresOpenaiAuth: true } : { account: { type: "chatgpt", email: process.env.FAKE_EMAIL ?? "me@example.com", planType: process.env.FAKE_PLAN ?? "plus" }, requiresOpenaiAuth: true });
         }
         case "model/list":
             return reply({
@@ -477,6 +483,7 @@ async function handle(m: any) {
             return;
         }
         case "account/rateLimits/read":
+            if (process.env.FAKE_CODEX_LIMIT_READ) return reply(JSON.parse(process.env.FAKE_CODEX_LIMIT_READ));
             if (!process.env.FAKE_RATE_LIMITS) return fail(`unknown method ${m.method}`);
             if (process.env.FAKE_RATE_LIMITS_RELEASE) {
                 const snapshot = JSON.parse(readFileSync(process.env.FAKE_RATE_LIMITS, "utf-8"));

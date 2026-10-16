@@ -999,6 +999,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(usageOf(session).inputTokens).toBe(200 + 400);
     });
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP tool call Codex asks about goes to the harness's rules and the user, not declined unasked", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         const yes = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
@@ -1044,6 +1045,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
     }, 20_000);
 
+    // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
     test("an MCP server's form goes to the question dialog, its answers typed as the form asks; with nobody to ask it's declined", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         process.env.FAKE_ELICIT = "form";
@@ -1592,6 +1594,55 @@ describe("fast mode backend wiring", () => {
 // session: whichever goes on with a shared one first forks it (natively), and
 // one that saw past the fork point isn't shared at all.
 describe("forked sessions", () => {
+    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
+        const { addAccount, removeAccount } = await import("../src/providers/accounts");
+        const selected = addAccount(provider, { id: "fork-work", name: "Fork work" });
+        const other = addAccount(provider, { id: "fork-other", name: "Fork other" });
+        const source = Session.create(cwd);
+        source.setAccount(provider, selected.id);
+        const settings = { delegation: false, permissions: { allow: ["Bash(touch:*)"] } };
+        const orig = await makeAgent({ provider, session: source, settings, ask: () => ({ allow: true }) });
+        let fork: Awaited<ReturnType<typeof makeAgent>> | undefined;
+        let replacement = selected;
+        try {
+            await orig.run("first on work");
+            const shared = source.backends.get(provider)!.id;
+            if (change === "folder") {
+                // A catalog change before forking must not relabel the source thread's owner.
+                removeAccount(provider, selected.id, selected.folder);
+                replacement = addAccount(provider, { id: selected.id, name: selected.name, folder: join(bin, `${provider}-replacement`) });
+            }
+            const session = forkSession(source, { cut: source.messages.length });
+            expect(session.accountId(provider)).toBe(selected.id);
+            expect(session.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            if (change === "selection") session.setAccount(provider, other.id);
+            session.release();
+            fork = await makeAgent({ provider, session: Session.load(session.path), settings, ask: () => ({ allow: true }) });
+            rmSync(LOG, { force: true });
+            expect(await fork.run("in the fork")).toBe("done");
+            const folder = change === "selection" ? other.folder : replacement.folder;
+            expect(starts()[0][provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(folder);
+            if (provider === "claude-code") {
+                expect(resumes()).toEqual([change === "none" ? `${shared} (fork)` : "new"]);
+                if (change !== "none") expect(userTexts().at(-1)).toContain("User: first on work");
+            } else {
+                const threads = received().filter((m) => m.method?.startsWith("thread/"));
+                expect(threads.map((m) => m.method)).toEqual([change === "none" ? "thread/fork" : "thread/start"]);
+                if (change === "none") expect(threads[0].params.threadId).toBe(shared);
+                else expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first on work");
+            }
+            expect(fork.session.backendSession(provider, folder)?.fork).toBeUndefined();
+            expect(source.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+        } finally {
+            await fork?.agent.dispose();
+            fork?.session.release();
+            await orig.agent.dispose();
+            source.release();
+            removeAccount(provider, replacement.id, replacement.folder);
+            removeAccount(provider, other.id, other.folder);
+        }
+    });
+
     /** Each Claude Code start: the session it resumed, and whether as a fork. */
     const resumes = () => starts().map((s) => {
         const a = s.argv as string[];

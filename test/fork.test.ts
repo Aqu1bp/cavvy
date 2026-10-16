@@ -52,6 +52,58 @@ function original(cwd = realpathSync(tempDir())) {
 const filesIn = (dir: string) => readdirSync(dir).sort();
 
 describe("the fork's file", () => {
+    test.each([4, 6])("copies the current account for each provider even at cut %i", (cut) => {
+        const s = original();
+        // Selected after the earlier turn: settings follow the source now, not the cut.
+        s.setAccount("claude-code", "work");
+        s.setAccount("codex", "personal");
+        for (const provider of ["claude-code", "codex"]) s.setBackendSession(provider, `${provider}-shared`, 4, `/accounts/${provider}`);
+        const f = forkSession(s, { cut });
+        f.release();
+        const reopened = Session.load(f.path);
+        try {
+            expect(reopened.accountId("claude-code")).toBe("work");
+            expect(reopened.accountId("codex")).toBe("personal");
+            for (const provider of ["claude-code", "codex"]) {
+                const shared = { id: `${provider}-shared`, synced: 4, fork: true };
+                expect(reopened.backendSession(provider, `/accounts/${provider}`)).toEqual(shared);
+                expect(s.backendSession(provider, `/accounts/${provider}`)).toEqual(shared);
+                expect(readFileSync(f.path, "utf8")).toContain(`"folder":"/accounts/${provider}"`);
+            }
+        } finally { reopened.release(); s.release(); }
+    });
+
+    test.each(["claude-code", "codex"])("%s: an account switch or replacement folder cannot reuse a shared session", (provider) => {
+        const s = original();
+        s.setAccount(provider, "work");
+        s.setBackendSession(provider, "shared", 6, "/accounts/work");
+        for (const change of ["selection", "folder"]) {
+            const f = forkSession(s, { cut: 6 });
+            expect(f.backendSession(provider, "/accounts/work")?.fork).toBe(true);
+            if (change === "selection") f.setAccount(provider, "personal");
+            expect(f.backendSession(provider, "/accounts/other")).toBeUndefined();
+            f.release();
+            const reopened = Session.load(f.path);
+            expect(reopened.backendSession(provider, "/accounts/work")).toBeUndefined();
+            reopened.release();
+            expect(s.backendSession(provider, "/accounts/work")?.id).toBe("shared");
+        }
+        s.release();
+    });
+
+    test("accounts survive without sharing backends, including a switch back to Default", () => {
+        const s = original();
+        s.setAccount("claude-code", "work");
+        s.setAccount("codex", "personal");
+        s.setAccount("codex", "default");
+        const f = forkSession(s, { cut: 4, shareBackends: false });
+        expect(f.accountId("claude-code")).toBe("work");
+        expect(f.accountId("codex")).toBe("default");
+        expect(f.backends.size).toBe(0);
+        f.release();
+        s.release();
+    });
+
     test.each(["explicit", "session", "prompt"] as const)("redacts %s titles before shortening or normalizing them", (source) => {
         for (const secret of ["fork-private-token-" + "x".repeat(160), "fork-private\n  token-123456789"]) {
             const s = Session.create(realpathSync(tempDir()));

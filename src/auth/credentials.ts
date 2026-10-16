@@ -283,6 +283,11 @@ export function secretEnvVarNames(): string[] {
             ...allProviders().flatMap((p) => p.envKeys),
             ...SEARCH_PROVIDERS.flatMap((s) => [...s.envKeys]),
             "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "OPENAI_ACCESS_TOKEN",
             "API_KEY",
         ]),
     ];
