@@ -3,7 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
-import { account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { planLimitKey, type AccountInfo } from "./protocol";
 import { mergeLimits } from "../backends/limits";
@@ -13,13 +13,13 @@ import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { readdirSync, realpathSync, statSync } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, harnessHome, paths } from "../config/paths";
 import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
-import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError } from "../agent/session";
+import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
 import { forkSession } from "../agent/fork";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { McpManager } from "../mcp/manager";
@@ -33,7 +33,8 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktree, listWorktrees, mainCheckoutOf, planRemoval, runRemoval } from "./worktrees";
+import { createWorktree, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
+import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
@@ -48,6 +49,8 @@ import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, tra
 import { searchSessions } from "./search";
 import { usageDays, usageSummary } from "./usage";
 import type {
+    ArchiveOffer,
+    ArchiveResult,
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
@@ -57,12 +60,15 @@ import type {
     EffortLevel,
     GuiSettings,
     HelloResult,
+    ImplementMode,
+    ImplementPlanResult,
     McpListInfo,
     McpStatus,
     PlanLimits,
     Method,
     Methods,
     PermissionModeId,
+    PlanInfo,
     ProjectInfo,
     RemoveWorktreeResult,
     ProviderInfo,
@@ -74,8 +80,9 @@ import type {
     SessionSnapshot,
     SessionSearchResult,
     SessionSummary,
+    WorktreeInfo,
 } from "./protocol";
-import { PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
+import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
 
@@ -298,6 +305,9 @@ export class Engine {
     private removing = new Set<string>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
+    /** Sessions whose plan is being taken to a worktree, and sessions being archived with theirs: one at a time each. */
+    private implementing = new Set<string>();
+    private archiving = new Set<string>();
     private purgeTimer?: ReturnType<typeof setInterval>;
     /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
     private cliCommandNames = new Map<string, Set<string>>();
@@ -524,7 +534,7 @@ export class Engine {
      * open there from this server, nor can another removal of it start; its
      * idle workspaces (picked while their paths still resolve) close after.
      */
-    private async removeWorktree(path: string, worktree: string, deleteIgnored?: string): Promise<RemoveWorktreeResult> {
+    private async removeWorktree(path: string, worktree: string, deleteIgnored?: string, check?: (plan: Removal) => Promise<void>): Promise<RemoveWorktreeResult> {
         const held = heldSessionFolders();
         const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...held];
         const plan = planRemoval({ path, worktree, inUse: (dir) => open().some(within(dir)) });
@@ -534,6 +544,8 @@ export class Engine {
         const idle = [...this.workspaces].filter(([cwd]) => within(plan.path)(cwd));
         let result: RemoveWorktreeResult;
         try {
+            // Last checks of the caller's own, with the folder reserved: nothing can open there meanwhile.
+            await check?.(plan);
             result = await runRemoval(plan, { deleteIgnored }, this.o.log);
         } finally {
             this.removing.delete(reserved);
@@ -646,11 +658,13 @@ export class Engine {
         return m;
     }
 
-    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId } = {}): Promise<Runtime> {
+    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string> } = {}): Promise<Runtime> {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const ws = this.workspaceFor(p);
         const session = Session.create(p);
+        // Apply inherited selections before Runtime starts model setup; native threads stay fresh.
+        for (const [provider, id] of Object.entries(opts.accounts ?? {})) session.setAccount(provider, id);
         const mode = opts.mode && PERMISSION_MODES.includes(opts.mode) ? opts.mode : this.defaultMode(ws);
         const rt = new Runtime(this, ws, session, { mode, resumed: false });
         this.runtimes.set(rt.id, rt);
@@ -838,6 +852,8 @@ export class Engine {
         const session = this.loadSession(id);
         let rt: Runtime;
         try {
+            // Its worktree removed, say: its tools, shells and hooks would all fail there.
+            if (!isDir(session.meta.cwd)) throw new RpcError(`This session's folder, ${session.meta.cwd}, no longer exists (if it was a worktree, it was removed; its branch is still in the repository). The conversation is saved, but it can't be opened without its folder.`, "folder_missing");
             const ws = this.workspaceFor(session.meta.cwd);
             rt = new Runtime(this, ws, session, { mode: this.defaultMode(ws), resumed: true });
         } catch (e) {
@@ -858,6 +874,15 @@ export class Engine {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
         if (!rt.idle) return this.unloadLater(id);
+        void this.unload(rt);
+    }
+
+    /** Close a session as quitting a terminal would (its SessionEnd hooks run); it can be opened again once that's done. */
+    private unload(rt: Runtime): Promise<void> {
+        const id = rt.id;
+        const timer = this.unloadTimers.get(id);
+        if (timer) clearTimeout(timer);
+        this.unloadTimers.delete(id);
         this.runtimes.delete(id);
         const done: Promise<void> = rt
             .close()
@@ -870,6 +895,7 @@ export class Engine {
             });
         this.closing.set(id, done);
         this.closingIn.set(id, rt.ws.cwd);
+        return done;
     }
 
     private unloadLater(id: string) {
@@ -976,6 +1002,264 @@ export class Engine {
         const rt = this.runtimes.get(id);
         if (!rt) throw new RpcError("That session isn't open", "not_open");
         return rt;
+    }
+
+    /** Pin, set aside or archive (the GUI's own lists), and tell every window. */
+    private setFlag(id: string, key: "pinned" | "settled" | "archived", on: boolean) {
+        updateStore((s) => {
+            const list = new Set(s[key] ?? []);
+            if (on) list.add(id);
+            else list.delete(id);
+            s[key] = [...list];
+        });
+        const rt = this.runtimes.get(id);
+        const summary = rt ? this.summaryOf(rt) : this.listSessions(1000, key === "archived" ? !on : false).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
+        if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
+    }
+
+    // -----------------------------------------------------------------------
+    // Plans: saved as Markdown, or carried out in a new worktree
+
+    private planOf(rt: Runtime, toolId?: string) {
+        const plan = rt.planText(toolId);
+        if (!plan) throw new RpcError(toolId ? "That plan isn't in this session." : "This session hasn't presented a plan.", "no_plan");
+        return plan;
+    }
+
+    /** The mode a plan's new session starts in: never plan, which would only plan again. */
+    private implementMode(rt: Runtime): { mode: ImplementMode; why: string } {
+        const offered = (m: string | undefined): m is ImplementMode => IMPLEMENT_MODES.includes(m as ImplementMode);
+        if (offered(rt.modeBeforePlan)) return { mode: rt.modeBeforePlan, why: "the mode this session was in before it started planning" };
+        const preferred = this.defaultMode(rt.ws);
+        if (offered(preferred)) return { mode: preferred, why: "your default mode" };
+        return { mode: "default", why: preferred === "plan" ? "your default mode is Plan, which would only plan again" : "your default mode can't be chosen for a plan" };
+    }
+
+    private planInfo(rt: Runtime, toolId?: string): PlanInfo {
+        const plan = this.planOf(rt, toolId);
+        const title = planTitle(plan.text);
+        const cwd = rt.ws.cwd;
+        let git: PlanInfo["git"];
+        let notGit: string | undefined;
+        let worktrees: WorktreeInfo[] = [];
+        try {
+            worktrees = listWorktrees(cwd);
+        } catch {
+            notGit = `${cwd} isn't in a Git repository, so there's no worktree to make. Save the plan instead.`;
+        }
+        if (!notGit) {
+            const main = worktrees.find((w) => w.main);
+            const base = currentBase(cwd);
+            if (!main) notGit = "This repository has no main worktree (it's bare), so there's nowhere to put a new one.";
+            else if (!base) notGit = "This repository has no commit yet, so a worktree has nothing to start from.";
+            else git = { main: main.path, base, branch: suggestBranch(cwd, slugify(title) || "plan") };
+        }
+        const { mode, why } = this.implementMode(rt);
+        return { id: plan.id, plan: plan.text, title, pending: Boolean(plan.interactionId), cwd, git, notGit, mode, modeWhy: why, savePath: defaultPlanPath({ home: harnessHome(), cwd, title }), home: harnessHome() };
+    }
+
+    /** A managed worktree an earlier attempt made for the plan, checked again from Git's own records. */
+    private madeWorktree(from: string, path: string, branch: string): { path: string; branch: string; commit?: string } {
+        let all: WorktreeInfo[];
+        try {
+            all = listWorktrees(from);
+        } catch {
+            throw new RpcError("This folder isn't in a Git repository.", "not_git");
+        }
+        const w = all.find((x) => x.managed && x.exists && (resolve(x.path) === resolve(path) || realPath(x.path) === realPath(path)));
+        if (!w || w.branch !== branch) throw new RpcError(`${path} isn't a worktree Harness made for ${branch} in this repository.`, "not_managed");
+        return { path: w.path, branch, commit: w.head };
+    }
+
+    /**
+     * Steps, each only once the one before it worked: a managed worktree on the
+     * new branch (createWorktree, its trust checks unchanged); a session there
+     * (workspaceFor, so a folder with configuration still asks for trust) with
+     * the planning session's accounts, model, effort and speed; links both ways; the plan
+     * as its first prompt; and last, the planning session's card answered so it
+     * stops, still in plan mode. A worktree made for a session that then
+     * couldn't start is kept and reported (`failed`): it may already hold the
+     * user's work by the time they read it, and `resume` starts the session in it.
+     */
+    private async implementPlan(client: EngineClient, p: Record<string, any>): Promise<ImplementPlanResult> {
+        const rt = this.runtime(text(p.id, "id", 200));
+        const toolId = optText(p.toolId, "toolId", 200);
+        const branch = text(p.branch, "branch", 200);
+        const base = optText(p.base, "base", 200);
+        const folder = optText(p.folder, "folder", 255);
+        const resume = optText(p.resume, "resume", 4096);
+        if (!IMPLEMENT_MODES.includes(p.mode)) throw new RpcError("Choose how the new session handles edits: auto-accept them, ask, or auto mode.", "invalid_mode");
+        const mode = p.mode as ImplementMode;
+        const plan = this.planOf(rt, toolId);
+        const sourceModel = rt.model ? modelRef(rt.model) : rt.session.model;
+        if (!sourceModel) throw new RpcError("Choose a model for the planning session before implementing its plan.", "no_model");
+        if (this.implementing.has(rt.id)) throw new RpcError("This plan is already being taken to a worktree.", "busy");
+        this.implementing.add(rt.id);
+        try {
+            const from = rt.ws.cwd;
+            const made = resume ? this.madeWorktree(from, resume, branch) : await createWorktree({ path: from, branch, base, folder }, this.o.log);
+            // The new session works where the planning one did, relative to its worktree.
+            const top = gitRoot(from);
+            const sub = top ? relative(realPath(top), realPath(from)) : "";
+            // Only a real folder inside the worktree: a checked-out symlink could lead anywhere.
+            const candidate = sub && sub !== ".." && !sub.startsWith(`..${sep}`) && !isAbsolute(sub) ? join(made.path, sub) : "";
+            const there = candidate && isDir(candidate) && isInside(realPath(candidate), realPath(made.path)) ? candidate : made.path;
+            const failed = (e: unknown, sessionId?: string): ImplementPlanResult => {
+                const code = e instanceof RpcError ? e.code : undefined;
+                const folder = code === "needs_trust" ? ((e as RpcError).folder ?? there) : undefined;
+                return { path: made.path, branch: made.branch, sessionId, failed: { message: redact((e as Error).message), code, folder } };
+            };
+            let next: Runtime;
+            try {
+                const accounts = Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, rt.session.accountId(provider)]));
+                next = await this.createSession(there, { mode, accounts });
+            } catch (e) {
+                return failed(e);
+            }
+            try {
+                // Keep the runtime's id before model setup: a provider failure must identify
+                // the session that already exists, so the user can open it instead of duplicating it.
+                if (!(await next.setModel(sourceModel))) throw new RpcError("The planning session's model is unavailable in the new session. Choose an available model there before implementing the plan.", "model_unavailable");
+                if (plan.interactionId && (this.runtimes.get(rt.id) !== rt || rt.planText(plan.id)?.interactionId !== plan.interactionId)) {
+                    throw new RpcError("The planning session was interrupted or its plan was answered while the worktree was being created. The worktree and new session are kept, but implementation was not started.", "expired");
+                }
+                const effort = rt.settings().effort;
+                if (effort && EFFORT_LEVELS.includes(effort)) next.setEffort(effort as EffortLevel);
+                if (next.model?.supportsFastMode) next.setFastMode(rt.fastModeEnabled());
+                const title = rt.title ?? rt.firstPrompt()?.replace(/\s+/g, " ").slice(0, 80);
+                const named = base ?? currentBase(from) ?? made.commit?.slice(0, 12) ?? "HEAD";
+                const link = { title, folder: from, path: made.path, branch: made.branch, base: named, at: Date.now() };
+                next.addPlanLink({ role: "from", session: rt.id, ...link });
+                rt.addPlanLink({ role: "to", session: next.id, ...link });
+                this.watch(client, next.id);
+                await next.send(implementPrompt({ plan: plan.text, title, sessionId: rt.id, from, fromRoot: top ?? from, path: made.path, branch: made.branch, base: named, commit: made.commit }));
+            } catch (e) {
+                return failed(e, next.id);
+            }
+            if (plan.interactionId) rt.handOffPlan(plan.interactionId, `It went to a new session (${next.id}) in a new Git worktree at ${made.path}, on branch ${made.branch}.`);
+            return { path: made.path, branch: made.branch, sessionId: next.id };
+        } finally {
+            this.implementing.delete(rt.id);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Archiving a session in a managed worktree, and removing the worktree with it
+
+    /** A session's folder, live or from its file, and the file (for whether another process has it open). */
+    private sessionWhere(id: string): { cwd: string; file?: string } {
+        const rt = this.runtimes.get(id);
+        const file = findSessionAnywhere(id);
+        if (rt) return { cwd: rt.ws.cwd, file };
+        const cwd = file ? sessionFolder(file) : undefined;
+        if (!cwd) throw new RpcError(`No session ${id}`, "not_found");
+        return { cwd, file };
+    }
+
+    /**
+     * Why archiving this session keeps its worktree, if it does. Another
+     * session (in the sidebar, or open) working there keeps it; so do this one
+     * still working or open elsewhere, a lock, and commits no remote branch has.
+     * Changes in the worktree are Git's to refuse, at removal.
+     */
+    private async keepReason(client: EngineClient, id: string, file: string | undefined, cwd: string, wt: WorktreeInfo): Promise<{ reason: string; code: string } | undefined> {
+        const rt = this.runtimes.get(id);
+        if (rt && !rt.idle) return { reason: "This session is still working, or waiting for you. Stop it, or let it finish, to remove its worktree.", code: "running" };
+        if ([...this.clients].some((c) => c !== client && c.subs.has(id))) return { reason: "This session is open in another window. Close it there to remove its worktree.", code: "open_elsewhere" };
+        if (file && sessionHolder(file) !== undefined) return { reason: "This session is open in another Harness process (a terminal, say). Close it there to remove its worktree.", code: "open_elsewhere" };
+        const inside = within(wt.path);
+        const other = this.listSessions(Infinity).find((s) => s.id !== id && inside(s.cwd));
+        if (other) return { reason: `“${other.title}” also works in this worktree, so it stays.`, code: "shared" };
+        if ([...this.runtimes.values()].some((r) => r.id !== id && inside(r.ws.cwd))) return { reason: "Another open session works in this worktree, so it stays.", code: "shared" };
+        if (wt.locked !== undefined) return { reason: `The worktree is locked${wt.locked ? ` (${wt.locked})` : ""}.`, code: "locked" };
+        try {
+            const why = await unpushedReason({ path: cwd, worktree: wt.path });
+            return why ? { reason: why, code: "unpushed" } : undefined;
+        } catch (e) {
+            // The removal dialog must still offer its explicit Trust and remove action.
+            if (e instanceof RpcError && e.code === "needs_trust") return undefined;
+            return { reason: (e as Error).message, code: e instanceof RpcError && e.code ? e.code : "unchecked" };
+        }
+    }
+
+    private async archiveOffer(client: EngineClient, id: string): Promise<ArchiveOffer> {
+        const { cwd, file } = this.sessionWhere(id);
+        const found = isDir(cwd) ? managedWorktreeOf(cwd) : undefined;
+        if (!found) return { removable: false };
+        const worktree = { path: found.worktree.path, branch: found.worktree.branch, main: found.main };
+        const keep = await this.keepReason(client, id, file, cwd, found.worktree);
+        return keep ? { worktree, removable: false, reason: keep.reason } : { worktree, removable: true };
+    }
+
+    /**
+     * Archive, and remove the managed worktree the session works in with
+     * PR 13's removal unchanged (no --force; the branch stays), plus a check
+     * of its own: every commit is on a remote branch, checked right before Git
+     * runs. Trust and ignored files need the user, so they come first and
+     * nothing is done until they've answered; anything else that keeps the
+     * worktree still archives the session, and says why. The session, open in
+     * the window that asked, is closed properly first: removal refuses while
+     * one is open there.
+     */
+    private async archiveAndRemove(client: EngineClient, id: string, deleteIgnored?: string): Promise<ArchiveResult> {
+        if (this.archiving.has(id)) throw new RpcError("This session is already being archived.", "busy");
+        this.archiving.add(id);
+        try {
+            const { cwd, file } = this.sessionWhere(id);
+            const found = isDir(cwd) ? managedWorktreeOf(cwd) : undefined;
+            if (!found) throw new RpcError("This session isn't in a worktree Harness manages, so there's no worktree to remove.", "not_managed");
+            const wt = found.worktree.path;
+            let closed = false;
+            const done = (removed: boolean, kept?: string, code?: string): ArchiveResult => {
+                this.setFlag(id, "archived", true);
+                return { archived: true, removed, kept, code, worktree: wt, main: found.main, closed };
+            };
+            const keep = await this.keepReason(client, id, file, cwd, found.worktree);
+            if (keep) return done(false, keep.reason, keep.code);
+            const rt = this.runtimes.get(id);
+            // As removal will see it, but with this session not counting yet: it's still open, and only closed once nothing needs asking.
+            const others = [...[...this.runtimes.values()].filter((r) => r !== rt).map((r) => r.ws.cwd), ...this.closingIn.values(), ...heldSessionFolders()];
+            let plan: Removal;
+            try {
+                plan = planRemoval({ path: cwd, worktree: wt, inUse: (dir) => others.some(within(dir)) });
+            } catch (e) {
+                if (e instanceof RpcError && e.code !== "needs_trust") return done(false, e.message, e.code);
+                throw e;
+            }
+            let waiting;
+            try {
+                waiting = await ignoredWaiting(plan, deleteIgnored, this.o.log);
+            } catch (e) {
+                if (e instanceof RpcError) return done(false, e.message, e.code);
+                throw e;
+            }
+            if (waiting) return { archived: false, ignored: waiting.ignored, total: waiting.total, confirm: waiting.confirm };
+            if (rt) {
+                // Checked again now, after the awaits above: a turn started, or another window opened it, meanwhile.
+                if (this.runtimes.get(id) !== rt || !rt.idle) return done(false, "This session started working again, so its worktree stays.", "running");
+                if ([...this.clients].some((c) => c !== client && c.subs.has(id))) return done(false, "This session was opened in another window, so its worktree stays.", "open_elsewhere");
+                client.subs.delete(id);
+                closed = true;
+                await this.unload(rt);
+            }
+            try {
+                const r = await this.removeWorktree(cwd, wt, deleteIgnored, async () => {
+                    const why = await unpushedReason({ path: cwd, worktree: wt });
+                    if (why) throw new RpcError(why, "unpushed");
+                    // Closing the runtime and checking Git both yield: another saved session may have
+                    // been restored meanwhile. Check all sessions while new opens are reserved out.
+                    const other = this.listSessions(Infinity).find((s) => s.id !== id && within(wt)(s.cwd));
+                    if (other) throw new RpcError(`“${other.title}” also works in this worktree, so it stays.`, "shared");
+                });
+                if (!r.removed) return done(false, "Its ignored files changed while you were deciding, so it was kept. Remove it from the worktree picker to see them again.", "ignored_changed");
+                return done(true);
+            } catch (e) {
+                if (e instanceof RpcError) return done(false, e.message, e.code);
+                throw e;
+            }
+        } finally {
+            this.archiving.delete(id);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1442,6 +1726,7 @@ export class Engine {
                 this.runtime(p.id).interrupt();
                 return null;
             case "session.respond":
+                if (this.implementing.has(p.id)) throw new RpcError("This plan is being taken to a worktree. Wait for that to finish before answering it.", "busy");
                 this.runtime(p.id).respond(str(p.interactionId, "interactionId"), p.response);
                 return null;
             case "session.setModel": {
@@ -1452,6 +1737,7 @@ export class Engine {
                 return null;
             }
             case "session.setMode":
+                if (this.implementing.has(p.id)) throw new RpcError("This plan is being taken to a worktree. Wait for that to finish before changing its mode.", "busy");
                 if (!PERMISSION_MODES.includes(p.mode)) throw new RpcError("Unknown mode");
                 if (!this.runtime(p.id).setMode(p.mode)) throw new RpcError("Bypass mode is off. Start the GUI with --dangerously-skip-permissions or set permissions.allowBypass in your user settings.");
                 return null;
@@ -1543,16 +1829,25 @@ export class Engine {
                 const id = str(p.id, "id");
                 const key = method === "session.pin" ? "pinned" : method === "session.settle" ? "settled" : "archived";
                 const on = Boolean(p[key]);
-                updateStore((s) => {
-                    const list = new Set(s[key] ?? []);
-                    if (on) list.add(id);
-                    else list.delete(id);
-                    s[key] = [...list];
-                });
-                const rt = this.runtimes.get(id);
-                const summary = rt ? this.summaryOf(rt) : this.listSessions(1000, method === "session.archive" ? !on : false).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
-                if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
+                if (key === "archived" && !on && this.removing.size) {
+                    const { cwd } = this.sessionWhere(id);
+                    if ([...this.removing].some((dir) => within(dir)(cwd))) throw new RpcError("This session's worktree is being removed. Wait for removal to finish before restoring it.", "busy");
+                }
+                if (key === "archived" && on && p.removeWorktree === true) return await this.archiveAndRemove(client, id, optText(p.deleteIgnored, "deleteIgnored", 128));
+                this.setFlag(id, key, on);
                 return null;
+            }
+            case "session.archiveOffer":
+                return await this.archiveOffer(client, text(p.id, "id", 200));
+            case "session.planInfo":
+                return this.planInfo(this.runtime(text(p.id, "id", 200)), optText(p.toolId, "toolId", 200));
+            case "session.implementPlan":
+                return await this.implementPlan(client, p);
+            case "session.savePlan": {
+                const rt = this.runtime(text(p.id, "id", 200));
+                const plan = this.planOf(rt, optText(p.toolId, "toolId", 200));
+                const input = optText(p.path, "path", 4096) ?? defaultPlanPath({ home: harnessHome(), cwd: rt.ws.cwd, title: planTitle(plan.text) });
+                return { path: writePlanFile({ cwd: rt.ws.cwd, home: harnessHome(), input, text: plan.text, replace: p.replace === true }) };
             }
             case "session.delete":
                 await this.deleteSession(checkId(p.id));
@@ -1560,7 +1855,9 @@ export class Engine {
             case "session.restore": {
                 const id = checkId(p.id);
                 while (this.closing.has(id)) await this.afterClosing(id);
-                const flags = restoreSession(id);
+                const flags = restoreSession(id, this.removing.size ? (cwd) => {
+                    if (!cwd || [...this.removing].some((dir) => within(dir)(cwd))) throw new RpcError("This session's worktree is being removed. Wait for removal to finish before restoring it.", "busy");
+                } : undefined);
                 const saved = updateStore((s) => {
                     for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
                 });
@@ -1678,8 +1975,10 @@ export class Engine {
                     },
                     this.o.log,
                 );
+                // The commit is for plan handoffs on the server; the wire result stays CreateWorktreeResult.
+                const wire = { path: made.path, branch: made.branch };
                 // The worktree is there whatever its setup does: only asked for, by this request, may it run.
-                return p.setup === true ? { ...made, ...(await this.grantSetup(client, made.path, preview)) } : made;
+                return p.setup === true ? { ...wire, ...(await this.grantSetup(client, made.path, preview)) } : wire;
             }
             case "projects.removeWorktree":
                 return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));

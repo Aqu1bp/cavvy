@@ -1,12 +1,13 @@
 // The session's side card: where it works (folder, branch, changes), and
-// only what's live besides: the plan, running shells, secrets it holds, MCP servers
+// only what's live besides: proposed plans, todos, running shells, secrets, MCP servers
 // that failed or ask for approval, and its sub-agents. Empty sections aren't drawn.
 
-import { createMemo, createSignal, For, Show } from "solid-js";
-import { Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
-import type { AgentRun } from "@shared/protocol";
+import { createMemo, createResource, createSignal, For, Show } from "solid-js";
+import { ArrowUpLeft, Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, KeyRound, Plug, Save, SquarePen, Terminal, X } from "lucide-solid";
+import type { AgentRun, PlanLink } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc, toast } from "../state/app";
+import { activate, app, reportError, rpc, toast } from "../state/app";
+import { setPlanDialog } from "../state/ui";
 import { newSession, openAgents, openReview, stopAgent } from "../state/actions";
 import { setMcpOpen } from "../state/ui";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
@@ -80,6 +81,76 @@ function Workspace(p: { handle: SessionHandle }) {
                 </Show>
             </button>
         </div>
+    );
+}
+
+/**
+ * The plan the session presented last, after its card is gone too, with what
+ * can be done with it; and the links a plan taken to a worktree leaves in
+ * both sessions. (The todo list below is the agent's own progress.)
+ */
+function ProposedPlan(p: { handle: SessionHandle }) {
+    let row: HTMLButtonElement | undefined;
+    const [menu, setMenu] = createSignal(false);
+    const st = () => p.handle.view.state;
+    const plan = () => st().plan;
+    const [info] = createResource(() => menu() && plan()?.id, (toolId) => rpc.call("session.planInfo", { id: p.handle.id, toolId }).catch(() => undefined));
+    const waiting = () => st().interactions.some((i) => i.kind === "plan");
+    const links = () => st().planLinks ?? [];
+    const open = (kind: "view" | "save" | "worktree") => {
+        setMenu(false);
+        setPlanDialog({ kind, sessionId: p.handle.id, planId: plan()?.id });
+    };
+    const titleOf = (l: PlanLink) => app.sessions.find((s) => s.id === l.session)?.title ?? app.archived.find((s) => s.id === l.session)?.title;
+    return (
+        <Show when={plan() || links().length}>
+            <div class="sec">
+                <div class="sh">Proposed plan</div>
+                <Show when={plan()}>
+                    {(pl) => (
+                        <>
+                            <button ref={row} class="prow" aria-haspopup="menu" aria-expanded={menu()} title="Read, save or implement the plan" onClick={() => setMenu(!menu())}>
+                                <ClipboardList size={16} />
+                                <span class="truncate grow">{pl().title}</span>
+                                <span class={`meta ${waiting() ? "tone-warn" : ""}`}>{waiting() ? "Needs you" : ""}</span>
+                            </button>
+                            <Popover open={menu()} anchor={() => row} onClose={() => setMenu(false)} width={260}>
+                                <button class="menu-item compact" onClick={() => open("view")}>
+                                    <ClipboardList size={14} /> Read the plan
+                                </button>
+                                <button class="menu-item compact" disabled={!info()?.git} title={info()?.notGit ?? (info()?.git ? "Implement the plan in a new worktree" : info.loading ? "Checking the repository…" : "Repository information unavailable")} onClick={() => open("worktree")}>
+                                    <FolderGit2 size={14} /> Implement in a new worktree…
+                                </button>
+                                <button class="menu-item compact" onClick={() => open("save")}>
+                                    <Save size={14} /> Save plan…
+                                </button>
+                                <button
+                                    class="menu-item compact"
+                                    onClick={async () => {
+                                        setMenu(false);
+                                        const r = await rpc.call("session.planInfo", { id: p.handle.id, toolId: pl().id }).catch(reportError);
+                                        if (r && (await copyText(r.plan))) toast("Copied the plan", "success");
+                                    }}
+                                >
+                                    <Copy size={14} /> Copy plan
+                                </button>
+                            </Popover>
+                        </>
+                    )}
+                </Show>
+                <For each={links()}>
+                    {(l) => (
+                        <button class="prow" title={`${l.role === "to" ? "Implemented" : "Planned"}: ${tildify(l.path, app.hello?.homeDir)} on ${l.branch}${l.base ? `, from ${l.base}` : ""}. Open that session.`} onClick={() => void activate(l.session)}>
+                            <Show when={l.role === "to"} fallback={<ArrowUpLeft size={16} />}>
+                                <GitBranchPlus size={16} />
+                            </Show>
+                            <span class="truncate grow">{l.role === "to" ? `Implementing on ${l.branch}` : `Plan from “${titleOf(l) ?? l.title ?? "another session"}”`}</span>
+                            <span class="meta">{l.role === "to" ? "Open" : ""}</span>
+                        </button>
+                    )}
+                </For>
+            </div>
+        </Show>
     );
 }
 
@@ -261,6 +332,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
         <aside class="panel" aria-label="Session details">
             <div class="panel-scroll">
                 <Workspace handle={p.handle} />
+                <ProposedPlan handle={p.handle} />
                 <Plan handle={p.handle} />
                 <Shells handle={p.handle} />
                 <Secrets handle={p.handle} />
