@@ -8,7 +8,7 @@ import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isTauri } from "../lib/platform";
+import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
 import { prefs } from "./prefs";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
@@ -19,7 +19,7 @@ import { afterFailedReopen } from "../lib/reopen";
 import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
 import { composerDrafts } from "../lib/composer-draft";
 
-export const rpc = new Rpc(credentials);
+export const rpc = new Rpc(credentials, windowKey);
 rpc.retriesCredentials = isTauri;
 
 // ---------------------------------------------------------------------------

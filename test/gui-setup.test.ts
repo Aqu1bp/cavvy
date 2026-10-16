@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
+import { EarlyInput, terminalInputChunks, restoreTabs, TerminalClosures } from "../gui/src/lib/terminal";
+import { RpcError } from "../gui/src/lib/rpc";
 import { node } from "./gui-component-harness";
 import { asksForSetup, setupNote, setupTabLabel } from "../gui/src/lib/setup";
 
@@ -13,7 +14,8 @@ type Setup = typeof setup;
 const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 
 /** Run both real component bodies with fake DOM/terminal adapters; no shell or socket is opened. */
-function panel() {
+async function panel() {
+    const effects: (() => void)[] = [];
     const signals: (() => any)[] = [];
     const mounts: (() => void)[] = [];
     const buttons: any[] = [];
@@ -50,7 +52,7 @@ function panel() {
             signals.push(read);
             return [read, (next: any) => { value = typeof next === "function" ? next(value) : next; }];
         },
-        createEffect() {}, on() {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
+        createEffect: (callback: () => void) => effects.push(callback), on: () => () => {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
         app, terminalActions, setupObscured, setSettingsTab, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
         prefs: { terminalHeight: 260 }, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
         terminalShortcut: "Ctrl+`", toast: (text: string, kind: string) => notices.push({ text, kind }),
@@ -58,7 +60,9 @@ function panel() {
             call: (method: string, params: any) => { calls.push({ method, params }); return response(method); },
             onEvent: () => () => {}, onState: () => () => {},
         },
-        Terminal, FitAddon: class { fit() {} }, EarlyInput, terminalInputChunks,
+        loadTabs: () => ({ tabs: [], next: 1, open: false }), restoreTabs, saveTabs() {}, TerminalClosures,
+        reportError: (error: unknown) => { throw error; },
+        RpcError, Terminal, FitAddon: class { fit() {} }, EarlyInput, terminalInputChunks,
         getComputedStyle: () => ({ getPropertyValue: () => "" }), MutationObserver: Observer, ResizeObserver: Observer,
         document: { documentElement: {} }, cancelAnimationFrame() {}, requestAnimationFrame() {},
     };
@@ -67,6 +71,11 @@ function panel() {
     const compiled = new Bun.Transpiler({ loader: "tsx", tsconfig: { compilerOptions: { jsx: "react", jsxFactory: "node" } } }).transformSync(source);
     const components = new Function(...Object.keys(dependencies), `${compiled}\nreturn { TerminalPanel, TerminalScreen, setupTickets };`)(...Object.values(dependencies));
     components.TerminalPanel({ cwd: "/project" });
+    response = async (method) => method === "terminal.list" ? [] : {};
+    for (const effect of effects) effect();
+    await flush();
+    expect(calls.map((call) => call.method)).toEqual(["terminal.list"]);
+    calls.length = 0;
     return {
         app, calls, notices, terminalActions,
         tabs: () => signals[0]!(), opened: () => opened,
@@ -75,12 +84,14 @@ function panel() {
         respond: (callback: typeof response) => { response = callback; },
         screen: (tab: any) => {
             const firstSignal = signals.length;
-            const props = { tab, visible: true };
+            // Parent persistence/close handling is covered by gui-terminal-persistence;
+            // this adapter isolates the screen's setup/restart command selection.
+            const props = { tab, visible: true, onClose() {}, onRestart: async () => {} };
             components.TerminalScreen(props);
             mounts.pop()!();
             return {
                 ended: signals[firstSignal]!,
-                restart: () => buttons.find((button) => button.children.includes(" Restart shell"))!.props.onClick(),
+                restart: () => buttons.find((button) => button.children.includes("Restart shell") || button.children.includes("Restart login"))!.props.onClick(),
                 input: (data: string) => onInput!(data),
                 hide: () => { props.visible = false; },
             };
@@ -88,8 +99,8 @@ function panel() {
     };
 }
 
-test("manual project scripts and worktree setup insert visible tabs in their requested folders", () => {
-    const p = panel();
+test("manual project scripts and worktree setup insert visible tabs in their requested folders", async () => {
+    const p = await panel();
     p.run(false);
     p.run();
     expect(p.tabs()).toHaveLength(2);
@@ -102,7 +113,7 @@ test("manual project scripts and worktree setup insert visible tabs in their req
 });
 
 test("a setup tab sends its ticket once and restarting gives a plain shell", async () => {
-    const p = panel();
+    const p = await panel();
     p.run();
     const screen = p.screen(p.tabs()[0]);
     await flush();
@@ -122,7 +133,7 @@ test("a setup tab sends its ticket once and restarting gives a plain shell", asy
 });
 
 test("login tabs retain their account on restart without attaching it to setup tabs", async () => {
-    const p = panel();
+    const p = await panel();
     const login = { provider: "codex", accountId: "personal", name: "Personal" };
     p.terminalActions.loginAccount!(login.provider, login.accountId, login.name);
     const screen = p.screen(p.tabs()[0]);
@@ -140,7 +151,7 @@ test("login tabs retain their account on restart without attaching it to setup t
 });
 
 test("manual script clicks still run without a setup ticket", async () => {
-    const p = panel();
+    const p = await panel();
     p.run(false);
     p.screen(p.tabs()[0]);
     await flush();
@@ -149,7 +160,7 @@ test("manual script clicks still run without a setup ticket", async () => {
 });
 
 test("Ctrl+C typed while setup opens is delivered before the script is armed", async () => {
-    const p = panel();
+    const p = await panel();
     const pending = Promise.withResolvers<unknown>();
     p.respond((method) => method === "scripts.run" ? pending.promise : Promise.resolve({}));
     p.run();
@@ -164,7 +175,7 @@ test("Ctrl+C typed while setup opens is delivered before the script is armed", a
 
 test("setup hidden while its shell opens is closed before arming and reports recovery", async () => {
     for (const cover of ["settings", "navigation"] as const) {
-        const p = panel();
+        const p = await panel();
         const pending = Promise.withResolvers<unknown>();
         p.respond((method) => method === "scripts.run" ? pending.promise : Promise.resolve({}));
         p.run();
@@ -185,7 +196,7 @@ test("setup hidden while its shell opens is closed before arming and reports rec
 });
 
 test("a failed setup start explains that the worktree remains and cannot replay on restart", async () => {
-    const p = panel();
+    const p = await panel();
     p.respond((method) => method === "scripts.run" ? Promise.reject(new Error("Folder is gone")) : Promise.resolve({}));
     p.run();
     const screen = p.screen(p.tabs()[0]);
@@ -198,8 +209,8 @@ test("a failed setup start explains that the worktree remains and cannot replay 
     expect(p.calls.map((call) => call.method)).toEqual(["scripts.run", "terminal.open"]);
 });
 
-test("a full window refuses another setup tab with a recoverable warning", () => {
-    const p = panel();
+test("a full window refuses another setup tab with a recoverable warning", async () => {
+    const p = await panel();
     for (let i = 0; i < 12; i++) p.run(false);
     p.run();
     expect(p.tabs()).toHaveLength(12);
@@ -211,7 +222,7 @@ test("a full window refuses another setup tab with a recoverable warning", () =>
 });
 
 test("disconnect before tab creation or before shell start never runs setup", async () => {
-    const p = panel();
+    const p = await panel();
     p.app.conn = "closed";
     p.run();
     expect(p.tabs()).toHaveLength(0);
@@ -377,7 +388,7 @@ test("submitting before the setup preview loads creates nothing; submission afte
 
 
 test("a setup tab without its transient ticket refuses to fall back to a manual script run", async () => {
-    const p = panel();
+    const p = await panel();
     p.run();
     const tab = p.tabs()[0];
     p.forgetTicket(tab);

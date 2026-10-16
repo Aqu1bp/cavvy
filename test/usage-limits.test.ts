@@ -299,7 +299,7 @@ describe("reset times in words", () => {
     test("today: the time, and how long", () => {
         expect(untilText(now + 125 * 60_000, now)).toBe("2h 5m");
         expect(resetPhrase(now + 125 * 60_000, now)).toMatch(/^at \S.* \(in 2h 5m\)$/);
-        expect(resetSentence(now + 125 * 60_000, "Codex", now)).toMatch(/^It resets at .* \(in 2h 5m\)\.$/);
+        expect(resetSentence(now + 125 * 60_000, "Codex", now)).toMatch(/^It resets (?:at|on) .* \(in 2h 5m\)\.$/);
     });
 
     test("another day: the day too", () => {
@@ -309,7 +309,7 @@ describe("reset times in words", () => {
     test("the terminal's /cost lines", () => {
         const l = parseCodexRateLimits(fixture("codex-update-reached.json"), { update: true, at: now })!.limits;
         const lines = limitLines({ ...l, windows: l.windows.map((w, i) => ({ ...w, resetsAt: now + (i ? 3 * 86_400_000 : 125 * 60_000) })) }, now);
-        expect(lines[0]).toMatch(/^5-hour 100% reached · resets at .* \(in 2h 5m\)$/);
+        expect(lines[0]).toMatch(/^5-hour 100% reached · resets (?:at|on) .* \(in 2h 5m\)$/);
         expect(lines[1]).toMatch(/^Weekly 41% · resets on .* \(in 3d\)$/);
         expect(limitLines({ provider: "claude-code", windows: [], reached: true, at: now }, now)).toEqual(["Limit reached"]);
     });
@@ -444,7 +444,7 @@ describe("a turn that hits the plan's limit says when it resets", () => {
             expect(r.reason).toBe("error");
             // An error arriving first also reports the reached account before its window details.
             expect(r.limits).toHaveLength(2 + Number(late === "1"));
-            expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)/);
+            expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)/);
         }
     });
 
@@ -459,7 +459,7 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         // No stale event reaches the engine; the local turn also keeps its reset.
         expect(r.limits).toHaveLength(1);
         expect(r.limits[0]!.windows[0]).toMatchObject({ usedPercent: 100, reached: true });
-        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)/);
+        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)/);
     });
 
     test("Claude Code: the time from its rate_limit_event (sent before the error)", async () => {
@@ -472,7 +472,7 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         expect(error).toContain(`Claude Code · Default: usage limit reached. It resets ${resetPhrase(Math.round(at / 1000) * 1000)}.`);
         expect(error).toContain("(in 2h 5m)");
         // The notice as the limit was reached says so too, and the meter hears of it.
-        expect(r.notices.some((n) => /^warn: Claude Code · Default: 5-hour usage limit reached\. It resets at .*\(in 2h 5m\)\.$/.test(n))).toBe(true);
+        expect(r.notices.some((n) => /^warn: Claude Code · Default: 5-hour usage limit reached\. It resets (?:at|on) .*\(in 2h 5m\)\.$/.test(n))).toBe(true);
         expect(r.limits.at(-1)).toMatchObject({ provider: "claude-code", reached: true });
     });
 
@@ -481,7 +481,7 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         process.env.FAKE_RATE_LIMIT = shifted("claude-rejected.json", soon());
         process.env.FAKE_RATE_LIMIT_LATE = "1";
         const r = await runTurn("claude-code");
-        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)\. Choose another account/);
+        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)\. Choose another account/);
     });
 
     test("Claude Code: no time when it didn't report one", async () => {
@@ -490,7 +490,7 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         const r = await runTurn("claude-code");
         const error = r.notices.find((n) => n.startsWith("error:"))!;
         expect(error).toContain("Claude Code didn't say when it resets.");
-        expect(error).not.toContain("resets at");
+        expect(error).not.toMatch(/resets (?:at|on) /);
 
         delete process.env.FAKE_RATE_LIMIT;
         const none = await runTurn("claude-code");
@@ -512,7 +512,7 @@ describe("a turn that hits the plan's limit says when it resets", () => {
     test("Claude Code: close to a limit is a notice with its reset", async () => {
         process.env.FAKE_RATE_LIMIT = shifted("claude-warning.json", soon());
         const r = await runTurn("claude-code");
-        expect(r.notices).toContainEqual(expect.stringMatching(/^info: Claude Code · Default: close to the 5-hour usage limit\. It resets at .*\(in 2h 5m\)\.$/));
+        expect(r.notices).toContainEqual(expect.stringMatching(/^info: Claude Code · Default: close to the 5-hour usage limit\. It resets (?:at|on) .*\(in 2h 5m\)\.$/));
     });
 
     test("Codex: the time from account/rateLimits/updated", async () => {
@@ -521,15 +521,15 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         const r = await runTurn("codex");
         expect(r.reason).toBe("error");
         const error = r.notices.find((n) => n.startsWith("error:"))!;
-        expect(error).toMatch(/^error: Codex · Default: usage limit reached\. It resets at .*\(in 2h 5m\)\. Choose another account with \/account or the plan meter, then send again\.$/);
-        expect(r.notices).toContainEqual(expect.stringMatching(/^warn: Codex · Default: usage limit reached \(rate limit reached\)\. It resets at .*\(in 2h 5m\)\.$/));
+        expect(error).toMatch(/^error: Codex · Default: usage limit reached\. It resets (?:at|on) .*\(in 2h 5m\)\. Choose another account with \/account or the plan meter, then send again\.$/);
+        expect(r.notices).toContainEqual(expect.stringMatching(/^warn: Codex · Default: usage limit reached \(rate limit reached\)\. It resets (?:at|on) .*\(in 2h 5m\)\.$/));
     });
 
     test("Codex: read from account/rateLimits/read when no update said", async () => {
         process.env.FAKE_SCENARIO = "usage-limit";
         process.env.FAKE_RATE_LIMITS = shifted("codex-read-reached.json", soon());
         const r = await runTurn("codex");
-        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)\. Choose another account/);
+        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)\. Choose another account/);
         expect(received().filter((m) => m.method === "account/rateLimits/read").length).toBeGreaterThanOrEqual(1);
     });
 
@@ -538,7 +538,7 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         const r = await runTurn("codex");
         const error = r.notices.find((n) => n.startsWith("error:"))!;
         expect(error).toContain("Codex didn't say when it resets.");
-        expect(error).not.toContain("resets at");
+        expect(error).not.toMatch(/resets (?:at|on) /);
         // Asked twice (as the turn started, and after it failed): an unknown method fails neither.
         expect(received().filter((m) => m.method === "account/rateLimits/read").length).toBe(2);
     });
@@ -589,7 +589,7 @@ describe("limit notices aren't repeated", () => {
         for (let turn = 0; turn < 2; turn++) {
             const r = await runTurn("claude-code");
             expect(reached(r.notices)).toBe(1);
-            expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets at .*\(in 2h 5m\)/);
+            expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)/);
         }
     });
 
