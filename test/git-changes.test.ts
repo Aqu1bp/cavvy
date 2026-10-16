@@ -4,7 +4,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { findRenames, gitChanges, removeWhere, render } = await import("../src/server/git-changes");
+const { convertsEol, findRenames, gitChanges, gitSeesBinary, removeWhere, render } = await import("../src/server/git-changes");
 const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
@@ -324,6 +324,56 @@ describe("git changes", () => {
         const r = await gitChanges(dir, { scope: "uncommitted" });
         expect(summary(r)).toEqual(["modified a.txt +1 -1"]);
         expect(r.files[0]!.hunks[0]!.lines.map((l) => `${l.t}:${l.text}`)).toEqual(["ctx:one\r", "del:two\r", "add:TWO\r"]);
+    });
+
+    test("in branch scope, CRLFs committed over an LF base are a change when the index keeps them", async () => {
+        const dir = repo({ "a.txt": "one\ntwo\n" });
+        git(dir, "switch", "-q", "-c", "feat");
+        write(dir, "a.txt", "one\r\ntwo\r\n");
+        git(dir, "commit", "-q", "-am", "crlf");
+        git(dir, "config", "core.autocrlf", "true");
+        expect(git(dir, "show", ":a.txt")).toBe("one\r\ntwo\r\n");
+        expect(git(dir, "diff", "--numstat", "main").trim()).toBe("2\t2\ta.txt");
+        const r = await gitChanges(dir, { scope: "branch", base: "main" });
+        expect(summary(r)).toEqual(["modified a.txt +2 -2"]);
+        expect((await gitChanges(dir, { scope: "uncommitted" })).files).toEqual([]);
+    });
+
+    test("auto conversion leaves content git sees as binary alone", async () => {
+        const dir = repo({ "a.txt": "one\rtwo\n" });
+        git(dir, "config", "core.autocrlf", "true");
+        write(dir, "a.txt", "one\rtwo\r\n");
+        expect(git(dir, "diff", "--numstat").trim()).not.toBe("");
+        const r = await gitChanges(dir, { scope: "uncommitted" });
+        expect(r.files.map((f) => [f.change, f.path])).toEqual([["modified", "a.txt"]]);
+    });
+
+    test("git's own auto conversion agrees with gitSeesBinary", async () => {
+        const dir = repo();
+        git(dir, "config", "core.autocrlf", "true");
+        const samples = [
+            "plain\r\ntext\r\n",
+            "lone\rcr\r\n",
+            "nul\0\r\n",
+            "tab\tbs\bff\fesc\x1b\r\n",
+            "a".repeat(128) + "\x01\r\n", // 1 non-printable per 128: text
+            "a".repeat(128) + "\x01\x01\r\n", // 2: binary
+            "a".repeat(127) + "\x7f\r\n", // 127 printable >> 7 is 0 < 1: binary
+            "dos\r\nend\x1a", // a final \032 isn't counted
+            "\u00e9t\u00e9\r\n", // UTF-8 bytes from 128 up are printable
+        ].map((t) => Buffer.from(t, "utf-8"));
+        for (const buf of samples) {
+            const r = Bun.spawnSync(gitArgv(["hash-object", "--path=x.txt", "--stdin"]), { cwd: dir, env: gitEnv(), stdin: buf, stdout: "pipe" });
+            const raw = Bun.spawnSync(gitArgv(["hash-object", "--no-filters", "--stdin"]), { cwd: dir, env: gitEnv(), stdin: buf, stdout: "pipe" });
+            const gitConverted = r.stdout.toString() !== raw.stdout.toString();
+            expect([JSON.stringify(buf.toString("latin1")), convertsEol("auto", { binary: gitSeesBinary(buf) }, null)]).toEqual([JSON.stringify(buf.toString("latin1")), gitConverted]);
+        }
+        // The index's copy: text with CRLFs keeps auto from converting; binary with CRLFs doesn't.
+        const text = Buffer.from("a\r\n");
+        expect(convertsEol("auto", { binary: false }, Buffer.from("x\r\ny\r\n"))).toBe(false);
+        expect(convertsEol("auto", { binary: false }, Buffer.from("x\0\r\n"))).toBe(true);
+        expect(convertsEol("auto", { binary: false }, undefined)).toBe(false);
+        expect(convertsEol("always", { binary: gitSeesBinary(text) }, undefined)).toBe(true);
     });
 
     test("a conflicted file gets its line endings normalized too", async () => {

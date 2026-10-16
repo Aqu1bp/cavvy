@@ -166,8 +166,10 @@ interface Entry {
     oid: string;
     /** Blob size: known for tree entries and files on disk. */
     size?: number;
-    /** The blob id with CRLF line endings turned into LF (text files that have them). */
+    /** The blob id with CRLF line endings turned into LF (files that have them). */
     norm?: string;
+    /** With `norm`: git's auto conversion sees this content as binary, so leaves it alone. */
+    autoBinary?: boolean;
 }
 
 interface IndexEntry extends Entry {
@@ -208,7 +210,7 @@ function blobId(data: Uint8Array, algo: Algo): string {
 type Algo = "sha1" | "sha256";
 
 /** Ids of files already hashed, while their stat stays the same. */
-const idCache = new Map<string, { stamp: string; oid: string; norm?: string }>();
+const idCache = new Map<string, { stamp: string; oid: string; norm?: string; autoBinary?: boolean }>();
 
 const OPEN_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
@@ -270,18 +272,61 @@ async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<st
     }
 }
 
-async function fileId(abs: string, st: Stats, algo: Algo, inTime: () => void): Promise<{ oid: string; norm?: string }> {
+/**
+ * Binary to git's auto line-ending conversion (convert.c gather_stats and
+ * convert_is_binary): a lone CR, a NUL, or more than one non-printable byte
+ * per 128 printable ones. BS, HT, ESC and FF count as printable, as do bytes
+ * from 128 up; CR and LF count as neither; a final \032 isn't counted.
+ */
+export function gitSeesBinary(buf: Uint8Array): boolean {
+    let printable = 0;
+    let nonprintable = 0;
+    for (let i = 0; i < buf.length; i++) {
+        const c = buf[i]!;
+        if (c === 13) {
+            if (buf[i + 1] !== 10) return true;
+            i++;
+        } else if (c === 10) continue;
+        else if (c === 0) return true;
+        else if (c === 127) nonprintable++;
+        else if (c < 32) {
+            if (c === 8 || c === 9 || c === 27 || c === 12) printable++;
+            else nonprintable++;
+        } else printable++;
+    }
+    if (buf.length && buf[buf.length - 1] === 26) nonprintable--;
+    return printable >> 7 < nonprintable;
+}
+
+/**
+ * Whether git's check-in turns this file's CRLFs into LFs (convert.c
+ * crlf_to_git): always under `text`/`eol`; under auto, only for content it
+ * doesn't see as binary, and not when the index's copy is text with CRLFs
+ * (has_crlf_in_index). `index`: that copy; null when there is none (or it's
+ * known to have no CRLF); undefined when it couldn't be read, so no conversion
+ * is assumed and a change is never hidden.
+ */
+export function convertsEol(mode: EolMode, working: { binary: boolean }, index: Uint8Array | null | undefined): boolean {
+    if (mode === "always") return true;
+    if (mode !== "auto" || working.binary || index === undefined) return false;
+    return index === null || !(Buffer.from(index).includes("\r\n") && !gitSeesBinary(index));
+}
+
+async function fileId(abs: string, st: Stats, algo: Algo, inTime: () => void): Promise<{ oid: string; norm?: string; autoBinary?: boolean }> {
     const stamp = `${algo}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
     const hit = idCache.get(abs);
     if (hit?.stamp === stamp) return hit;
-    let id: { oid: string; norm?: string };
+    let id: { oid: string; norm?: string; autoBinary?: boolean };
     if (st.size > MAX_DIFF_INPUT) id = { oid: (await streamId(abs, algo, inTime)) ?? "unreadable" };
     else {
         const r = await readRegular(abs, MAX_DIFF_INPUT);
         if (!r?.buf) id = { oid: "unreadable" };
         else {
             id = { oid: blobId(r.buf, algo) };
-            if (r.buf.includes("\r\n") && textOf(r.buf) !== undefined) id.norm = blobId(Buffer.from(r.buf.toString("latin1").replace(/\r\n/g, "\n"), "latin1"), algo);
+            if (r.buf.includes("\r\n")) {
+                id.norm = blobId(Buffer.from(r.buf.toString("latin1").replace(/\r\n/g, "\n"), "latin1"), algo);
+                id.autoBinary = gitSeesBinary(r.buf);
+            }
         }
     }
     if (idCache.size > 200_000) idCache.clear();
@@ -563,6 +608,8 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
 
     const [tree, index, others, folders] = await Promise.all([
         baseSha ? git(root, ["ls-tree", "-r", "-l", "-z", "--full-tree", baseSha], { deadline }) : undefined,
+        // Reading the index (here and with --debug) may touch a split index's sharedindex file's
+        // mtime: git's own way of keeping it from expiring, as any ls-files or status does.
         git(root, ["ls-files", "-s", "-v", "-z"], { deadline }),
         git(root, ["ls-files", "-z", "--others", "--exclude-standard"], { maxBytes: 4 * 1024 * 1024, deadline }),
         // The same, with wholly untracked folders as one path each ("dir/"), as `git status` shows them.
@@ -653,10 +700,19 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
     };
     const eolOf = (path: string): EolMode => (attrs.has(path) ? eolMode(attrs.get(path)) : undefined);
     if (candidates.length || crlfOnly.length) {
+        // Auto conversion depends on the index's copy. Where that's the base, it's the working
+        // text normalized, so (the working text not binary to git) it holds no CR at all; where
+        // it isn't (a branch's commits, something staged), it's read.
+        const ixFor = (c: Change) => {
+            const ix = staged.get(c.path);
+            return ix && ix.oid !== c.old!.oid ? ix.oid : undefined;
+        };
+        const wanted = crlfOnly.filter((c) => eolOf(c.path) === "auto" && !c.now!.autoBinary && ixFor(c)).map((c) => ixFor(c)!);
+        const ixBlobs = wanted.length ? await blobs(root, [...new Set(wanted)], deadline) : new Map<string, Buffer>();
         for (const c of crlfOnly) {
-            // Only paths whose endings git converts are unchanged; others really did gain CRLFs.
-            // (Their working text normalizes to the base, so that copy has no CRLFs for auto to keep.)
-            if (!eolOf(c.path)) changes.push(c);
+            // Only paths whose endings git would convert are unchanged; others really did gain CRLFs.
+            const ix = ixFor(c);
+            if (!convertsEol(eolOf(c.path), { binary: !!c.now!.autoBinary }, ix ? ixBlobs.get(ix) : null)) changes.push(c);
             else {
                 const note = stillListed(c.old!, staged.get(c.path));
                 if (note) changes.push({ ...c, change: "modified", note });
@@ -929,12 +985,11 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         }
         const b = before ? redact(before.text) : null;
         // Git compares this path's working text with its line endings converted, so a one-line
-        // edit in a CRLF checkout is one line, not every line. Auto leaves a file it already
-        // has with CRLFs alone (and a binary one, which never gets this far).
-        const mode = c.indexed ? undefined : eolOf(c.path);
+        // edit in a CRLF checkout is one line, not every line, by the same rule as above.
         const ix = indexOid(c.path);
-        const kept = mode === "auto" && ix !== undefined && (olds.get(ix)?.includes("\r\n") ?? true);
-        const a = after ? redact(mode && !kept ? after.text.replace(/\r\n/g, "\n") : after.text) : null;
+        const raw = after && "raw" in after ? after.raw : undefined;
+        const converted = raw && !c.indexed && convertsEol(eolOf(c.path), { binary: gitSeesBinary(raw) }, ix === undefined ? null : olds.get(ix));
+        const a = after ? redact(converted ? after.text.replace(/\r\n/g, "\n") : after.text) : null;
         const d = fileDiff(path, b, a);
         const out: GitFileDiff = { ...base, ...d, status: base.status };
         if (c.old && c.now && c.old.mode !== c.now.mode && isFileMode(c.old.mode) && isFileMode(c.now.mode) && !d.hunks.length) out.note = `Mode changed ${c.old.mode} → ${c.now.mode}`;
@@ -950,7 +1005,7 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
     return files;
 }
 
-type Side = { text: string; bytes: number; link?: true } | { note: string } | { later: true };
+type Side = { text: string; bytes: number; link?: true; raw?: Buffer } | { note: string } | { later: true };
 
 /** The old side, from its blob. */
 function oldSide(e: Entry, olds: Map<string, Buffer>): Side {
@@ -981,5 +1036,5 @@ async function current(c: Change, wt: WorkTree, budget: number): Promise<Side | 
     if (!r?.buf) return { note: r ? "Too large to show" : "Couldn't read the file" };
     const text = textOf(r.buf);
     if (text === undefined) return { note: "Binary file" };
-    return { text, bytes: r.buf.length };
+    return { text, bytes: r.buf.length, raw: r.buf };
 }

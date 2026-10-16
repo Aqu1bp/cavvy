@@ -166,18 +166,26 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const askedFor = () => unlistedKey() !== undefined;
     const file = createMemo((): Row | undefined => listedPick() ?? asked()?.file ?? (askedFor() ? undefined : files()[0]));
     // A file whose hunks didn't fit in the list's reply is fetched on its own.
+    // Like the unlisted file, its answer counts only for the session, view, base and path it was asked for.
+    const fullKey = () => {
+        const f = file();
+        return shownScope() !== "harness" && f?.deferred ? JSON.stringify([id(), gitScope(), base(), f.path]) : undefined;
+    };
     const [full, { refetch: refetchFull }] = createResource(
         () => {
-            const f = file();
-            return shownScope() !== "harness" && f?.deferred ? { id: id(), scope: gitScope(), base: base(), path: f.path } : false;
+            const key = fullKey();
+            return key ? { key, id: id(), scope: gitScope(), base: base(), path: file()!.path } : false;
         },
         async (k) => {
             const r = await fetchGitChanges(k.id, k.scope, k.base, k.path);
             const f = r.files[0];
-            return { path: k.path, file: f && !f.deferred ? f : undefined, error: r.error ?? (f ? "Couldn't load this diff." : "This file no longer has changes. Refresh the list.") };
+            return { key: k.key, file: f && !f.deferred ? f : undefined, error: r.error ?? (f ? "Couldn't load this diff." : "This file no longer has changes. Refresh the list.") };
         },
     );
-    const loaded = () => (full()?.path === file()?.path ? full() : undefined);
+    const loaded = () => {
+        const l = full();
+        return l && l.key === fullKey() ? l : undefined;
+    };
     const shownFile = (): Row | undefined => (file()?.deferred ? (loaded()?.file ?? file()) : file());
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
     const [fallback] = createResource(
