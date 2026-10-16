@@ -347,6 +347,57 @@ function sedReadOnly(args: string[]): boolean {
 // `--exec-path`, `-p` (pager) and friends can all execute commands.
 const GIT_SAFE_GLOBAL = new Set(["--no-pager", "-P", "--no-optional-locks", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs"]);
 
+/** `git branch` options that only filter or format the listing. */
+const BRANCH_DISPLAY = new Set(["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current", "-i", "--ignore-case", "--no-color", "--no-column", "--no-abbrev", "--omit-empty"]);
+/** Filters that put `git branch` in list mode, with the commit they take (`--merged` and friends default to HEAD). */
+const BRANCH_FILTERS = new Set(["--merged", "--no-merged", "--contains", "--no-contains", "--points-at"]);
+
+/**
+ * `git branch` that only lists. Its other words are patterns only in list
+ * mode (--list, or a filter such as --merged, which takes a commit); without
+ * one, `git branch -v name` and `git branch --sort=x name` create `name`.
+ */
+function gitBranchListsOnly(args: string[]): boolean {
+    let list = false;
+    let words = 0;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (a === "--") {
+            words += args.length - i - 1;
+            break;
+        }
+        if (!a.startsWith("-") || a === "-") {
+            words++;
+            continue;
+        }
+        if (BRANCH_DISPLAY.has(a)) continue;
+        if (a === "--list" || /^-[arvil]*l[arvil]*$/.test(a)) {
+            list = true;
+            continue;
+        }
+        if (/^-[arvi]+$/.test(a)) continue;
+        if (BRANCH_FILTERS.has(a)) {
+            list = true;
+            // The commit: --points-at needs one; the others take the next word unless it's an option.
+            if (a === "--points-at" || (args[i + 1] !== undefined && !args[i + 1]!.startsWith("-"))) i++;
+            continue;
+        }
+        const name = a.match(/^--([a-z-]+)=/)?.[1];
+        if (name && BRANCH_FILTERS.has(`--${name}`)) {
+            list = true;
+            continue;
+        }
+        if (name && ["sort", "format", "color", "column", "abbrev"].includes(name)) continue;
+        if (a === "--sort" || a === "--format") {
+            i++;
+            continue;
+        }
+        if (a === "--color" || a === "--column") continue;
+        return false;
+    }
+    return list || words === 0;
+}
+
 function gitReadOnly(args: string[]): boolean {
     let i = 0;
     while (i < args.length && args[i]!.startsWith("-")) {
@@ -361,7 +412,7 @@ function gitReadOnly(args: string[]): boolean {
     if (subArgs.some((a) => /^--(output|ext-diff|open-files-in-pager)(=|$)/.test(a) || (sub === "grep" && /^-[a-zA-Z]*O/.test(a)))) return false;
     if (sub === "reflog") return !["expire", "delete", "drop"].includes(subArgs[0] ?? "");
     if (GIT_READ_ONLY.has(sub)) return true;
-    if (sub === "branch") return subArgs.every((a) => ["-a", "-r", "-v", "-vv", "--list", "--show-current", "--all", "--remotes", "--contains", "--merged", "--no-merged"].includes(a) || !a.startsWith("-")) && positional(subArgs).length === 0;
+    if (sub === "branch") return gitBranchListsOnly(subArgs);
     if (sub === "remote") return subArgs.every((a) => a === "-v" || a === "--verbose") || ((subArgs[0] === "show" || subArgs[0] === "get-url") && subArgs.slice(1).every((a) => !a.startsWith("-") || a === "-n" || a === "--all" || a === "--push"));
     if (sub === "tag") return subArgs.length === 0 || subArgs.every((a) => a === "-l" || a === "--list" || a.startsWith("--sort") || a === "-n");
     if (sub === "stash") return subArgs[0] === "list" || subArgs[0] === "show";
