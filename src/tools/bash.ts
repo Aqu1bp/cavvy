@@ -30,7 +30,7 @@ async function sandboxedEnv(env: Record<string, string>, sandbox: Sandbox, hosts
 
 /** What to tell the model after a sandboxed command failed, if the sandbox looks like the reason. */
 function failureHint(sandbox: Sandbox, output: string, proxy: CommandProxy | undefined): string | undefined {
-    const hints = [proxy && refusedHint(proxy.refused()), blockedBySandbox(output) ? sandboxHint(sandbox.kind) : undefined].filter(Boolean);
+    const hints = [proxy && refusedHint(proxy.refused()), blockedBySandbox(output) ? sandboxHint(sandbox.kind, output) : undefined].filter(Boolean);
     return hints.length ? hints.join("\n") : undefined;
 }
 

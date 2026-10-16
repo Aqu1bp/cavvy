@@ -368,6 +368,14 @@ export function accessNeeded(cmd: string, cwd?: string): AccessNeeded {
             out.host ??= prog;
             continue;
         }
+        // git keeps a worktree's own data in .git/worktrees, which the sandbox protects (a sandboxed
+        // command could otherwise point a worktree's commondir at a config that runs programs). Inside,
+        // `git worktree add -b` fails after making the branch; outside, after review, it works.
+        if (prog === "git" && sub === "worktree") {
+            const op = argv[gitSubcommand(argv).index + 1] ?? "";
+            if (/^(add|move|remove|prune|repair)$/.test(op)) out.host ??= `git worktree ${op}`;
+            continue;
+        }
         if (prog === "git" && sub === "clone") {
             // Over https a public repository clones fine; ssh and private ones need the user's keys.
             const rest = argv.slice(gitSubcommand(argv).index + 1);
@@ -493,12 +501,18 @@ export function blockedBySandbox(output: string): boolean {
 }
 
 export const SANDBOX_HINT =
-    "[This ran in the auto-mode sandbox: no network except localhost and the hosts in allowedHosts, writes only inside the project and temp directories, no credential files, no signals to other processes. If it failed for want of a host, run it again listing the host in allowedHosts; if it failed for something else the sandbox blocks, run it again with dangerouslyDisableSandbox: true. The safety reviewer or the user then decides.]";
+    "[This ran in the auto-mode sandbox: no network except localhost and the hosts in allowedHosts, writes only inside the project and temp directories (git's hooks, config and worktree data under .git stay read-only), no credential files, no signals to other processes. If it failed for want of a host, run it again listing the host in allowedHosts; if it failed for something else the sandbox blocks, run it again with dangerouslyDisableSandbox: true. The safety reviewer or the user then decides.]";
 
 /** bubblewrap has no proxy: a sandboxed command there gets no network at all. */
 const BWRAP_HINT =
-    "[This ran in the auto-mode sandbox: no network except localhost, writes only inside the project and temp directories, no credential files, no signals to other processes. If the failure comes from that, run the command again with dangerouslyDisableSandbox: true; the safety reviewer or the user then decides.]";
+    "[This ran in the auto-mode sandbox: no network except localhost, writes only inside the project and temp directories (git's hooks, config and worktree data under .git stay read-only), no credential files, no signals to other processes. If the failure comes from that, run the command again with dangerouslyDisableSandbox: true; the safety reviewer or the user then decides.]";
 
-export function sandboxHint(kind: SandboxKind): string {
-    return kind === "seatbelt" ? SANDBOX_HINT : BWRAP_HINT;
+/** git couldn't write its worktree data: what that leaves behind, and how to finish. */
+export const WORKTREE_HINT =
+    "[git worktree can't create or change .git/worktrees inside the sandbox. Run it again with dangerouslyDisableSandbox: true. `git worktree add -b <branch>` makes the branch before it fails, so the branch may exist now (check with git branch --list <branch>): add the worktree for it without -b (git worktree add <path> <branch>), or delete it first if it was made by mistake.]";
+
+/** What to tell the model after a sandboxed command's output looked blocked. */
+export function sandboxHint(kind: SandboxKind, output = ""): string {
+    const base = kind === "seatbelt" ? SANDBOX_HINT : BWRAP_HINT;
+    return /\.git\/worktrees\b/.test(output) ? `${base}\n${WORKTREE_HINT}` : base;
 }
