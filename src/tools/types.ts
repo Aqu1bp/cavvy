@@ -72,8 +72,11 @@ export interface ToolState {
 export interface UiBridge {
     /** Ask the user a multiple-choice question (AskUserQuestion tool). */
     askQuestion?(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined>;
-    /** Present a plan for approval (ExitPlanMode). Returns the chosen next mode or undefined if rejected. */
-    approvePlan?(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string }>;
+    /**
+     * Present a plan for approval (ExitPlanMode). Returns the chosen next mode or undefined if rejected.
+     * `handoff`: not approved here because the user is carrying it out in another session; `feedback` says where.
+     */
+    approvePlan?(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string; handoff?: boolean }>;
     /** Ask the user to type in a secret (RequestSecret): the value, or undefined if they declined. `purpose` is already safe to show. */
     requestSecret?(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined>;
 }

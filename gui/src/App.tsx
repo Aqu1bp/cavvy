@@ -1,6 +1,6 @@
 import { createEffect, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
-import { app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastAction, toast, toasts, type Toast, type SessionHandle } from "./state/app";
+import { app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
@@ -22,6 +22,8 @@ import { RewindDialog } from "./components/RewindDialog";
 import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
+import { PlanDialogs } from "./components/PlanDialogs";
+import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RunSheet } from "./components/RunSheet";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { CommitDialog } from "./components/CommitDialog";
@@ -58,15 +60,17 @@ function ToastItem(p: { toast: Toast }) {
             <Show when={t().count > 1}>
                 <span class="toast-count">({t().count} times)</span>
             </Show>
-            <Show when={t().action}>
-                <button
-                    class="link-btn"
-                    disabled={t().running}
-                    onClick={() => void runToastAction(t().id)}
-                >
-                    {t().action!.label}
-                </button>
-            </Show>
+            <For each={[...(t().action ? [t().action!] : []), ...(t().additionalActions ?? [])]}>
+                {(action, index) => (
+                    <button
+                        class="link-btn"
+                        disabled={t().running}
+                        onClick={() => void runToastChoice(t().id, index())}
+                    >
+                        {action.label}
+                    </button>
+                )}
+            </For>
             <Show when={t().level === "error"}>
                 <button
                     class="link-btn"
@@ -292,6 +296,8 @@ export function App() {
             <McpDialog />
             <FolderPicker />
             <TrustDialog />
+            <PlanDialogs />
+            <ArchiveDialog />
             <RunSheet />
             <DeleteSessionDialog />
             <CommitDialog />

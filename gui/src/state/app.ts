@@ -61,7 +61,8 @@ export function pauseToast(id: number, reason: "hover" | "focus" | "hidden", pau
     scheduleToast(id);
 }
 
-export function toast(message: string, level: Toast["level"] = "info", action?: ToastAction, ms?: number) {
+export function toast(message: string, level: Toast["level"] = "info", actionOrActions?: ToastAction | ToastAction[], ms?: number) {
+    const [action, ...additionalActions] = Array.isArray(actionOrActions) ? actionOrActions : actionOrActions ? [actionOrActions] : [];
     const existing = repeatedToast(toasts, message, level, action);
     if (existing) {
         const index = toasts.findIndex((t) => t.id === existing.id);
@@ -75,7 +76,7 @@ export function toast(message: string, level: Toast["level"] = "info", action?: 
         waiting.count++;
         return;
     }
-    toastQueue.push({ id: ++toastId, level, message, count: 1, action, duration: toastMs(level, ms) });
+    toastQueue.push({ id: ++toastId, level, message, count: 1, action, additionalActions: additionalActions.length ? additionalActions : undefined, duration: toastMs(level, ms) });
     if (toasts.length >= MAX_TOASTS) {
         const idle = toasts.find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
         if (idle) dismissToast(idle.id);
@@ -96,15 +97,20 @@ export function dismissToast(id: number) {
     showQueuedToasts();
 }
 
-export async function runToastAction(id: number) {
+export function runToastAction(id: number) {
+    return runToastChoice(id, 0);
+}
+
+export async function runToastChoice(id: number, index: number) {
     const item = toasts.find((t) => t.id === id);
     const entry = toastTimers.get(id);
-    if (!item?.action || item.running || !entry) return;
+    const action = index === 0 ? item?.action : item?.additionalActions?.[index - 1];
+    if (!action || item?.running || !entry) return;
     setToasts((t) => t.id === id, "running", true);
     entry.life.pause("action", performance.now());
     scheduleToast(id);
     try {
-        if ((await item.action.run()) !== false) {
+        if ((await action.run()) !== false) {
             dismissToast(id);
             return;
         }
@@ -324,6 +330,12 @@ function schedule(h: SessionHandle) {
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
     if (document.visibilityState === "visible") requestAnimationFrame(() => flush(h));
     else setTimeout(() => flush(h), 200);
+}
+
+/** The server closed the session (archived with its worktree): this window no longer has it open. */
+export function dropHandle(id: string) {
+    if (!handles.delete(id)) return;
+    setHandleVersion((v) => v + 1);
 }
 
 export async function openSession(id: string): Promise<SessionHandle> {
