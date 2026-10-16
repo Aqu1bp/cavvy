@@ -6,6 +6,7 @@ import { createComposerDraft } from "../../gui/src/lib/composer-draft";
 import { pastedText, readAttachment, type Attachment } from "../../gui/src/lib/attachments";
 import { RpcError } from "../../gui/src/lib/rpc";
 
+const accepted: { id: string; text: string }[] = [];
 const notices: { text: string; action?: { run: () => void } }[] = [];
 const errors: unknown[] = [];
 const calls: { method: string; params: any }[] = [];
@@ -35,6 +36,7 @@ function submit() {
     const submitted = draft.capture();
     return send(submitted.draft.text, submitted.draft.attachments, {
         sent: () => draft.clearSent(submitted),
+        accepted: (id) => accepted.push({ id, text: submitted.draft.text }),
     }).then((ok) => { if (ok) draft.clearSent(submitted, ok === "command"); return ok; });
 }
 mock.module("../../gui/src/state/app", () => ({
@@ -139,6 +141,7 @@ for (const recovery of ["literal", "corrected", "newer-text", "newer-files"] as 
         ...wire,
         literal: recovery === "corrected" ? undefined : true,
     } });
+    assert.deepEqual(accepted.at(-1), { id: "created", text: recovery === "corrected" ? "corrected message" : "/oops" });
     // The active session is empty; only newer unsent work remains on Home.
     assert.equal(composer.text(), "");
     composer.dispose();

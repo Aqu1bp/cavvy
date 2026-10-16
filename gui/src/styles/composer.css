@@ -326,6 +326,9 @@
 }
 
 .queue-tab {
+    max-height: min(160px, 20vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -1143,4 +1146,10 @@
     margin-top: 4px;
     font-size: 0.786rem;
     color: var(--fg-muted);
+}
+
+.cm-status {
+    padding: 10px 12px;
+    color: var(--fg-muted);
+    font-size: 0.857rem;
 }

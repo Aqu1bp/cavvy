@@ -213,3 +213,43 @@ for (const lifecycle of ["mounted", "disposed", "replaced"] as const) {
 }
 
 if (image.kind === "image") URL.revokeObjectURL(image.preview);
+
+// Persistence follows live edits, without serializing any attachment content.
+const { composerStorage } = await import("../../gui/src/lib/drafts");
+const persistent = mount("persistent");
+persistent.setText("typed text only");
+persistent.setAttachments(files);
+assert.equal(composerStorage.draft("persistent"), "typed text only");
+persistent.clearSent(persistent.capture());
+assert.equal(composerStorage.draft("persistent"), "");
+persistent.dispose();
+
+// A late send must not erase persistence for a replacement that is still mounted.
+const oldMounted = mount("mounted-replacement");
+oldMounted.setText("old");
+const oldCapture = oldMounted.capture();
+oldMounted.dispose();
+const liveReplacement = mount("mounted-replacement");
+liveReplacement.setText("new typed work");
+oldMounted.clearSent(oldCapture);
+assert.equal(composerStorage.draft("mounted-replacement"), "new typed work");
+assert.equal(liveReplacement.text(), "new typed work");
+liveReplacement.dispose();
+
+// Reload drops attachments, but restores the persisted text synchronously.
+const reload = mount("reload");
+reload.setText("survives reload");
+reload.setAttachments(files);
+reload.dispose();
+composerDrafts.clear();
+const reloaded = mount("reload");
+assert.equal(reloaded.text(), "survives reload");
+assert.deepEqual(reloaded.attachments(), []);
+reloaded.dispose();
+composerStorage.flush();
+
+// An async attachment read finishing after unmount cannot overwrite the replacement.
+oldMounted.setAttachments(files);
+oldMounted.setText("too late");
+assert.equal(composerStorage.draft("mounted-replacement"), "new typed work");
+composerStorage.flush();
