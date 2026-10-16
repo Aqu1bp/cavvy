@@ -22,6 +22,9 @@ export const ATTACH_LIMITS = {
     nameChars: 120,
 };
 
+// Lives in src/util because provider serializers use it too and cannot import server code.
+export { MEDIA_BUDGET, base64Size } from "../util/media";
+
 /** A paste longer than this (characters or lines) becomes a "Pasted text" attachment instead of filling the box. */
 export const LONG_PASTE = { chars: 4000, lines: 80 };
 

@@ -5,8 +5,8 @@
 
 import { ATTACH_LIMITS, type FileChip, type WireFile } from "./protocol";
 import { RpcError } from "./rpc-error";
-import { readsPdf } from "../providers/files";
-import type { AttachedPart, FilePart, ImagePart, ModelInfo } from "../providers/types";
+import { MEDIA_BUDGET, base64Size } from "../util/media";
+import type { AttachedPart, FilePart, ImagePart } from "../providers/types";
 import { formatBytes, looksBinary } from "../util/files";
 import { redact } from "../util/redact";
 
@@ -37,10 +37,10 @@ function lineCount(text: string): number {
 
 /**
  * The files of a `session.send`, checked: each one text (valid UTF-8 that
- * doesn't look binary, redacted like an @mention) or a PDF (by its header,
- * to a model that reads PDFs). Throws an RpcError naming the file otherwise.
+ * doesn't look binary, redacted like an @mention) or a PDF (by its header).
+ * Throws an RpcError naming the file otherwise. Model support is checked at send time.
  */
-export function checkFiles(raw: unknown, model: ModelInfo | undefined): FilePart[] {
+export function checkFiles(raw: unknown): FilePart[] {
     if (raw === undefined || raw === null) return [];
     if (!Array.isArray(raw)) throw new RpcError("files must be a list");
     if (raw.length > ATTACH_LIMITS.files) throw new RpcError(`A message can carry ${ATTACH_LIMITS.files} files at most; this one has ${raw.length}.`);
@@ -65,7 +65,6 @@ export function checkFiles(raw: unknown, model: ModelInfo | undefined): FilePart
         // Pasted text is text, whatever it starts with.
         if (!pasted && bytes.subarray(0, 5).toString("latin1") === "%PDF-") {
             if (bytes.length > ATTACH_LIMITS.pdfBytes) throw new RpcError(`${name} is ${formatBytes(bytes.length)}; PDFs can be ${formatBytes(ATTACH_LIMITS.pdfBytes)} at most.`);
-            if (model && !readsPdf(model)) throw new RpcError(`${model.name ?? model.id} can't read PDFs. Remove ${name}, or switch to a model that can.`, "pdf_unsupported");
             storedFits();
             out.push({ type: "file", kind: "pdf", name, size: bytes.length, mediaType: "application/pdf", data: f.data });
             continue;
@@ -86,6 +85,12 @@ export function checkFiles(raw: unknown, model: ModelInfo | undefined): FilePart
         out.push({ type: "file", kind: "text", name, size: bytes.length, lines: lineCount(text), text, ...(pasted ? { pasted: true } : {}) });
     }
     return out;
+}
+
+/** The newest message is kept whole by serializers, so its media must fit on its own. */
+export function checkMedia(parts: readonly AttachedPart[]): void {
+    const total = parts.reduce((n, p) => n + (p.type === "image" || p.kind === "pdf" ? base64Size(p.data) : 0), 0);
+    if (total > MEDIA_BUDGET) throw new RpcError(`PDFs and images in one message can come to ${formatBytes(MEDIA_BUDGET)} at most. Remove some.`);
 }
 
 /** What a prompt shows of its files. */

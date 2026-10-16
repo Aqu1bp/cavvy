@@ -59,7 +59,7 @@ import type {
 } from "./protocol";
 import { PROTOCOL_VERSION } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, toWire } from "./attachments";
+import { checkFiles, checkMedia, toWire } from "./attachments";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -1099,9 +1099,8 @@ export class Engine {
                     if (!validImage(i)) throw new RpcError("Images must be PNG, JPEG, GIF or WebP, under 15 MB.");
                     return { type: "image", mediaType: String(i.mediaType), data: String(i.data) };
                 }) : [];
-                // Which model decides whether PDFs can go: a session just made, or one switching models, waits until it's settled.
-                if (Array.isArray(p.files) && p.files.length) await rt.modelSettled();
-                const attached: AttachedPart[] = [...images, ...checkFiles(p.files, rt.model)];
+                const attached: AttachedPart[] = [...images, ...checkFiles(p.files)];
+                checkMedia(attached);
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.
                 if ((readStore().settled ?? []).includes(rt.id)) {

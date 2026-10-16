@@ -595,11 +595,6 @@ export class Runtime {
         this.setState({ model: undefined });
     }
 
-    /** Once the model is settled: the session's first, or a switch under way (what can be sent depends on it). */
-    async modelSettled(): Promise<void> {
-        while (this.switching) await this.switching.catch(() => undefined);
-    }
-
     /** The user picked a model: a prompt sent while it's being set up waits, and starts with it. */
     switchModel(ref: string, opts: { persist?: boolean } = {}): Promise<boolean> {
         // After the one under way (the session's own, as it opens), so this one has the last word.
@@ -1472,6 +1467,9 @@ export class Runtime {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
         if (this.closed) throw new Error("This session was closed.");
+        // No await between this check and queueing/dispatch: a switch must not change the model we checked.
+        const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
+        if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
         if (attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");

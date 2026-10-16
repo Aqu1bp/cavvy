@@ -4,7 +4,7 @@
 // anything over the caps is refused here with its reason, before it's sent.
 // The server checks it all again.
 
-import { ATTACH_LIMITS, LONG_PASTE, type WireFile } from "@shared/protocol";
+import { ATTACH_LIMITS, LONG_PASTE, MEDIA_BUDGET, base64Size, type WireFile } from "@shared/protocol";
 
 export type Attachment =
     | { kind: "image"; name: string; size: number; mediaType: string; data: string; preview: string }
@@ -82,6 +82,7 @@ function overLimits(a: Attachment, list: readonly Attachment[]): string | undefi
     if (a.kind === "refused") return undefined;
     if (a.kind !== "image" && fileCount(list) >= ATTACH_LIMITS.files) return `A message can carry ${ATTACH_LIMITS.files} files at most`;
     if (a.kind !== "image" && bytesOf(list, ["text", "pdf"]) + a.size > ATTACH_LIMITS.totalBytes) return `Files in one message can come to ${formatSize(ATTACH_LIMITS.totalBytes)} at most`;
+    if ((a.kind === "image" || a.kind === "pdf") && bytesOf(list, ["image", "pdf"]) + a.size > MEDIA_BUDGET) return `PDFs and images in one message can come to ${formatSize(MEDIA_BUDGET)} at most`;
     if (bytesOf(sent(list), ["image", "text", "pdf"]) + a.size > MAX_MESSAGE) return "Too much attached for one message";
     return undefined;
 }
@@ -126,7 +127,7 @@ export function pastedText(text: string, list: readonly Attachment[]): Attachmen
 
 /** What the server hands back to the box (an edited or interrupted queued message). */
 export function fromWire(images: { mediaType: string; data: string }[] | undefined, files: WireFile[] | undefined): Attachment[] {
-    const out: Attachment[] = (images ?? []).map((i) => ({ kind: "image", name: "image", size: Math.floor((i.data.length * 3) / 4), mediaType: i.mediaType, data: i.data, preview: `data:${i.mediaType};base64,${i.data}` }));
+    const out: Attachment[] = (images ?? []).map((i) => ({ kind: "image", name: "image", size: base64Size(i.data), mediaType: i.mediaType, data: i.data, preview: `data:${i.mediaType};base64,${i.data}` }));
     for (const f of files ?? []) out.push(fromBytes(f.name, fromBase64(f.data), f.pasted));
     return out;
 }
@@ -144,6 +145,7 @@ export function blockedBy(list: readonly Attachment[], readsPdf: boolean): strin
     // Each fit when it was added; together (messages handed back from the queue) they may not.
     if (fileCount(list) > ATTACH_LIMITS.files) return `A message can carry ${ATTACH_LIMITS.files} files at most. Remove ${fileCount(list) - ATTACH_LIMITS.files}.`;
     if (bytesOf(list, ["text", "pdf"]) > ATTACH_LIMITS.totalBytes) return `Files in one message can come to ${formatSize(ATTACH_LIMITS.totalBytes)} at most. Remove some.`;
+    if (bytesOf(list, ["image", "pdf"]) > MEDIA_BUDGET) return `PDFs and images in one message can come to ${formatSize(MEDIA_BUDGET)} at most. Remove some.`;
     if (bytesOf(list, ["image", "text", "pdf"]) > MAX_MESSAGE) return "Too much attached for one message. Remove some.";
     if (!readsPdf && list.some((a) => a.kind === "pdf")) return "This model can't read PDFs. Remove the PDF, or pick a model that can.";
     return undefined;

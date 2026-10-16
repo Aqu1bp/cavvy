@@ -10,6 +10,7 @@
 import { createHash } from "crypto";
 import { getProvider, type ProviderDef } from "./registry";
 import type { FilePart, ImagePart, Message, ModelInfo, PdfPart, UserContent } from "./types";
+import { MEDIA_BUDGET, base64Size } from "../util/media";
 import { formatBytes } from "../util/files";
 
 /**
@@ -67,20 +68,10 @@ export function pastedTexts(content: readonly UserContent[]): string[] {
     return content.flatMap((p) => (p.type === "file" && p.kind === "text" && p.pasted ? [p.text] : []));
 }
 
-/**
- * How many bytes of PDFs and images one request carries at most. Every
- * request resends every earlier attachment, and Anthropic refuses requests
- * over 32 MB (20 MB is about 27 MB as base64). A message can't carry more
- * files than this (ATTACH_LIMITS.totalBytes in src/server/protocol.ts).
- */
-export const MEDIA_BUDGET = 20 * 1024 * 1024;
-
-const rawSize = (base64: string) => Math.floor((base64.length * 3) / 4);
-
 function mediaSize(p: UserContent, pdf: boolean): number {
-    if (p.type === "image") return rawSize(p.data);
-    if (p.type === "file") return p.kind === "pdf" && pdf ? rawSize(p.data) : 0;
-    if (p.type === "tool_result") return (p.images ?? []).reduce((n, i) => n + rawSize(i.data), 0);
+    if (p.type === "image") return base64Size(p.data);
+    if (p.type === "file") return p.kind === "pdf" && pdf ? base64Size(p.data) : 0;
+    if (p.type === "tool_result") return (p.images ?? []).reduce((n, i) => n + base64Size(i.data), 0);
     return 0;
 }
 
@@ -115,7 +106,7 @@ export function fitMedia(messages: Message[], pdf: boolean, budget = MEDIA_BUDGE
             if (p.type === "image") return fits(sizes[j]!) ? p : { type: "text", text: `[An image the user attached earlier isn't included any more: ${AGAIN}. Ask them to attach it again if you need it.]` };
             if (p.type === "file" && p.kind === "pdf") return fits(sizes[j]!) ? p : { type: "text", text: `[The user attached ${frameName(p.name)} earlier; it isn't included any more: ${AGAIN}. Ask them to attach it again if you need it.]` };
             if (p.type === "tool_result") {
-                const images = (p.images ?? []).filter((img) => fits(rawSize(img.data)));
+                const images = (p.images ?? []).filter((img) => fits(base64Size(img.data)));
                 const gone = (p.images?.length ?? 0) - images.length;
                 return gone ? { ...p, images, content: `${p.content}\n[${gone === 1 ? "An image" : `${gone} images`} this returned ${gone === 1 ? "isn't" : "aren't"} included any more: ${AGAIN}.]` } : p;
             }
