@@ -12,7 +12,7 @@
 // they are (neither shown nor run), as are fields this Harness doesn't know.
 
 import { randomUUID } from "crypto";
-import { closeSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { closeSync, fstatSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { readFile, realpath, stat } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { ensureDir, harnessHome } from "../config/paths";
@@ -395,13 +395,16 @@ type LockId = { ino: number; dev: number };
  * empty: written aside, then linked into place (EEXIST: it's held). Undefined
  * when it's held. Where there are no hard links, it's made in place instead.
  */
+/** How the lock is made; tests stand in for a file system without hard links, or another process taking it over. */
+export const lockFiles = { link: linkSync, open: openSync };
+
 function makeLock(lock: string): LockId | undefined {
     const tmp = `${lock}.${process.pid}.${randomUUID()}`;
     try {
         writeFileSync(tmp, String(process.pid), { flag: "wx", mode: 0o600 });
         const id = statSync(tmp);
         try {
-            linkSync(tmp, lock);
+            lockFiles.link(tmp, lock);
             return { ino: id.ino, dev: id.dev };
         } catch (e) {
             const code = (e as NodeJS.ErrnoException).code;
@@ -410,15 +413,18 @@ function makeLock(lock: string): LockId | undefined {
         }
         let fd: number;
         try {
-            fd = openSync(lock, "wx", 0o600);
+            fd = lockFiles.open(lock, "wx", 0o600);
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code === "EEXIST") return undefined;
             throw e;
         }
         try {
             writeSync(fd, String(process.pid));
-            const made = statSync(lock);
-            return { ino: made.ino, dev: made.dev };
+            // The file this process made, by its descriptor: the path may name another process's lock by
+            // now (it was taken over meanwhile), and that one mustn't be taken for ours. Then it's held.
+            const made = fstatSync(fd);
+            const id = { ino: made.ino, dev: made.dev };
+            return stillMine(lock, id) ? id : undefined;
         } finally {
             closeSync(fd);
         }

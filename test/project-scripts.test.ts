@@ -5,7 +5,7 @@ import type { ServerEvent } from "../src/server/protocol";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { deleteScript, findScript, forgetProjectKeys, listScripts, markUsed, projectFolder, projectKey, updateProject, reorderScripts, saveScript, scriptsFile, validateScript } = await import("../src/server/scripts");
+const { deleteScript, findScript, forgetProjectKeys, listScripts, lockFiles, markUsed, projectFolder, projectKey, updateProject, reorderScripts, saveScript, scriptsFile, validateScript } = await import("../src/server/scripts");
 const { Terminals, Typist, isTerminalReply } = await import("../src/server/terminals");
 const { EarlyInput } = await import("../gui/src/lib/terminal");
 const { gitArgv, gitEnv } = await import("../src/util/git");
@@ -898,4 +898,67 @@ describe("git that won't stop", () => {
             forgetProjectKeys();
         }
     }, 15_000);
+});
+
+describe("the lock, where there are no hard links", () => {
+    const real = { ...lockFiles };
+    const lock = () => `${scriptsFile()}.lock`;
+    const noLinks = () => {
+        lockFiles.link = () => {
+            throw Object.assign(new Error("hard links aren't supported here"), { code: "EPERM" });
+        };
+    };
+    afterAll(() => {
+        Object.assign(lockFiles, real);
+        rmSync(lock(), { force: true });
+        resetStore();
+    });
+
+    test("it's made in place, with the pid in it, and released", async () => {
+        resetStore();
+        noLinks();
+        try {
+            const dir = folder();
+            let held = "";
+            await updateProject(dir, () => {
+                held = readFileSync(lock(), "utf-8");
+                return false;
+            });
+            expect(held).toBe(String(process.pid));
+            await saveScript(dir, { name: "a", command: "echo a" });
+            expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["a"]);
+            expect(existsSync(lock())).toBe(false);
+        } finally {
+            Object.assign(lockFiles, real);
+        }
+    });
+
+    test("taken over just after it was made: the new owner's lock isn't mistaken for ours", async () => {
+        resetStore();
+        const dir = folder();
+        await saveScript(dir, { name: "before", command: "echo before" });
+        const before = readFileSync(scriptsFile(), "utf-8");
+        noLinks();
+        let tookOver = false;
+        lockFiles.open = ((path: string, flags: string, mode: number) => {
+            const fd = real.open(path, flags, mode);
+            if (!tookOver) {
+                // Another process takes it over between the open and the identity check (pid 1 is running).
+                tookOver = true;
+                rmSync(path);
+                writeFileSync(path, "1");
+            }
+            return fd;
+        }) as typeof lockFiles.open;
+        try {
+            await expect(saveScript(dir, { name: "after", command: "echo after" })).rejects.toThrow("being saved by another Harness window");
+            expect(tookOver).toBe(true);
+            // Nothing was written, and the other process's lock is still there.
+            expect(readFileSync(scriptsFile(), "utf-8")).toBe(before);
+            expect(readFileSync(lock(), "utf-8")).toBe("1");
+        } finally {
+            Object.assign(lockFiles, real);
+            rmSync(lock(), { force: true });
+        }
+    }, 10_000);
 });
