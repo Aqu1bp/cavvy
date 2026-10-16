@@ -391,10 +391,11 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         }
     };
     const remove = async () => {
+        const { id, name, agentCli } = p.pr;
         try {
-            await rpc.call("providers.removeKey", { provider: p.pr.id });
+            await rpc.call("providers.removeKey", { provider: id });
             await Promise.all([refreshProviders(), refreshModels()]);
-            toast(p.pr.agentCli ? `Turned off ${p.pr.name}; it stays signed in` : `Removed the ${p.pr.name} key`);
+            toast(agentCli ? `Turned off ${name}; it stays signed in` : `Removed the ${name} key`);
         } catch (e) {
             reportError(e);
         }

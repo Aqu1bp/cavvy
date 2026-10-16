@@ -1,4 +1,4 @@
-import { createSignal, type JSX } from "solid-js";
+import { createSignal, onCleanup, type JSX } from "solid-js";
 import { Dialog } from "./Dialog";
 
 /** Mutations only begin on explicit confirmation; Cancel is the initial focus. */
@@ -11,15 +11,19 @@ export function ConfirmDialog(p: {
     onConfirm: () => void | Promise<void>;
 }) {
     const [busy, setBusy] = createSignal(false);
+    let dismissed = false;
+    onCleanup(() => (dismissed = true));
     const close = () => {
-        if (!busy()) p.onClose();
+        dismissed = true;
+        p.onClose();
     };
     const confirm = async () => {
         if (busy()) return;
+        dismissed = false;
         setBusy(true);
         try {
             await p.onConfirm();
-            p.onClose();
+            if (!dismissed) close();
         } finally {
             setBusy(false);
         }
@@ -29,8 +33,9 @@ export function ConfirmDialog(p: {
             <p>{p.children}</p>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" autofocus disabled={busy()} onClick={close}>
-                    Cancel
+                <button class="btn ghost" autofocus onClick={close}>
+                    {/* Once confirmed it can't be undone from here: closing leaves it running, and its result still shows. */}
+                    {busy() ? "Close" : "Cancel"}
                 </button>
                 <button class="btn danger" disabled={busy()} onClick={() => void confirm()}>
                     {p.confirmLabel}
