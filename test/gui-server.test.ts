@@ -2674,7 +2674,11 @@ describe("the setup script, run in a worktree created from the GUI", () => {
         const script = await c.call<ProjectScript>("scripts.save", { cwd: main, name: "install", command, runOnWorktreeCreate: true });
         return { main, script };
     }
-    const create = (c: Client, main: string, extra: Record<string, unknown> = {}) => c.call<Made>("projects.createWorktree", { path: main, branch: `setup-${++n}`, ...extra });
+    const create = async (c: Client, main: string, extra: Record<string, unknown> = {}) => {
+        const preview = extra.setup === true ? await c.call<{ script?: ProjectScript }>("scripts.setupInfo", { cwd: main }).catch(() => undefined) : undefined;
+        const setupScript = preview?.script && { id: preview.script.id, command: preview.script.command };
+        return c.call<Made>("projects.createWorktree", { path: main, branch: `setup-${++n}`, setupScript, ...extra });
+    };
     const start = async (c: Client, made: Made, ticket = made.setup!.ticket, script = made.setup!.script.id) => {
         const id = `setup-terminal-${++n}`;
         const opened = await c.call("scripts.run", { id, cwd: made.path, script, cols: 80, rows: 24, setup: ticket });

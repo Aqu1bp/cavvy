@@ -4,6 +4,8 @@ import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
 import { node } from "./gui-component-harness";
 import { asksForSetup, setupNote, setupTabLabel } from "../gui/src/lib/setup";
 
+import { setupObscured, setSettingsTab, setPaletteOpen } from "../gui/src/state/ui";
+
 const script = { id: "install", name: "Install", command: "printf ready > ready" };
 type Script = typeof script;
 const setup = { ticket: "a".repeat(32), label: "Setup · feature", command: script.command };
@@ -49,7 +51,7 @@ function panel() {
             return [read, (next: any) => { value = typeof next === "function" ? next(value) : next; }];
         },
         createEffect() {}, on() {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
-        app, terminalActions, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
+        app, terminalActions, setupObscured, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
         prefs: { terminalHeight: 260 }, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
         terminalShortcut: "Ctrl+`", toast: (text: string, kind: string) => notices.push({ text, kind }),
         rpc: {
@@ -73,12 +75,14 @@ function panel() {
         respond: (callback: typeof response) => { response = callback; },
         screen: (tab: any) => {
             const firstSignal = signals.length;
-            components.TerminalScreen({ tab, visible: true });
+            const props = { tab, visible: true };
+            components.TerminalScreen(props);
             mounts.pop()!();
             return {
                 ended: signals[firstSignal]!,
                 restart: () => buttons.find((button) => button.children.includes(" Restart shell"))!.props.onClick(),
                 input: (data: string) => onInput!(data),
+                hide: () => { props.visible = false; },
             };
         },
     };
@@ -136,6 +140,28 @@ test("Ctrl+C typed while setup opens is delivered before the script is armed", a
     expect(p.calls[1]!.params.data).toBe("\x03");
 });
 
+test("setup hidden while its shell opens is closed before arming and reports recovery", async () => {
+    for (const cover of ["settings", "navigation"] as const) {
+        const p = panel();
+        const pending = Promise.withResolvers<unknown>();
+        p.respond((method) => method === "scripts.run" ? pending.promise : Promise.resolve({}));
+        p.run();
+        const screen = p.screen(p.tabs()[0]);
+        if (cover === "settings") setSettingsTab("general");
+        else screen.hide();
+        try {
+            pending.resolve({});
+            await flush();
+            expect(p.calls.map((call) => call.method)).toEqual(["scripts.run", "terminal.close"]);
+            expect(p.notices[0]!.text).toContain("project scripts menu");
+            expect(screen.ended()).toContain("no longer visible");
+            screen.restart();
+            await flush();
+            expect(p.calls.map((call) => call.method)).toEqual(["scripts.run", "terminal.close", "terminal.open"]);
+        } finally { setSettingsTab(undefined); }
+    }
+});
+
 test("a failed setup start explains that the worktree remains and cannot replay on restart", async () => {
     const p = panel();
     p.respond((method) => method === "scripts.run" ? Promise.reject(new Error("Folder is gone")) : Promise.resolve({}));
@@ -182,7 +208,7 @@ test("disconnect before tab creation or before shell start never runs setup", as
     expect(p.calls.map((call) => call.method)).toEqual(["terminal.open"]);
 });
 
-function worktreeDialog(options: { trusted?: boolean; unreadable?: boolean; openFails?: boolean; terminalMissing?: boolean; deferSetup?: boolean } = {}) {
+function worktreeDialog(options: { trusted?: boolean; unreadable?: boolean; openFails?: boolean; terminalMissing?: boolean; deferSetup?: boolean; deferCreate?: boolean } = {}) {
     const calls: { method: string; params: any }[] = [];
     const steps: string[] = [];
     const runs: any[][] = [];
@@ -190,13 +216,14 @@ function worktreeDialog(options: { trusted?: boolean; unreadable?: boolean; open
     const app = { homeCwd: "/project" };
     let trusted = options.trusted ?? true;
     let event: ((event: { type: string }) => void) | undefined;
+    const checkout = Promise.withResolvers<void>();
     const previews: ReturnType<typeof Promise.withResolvers<any>>[] = [];
     const dependencies = {
         createSignal: (initial: unknown) => {
             let value = initial;
             return [() => value, (next: any) => { value = typeof next === "function" ? next(value) : next; }];
         },
-        onCleanup() {}, app, asksForSetup, setupNote, setupTabLabel,
+        onCleanup() {}, app, asksForSetup, setupNote, setupTabLabel, setupObscured, trustRequest: () => undefined,
         rpc: {
             onEvent: (callback: typeof event) => { event = callback; return () => {}; },
             call: async (method: string, params: any) => {
@@ -213,6 +240,7 @@ function worktreeDialog(options: { trusted?: boolean; unreadable?: boolean; open
                 if (method === "projects.trust") { trusted = true; return {}; }
                 if (method === "projects.createWorktree") {
                     steps.push("created");
+                    if (options.deferCreate) await checkout.promise;
                     return { path: "/project/feature", branch: "feature", ...(params.setup ? { setup: { ticket: setup.ticket, script } } : {}) };
                 }
                 throw new Error(`Unexpected RPC ${method}`);
@@ -232,7 +260,7 @@ function worktreeDialog(options: { trusted?: boolean; unreadable?: boolean; open
     const component = new Function(...Object.keys(dependencies), `${compiled}\nreturn NewWorktreeDialog;`)(...Object.values(dependencies));
     const handlers = component({ request: { cwd: "/project", main: "/project", base: "main" }, onClose() {} });
     handlers.setBranch("feature");
-    return { ...handlers, calls, steps, runs, notices, previews, changed: () => event!({ type: "scripts.changed" }) };
+    return { ...handlers, calls, steps, runs, notices, previews, checkout, changed: () => event!({ type: "scripts.changed" }) };
 }
 
 test("the worktree dialog requests setup and opens the created worktree before starting its tab", async () => {
@@ -240,9 +268,43 @@ test("the worktree dialog requests setup and opens the created worktree before s
     await flush();
     await d.create();
     expect(d.calls.find((call) => call.method === "projects.createWorktree")!.params.setup).toBe(true);
+    expect(d.calls.find((call) => call.method === "projects.createWorktree")!.params.setupScript).toEqual({ id: script.id, command: script.command });
     expect(d.steps).toEqual(["created", "opened", "setup"]);
     expect(d.runs).toEqual([["/project/feature", script, setup]]);
     expect(d.calls.some((call) => call.method === "projects.trust")).toBe(false);
+});
+
+test("Settings or another overlay opened during checkout skips setup with recovery", async () => {
+    for (const show of [() => setSettingsTab("general"), () => setPaletteOpen(true)]) {
+        const d = worktreeDialog({ deferCreate: true });
+        await flush();
+        const creating = d.create();
+        expect(d.steps).toEqual(["created"]);
+        show();
+        try {
+            d.checkout.resolve();
+            await creating;
+            expect(d.steps).toEqual(["created", "opened"]);
+            expect(d.runs).toEqual([]);
+            expect(d.notices.some((text) => text.includes("didn't run") && text.includes("covering") && text.includes("project scripts menu"))).toBe(true);
+        } finally {
+            setSettingsTab(undefined);
+            setPaletteOpen(false);
+        }
+    }
+});
+
+test("the Create request retains its accepted preview when scripts refresh during checkout", async () => {
+    const d = worktreeDialog({ deferCreate: true, deferSetup: true });
+    d.previews[0]!.resolve({ main: "/project", trusted: true, script });
+    await flush();
+    const creating = d.create();
+    d.changed();
+    d.previews[1]!.resolve({ main: "/project", trusted: true, script: { ...script, command: "unseen" } });
+    await flush();
+    expect(d.calls.find((call) => call.method === "projects.createWorktree")!.params.setupScript).toEqual({ id: script.id, command: script.command });
+    d.checkout.resolve();
+    await creating;
 });
 
 test("skip, missing trust, and unreadable scripts never request setup or implicitly grant trust", async () => {

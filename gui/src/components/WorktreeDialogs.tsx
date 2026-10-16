@@ -10,9 +10,9 @@ import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/prot
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
 import { asksForSetup, setupNote, setupTabLabel } from "../lib/setup";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, reportError, rpc, toast, trustRequest } from "../state/app";
 import { chooseFolder, openProject } from "../state/actions";
-import { requestComposerFocus, terminalActions } from "../state/ui";
+import { requestComposerFocus, setupObscured, terminalActions } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -105,6 +105,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
         const didnt = (why: string) => toast(`The worktree was created, but its setup script “${setup.script.name}” didn't run: ${why} You can run it from the project scripts menu.`, "warn");
         // A tab outside the project on screen would run where nobody sees it.
         if (app.homeCwd !== made.path) return didnt("the new worktree couldn't be opened.");
+        if (setupObscured() || trustRequest()) return didnt("Settings or another dialog is covering the new worktree.");
         if (!terminalActions.runScript) return didnt("the terminal isn't available here.");
         terminalActions.runScript(made.path, setup.script, { ticket: setup.ticket, label: setupTabLabel(made.path), command: setup.script.command });
     };
@@ -122,7 +123,8 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const create = async (trust?: string) => {
         if (busy() || trusting() || note().kind === "loading") return;
         // Only request the setup already shown before the user clicked Create.
-        const setup = asksForSetup(note(), skipSetup());
+        const preview = note();
+        const setup = asksForSetup(preview, skipSetup()) && preview.kind === "runs" ? { id: preview.script.id, command: preview.script.command } : undefined;
         const b = branch().trim();
         if (!b) return setError({ field: "branch", message: "Enter a branch name." });
         setError(undefined);
@@ -130,7 +132,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
         try {
             if (trust) await rpc.call("projects.trust", { path: trust, trust: true });
             if (!open) return;
-            const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }), ...(setup ? { setup: true } : {}) });
+            const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }), ...(setup ? { setup: true, setupScript: setup } : {}) });
             setBusy(false);
             p.onClose();
             if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} You can run it from the project scripts menu.`, "warn");

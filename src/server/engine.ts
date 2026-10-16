@@ -45,6 +45,7 @@ import type {
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
+    CreateWorktreeParams,
     CreateWorktreeResult,
     EditorInfo,
     EffortLevel,
@@ -66,7 +67,7 @@ import type {
     SessionSearchResult,
     SessionSummary,
 } from "./protocol";
-import { PROTOCOL_VERSION } from "./protocol";
+import { PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
 
@@ -469,12 +470,15 @@ export class Engine {
      * The worktree at `path` was just created for `client`, which asked for its setup: may the setup script run
      * there? Never throws: the worktree is made either way, and the window says why the script didn't run.
      */
-    private async grantSetup(client: EngineClient, path: string): Promise<Pick<CreateWorktreeResult, "setup" | "setupError">> {
+    private async grantSetup(client: EngineClient, path: string, preview: CreateWorktreeParams["setupScript"]): Promise<Pick<CreateWorktreeResult, "setup" | "setupError">> {
         try {
             const main = mainCheckoutOf(path);
             if (!setupTrusted(main, path)) return { setupError: "The setup script didn't run: you haven't trusted this repository." };
             const { project, script } = await findSetupScript(path);
             if (!script) return { setupError: "The setup script didn't run: no script is marked to run when a worktree is created (it may have changed in another window)." };
+            if (!preview || script.id !== preview.id || script.command !== preview.command) {
+                return { setupError: "The setup script didn't run: it no longer matches the script and command previewed when you clicked Create. Review it in the project scripts menu before running it." };
+            }
             // Nobody would see it start.
             if (!this.clients.has(client)) return {};
             const ticket = this.setups.issue({ owner: client, path, main, project, script: script.id, command: script.command });
@@ -1458,6 +1462,15 @@ export class Engine {
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
             case "projects.createWorktree": {
                 if (p.setup !== undefined && typeof p.setup !== "boolean") throw new RpcError("setup must be true or false", "invalid");
+                // Copy the client's accepted preview before checkout yields; never select a replacement later.
+                let preview: CreateWorktreeParams["setupScript"];
+                if (p.setup === true && p.setupScript !== undefined) {
+                    const s = p.setupScript;
+                    if (!s || typeof s !== "object" || Array.isArray(s) || typeof s.id !== "string" || typeof s.command !== "string") {
+                        throw new RpcError("setupScript must contain the previewed id and command", "invalid");
+                    }
+                    preview = { id: text(s.id, "setupScript.id", 64), command: text(s.command, "setupScript.command", SCRIPT_LIMITS.command) };
+                }
                 const made = await createWorktree(
                     {
                         path: resolve(expandHome(text(p.path, "path", 4096))),
@@ -1469,7 +1482,7 @@ export class Engine {
                     this.o.log,
                 );
                 // The worktree is there whatever its setup does: only asked for, by this request, may it run.
-                return p.setup === true ? { ...made, ...(await this.grantSetup(client, made.path)) } : made;
+                return p.setup === true ? { ...made, ...(await this.grantSetup(client, made.path, preview)) } : made;
             }
             case "projects.removeWorktree":
                 return this.removeWorktree(resolve(expandHome(text(p.path, "path", 4096))), text(p.worktree, "worktree", 4096), optText(p.deleteIgnored, "deleteIgnored", 128));

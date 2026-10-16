@@ -4,10 +4,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "../styles/terminal.css";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, reportError, rpc, toast, trustRequest } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen, type SetupRun } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen, setupObscured, type SetupRun } from "../state/ui";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, terminalInputChunks } from "../lib/terminal";
 import { copyText, isMod, isTerminalToggle, terminalShortcut } from "../lib/platform";
@@ -167,6 +167,15 @@ function TerminalScreen(p: { tab: Tab; visible: boolean }) {
             opened = true;
             const typed = early.take();
             if (disposed) { if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {}); return; }
+            // Opening the shell also yields: Settings/navigation may have hidden the tab since checkout.
+            if (run?.setup && (!p.visible || setupObscured() || trustRequest())) {
+                opened = false;
+                const message = failed("the setup terminal is no longer visible");
+                setEnded(message);
+                toast(message, "warn");
+                if (app.conn === "open") void rpc.call("terminal.close", { id }).catch(() => {});
+                return;
+            }
             if (typed && app.conn === "open") send(typed);
             // Only after what was typed meanwhile (the socket keeps the order): a Ctrl+C there cancels the script first.
             if (run && app.conn === "open") void rpc.call("terminal.arm", { id }).catch(() => {});

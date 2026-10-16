@@ -111,12 +111,14 @@ describe("checking a setup grant at use time", () => {
 describe("setup RPC dispatch without sockets", () => {
     async function fixture(trusted = true) {
         const main = realpathSync(mkdtempSync(join(iso.home, "rpc-repo-")));
-        for (const args of [["init", "-q", "-b", "main"], ["commit", "--allow-empty", "-qm", "Initial commit"]]) {
+        const git = (...args: string[]) => {
             const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), {
                 cwd: main, env: { ...gitEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdout: "pipe", stderr: "pipe",
             });
             if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-        }
+        };
+        git("init", "-q", "-b", "main");
+        git("commit", "--allow-empty", "-qm", "Initial commit");
         const engine = new Engine({});
         const client = { subs: new Set<string>(), send() {} };
         engine.clients.add(client);
@@ -125,8 +127,8 @@ describe("setup RPC dispatch without sockets", () => {
         const script = await engine.handle(client, "scripts.save", { cwd: main, name: "install", command: "touch setup-ran", runOnWorktreeCreate: true });
         let next = 0;
         return {
-            main, engine, client, opened, script,
-            create: (extra: Record<string, unknown> = { setup: true }) => engine.handle(client, "projects.createWorktree", { path: main, branch: `setup-${++next}`, ...extra }),
+            main, engine, client, opened, script, git,
+            create: (extra: Record<string, unknown> = { setup: true, setupScript: { id: script.id, command: script.command } }) => engine.handle(client, "projects.createWorktree", { path: main, branch: `setup-${++next}`, ...extra }),
             run: (made: CreateWorktreeResult, owner = client) => engine.handle(owner, "scripts.run", { id: `terminal-${++next}`, cwd: made.path, script: script.id, cols: 80, rows: 24, setup: made.setup?.ticket }),
             close: async () => { opened.mockRestore(); await engine.stop(); },
         };
@@ -145,6 +147,60 @@ describe("setup RPC dispatch without sockets", () => {
             expect(f.opened).toHaveBeenCalledTimes(1);
             await f.engine.handle(f.client, "scripts.run", { id: "manual", cwd: f.main, script: f.script.id, cols: 80, rows: 24 });
             expect(f.opened).toHaveBeenCalledTimes(2);
+        } finally { await f.close(); }
+    });
+
+    test("editing or replacing setup in another window during checkout never grants the unseen script", async () => {
+        for (const change of ["command", "selection"] as const) {
+            const f = await fixture();
+            const entered = join(f.main, "checkout-entered");
+            const release = join(f.main, "checkout-release");
+            let pending: Promise<CreateWorktreeResult> | undefined;
+            try {
+                // A real checkout waits in its smudge filter while the second window edits scripts.
+                writeFileSync(join(f.main, ".gitattributes"), "payload filter=wait\n");
+                writeFileSync(join(f.main, "payload"), "content\n");
+                f.git("add", ".gitattributes", "payload");
+                f.git("commit", "-qm", "Add filtered file");
+                f.git("config", "filter.wait.smudge", `touch '${entered}'; while [ ! -e '${release}' ]; do sleep 0.01; done; cat`);
+                pending = f.create();
+                const deadline = Date.now() + 5000;
+                while (!existsSync(entered)) {
+                    if (Date.now() > deadline) throw new Error("Checkout never entered its filter");
+                    await Bun.sleep(10);
+                }
+                const other = { subs: new Set<string>(), send() {} };
+                f.engine.clients.add(other);
+                await f.engine.handle(other, "scripts.save", {
+                    cwd: f.main, ...f.script,
+                    ...(change === "command" ? { command: "touch unseen-replacement" } : { id: undefined, name: "replacement" }),
+                });
+                writeFileSync(release, "");
+                const made = await pending;
+                expect(made.setup).toBeUndefined();
+                expect(made.setupError).toContain("no longer matches");
+                expect(made.setupError).toContain("project scripts menu");
+                expect(existsSync(made.path)).toBe(true);
+                expect(f.engine.setups.size).toBe(0);
+                expect(f.opened).not.toHaveBeenCalled();
+            } finally {
+                writeFileSync(release, "");
+                await pending?.catch(() => {});
+                await f.close();
+            }
+        }
+    }, 15_000);
+
+    test("setup requires the exact client preview, including its command whitespace", async () => {
+        const f = await fixture();
+        try {
+            for (const setupScript of [undefined, { id: f.script.id, command: ` ${f.script.command}` }, { id: "other", command: f.script.command }]) {
+                const made = await f.create({ setup: true, setupScript });
+                expect(made.setup).toBeUndefined();
+                expect(made.setupError).toContain("previewed");
+            }
+            expect(f.engine.setups.size).toBe(0);
+            expect(f.opened).not.toHaveBeenCalled();
         } finally { await f.close(); }
     });
 
@@ -188,6 +244,7 @@ describe("setup RPC dispatch without sockets", () => {
             const edited = await f.create();
             await f.engine.handle(f.client, "scripts.save", { cwd: f.main, ...f.script, command: "touch changed" });
             await expect(f.run(edited)).rejects.toThrow(/command changed/);
+            await f.engine.handle(f.client, "scripts.save", { cwd: f.main, ...f.script });
             const unmarked = await f.create();
             await f.engine.handle(f.client, "scripts.save", { cwd: f.main, ...f.script, runOnWorktreeCreate: false });
             await expect(f.run(unmarked)).rejects.toThrow(/no longer marked/);
@@ -226,6 +283,9 @@ describe("setup RPC dispatch without sockets", () => {
         const f = await fixture();
         try {
             for (const setup of [null, "true", 1, {}, []]) await expect(f.create({ setup })).rejects.toMatchObject({ code: "invalid" });
+            for (const setupScript of [null, true, [], {}, { id: f.script.id }, { id: 7, command: "x" }, { id: f.script.id, command: "x".repeat(2001) }]) {
+                await expect(f.create({ setup: true, setupScript })).rejects.toMatchObject({ code: "invalid" });
+            }
             for (const setup of [null, 1, "short", "g".repeat(32), "0".repeat(33)]) {
                 await expect(f.engine.handle(f.client, "scripts.run", { id: "bad", cwd: f.main, script: f.script.id, cols: 80, rows: 24, setup })).rejects.toMatchObject({ code: "invalid" });
             }

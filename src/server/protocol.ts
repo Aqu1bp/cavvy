@@ -583,6 +583,8 @@ export interface CreateWorktreeParams {
     location?: string;
     /** Run the project's setup script in the new worktree (the dialog's choice); nothing runs when it's absent. */
     setup?: boolean;
+    /** The exact setup preview accepted at Create time; setup is skipped if it no longer matches. */
+    setupScript?: Pick<ProjectScript, "id" | "command">;
 }
 
 export interface CreateWorktreeResult {
