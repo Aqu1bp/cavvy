@@ -26,11 +26,13 @@ export async function checkEditorFind(root: HTMLElement) {
         diff: { path: "src/edited.ts", status: "modified", added: 1, removed: 0, hunks: [{ oldStart: 9, oldLines: 0, newStart: 9, newLines: 1, lines: [{ t: "add", text: "edited text" }] }] },
     };
     const turn: Turn = {
-        id: "editor-turn", status: "done", prompt: { text: "Inspect the files", images: 1, files: [
+        id: "editor-turn", status: "done", prompt: { text: "Inspect the files for needle", images: 1, files: [
             { kind: "text", name: "files-quokka.txt", size: 1024, lines: 3 },
             { kind: "pdf", name: "files.pdf", size: 512 },
         ] },
-        blocks: [read, edit, { t: "text", id: "reply", text: "Inspect src/quokka.ts:12 near `src/quokka.ts:20` and [**quokka label**](src/quokka.ts:30)." }, { t: "compact", id: "compact", summary: "**Important** summary", auto: false }],
+        blocks: [read, edit, { t: "text", id: "reply", text: "Inspect src/quokka.ts:12 near `src/quokka.ts:20` and [**quokka label**](src/quokka.ts:30)." }, { t: "compact", id: "compact", summary: "**Important** summary", auto: false },
+            { t: "shell", id: "shell", command: `echo ${"x".repeat(2000)}needle`, output: "done", exitCode: 0, running: false },
+        ],
     };
     const state = { id: sessionId, cwd: "/fixture", interactions: [] } as unknown as SessionState;
     const opened: { path: string; line?: number; sessionId: string }[] = [];
@@ -141,6 +143,27 @@ export async function checkEditorFind(root: HTMLElement) {
         check(findMatches([turn], "Important summary").length === 1 && count() === "1 of 1", "formatted compaction summary is counted as rendered Markdown");
         check(current().toString() === "Important summary" && current().startContainer.parentElement?.closest("strong"), "formatted match is revealed and highlighted across the bold boundary");
         check(textRanges(col, "hide summary").length === 0 && textRanges(col, "Conversation compacted").length === 0, "compaction controls never enter highlight ranges");
+
+        const shell = scope("shell");
+        const command = shell.querySelector<HTMLElement>(".shell-head code")!;
+        check(command.scrollWidth > command.clientWidth, "long shell command begins clipped");
+        const hidden = textRanges(command, "needle")[0]!.getBoundingClientRect();
+        check(hidden.left > command.getBoundingClientRect().right, "shell fixture match starts beyond the visible header");
+        setFindQuery("needle");
+        await settle(350);
+        check(count() === "1 of 2" && current().startContainer.parentElement?.closest(".user-text"), "find starts at the prompt occurrence");
+        key(input, "Enter");
+        await settle(350);
+        check(count() === "2 of 2" && current().toString() === "needle" && current().startContainer.parentElement === command, "Enter selects the shell-header occurrence");
+        const matchBox = current().getBoundingClientRect();
+        const commandBox = command.getBoundingClientRect();
+        const view = scroller.getBoundingClientRect();
+        check(shell.classList.contains("found") && command.scrollWidth <= command.clientWidth + 1, "selected shell command wraps without horizontal clipping");
+        check(matchBox.width > 0 && matchBox.left >= commandBox.left - 1 && matchBox.right <= commandBox.right + 1 && matchBox.top >= commandBox.top - 1 && matchBox.bottom <= commandBox.bottom + 1, "match past character 2000 is visible inside the wrapped header");
+        check(matchBox.top >= view.top && matchBox.bottom <= view.bottom, "selected shell-header match is inside the transcript viewport");
+        key(input, "Enter", true);
+        await settle();
+        check(count() === "1 of 2" && !shell.classList.contains("found") && command.scrollWidth > command.clientWidth, "stepping away restores shell truncation");
 
         const beforeKeys = opened.length;
         check(key(input, "Escape").defaultPrevented && !findOpen(), "Escape closes find");

@@ -122,10 +122,11 @@
     color: var(--fg);
 }
 
-/* The tool row find is showing: all of its title and summary, not cut short. */
+/* The row find is showing: all of its command, title or summary, not cut short. */
 .tool.found .tool-line .truncate,
 .wrow.live.found .warg,
-.agr.found .truncate {
+.agr.found .truncate,
+.shell-block.found .shell-head code {
     white-space: normal;
     overflow-wrap: anywhere;
 }

@@ -166,7 +166,7 @@ function Compacted(p: { block: CompactBlock }) {
 
 function Shell(p: { block: ShellBlock }) {
     return (
-        <div class="shell-block" data-find={p.block.id}>
+        <div class={`shell-block ${findReveal()?.part === p.block.id ? "found" : ""}`} data-find={p.block.id}>
             <div class="shell-head">
                 <SquareTerminal size={13} />
                 <code class="truncate">{p.block.command}</code>
