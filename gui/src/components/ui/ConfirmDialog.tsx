@@ -2,9 +2,18 @@ import { createSignal, type JSX } from "solid-js";
 import { Dialog } from "./Dialog";
 
 /** Mutations only begin on explicit confirmation; Cancel is the initial focus. */
-export function ConfirmDialog(p: { open: boolean; title: string; children: JSX.Element; confirmLabel: string; onClose: () => void; onConfirm: () => void | Promise<void> }) {
+export function ConfirmDialog(p: {
+    open: boolean;
+    title: string;
+    children: JSX.Element;
+    confirmLabel: string;
+    onClose: () => void;
+    onConfirm: () => void | Promise<void>;
+}) {
     const [busy, setBusy] = createSignal(false);
-    const close = () => { if (!busy()) p.onClose(); };
+    const close = () => {
+        if (!busy()) p.onClose();
+    };
     const confirm = async () => {
         if (busy()) return;
         setBusy(true);
@@ -20,8 +29,12 @@ export function ConfirmDialog(p: { open: boolean; title: string; children: JSX.E
             <p>{p.children}</p>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" autofocus disabled={busy()} onClick={close}>Cancel</button>
-                <button class="btn danger" disabled={busy()} onClick={() => void confirm()}>{p.confirmLabel}</button>
+                <button class="btn ghost" autofocus disabled={busy()} onClick={close}>
+                    Cancel
+                </button>
+                <button class="btn danger" disabled={busy()} onClick={() => void confirm()}>
+                    {p.confirmLabel}
+                </button>
             </div>
         </Dialog>
     );

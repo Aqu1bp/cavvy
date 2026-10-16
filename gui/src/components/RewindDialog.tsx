@@ -33,10 +33,11 @@ export function RewindDialog() {
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
     const [targets, { refetch }] = createResource(
         () => (app.conn === "open" && rewindOpen() && id() ? id() : undefined),
-        (sid) => rpc.call("session.rewindTargets", { id: sid }).catch((e) => {
-            if (app.conn === "open") reportError(e);
-            return [];
-        }),
+        (sid) =>
+            rpc.call("session.rewindTargets", { id: sid }).catch((e) => {
+                if (app.conn === "open") reportError(e);
+                return [];
+            }),
     );
     createEffect(
         on(rewindOpen, (open) => {

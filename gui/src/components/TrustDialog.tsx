@@ -8,10 +8,11 @@ import { Dialog } from "./ui/Dialog";
 export function TrustDialog() {
     const [info] = createResource(
         () => app.conn === "open" && trustRequest()?.path,
-        (path) => rpc.call("projects.inspect", { path }).catch((e) => {
-            if (app.conn === "open") reportError(e);
-            return undefined;
-        }),
+        (path) =>
+            rpc.call("projects.inspect", { path }).catch((e) => {
+                if (app.conn === "open") reportError(e);
+                return undefined;
+            }),
     );
     const decide = async (trust: boolean) => {
         const req = trustRequest();

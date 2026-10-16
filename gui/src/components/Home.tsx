@@ -20,10 +20,11 @@ export function Home() {
     const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
     const [info, { refetch }] = createResource(
         () => app.conn === "open" && app.homeCwd,
-        (path) => rpc.call("projects.inspect", { path }).catch((e) => {
-            if (app.conn === "open") reportError(e);
-            return undefined;
-        }),
+        (path) =>
+            rpc.call("projects.inspect", { path }).catch((e) => {
+                if (app.conn === "open") reportError(e);
+                return undefined;
+            }),
     );
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
     const clis = () => app.providers.filter((p) => p.agentCli?.installed && !p.configured);

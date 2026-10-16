@@ -10,7 +10,7 @@ export type ReviewScope = GitScope | "harness";
 /** What the agent's edit tools changed in a session; fetched again as edits land and when a turn ends. */
 export function useChanges(handle: () => SessionHandle) {
     return createResource(
-        () => app.conn === "open" && ({ id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy }),
+        () => app.conn === "open" && { id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy },
         async ({ id }) => rpc.call("session.changes", { id }).catch((e): ChangesInfo => (reportError(e), { files: [], added: 0, removed: 0, tracked: true })),
     );
 }

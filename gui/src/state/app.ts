@@ -46,17 +46,14 @@ export function toast(message: string, level: Toast["level"] = "info", action?: 
     const existing = repeatedToast(toasts, message, level, action);
     if (existing) {
         const index = toasts.findIndex((t) => t.id === existing.id);
-        batch(() => {
-            setToasts(index, "count", existing.count + 1);
-            if (action) setToasts(index, "actions", (actions) => [...actions, action]);
-        });
+        setToasts(index, "count", existing.count + 1);
         toastTimers.get(existing.id)?.life.restart(toastMs(level, ms), performance.now());
         scheduleToast(existing.id);
         return;
     }
     const id = ++toastId;
     for (const old of toasts.slice(0, Math.max(0, toasts.length - 3))) dismissToast(old.id);
-    setToasts((t) => [...t, { id, level, message, count: 1, actions: action ? [action] : [] }]);
+    setToasts((t) => [...t, { id, level, message, count: 1, action }]);
     const life = new ToastLifetime(toastMs(level, ms), performance.now());
     if (document.hidden) life.pause("hidden", performance.now());
     toastTimers.set(id, { life });

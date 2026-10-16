@@ -32,11 +32,27 @@ class Socket {
     onopen?: () => void;
     onmessage?: (event: { data: string }) => void;
     onclose?: (event: { code: number }) => void;
-    constructor() { Socket.instances.push(this); }
-    open() { this.readyState = 1; this.onopen?.(); }
-    send(raw: string) { this.sent.push(JSON.parse(raw)); }
-    message(msg: unknown) { this.onmessage?.({ data: JSON.stringify(msg) }); }
-    close() { this.readyState = 3; this.onclose?.({ code: 1006 }); }
+    constructor() {
+        Socket.instances.push(this);
+    }
+
+    open() {
+        this.readyState = 1;
+        this.onopen?.();
+    }
+
+    send(raw: string) {
+        this.sent.push(JSON.parse(raw));
+    }
+
+    message(msg: unknown) {
+        this.onmessage?.({ data: JSON.stringify(msg) });
+    }
+
+    close() {
+        this.readyState = 3;
+        this.onclose?.({ code: 1006 });
+    }
 }
 
 const originalSocket = globalThis.WebSocket;
@@ -59,21 +75,36 @@ function setup() {
     const timers = new Map<number, { at: number; fn: () => void }>();
     Socket.instances = [];
     globalThis.WebSocket = Socket as unknown as typeof WebSocket;
-    globalThis.setTimeout = ((fn: () => void, ms: number) => { timers.set(++id, { at: now + ms, fn }); return id; }) as unknown as typeof setTimeout;
-    globalThis.clearTimeout = ((id: number) => { timers.delete(id); }) as unknown as typeof clearTimeout;
+    globalThis.setTimeout = ((fn: () => void, ms: number) => {
+        timers.set(++id, { at: now + ms, fn });
+        return id;
+    }) as unknown as typeof setTimeout;
+    globalThis.clearTimeout = ((id: number) => {
+        timers.delete(id);
+    }) as unknown as typeof clearTimeout;
     const spy = spyOn(performance, "now").mockImplementation(() => now);
     restoreNow = () => spy.mockRestore();
     rpc = new Rpc(async () => ({ url: "ws://test", token: "test" }));
-    return { client: rpc, advance(ms: number) {
-        now += ms;
-        for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); }
-    } };
+    return {
+        client: rpc,
+        advance(ms: number) {
+            now += ms;
+            for (const [id, timer] of [...timers]) {
+                if (timer.at <= now) {
+                    timers.delete(id);
+                    timer.fn();
+                }
+            }
+        },
+    };
 }
 
 test("slow feedback never cancels work and clears on replies, errors, and disconnect", async () => {
     const { client, advance } = setup();
     let slow = false;
-    client.onSlow((v) => { slow = v; });
+    client.onSlow((v) => {
+        slow = v;
+    });
     await client.connect();
     const ws = Socket.instances[0]!;
     ws.open();
@@ -122,31 +153,59 @@ test("reconnect now replaces backoff and stale sockets without replaying mutatio
     expect(client.state).toBe("open");
 });
 
-test("visible compaction activity suppresses only its own request notice", async () => {
+test("compaction uses the long threshold regardless of activity display text", async () => {
     const { client, advance } = setup();
     let slow = false;
-    client.onSlow((v) => { slow = v; });
+    client.onSlow((v) => {
+        slow = v;
+    });
     await client.connect();
     const ws = Socket.instances[0]!;
     ws.open();
     const compact = client.call("session.compact", { id: "s" });
     ws.message({ event: { type: "session.ops", sessionId: "s", ops: [{ op: "state", patch: { activity: { label: "Compacting conversation" } } }] } });
-    advance(90_000);
+    advance(59_999);
     expect(slow).toBe(false);
-    const settings = client.call("settings.get", {});
-    advance(15_000);
+    ws.message({ event: { type: "session.ops", sessionId: "s", ops: [{ op: "state", patch: { activity: { label: "Reworded activity" } } }] } });
+    advance(1);
     expect(slow).toBe(true);
-    ws.message({ id: ws.sent[1]!.id, result: {} });
-    await settings;
-    expect(slow).toBe(false);
     ws.message({ id: ws.sent[0]!.id, result: null });
     await compact;
+    expect(slow).toBe(false);
+});
+
+test("close rejects pending replies, clears feedback, and never reconnects", async () => {
+    const { client, advance } = setup();
+    let slow = false;
+    client.onSlow((v) => {
+        slow = v;
+    });
+    await client.connect();
+    const ws = Socket.instances[0]!;
+    ws.open();
+    const pending = client.call("session.send", { id: "s", text: "once" }).catch((e) => e);
+    advance(15_000);
+    expect(slow).toBe(true);
+    client.close();
+    expect((await pending).code).toBe("disconnected");
+    expect(slow).toBe(false);
+    expect(client.state).toBe("unavailable");
+    client.reconnectNow();
+    advance(100_000);
+    await client.connect();
+    expect(Socket.instances).toHaveLength(1);
+    await expect(client.call("session.send", { id: "s", text: "offline" })).rejects.toThrow("Not connected");
 });
 
 test("closing during credential lookup never opens a socket", async () => {
     setup();
     let resolve!: (value: { url: string; token: string }) => void;
-    rpc = new Rpc(() => new Promise((r) => { resolve = r; }));
+    rpc = new Rpc(
+        () =>
+            new Promise((r) => {
+                resolve = r;
+            }),
+    );
     const connecting = rpc.connect();
     rpc.close();
     resolve({ url: "ws://test", token: "test" });

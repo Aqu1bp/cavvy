@@ -72,7 +72,15 @@ function DialogInner(p: DialogProps) {
     return (
         <Portal>
             <div class="dialog-backdrop" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
-                <div ref={box} class={`dialog ${p.class ?? ""}`} style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }} role="dialog" aria-modal="true" aria-labelledby={!p.bare && p.title ? titleId : undefined} tabIndex={-1}>
+                <div
+                    ref={box}
+                    class={`dialog ${p.class ?? ""}`}
+                    style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby={!p.bare && p.title ? titleId : undefined}
+                    tabIndex={-1}
+                >
                     <Show when={!p.bare}>
                         <div class="dialog-head">
                             <div>

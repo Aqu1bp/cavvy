@@ -35,11 +35,18 @@ test("repeats renew the duration but keep focus and visibility pauses", () => {
     expect(life.remaining(37_999)).toBe(1);
 });
 
-test("repeat matching keeps levels and incompatible actions distinct", () => {
+test("only actionless repeats of the same message and level merge", () => {
+    const item = { id: 1, message: "Not connected", level: "info" as const, count: 1 };
+    expect(repeatedToast([item], item.message, "info")).toBe(item);
+    expect(repeatedToast([item], item.message, "error")).toBeUndefined();
+    expect(repeatedToast([item], "Different message", "info")).toBeUndefined();
+    expect(repeatedToast([item], item.message, "info", { label: "Undo", run() {} })).toBeUndefined();
+});
+
+test("Undo toasts stay separate even when their messages and action labels match", () => {
     const undo = { label: "Undo", run() {} };
-    const item = { id: 1, message: "Session deleted", level: "info" as const, count: 1, actions: [undo] };
-    expect(repeatedToast([item], item.message, "info", { label: "Undo", run() {} })).toBe(item);
-    expect(repeatedToast([item], item.message, "error", undo)).toBeUndefined();
+    const item = { id: 1, message: "Session deleted", level: "info" as const, count: 1, action: undo };
+    expect(repeatedToast([item], item.message, "info", undo)).toBeUndefined();
+    expect(repeatedToast([item], item.message, "info", { label: "Undo", run() {} })).toBeUndefined();
     expect(repeatedToast([item], item.message, "info")).toBeUndefined();
-    expect(repeatedToast([item], item.message, "info", { label: "Open", run() {} })).toBeUndefined();
 });

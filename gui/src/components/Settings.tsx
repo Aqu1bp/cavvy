@@ -122,9 +122,14 @@ const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium
 function General() {
     const [confirmBypass, setConfirmBypass] = createSignal(false);
     const s = () => app.settings;
-    createEffect(on(() => app.conn, (conn) => {
-        if (conn === "open") void refreshEditors();
-    }));
+    createEffect(
+        on(
+            () => app.conn,
+            (conn) => {
+                if (conn === "open") void refreshEditors();
+            },
+        ),
+    );
     // The chosen editor stays listed when it's gone, so the choice isn't silently lost.
     const editorChoices = () => editors().filter((e) => e.installed || e.id === s().editor);
     return (
@@ -196,9 +201,15 @@ function General() {
                 </select>
             </Row>
             <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">
-                <Toggle label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => v ? setConfirmBypass(true) : void update({ allowBypass: false })} />
+                <Toggle label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => (v ? setConfirmBypass(true) : void update({ allowBypass: false }))} />
             </Row>
-            <ConfirmDialog open={confirmBypass()} onClose={() => setConfirmBypass(false)} title="Allow bypass mode?" confirmLabel="Allow bypass mode" onConfirm={() => update({ allowBypass: true })}>
+            <ConfirmDialog
+                open={confirmBypass()}
+                onClose={() => setConfirmBypass(false)}
+                title="Allow bypass mode?"
+                confirmLabel="Allow bypass mode"
+                onConfirm={() => update({ allowBypass: true })}
+            >
                 Lets sessions run tools without asking for permission. Enable only in a sandbox or container.
             </ConfirmDialog>
             <Group>This computer</Group>

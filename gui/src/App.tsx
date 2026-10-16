@@ -32,62 +32,56 @@ function ToastItem(p: { toast: Toast }) {
             onPointerEnter={() => pauseToast(t().id, "hover", true)}
             onPointerLeave={() => pauseToast(t().id, "hover", false)}
             onFocusIn={() => pauseToast(t().id, "focus", true)}
-            onFocusOut={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) pauseToast(t().id, "focus", false); }}
+            onFocusOut={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) pauseToast(t().id, "focus", false);
+            }}
         >
             <Switch fallback={<Info size={15} />}>
-                <Match when={t().level === "error"}><AlertCircle size={15} /></Match>
-                <Match when={t().level === "success"}><CheckCircle2 size={15} /></Match>
+                <Match when={t().level === "error"}>
+                    <AlertCircle size={15} />
+                </Match>
+                <Match when={t().level === "success"}>
+                    <CheckCircle2 size={15} />
+                </Match>
             </Switch>
-            <span class="toast-msg">{t().message}<Show when={t().count > 1}> <span aria-label={`Repeated ${t().count} times`}>×{t().count}</span></Show></span>
-            <Show when={t().actions.length}>
-                <button class="link-btn" onClick={() => {
-                    for (const action of t().actions) action.run();
-                    dismissToast(t().id);
-                }}>{t().actions[0]?.label}{t().actions.length > 1 ? ` (${t().actions.length})` : ""}</button>
+            <span class="toast-msg" title={t().message}>
+                {t().message}
+            </span>
+            <Show when={t().count > 1}>
+                <span class="toast-count">({t().count} times)</span>
+            </Show>
+            <Show when={t().action}>
+                <button
+                    class="link-btn"
+                    onClick={() => {
+                        t().action!.run();
+                        dismissToast(t().id);
+                    }}
+                >
+                    {t().action!.label}
+                </button>
             </Show>
             <Show when={t().level === "error"}>
-                <button class="link-btn" onClick={async () => {
-                    const copied = await copyText(t().message);
-                    toast(copied ? "Copied error" : "Couldn't copy error", copied ? "success" : "info");
-                }}>Copy</button>
+                <button
+                    class="link-btn"
+                    onClick={async () => {
+                        const copied = await copyText(t().message);
+                        toast(copied ? "Copied error" : "Couldn't copy error", copied ? "success" : "info");
+                    }}
+                >
+                    Copy
+                </button>
             </Show>
-            <button class="icon-btn" onClick={() => dismissToast(t().id)} aria-label="Dismiss"><X size={13} /></button>
+            <button class="icon-btn" onClick={() => dismissToast(t().id)} aria-label="Dismiss">
+                <X size={13} />
+            </button>
         </div>
     );
 }
 
 function Toasts() {
-    let box: HTMLDivElement | undefined;
-    onMount(() => {
-        let observed = new Set<Element>();
-        const place = () => {
-            const next = new Set(document.querySelectorAll(".main, .stage, .home, .composer-box"));
-            for (const element of observed) if (!next.has(element)) resize.unobserve(element);
-            for (const element of next) if (!observed.has(element)) resize.observe(element);
-            observed = next;
-            // Home centers its input; a growing draft can move it upward into long toasts.
-            const bottom = document.querySelector(".composer-box")?.getBoundingClientRect().top ?? window.innerHeight;
-            box?.style.setProperty("--toast-space", `${Math.max(0, bottom - 60 - 16)}px`);
-        };
-        const resize = new ResizeObserver(place);
-        const changes = new MutationObserver(place);
-        // The composer can mount after initial connection, or change with the active view.
-        const appRoot = document.querySelector(".app");
-        if (appRoot) changes.observe(appRoot, { childList: true, subtree: true });
-        window.addEventListener("resize", place);
-        window.addEventListener("scroll", place, true);
-        window.addEventListener("animationend", place, true);
-        place();
-        onCleanup(() => {
-            resize.disconnect();
-            changes.disconnect();
-            window.removeEventListener("resize", place);
-            window.removeEventListener("scroll", place, true);
-            window.removeEventListener("animationend", place, true);
-        });
-    });
     return (
-        <div class="toasts" ref={box}>
+        <div class="toasts">
             <div class="toast-region" role="alert" aria-live="assertive" aria-relevant="additions text">
                 <For each={toasts.filter((t) => t.level === "error")}>{(t) => <ToastItem toast={t} />}</For>
             </div>
@@ -123,7 +117,9 @@ function Disconnected() {
                     <p class="muted">{isTauri ? "The background process stopped. Quit and reopen the app." : "Is `harness gui` still running? Still trying to reconnect…"}</p>
                 </Match>
             </Switch>
-            <button class="btn secondary" onClick={() => rpc.reconnectNow()}>Reconnect now</button>
+            <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
+                Reconnect now
+            </button>
         </div>
     );
 }
@@ -164,11 +160,15 @@ function Reconnecting() {
             <Show when={app.conn !== "open"}>
                 <div class="banner" role="status">
                     <Spinner size={12} /> Not connected · Reconnecting…
-                    <button class="link-btn" onClick={() => rpc.reconnectNow()}>Reconnect now</button>
+                    <button class="link-btn" onClick={() => rpc.reconnectNow()}>
+                        Reconnect now
+                    </button>
                 </div>
             </Show>
             <Show when={app.conn === "open" && app.slowRequest}>
-                <div class="banner" role="status">The server is taking a while…</div>
+                <div class="banner" role="status">
+                    The server is taking a while…
+                </div>
             </Show>
         </>
     );

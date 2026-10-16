@@ -1689,9 +1689,9 @@ button.strip-ctl[aria-expanded="true"] {
     position: fixed;
     right: 20px;
     top: 60px;
-    max-height: min(320px, calc(40vh - 60px), var(--toast-space, 100vh));
-    max-width: calc(100vw - 40px);
-    overflow-y: auto;
+    /* Four 44px rows and three 8px gaps fit without clipping or scrolling. */
+    max-height: 200px;
+    width: min(440px, calc(100vw - 40px));
     z-index: 80;
     display: flex;
     flex-direction: column;
@@ -1708,14 +1708,24 @@ button.strip-ctl[aria-expanded="true"] {
     max-width: 100%;
 }
 
+.toast-region:empty {
+    display: none;
+}
+
+/* Home centers its input. Keep its scroll viewport below four toast rows. */
+.app:has(.toast) .home {
+    margin-top: 228px;
+}
+
 .toast {
     flex: none;
     pointer-events: auto;
     display: flex;
     align-items: center;
     gap: 10px;
-    max-width: 440px;
-    padding: 11px 10px 11px 15px;
+    max-width: 100%;
+    height: 44px;
+    padding: 8px 10px;
     border-radius: 14px;
     background: var(--bg-elev);
     box-shadow: var(--shadow-float);
@@ -1743,7 +1753,16 @@ button.strip-ctl[aria-expanded="true"] {
 .toast-msg {
     flex: 1;
     min-width: 0;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.toast-count,
+.toast .link-btn,
+.toast .icon-btn {
+    flex: none;
+    white-space: nowrap;
 }
 
 

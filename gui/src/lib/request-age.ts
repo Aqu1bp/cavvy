@@ -2,7 +2,7 @@ import type { Method } from "@shared/protocol";
 
 const slowMethods = new Set<Method>(["models.list", "providers.setKey", "providers.connectCli", "projects.createWorktree", "projects.removeWorktree", "cliSessions.import", "session.compact"]);
 
-export const requestNoticeMs = (method: Method): number => slowMethods.has(method) ? 60_000 : 15_000;
+export const requestNoticeMs = (method: Method): number => (slowMethods.has(method) ? 60_000 : 15_000);
 
 /** Only outstanding replies count; a running turn has already received its reply. */
 export class RequestAges {

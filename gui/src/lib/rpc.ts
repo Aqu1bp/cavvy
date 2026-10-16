@@ -25,8 +25,6 @@ export class RpcError extends Error {
 }
 
 interface Pending {
-    method: Method;
-    sessionId?: string;
     resolve: (v: unknown) => void;
     reject: (e: Error) => void;
 }
@@ -39,7 +37,6 @@ export class Rpc {
     private stateListeners = new Set<(s: ConnectionState, attempt: number) => void>();
     private attempt = 0;
     private closed = false;
-    private openWaiters: (() => void)[] = [];
     private ages = new RequestAges();
     private slowListeners = new Set<(slow: boolean) => void>();
     private noticeTimer?: ReturnType<typeof setTimeout>;
@@ -114,9 +111,10 @@ export class Rpc {
             opened = true;
             this.attempt = 0;
             this.setState("open");
-            for (const w of this.openWaiters.splice(0)) w();
         };
-        ws.onmessage = (m) => { if (this.ws === ws && !this.closed) this.receive(String(m.data)); };
+        ws.onmessage = (m) => {
+            if (this.ws === ws && !this.closed) this.receive(String(m.data));
+        };
         ws.onclose = (ev) => {
             if (this.ws !== ws) return;
             this.ws = undefined;
@@ -165,13 +163,6 @@ export class Rpc {
             return;
         }
         if ("event" in msg) {
-            // Manual compaction waits for completion, but its activity is already visible.
-            if (msg.event.type === "session.ops" && msg.event.ops.some((op) => op.op === "state" && op.patch.activity?.label === "Compacting conversation")) {
-                for (const [id, p] of this.pending) {
-                    if (p.method === "session.compact" && p.sessionId === msg.event.sessionId) this.ages.remove(id);
-                }
-                this.updateNotice();
-            }
             for (const fn of this.listeners) {
                 try {
                     fn(msg.event);
@@ -190,20 +181,14 @@ export class Rpc {
         else p.resolve(msg.result);
     }
 
-    /** Resolves once connected (immediately when already). */
-    ready(): Promise<void> {
-        if (this.state === "open") return Promise.resolve();
-        return new Promise((r) => this.openWaiters.push(r));
-    }
-
+    /** Never wait for reconnect: an offline action must not run later without the user. */
     async call<M extends Method>(method: M, params: ParamsOf<M>): Promise<ResultOf<M>> {
-        // Offline actions must stay with the user, not run later on reconnect.
         if (this.closed || this.state !== "open") throw new RpcError("Not connected", "disconnected");
         const ws = this.ws;
         if (!ws || ws.readyState !== WebSocket.OPEN) throw new RpcError("Not connected", "disconnected");
         const id = this.next++;
         return new Promise<ResultOf<M>>((resolve, reject) => {
-            this.pending.set(id, { method, sessionId: "id" in params ? String(params.id) : undefined, resolve: resolve as (v: unknown) => void, reject });
+            this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
             this.ages.add(id, method, performance.now());
             this.updateNotice();
             try {
