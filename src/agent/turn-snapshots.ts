@@ -6,7 +6,7 @@
 // process avoids a subprocess per file and preserves the bytes on disk.
 
 import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
-import { chmod, mkdir, readlink, rename, rm, writeFile } from "fs/promises";
+import { chmod, lstat, mkdir, readdir, readlink, rename, rm, writeFile } from "fs/promises";
 import { dirname, isAbsolute, join, relative } from "path";
 import { deflateSync } from "zlib";
 import { randomBytes } from "crypto";
@@ -42,6 +42,8 @@ export interface SnapshotTurn {
     changed?: string[];
 }
 
+export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
+
 const instances = new WeakMap<FileHistory, WeakMap<Session, TurnSnapshots>>();
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const POLICY = "Ignored files are not captured. Concurrent sessions in this repository see each other's changes. Submodule and nested repository contents are not captured.";
@@ -50,11 +52,10 @@ const pathMap = (...sources: Record<string, string>[]): Record<string, string> =
 const own = (map: Record<string, string> | undefined, path: string) => map && Object.hasOwn(map, path) ? map[path] : undefined;
 
 /**
- * Tree ids write-tree can create, computed before it runs. Git creates loose
- * trees read-only (0400); only these objects need chmod, even if Git times out
- * after writing a subtree. Never scan the session's historical object store.
+ * Build the trees before write-tree so their compressed bytes pass through
+ * the same quota as blobs. Git then reuses these private objects.
  */
-function treeObjects(entries: Map<string, Entry>, algo: "sha1" | "sha256", inTime: () => void): { root: string; ids: Set<string> } {
+function treeObjects(entries: Map<string, Entry>, algo: "sha1" | "sha256", inTime: () => void): { root: string; objects: Map<string, Buffer> } {
     interface Directory { files: Map<string, Entry>; dirs: Map<string, Directory> }
     const directory = (): Directory => ({ files: new Map(), dirs: new Map() });
     const root = directory();
@@ -69,7 +70,7 @@ function treeObjects(entries: Map<string, Entry>, algo: "sha1" | "sha256", inTim
         }
         node.files.set(parts.at(-1)!, entry);
     }
-    const ids = new Set<string>();
+    const objects = new Map<string, Buffer>();
     const tree = (node: Directory): string => {
         inTime();
         const children = [...node.files].map(([name, e]) => ({ name, mode: e.mode, oid: e.oid, order: Buffer.from(name) }));
@@ -80,10 +81,10 @@ function treeObjects(entries: Map<string, Entry>, algo: "sha1" | "sha256", inTim
         hash.update(`tree ${bytes.length}\0`);
         hash.update(bytes);
         const oid = hash.digest("hex");
-        ids.add(oid);
+        objects.set(oid, bytes);
         return oid;
     };
-    return { root: tree(root), ids };
+    return { root: tree(root), objects };
 }
 
 export class TurnSnapshots {
@@ -94,6 +95,8 @@ export class TurnSnapshots {
     private cache = new Map<string, { stamp: string; entry: Entry }>();
     private indexEntries = new Map<string, Entry>();
     private hardened = new Set<string>();
+    private stored = new Set<string>();
+    private objectBytes?: number;
     private inflight = new Map<string, Slot<GitChangesInfo>>();
     private saved = false;
     private stopped = false;
@@ -102,7 +105,7 @@ export class TurnSnapshots {
     private readonly storage: string;
     private readonly journal: string;
 
-    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number } = {}) {
+    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number } = {}) {
         this.storage = join(dir, "turn-snapshots");
         this.journal = join(dir, "turn-snapshots.jsonl");
         let lines: string;
@@ -243,18 +246,59 @@ export class TurnSnapshots {
         if (!this.stopped) this.persist(turn);
     }
 
-    private async store(buf: Buffer): Promise<string> {
-        const oid = blobId(buf, this.algo);
+    /** Scan once on reopen; failed captures' objects and temporary files count too. */
+    private async measureStore(inTime: () => void) {
+        if (this.objectBytes !== undefined) return;
+        let bytes = 0;
+        const stored = new Set<string>();
+        const walk = async (dir: string) => {
+            for (const name of await readdir(dir)) {
+                inTime();
+                const path = join(dir, name);
+                const st = await lstat(path);
+                if (st.isDirectory()) await walk(path);
+                else {
+                    bytes += st.size;
+                    if (st.isFile()) stored.add(path);
+                }
+            }
+        };
+        await walk(join(this.storage, "objects"));
+        inTime();
+        this.objectBytes = bytes;
+        this.stored = stored;
+    }
+
+    private async store(buf: Buffer, type = "blob", oid = blobId(buf, this.algo)): Promise<string> {
         const folder = join(this.storage, "objects", oid.slice(0, 2));
         const path = join(folder, oid.slice(2));
-        if (this.hardened.has(path)) return oid;
+        if (this.stored.has(path)) {
+            if (!this.hardened.has(path)) {
+                await chmod(folder, 0o700);
+                await chmod(path, 0o600);
+                this.hardened.add(path);
+            }
+            return oid;
+        }
+        // No Git filters or EOL conversion: precisely the object format used
+        // by hash-object --no-filters, with a bounded read of the source file.
+        const compressed = deflateSync(Buffer.concat([Buffer.from(`${type} ${buf.length}\0`), buf]), { level: 1 });
+        const limit = this.options.maxStoreBytes ?? MAX_SNAPSHOT_STORE_BYTES;
+        if (this.objectBytes! + compressed.length > limit) throw new Error("Snapshot storage limit reached (256 MiB per session by default).");
         await mkdir(folder, { recursive: true, mode: 0o700 });
         await chmod(folder, 0o700);
         const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-        // No Git filters or EOL conversion: precisely the object format used
-        // by hash-object --no-filters, with a bounded read of the source file.
-        await writeFile(tmp, deflateSync(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf]), { level: 1 }), { mode: 0o600 });
-        await rename(tmp, path);
+        this.objectBytes! += compressed.length;
+        try {
+            await writeFile(tmp, compressed, { mode: 0o600 });
+            await rename(tmp, path);
+        } catch (e) {
+            // Only this unpublished temporary file is safe to remove without
+            // tracing every retained tree. Keep its reservation if removal fails.
+            await rm(tmp, { force: true }).then(() => { this.objectBytes! -= compressed.length; }).catch(() => {});
+            throw e;
+        }
+        this.stored.add(path);
         this.hardened.add(path);
         return oid;
     }
@@ -302,6 +346,7 @@ export class TurnSnapshots {
             if (listing.err.trim()) throw new Error(`The repository file list is incomplete: ${redact(listing.err.trim())}`);
             this.algo = format.out.toString().trim() === "sha256" ? "sha256" : "sha1";
             this.ensure();
+            await this.measureStore(inTime);
             const wt = new WorkTree(this.root, this.algo, true, inTime, deadline);
             const entries = new Map<string, Entry>();
             const modes = new Map<string, string>();
@@ -347,7 +392,11 @@ export class TurnSnapshots {
             }
             inTime();
             const planned = treeObjects(entries, this.algo, inTime);
-            plannedTrees = planned.ids;
+            plannedTrees = new Set(planned.objects.keys());
+            for (const [oid, bytes] of planned.objects) {
+                inTime();
+                await this.store(bytes, "tree", oid);
+            }
             // Reset only on first use/reopen or after a failed index update.
             // Afterwards update just changed paths; object/stat caches avoid rehashing.
             if (!this.indexEntries.size) {

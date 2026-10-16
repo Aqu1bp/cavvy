@@ -76,6 +76,54 @@ function expectPrivate(root: string) {
 }
 
 describe("per-turn snapshots", () => {
+    test("the object quota degrades capture gracefully and survives reopening", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        await snapshots.begin(1, "saved");
+        await snapshots.end();
+        const objects = objectsDir(dir);
+        const bytes = () => Object.values(inventory(objects)).reduce((total, value) => total + (value === "directory" ? 0 : Buffer.from(value, "base64").length), 0);
+        const used = bytes();
+        const limited = new TurnSnapshots(dir, cwd, { maxStoreBytes: used });
+        await limited.begin(2, "fits existing objects");
+        expect(limited.list()[1]!.start.incomplete).toBe(false);
+        write(cwd, "a.txt", "a new version that needs another blob\n");
+        await limited.end();
+        const failed = limited.list()[1]!;
+        expect(failed.end!.incomplete).toBe(true);
+        expect(failed.end!.tree).toBeUndefined();
+        expect(failed.end!.notes.join(" ")).toContain("Snapshot storage limit reached");
+        expect(bytes()).toBe(used);
+        const reopened = new TurnSnapshots(dir, cwd, { maxStoreBytes: used });
+        expect(reopened.list()[1]!.end!.incomplete).toBe(true);
+        await reopened.begin(3, "still full");
+        expect(reopened.list()[2]!.start.notes.join(" ")).toContain("Snapshot storage limit reached");
+        expect(bytes()).toBe(used);
+        expect((await reopened.changes({ scope: "turn", turnId: 1 })).files).toEqual([]);
+        expect((await reopened.changes({ scope: "turn", turnId: 2 })).incomplete).toBe(true);
+    });
+
+    test("tree objects and blobs left by failed captures count toward the quota", async () => {
+        const { cwd, dir } = setup({ "a.txt": "before\n" });
+        // A loose blob fits, but its containing tree does not.
+        const limited = new TurnSnapshots(dir, cwd, { maxStoreBytes: 32 });
+        await limited.begin(1, "tree exceeds quota");
+        expect(limited.list()[0]!.start.incomplete).toBe(true);
+        expect(limited.list()[0]!.start.notes.join(" ")).toContain("Snapshot storage limit reached");
+        const before = inventory(objectsDir(dir));
+        const sizes = Object.values(before).filter((v) => v !== "directory").map((v) => Buffer.from(v, "base64").length);
+        expect(sizes.length).toBe(1);
+        expect(sizes.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(32);
+        const reopened = new TurnSnapshots(dir, cwd, { maxStoreBytes: 32 });
+        await reopened.begin(2, "failed objects still count");
+        expect(reopened.list()[1]!.start.notes.join(" ")).toContain("Snapshot storage limit reached");
+        expect(inventory(objectsDir(dir))).toEqual(before);
+        write(cwd, "a.txt", "changed\n");
+        await reopened.end();
+        expect(reopened.list()[1]!.end!.incomplete).toBe(true);
+        expect(inventory(objectsDir(dir))).toEqual(before);
+        expectPrivate(dir);
+    });
+
     test("malformed journal records cannot supply paths or repository roots", async () => {
         const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
         await snapshots.begin(1, "valid");
