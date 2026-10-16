@@ -3,13 +3,13 @@
 // bottom; sending to one brings it back.
 
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
-import type { SessionSummary } from "@shared/protocol";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
+import type { RunMember, SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread } from "../state/app";
 import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
-import { ago, duration, monogram, since } from "../lib/format";
+import { ago, basename, duration, monogram, since } from "../lib/format";
 import { now } from "../lib/clock";
 import { isTauri, mod, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
@@ -127,6 +127,51 @@ function useRowMenu(more: () => HTMLElement | undefined) {
     return { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
 }
 
+/** A session on its own, or a run's sessions together (where its latest one would be), in the order they started. */
+type CardItem = { key: string; s: SessionSummary; run?: undefined };
+type RunItem = { key: string; run: RunMember; sessions: SessionSummary[] };
+type Item = CardItem | RunItem;
+
+function withRuns(list: SessionSummary[]): Item[] {
+    const members = new Map<string, SessionSummary[]>();
+    for (const s of list) if (s.run) members.set(s.run.id, [...(members.get(s.run.id) ?? []), s]);
+    const out: Item[] = [];
+    for (const s of list) {
+        if (!s.run) out.push({ key: s.id, s });
+        else if (members.has(s.run.id)) {
+            out.push({ key: `run:${s.run.id}`, run: s.run, sessions: members.get(s.run.id)!.sort((a, b) => a.createdAt - b.createdAt) });
+            members.delete(s.run.id);
+        }
+    }
+    return out;
+}
+
+function RunGroup(p: { run: RunMember; sessions: SessionSummary[] }) {
+    return (
+        <div class="run-group" role="group" aria-label={`${p.sessions.length} models: ${p.run.label}`}>
+            <div class="run-head" title={p.run.label}>
+                <Layers size={12} />
+                <span class="truncate">{p.run.label}</span>
+                <span class="run-count">{p.sessions.length}</span>
+            </div>
+            <For each={p.sessions}>{(s) => <SessionCard s={s} />}</For>
+        </div>
+    );
+}
+
+/** By key, so a card stays put (its menu, a rename under way) while the list changes around it. */
+function Items(p: { list: SessionSummary[]; limit?: number }) {
+    const items = createMemo(() => withRuns(p.list));
+    const byKey = createMemo(() => new Map(items().map((i) => [i.key, i])));
+    const keys = createMemo(() => items().slice(0, p.limit).map((i) => i.key));
+    // A key is always a run or always a session; what's in it is read anew as the list changes.
+    return (
+        <For each={keys()}>
+            {(key) => <Show when={byKey().get(key)}>{(item) => (key.startsWith("run:") ? <RunGroup run={(item() as RunItem).run} sessions={(item() as RunItem).sessions} /> : <SessionCard s={(item() as CardItem).s} />)}</Show>}
+        </For>
+    );
+}
+
 function SessionCard(p: { s: SessionSummary }) {
     const r = useRename(() => p.s);
     const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
@@ -157,7 +202,8 @@ function SessionCard(p: { s: SessionSummary }) {
                         <Show when={p.s.pinned}>
                             <Pin size={12} class="card-pin" />
                         </Show>
-                        {p.s.title}
+                        {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
+                        {p.s.run ? p.s.run.modelName : p.s.title}
                     </span>
                 </Show>
                 <span class="l3">
@@ -209,7 +255,7 @@ function SessionRow(p: { s: SessionSummary }) {
                     <Show when={p.s.pinned}>
                         <Pin size={12} class="slim-pin" />
                     </Show>
-                    <span class="truncate">{p.s.title}</span>
+                    <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                 </button>
                 <span class="slim-end">
                     <span class="t">{(now(), since(p.s.updatedAt))}</span>
@@ -278,15 +324,18 @@ export function Sidebar() {
     const pinnedFirst = (list: SessionSummary[]) => [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)];
     const cards = createMemo(() => (showArchived() ? [] : pinnedFirst(app.sessions.filter((s) => !s.settled))));
     const settledList = createMemo(() => (showArchived() ? [] : app.sessions.filter((s) => s.settled)));
+    const items = createMemo(() => withRuns(cards()));
+    // A run's sessions are in worktrees of their own, listed under the project the run started from.
     const byProject = createMemo(() => {
         const out: { name: string; cwd: string; sessions: SessionSummary[] }[] = [];
         const by = new Map<string, SessionSummary[]>();
         for (const s of cards()) {
-            if (!by.has(s.projectName)) {
-                by.set(s.projectName, []);
-                out.push({ name: s.projectName, cwd: s.cwd, sessions: by.get(s.projectName)! });
+            const name = s.run ? basename(s.run.cwd) : s.projectName;
+            if (!by.has(name)) {
+                by.set(name, []);
+                out.push({ name, cwd: s.run?.cwd ?? s.cwd, sessions: by.get(name)! });
             }
-            by.get(s.projectName)!.push(s);
+            by.get(name)!.push(s);
         }
         return out;
     });
@@ -352,11 +401,11 @@ export function Sidebar() {
                     when={prefs.groupBy === "project"}
                     fallback={
                         <>
-                            <For each={cards().slice(0, shown())}>{(s) => <SessionCard s={s} />}</For>
-                            <Show when={cards().length > shown()}>
+                            <Items list={cards()} limit={shown()} />
+                            <Show when={items().length > shown()}>
                                 <button class="slim more" onClick={() => setShown((n) => n + PAGE)}>
                                     <Plus size={14} />
-                                    <span>Show {Math.min(PAGE, cards().length - shown())} more</span>
+                                    <span>Show {Math.min(PAGE, items().length - shown())} more</span>
                                 </button>
                             </Show>
                         </>
@@ -372,7 +421,7 @@ export function Sidebar() {
                                         <Plus size={13} />
                                     </button>
                                 </div>
-                                <For each={g.sessions}>{(s) => <SessionCard s={s} />}</For>
+                                <Items list={g.sessions} />
                             </>
                         )}
                     </For>

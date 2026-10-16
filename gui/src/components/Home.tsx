@@ -135,6 +135,7 @@ export function Home() {
                 <Composer
                     variant="home"
                     autofocus
+                    compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository: each model works in a worktree of its own." : "Choose a project folder first." }}
                     placeholder={app.homeCwd ? "Describe a task, ask a question, or paste an error…" : "Choose a project folder to start"}
                     strip={
                         app.homeCwd ? (
