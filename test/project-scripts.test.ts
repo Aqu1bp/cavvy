@@ -5,7 +5,7 @@ import type { ServerEvent } from "../src/server/protocol";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { deleteScript, findScript, findSetupScript, forgetProjectKeys, listScripts, lockFiles, markUsed, projectFolder, projectKey, updateProject, reorderScripts, saveScript, scriptsFile, validateScript } = await import("../src/server/scripts");
+const { abandoned, deleteScript, findScript, findSetupScript, forgetProjectKeys, listScripts, lockFiles, markUsed, projectFolder, projectKey, updateProject, reorderScripts, saveScript, scriptsFile, takeOver, validateScript } = await import("../src/server/scripts");
 const { Terminals, Typist, isTerminalReply } = await import("../src/server/terminals");
 const { EarlyInput } = await import("../gui/src/lib/terminal");
 const { gitArgv, gitEnv } = await import("../src/util/git");
@@ -741,6 +741,54 @@ describe("second review", () => {
         }
     });
 
+    test("a lock that got the old one's inode is another owner's: the old owner writes nothing, and its lock is left alone", async () => {
+        resetStore();
+        const dir = folder();
+        await saveScript(dir, { name: "original", command: "echo original" });
+        const lock = `${scriptsFile()}.lock`;
+        const theirs = { version: 1, projects: { [dir]: { scripts: [{ id: "new-owner", name: "theirs", command: "echo theirs" }] } } };
+        try {
+            await expect(updateProject(dir, (p) => {
+                // A filesystem that reuses a freed inode (ext4) gives the new owner's lock the old one's. Written in
+                // place, this one has it on any filesystem: the same inode and device, another owner's token.
+                const ino = statSync(lock).ino;
+                writeFileSync(lock, "1:bbbbbbbb");
+                expect(statSync(lock).ino).toBe(ino);
+                write(theirs);
+                p.items = [];
+                return true;
+            })).rejects.toThrow("being saved by another Harness window");
+            expect(file()).toEqual(theirs);
+            expect(readFileSync(lock, "utf-8")).toBe("1:bbbbbbbb");
+        } finally {
+            rmSync(lock, { force: true });
+        }
+    });
+
+    test("taking over an abandoned lock leaves the one that has its inode since, which is a new owner's", async () => {
+        resetStore();
+        const lock = `${scriptsFile()}.lock`;
+        const dead = Bun.spawn(["true"]);
+        await dead.exited;
+        writeFileSync(lock, `${dead.pid}:aaaaaaaa`);
+        try {
+            const found = abandoned(lock)!;
+            expect(found).toBeDefined();
+            // Another process took it over and made its own, which got the freed inode (written in place here).
+            writeFileSync(lock, `${process.pid}:bbbbbbbb`);
+            expect(statSync(lock).ino).toBe(found.ino);
+            expect(takeOver(lock, found)).toBe(true);
+            expect(readFileSync(lock, "utf-8")).toBe(`${process.pid}:bbbbbbbb`);
+            expect(existsSync(`${lock}.takeover`)).toBe(false);
+            // The lock that was found abandoned is removed.
+            writeFileSync(lock, `${dead.pid}:cccccccc`);
+            expect(takeOver(lock, abandoned(lock)!)).toBe(true);
+            expect(existsSync(lock)).toBe(false);
+        } finally {
+            rmSync(lock, { force: true });
+        }
+    });
+
     test("the lock is never seen without a pid in it", async () => {
         resetStore();
         const dir = folder();
@@ -754,7 +802,7 @@ describe("second review", () => {
                 let body;
                 try { body = readFileSync(${JSON.stringify(lock)}, "utf-8"); } catch { continue; }
                 seen++;
-                if (!/^\\d+$/.test(body)) empty++;
+                if (!/^\\d+:[0-9a-f-]{36}$/.test(body)) empty++;
             }
             console.log(JSON.stringify({ seen, empty }));
         `], { stdout: "pipe" });
@@ -982,7 +1030,7 @@ describe("the lock, where there are no hard links", () => {
                 held = readFileSync(lock(), "utf-8");
                 return false;
             });
-            expect(held).toBe(String(process.pid));
+            expect(held).toMatch(new RegExp(`^${process.pid}:[0-9a-f-]{36}$`));
             await saveScript(dir, { name: "a", command: "echo a" });
             expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["a"]);
             expect(existsSync(lock())).toBe(false);
