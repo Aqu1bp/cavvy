@@ -93,11 +93,18 @@ test("one ring uses the higher share; card orders context, plan windows/account,
     } finally { m.dispose(); }
 });
 
-for (const plan of [undefined, 100]) test(`unknown size stays neutral with plan=${plan}; shared /context signal opens the same card`, () => {
+for (const plan of [undefined, 100]) test(`unknown size ${plan ? "still shows the plan" : "stays neutral"} with plan=${plan}; shared /context signal opens the same card`, () => {
     const m = mount({ unknown: true, plan });
     try {
-        expect(m.stroke().stroke).toBe("var(--fg-muted)");
-        expect(m.stroke()["stroke-dasharray"]).toStartWith("0 ");
+        if (plan === undefined) {
+            expect(m.stroke().stroke).toBe("var(--fg-muted)");
+            expect(m.stroke()["stroke-dasharray"]).toStartWith("0 ");
+        } else {
+            // Known plan usage must not disappear just because context size is unknown (e.g. on Home).
+            const circumference = 2 * Math.PI * (18 - 2.4) / 2;
+            expect(m.stroke().stroke).toBe("var(--danger)");
+            expect(m.stroke()["stroke-dasharray"]).toBe(`${circumference} ${circumference}`);
+        }
         expect(m.trigger().props["aria-label"]).toContain("size not known yet");
         m.show();
         expect(text(m.root)).toContain("Not known yet: CLI reports");

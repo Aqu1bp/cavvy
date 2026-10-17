@@ -55,8 +55,9 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
         finally { setSwitching(false); }
     }
     const view = () => contextView(state(), open());
-    // Until the context size is known, an empty neutral ring avoids implying a measured share.
-    const urgency = () => view().pct === undefined ? 0 : Math.max(view().pct!, meter()?.reached ? 1 : (meter()?.top ?? 0) / 100);
+    // The more urgent of the two. With neither known (no context size, no plan
+    // report), the ring stays empty and neutral rather than implying a share.
+    const urgency = () => Math.max(view().pct ?? 0, meter()?.reached ? 1 : (meter()?.top ?? 0) / 100);
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
         meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}` : undefined,
