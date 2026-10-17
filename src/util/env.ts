@@ -10,7 +10,7 @@ import { secretEnvVarNames } from "../auth/credentials";
 export function childEnv(extra?: Record<string, string>): Record<string, string> {
     const env: Record<string, string> = {};
     // Account selectors belong only to their CLI, never to tools or hooks.
-    const secretNames = new Set([...secretEnvVarNames(), "CLAUDE_CONFIG_DIR", "CODEX_HOME"]);
+    const secretNames = new Set([...secretEnvVarNames(), "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]);
     const secretValues = new Set(knownSecrets());
     for (const [k, v] of Object.entries(process.env)) {
         if (v === undefined) continue;

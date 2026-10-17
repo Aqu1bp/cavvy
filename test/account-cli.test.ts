@@ -1,17 +1,17 @@
 // Fake CLIs only: account selection must never become the environment of tools or hooks.
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { chmodSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, linkSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const { home, cleanup } = isolate();
-const { saveAgentConfig, BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+const { saveAgentConfig, readAgentConfig, removeAgentConfig, BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 const { checkAgentCli, createBackend } = await import("../src/backends/index");
 const { claudePermissions } = await import("../src/backends/claude-code");
 const { childEnv } = await import("../src/util/env");
 const { runShell } = await import("../src/tools/bash");
 const { runHooks } = await import("../src/agent/hooks");
-const root = tempDir("account-cli-");
+const root = realpathSync(tempDir("account-cli-"));
 const log = join(root, "starts.jsonl");
 const originalClaude = process.env.CLAUDE_CONFIG_DIR;
 const originalCodex = process.env.CODEX_HOME;
@@ -58,7 +58,7 @@ test("each status child receives only its chosen CLI selector and no overriding 
     expect(process.env.CODEX_HOME).toBe(originalCodex);
 });
 
-test("Default adds no selector and preserves only its CLI's inherited behavior", async () => {
+test("Default preserves the user's inherited selectors", async () => {
     delete process.env.CLAUDE_CONFIG_DIR;
     delete process.env.CODEX_HOME;
     await checkAgentCli("claude-code");
@@ -69,14 +69,43 @@ test("Default adds no selector and preserves only its CLI's inherited behavior",
     await checkAgentCli("claude-code");
     await checkAgentCli("codex");
     expect(starts()[2]).toMatchObject({ claudeConfigDir: originalClaude });
-    expect(starts()[2].codexHome).toBeUndefined();
+    expect(starts()[2].codexHome).toBe(originalCodex);
     expect(starts()[3]).toMatchObject({ codexHome: originalCodex });
-    expect(starts()[3].claudeConfigDir).toBeUndefined();
+    expect(starts()[3].claudeConfigDir).toBe(originalClaude);
+});
+
+test("legacy accounts and changed default selectors cannot launch into Default's identity", async () => {
+    const { accountEnv } = await import("../src/providers/accounts");
+    const { loginCommand } = await import("../src/backends/account-login");
+    // These accounts were seeded directly in providers.json above, as if an older
+    // version had accepted them. A later environment change must fail closed too.
+    for (const [provider, key] of [["claude-code", "CLAUDE_CONFIG_DIR"], ["claude-code", "CLAUDE_SECURESTORAGE_CONFIG_DIR"], ["codex", "CODEX_HOME"]]) {
+        const previous = process.env[key!];
+        process.env[key!] = folder;
+        try {
+            expect(() => accountEnv(provider!, "personal")).toThrow(/default CLI folder/);
+            expect(() => loginCommand(provider!, "personal")).toThrow(/default CLI folder/);
+            await expect(checkAgentCli(provider!, undefined, "personal")).rejects.toThrow(/default CLI folder/);
+            saveAgentConfig(provider!, { defaultAccount: "personal" });
+            await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/default CLI folder/);
+            expect(existsSync(log)).toBe(false);
+            // Default still gets the user's exact selectors, even when they overlap.
+            const expected = Object.fromEntries(["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]]));
+            expect(accountEnv(provider!)).toEqual(expected);
+            await checkAgentCli(provider!, undefined, "default");
+            expect(starts()).toHaveLength(1);
+            rmSync(log);
+        } finally {
+            if (previous === undefined) delete process.env[key!]; else process.env[key!] = previous;
+            saveAgentConfig(provider!, { defaultAccount: "default" });
+        }
+    }
 });
 
 test("agent shell and hook environments cannot inherit or reintroduce account selectors", async () => {
-    const env = childEnv({ CLAUDE_CONFIG_DIR: folder, CODEX_HOME: folder, CLAUDE_CODE_OAUTH_TOKEN: "fake-override" });
+    const env = childEnv({ CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder, CODEX_HOME: folder, CLAUDE_CODE_OAUTH_TOKEN: "fake-override" });
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
     expect(env.CODEX_HOME).toBeUndefined();
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     const command = 'test -z "$CLAUDE_CONFIG_DIR" && test -z "$CODEX_HOME" && printf clean';
@@ -181,4 +210,133 @@ test("Codex fails closed if it cannot apply account protections, even with deleg
     const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
     expect(received.filter((message) => message.method === "thread/start")).toHaveLength(1);
     expect(received.some((message) => message.method === "turn/start")).toBe(false);
+});
+
+
+test("invalid persisted named folders fail before login, status or model spawns", async () => {
+    const { accountEnv } = await import("../src/providers/accounts");
+    const { readAgentConfig } = await import("../src/providers/registry");
+    const { loginCommand } = await import("../src/backends/account-login");
+    for (const provider of ["claude-code", "codex"]) {
+        for (const invalid of ["", "relative", "..", `${root}/../escape`]) {
+            saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder: invalid, managed: false }], defaultAccount: "personal" });
+            try {
+                expect(readAgentConfig(provider)?.accounts).toMatchObject([{ id: "personal", folder: invalid, invalid: true }]);
+                expect(() => accountEnv(provider, "personal")).toThrow(/Invalid account folder/);
+                expect(() => loginCommand(provider, "personal")).toThrow(/Invalid account folder/);
+                await expect(checkAgentCli(provider, undefined, "personal")).rejects.toThrow(/Invalid account folder/);
+                await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/Invalid account folder/);
+                expect(existsSync(log)).toBe(false);
+            } finally { saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder, managed: false }], defaultAccount: "default" }); }
+        }
+    }
+});
+
+test("persisted aliases are checked against Default and launch with the canonical validated path", async () => {
+    const { accountEnv } = await import("../src/providers/accounts");
+    const alias = join(root, "alias");
+    mkdirSync(folder, { recursive: true });
+    for (const provider of ["claude-code", "codex"]) {
+        const defaultFolder = provider === "codex" ? originalCodex! : originalClaude!;
+        for (const target of [defaultFolder, folder]) {
+            symlinkSync(target, alias);
+            saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder: alias, managed: false }] });
+            try {
+                if (target === defaultFolder) {
+                    expect(() => accountEnv(provider, "personal")).toThrow(/default CLI folder/);
+                    await expect(checkAgentCli(provider, undefined, "personal")).rejects.toThrow(/default CLI folder/);
+                    expect(existsSync(log)).toBe(false);
+                } else {
+                    const env = accountEnv(provider, "personal");
+                    expect(Object.values(env).every((v) => v === realpathSync(folder))).toBe(true);
+                }
+            } finally { rmSync(alias); saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder, managed: false }] }); }
+        }
+    }
+});
+
+for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) test(`Default rejects relative ${key} but preserves absolute, empty and unset values`, async () => {
+    const { accountEnv } = await import("../src/providers/accounts");
+    const { loginCommand } = await import("../src/backends/account-login");
+    const previous = process.env[key];
+    try {
+        for (const value of [undefined, "", `${root}//raw/./selector`]) {
+            if (value === undefined) delete process.env[key]; else process.env[key] = value;
+            for (const provider of ["claude-code", "codex"]) expect(accountEnv(provider)[key]).toBe(value);
+        }
+        process.env[key] = "relative/selector";
+        for (const provider of ["claude-code", "codex"]) {
+            expect(() => accountEnv(provider)).toThrow(new RegExp(`relative ${key}.*absolute path`));
+            expect(() => loginCommand(provider)).toThrow(/relative.*absolute path/);
+            await expect(checkAgentCli(provider)).rejects.toMatchObject({ code: "invalid" });
+            await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/relative.*absolute path/);
+        }
+        expect(existsSync(log)).toBe(false);
+    } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
+});
+
+for (const [provider, files] of [["claude-code", [".claude.json", ".credentials.json"]], ["codex", ["auth.json", "config.toml"]]] as const) {
+    for (const file of files) test(`${provider} checks linked ${file} at add and again before login, status and model launches`, async () => {
+        const { addAccount, accountEnv } = await import("../src/providers/accounts");
+        const { loginCommand } = await import("../src/backends/account-login");
+        const candidate = join(root, `${provider}-${file}`);
+        mkdirSync(candidate, { recursive: true });
+        const identity = join(candidate, file);
+        const target = join(root, "outside-identity");
+        writeFileSync(target, "fixture only");
+        const saved = [{ id: "personal", name: "Personal", folder, managed: false }];
+        try {
+            const shared = join(candidate, "shared-identity");
+            for (const kind of ["symlink", "dangling", "hardlink", "internal-link-to-hardlink"]) {
+                if (kind === "hardlink") linkSync(target, identity);
+                // An internal symlink whose target is a hard link to another identity.
+                else if (kind === "internal-link-to-hardlink") { linkSync(target, shared); symlinkSync(shared, identity); }
+                else symlinkSync(kind === "dangling" ? join(root, "missing-identity") : target, identity);
+                expect(() => addAccount(provider, { id: "linked", name: "Linked", folder: candidate })).toThrow(/outside|symlink|hard links/);
+                saveAgentConfig(provider, { accounts: [{ id: "linked", name: "Linked", folder: candidate, managed: false }], defaultAccount: "linked" });
+                expect(() => accountEnv(provider, "linked")).toThrow(/outside|symlink|hard links/);
+                expect(() => loginCommand(provider, "linked")).toThrow(/outside|symlink|hard links/);
+                await expect(checkAgentCli(provider, undefined, "linked")).rejects.toMatchObject({ code: "invalid" });
+                await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/outside|symlink|hard links/);
+                expect(existsSync(log)).toBe(false);
+                rmSync(identity);
+                rmSync(shared, { force: true });
+                saveAgentConfig(provider, { accounts: saved, defaultAccount: "default" });
+            }
+            const internal = join(candidate, "private-identity");
+            writeFileSync(internal, "fixture only");
+            symlinkSync(internal, identity);
+            const added = addAccount(provider, { id: "linked", name: "Linked", folder: candidate });
+            expect(accountEnv(provider, added.id)[provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"]).toBe(candidate);
+        } finally {
+            saveAgentConfig(provider, { accounts: saved, defaultAccount: "default" });
+            rmSync(candidate, { recursive: true, force: true });
+            rmSync(target, { force: true });
+        }
+    });
+}
+
+test("an invalid preferred account cannot reject other providers' model listings", async () => {
+    const { listAllModels } = await import("../src/providers/models");
+    const { readJson, writeJson } = await import("../src/config/settings");
+    const { paths } = await import("../src/config/paths");
+    const { listAccounts } = await import("../src/providers/accounts");
+    const savedCodex = readAgentConfig("codex");
+    const previousCache = existsSync(paths.modelCache()) ? readJson(paths.modelCache()) : undefined;
+    saveAgentConfig("claude-code", { accounts: [{ id: "invalid", name: "Invalid", folder: "relative", managed: false }], defaultAccount: "invalid" });
+    // A CLI provider's cache key needs no API key, so earlier key lookups in this process can't change it.
+    const codex = savedCodex ?? {};
+    if (!savedCodex) saveAgentConfig("codex", {});
+    const fp = `cli|${codex.path ?? ""}|${(codex.args ?? []).join("\0")}|${codex.defaultAccount ?? "default"}|${listAccounts("codex").find((a) => a.id === (codex.defaultAccount ?? "default"))!.folder}`;
+    writeJson(paths.modelCache(), { version: 3, providers: { codex: { fp, fetchedAt: Date.now(), models: [{ provider: "codex", id: "cached-fixture" }] } } });
+    try {
+        const listings = await listAllModels({ cachedOnly: true });
+        expect(listings.find((l) => l.provider.id === "claude-code")).toMatchObject({ status: "error", models: [], error: expect.stringContaining("Invalid account folder") });
+        expect(listings.find((l) => l.provider.id === "codex")).toMatchObject({ status: "cached", models: [{ id: "cached-fixture" }] });
+        expect(existsSync(log)).toBe(false);
+    } finally {
+        saveAgentConfig("claude-code", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }], defaultAccount: "default" });
+        if (!savedCodex) removeAgentConfig("codex");
+        if (previousCache === undefined) rmSync(paths.modelCache(), { force: true }); else writeJson(paths.modelCache(), previousCache);
+    }
 });

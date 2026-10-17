@@ -40,6 +40,24 @@ test("pointed folders are forgotten only and may never overlap any account", () 
     expect(() => removeAccount("codex", "default", account("codex").folder)).toThrow(/Default/);
 });
 
+test("a separate default Claude secure-storage directory cannot become a named account", () => {
+    const previous = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+    const secure = join(outside, "secure-storage");
+    const alias = join(outside, "secure-alias");
+    mkdirSync(secure); symlinkSync(secure, alias);
+    process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = secure;
+    try {
+        for (const provider of ["claude-code", "codex"]) {
+            for (const folder of [secure, alias, join(alias, "nested"), outside]) {
+                expect(() => addAccount(provider, { id: "collision", name: "Collision", folder })).toThrow(/default CLI folder/);
+            }
+        }
+    } finally {
+        if (previous === undefined) delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+        else process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = previous;
+    }
+});
+
 test("ids, names, paths, defaults, projects and aliases are validated", () => {
     for (const id of ["..", "a/b", "a;echo", "default", "x".repeat(49)]) expect(() => addAccount("codex", { id, name: "Name" })).toThrow();
     for (const name of ["", "A\nB", "A; echo", "x".repeat(65), "A..B"]) expect(() => addAccount("codex", { id: "badname", name })).toThrow();
@@ -67,7 +85,7 @@ test("deletion refuses replaced roots and never follows child symlinks", () => {
 });
 
 
-test("managed removal refuses projects on either side of the account, including aliases", () => {
+test("managed removal refuses projects at or below the account, including aliases", () => {
     const a = addAccount("codex", { id: "contains-project", name: "Contains project" });
     const project = join(a.folder, "project");
     mkdirSync(project);
@@ -75,10 +93,92 @@ test("managed removal refuses projects on either side of the account, including 
     writeFileSync(sentinel, "keep");
     const alias = join(outside, "nested-project-link");
     symlinkSync(project, alias);
-    for (const root of [project, alias, a.folder, iso.home]) {
+    for (const root of [project, alias, a.folder]) {
         expect(() => removeAccount("codex", a.id, a.folder, [root])).toThrow(/projects/);
         expect(existsSync(sentinel)).toBe(true);
         expect(account("codex", a.id).folder).toBe(a.folder);
     }
+    mkdirSync(join(a.folder, ".git"));
+    expect(() => removeAccount("codex", a.id, a.folder, [iso.home])).toThrow(/projects/);
+    expect(existsSync(sentinel)).toBe(true);
+    rmSync(join(a.folder, ".git"), { recursive: true });
     removeAccount("codex", a.id, a.folder);
+});
+
+test("invalid saved folders stay listed and preferred, fail selection, and remove metadata only", async () => {
+    const { accountEnv, accountFolders } = await import("../src/providers/accounts");
+    const { Engine } = await import("../src/server/engine");
+    const { Session } = await import("../src/agent/session");
+    const engine = new Engine({ startCwd: outside, listModels: async () => [] });
+    const client = { subs: new Set<string>(), send() {} };
+    const sentinel = join(outside, "metadata-only-sentinel");
+    writeFileSync(sentinel, "keep");
+    try {
+        for (const provider of ["claude-code", "codex"]) {
+            for (const folder of ["", "relative", `${outside}/../${outside.split("/").at(-1)}`, null, 42]) {
+                saveAgentConfig(provider, { path: "/nonexistent-harness-test-cli", accounts: [{ id: "broken", name: "Broken", folder: folder as any, managed: true }], defaultAccount: "broken" });
+                expect(readAgentConfig(provider)?.accounts).toMatchObject([{ id: "broken", invalid: true }]);
+                expect(defaultAccount(provider)).toBe("broken");
+                expect(() => account(provider, "broken")).toThrow(/Invalid account folder/);
+                expect(() => setDefaultAccount(provider, "broken")).toThrow(/Invalid account folder/);
+                expect(() => accountEnv(provider, "broken")).toThrow(/Invalid account folder/);
+                expect(() => accountFolders()).not.toThrow();
+                expect(await engine.handle(client, "providers.list", {})).toBeArray();
+                const listed = await engine.handle(client, "accounts.list", { provider, refresh: true });
+                expect(listed.find((a: any) => a.id === "broken")).toMatchObject({ invalid: true, description: expect.stringContaining("Invalid account folder") });
+                const saved = Session.create(outside);
+                expect(saved.accountId(provider)).toBe("broken");
+                const confirmedFolder = listAccounts(provider).find((a) => a.id === "broken")!.folder;
+                await engine.handle(client, "accounts.remove", { provider, id: "broken", confirmedFolder });
+                expect(defaultAccount(provider)).toBe("default");
+                expect(saved.accountId(provider)).toBe("broken");
+                expect(() => account(provider, saved.accountId(provider))).toThrow(/no longer exists/);
+                expect(existsSync(sentinel)).toBe(true);
+            }
+        }
+    } finally { await engine.stop(); }
+});
+
+test("Claude keychain collisions are rejected at add and every launch", async () => {
+    const { createHash } = await import("crypto");
+    const { accountEnv } = await import("../src/providers/accounts");
+    const one = "/private/tmp/harness-account-collision/26293";
+    const two = "/private/tmp/harness-account-collision/88046";
+    for (const raw of [one, two]) expect(createHash("sha256").update(raw).digest("hex").slice(0, 8)).toBe("b6f8ac42");
+    const secure = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+    const config = process.env.CLAUDE_CONFIG_DIR;
+    const accounts = readAgentConfig("claude-code")?.accounts ?? [];
+    const named = { id: "collision", name: "Collision", folder: two, managed: false };
+    try {
+        for (const source of ["secure", "config"]) {
+            if (source === "secure") process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = one;
+            else { delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR; process.env.CLAUDE_CONFIG_DIR = one; }
+            saveAgentConfig("claude-code", { accounts: [] });
+            expect(() => addAccount("claude-code", { id: named.id, name: named.name, folder: two })).toThrow(/keychain.*Default/);
+            saveAgentConfig("claude-code", { accounts: [named] });
+            expect(() => accountEnv("claude-code", named.id)).toThrow(/keychain.*Default/);
+        }
+        // A relative config-only selector also reserves its absolute hash.
+        delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+        const { relative } = await import("path");
+        process.env.CLAUDE_CONFIG_DIR = relative(process.cwd(), one);
+        expect(() => accountEnv("claude-code", named.id)).toThrow(/keychain.*Default/);
+        // Defined empty secure storage overrides config, reserving the unsuffixed service.
+        process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = "";
+        expect(accountEnv("claude-code", named.id).CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(two);
+        process.env.CLAUDE_CONFIG_DIR = config;
+        // Raw secure selectors are not resolved before hashing (one/. has another hash).
+        process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = one + "/.";
+        expect(accountEnv("claude-code", named.id).CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(two);
+        process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = secure;
+        const other = { id: "other", name: "Other", folder: one, managed: false };
+        saveAgentConfig("claude-code", { accounts: [other] });
+        expect(() => addAccount("claude-code", { id: named.id, name: named.name, folder: two })).toThrow(/separate keychain/);
+        saveAgentConfig("claude-code", { accounts: [other, named] });
+        for (const id of [other.id, named.id]) expect(() => accountEnv("claude-code", id)).toThrow(/separate keychain/);
+    } finally {
+        if (secure === undefined) delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR; else process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = secure;
+        if (config === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = config;
+        saveAgentConfig("claude-code", { accounts });
+    }
 });

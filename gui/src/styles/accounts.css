@@ -1,4 +1,29 @@
-.accounts { margin: 8px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.account-form, .account-row { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
-.account-form label, .account-path { flex-basis: 100%; overflow-wrap: anywhere; }
-.account-form input { width: 100%; }
+.accounts { margin-top: 12px; display: grid; gap: 10px; min-width: 0; }
+.account-toolbar, .account-actions, .account-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.account-toolbar { justify-content: space-between; }
+.account-help summary, .account-advanced summary { cursor: pointer; width: fit-content; }
+.account-help p { margin: 8px 0 0; line-height: 1.5; }
+.account-form { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.account-form label { font-size: 12px; font-weight: 500; }
+.account-form .input { width: 100%; min-width: 0; }
+.account-advanced { font-size: 12px; }
+.account-advanced label, .account-advanced .small, .account-advanced .account-error { display: block; margin-top: 8px; }
+.account-advanced input { margin-top: 6px; }
+.account-list { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.account-list:empty { display: none; }
+.account-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px; }
+.account-row + .account-row { border-top: 1px solid var(--border); }
+.account-identity { flex: 1; min-width: 0; }
+.account-title strong { font-size: 13px; overflow-wrap: anywhere; }
+.account-status { margin-top: 4px; overflow-wrap: anywhere; }
+.account-path { overflow-wrap: anywhere; }
+.account-rename { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.account-rename .input { flex: 1 1 160px; min-width: 0; }
+.account-error { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.account-rename .account-error { flex-basis: 100%; }
+.accounts summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+@media (max-width: 480px) {
+    .account-toolbar { align-items: flex-start; }
+    .account-form { padding: 10px; }
+    .account-title { align-items: flex-start; flex-direction: column; gap: 4px; }
+}
