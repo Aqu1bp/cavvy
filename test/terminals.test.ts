@@ -144,6 +144,20 @@ describe("embedded terminals", () => {
             await shells.stop();
         }
     }, 20_000);
+    test("a command's last output, written just before it exits, arrives before its exit", async () => {
+        // On Linux the PTY can still hold it when the process has exited: in CI, 5 of 300 such
+        // commands had lost it when its exit was reported, before the terminal waited for the PTY's end.
+        const shells = new Terminals();
+        try {
+            for (let i = 0; i < 100; i++) {
+                const owner = client();
+                shells.open(owner, `fast-${i}`, iso.home, 80, 24, { command: { argv: ["/bin/sh", "-c", "printf '__%s__' fast"], env: {} } });
+                await until(() => owner.events.some((e) => e.type === "terminal.exit"));
+                expect(owner.output()).toContain("__fast__");
+                shells.close(owner, `fast-${i}`);
+            }
+        } finally { await shells.stop(); }
+    }, 30_000);
     test("another window cannot write, resize or close; a connection without a window key closes its own shells only as it goes", async () => {
         const shells = new Terminals(); const owner = client(); const other = client();
         try {
