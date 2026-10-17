@@ -510,6 +510,17 @@ describe("Bash", () => {
             }
         });
 
+        test("worktree tests with numeric shell parameters run sandboxed, while path expansions still ask", () => {
+            for (const suffix of ["$?", "$#", "$$", "$$?", "$$$?"]) {
+                const cmd = `cd ${W}/.claude/worktrees/feature && bun test; echo "exit ${suffix}"`;
+                expect([suffix, auto(withSandbox(true), bash(cmd))]).toEqual([suffix, { behavior: "allow", sandbox: true, reason: "sandboxed" }]);
+            }
+            for (const suffix of ["ls $(echo ..)", "bun test; echo $!"]) {
+                const cmd = `cd ${W}/.claude/worktrees/feature && ${suffix}`;
+                expect(auto(withSandbox(true), bash(cmd))).toMatchObject({ behavior: "ask", reason: expect.stringContaining("harness or git configuration") });
+            }
+        });
+
         test.each(["rm build.log", "rm -rf dist", "git checkout -- src", "git stash drop", "git branch -D old", "find . -name '*.o' -delete", "ls | xargs rm", "python3 -c 'import shutil; shutil.rmtree(\"src\")'"])(
             "with a sandbox, %p still goes to the classifier, then runs sandboxed",
             (cmd) => {
@@ -742,10 +753,29 @@ describe("Bash", () => {
         for (const cmd of ["cat .env.example", "cat .env.dist", "cat x.env.example"]) expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "allow"]);
     });
 
+    test("numeric shell parameters don't make worktree commands config changes, but other expansions still do", async () => {
+        const { configTarget } = await import("../src/permissions/bash-safety");
+        for (const suffix of ["$?", "$#", "$$", "$$?", "$$$?", "$?$#$$", ".log$?"]) {
+            const cmd = `cd /tmp/r/.claude/worktrees/soak-json && bun test; echo "exit ${suffix}"`;
+            expect([suffix, configTarget(cmd)]).toEqual([suffix, undefined]);
+        }
+        for (const suffix of ["$!", "$?$#$$$!", "$VAR", "${?}", "${#}", "${VAR}", "$(echo ..)", "`echo ..`", "$@", "$*", ...Array.from({ length: 10 }, (_, i) => `$${i}`), "$-", "$_", "$$$VAR", "$$${?}", ".$$?", "../$?", ".*$?"]) {
+            const cmd = `cd .claude/worktrees/feature && bun test; echo ${suffix}`;
+            expect([suffix, configTarget(cmd)]).toEqual([suffix, "harness or git configuration"]);
+        }
+        expect(configTarget("cp /dev/null .claude/worktrees/x/.$!claude/settings.json")).toBe("harness or git configuration");
+        expect(configTarget("cd .claude/worktrees/feature && ls $(echo ..)")).toBeDefined();
+        for (const path of [".$!./.$!./settings.json", "$!..$!/settings.json", String.raw`\$$VAR/settings.json`]) {
+            const cmd = `rm .claude/worktrees/feature/${path}`;
+            expect([path, configTarget(cmd)]).toEqual([path, "harness or git configuration"]);
+        }
+    });
+
     test("an allowed program can't write the agent CLIs' config either, but can work in a Claude Code worktree", async () => {
         settings.permissions!.allow = ["Bash(cp:*)", "Bash(bun test:*)"];
         for (const cmd of [
             "cp x .claude/settings.json",
+            "cp /dev/null .claude/worktrees/x/.$!claude/settings.json",
             "cp x .codex/config.toml",
             "cp x ~/.claude/settings.json",
             "cp x .claude/worktrees/feature/.claude/settings.json",
@@ -775,6 +805,21 @@ describe("Bash", () => {
         configTarget(`git commit -m ${JSON.stringify("a:.".repeat(50000))}`);
         configTarget("cp " + ".claude/worktrees/x/a ".repeat(10000) + "out");
         expect(performance.now() - started).toBeLessThan(2000);
+    });
+
+    test("zsh continuations of numeric parameters still protect config from an allowed cp", async () => {
+        const { configTarget } = await import("../src/permissions/bash-safety");
+        settings.permissions!.allow = ["Bash(cp:*)"];
+        for (const parameter of ["$?", "$#", "$$"]) {
+            for (const suffix of [":h", "[1]:h", "{name}", "(name)"]) {
+                const segment = `.${parameter}${suffix}`;
+                const cmd = `cp /dev/null .claude/worktrees/x/${segment}/${segment}/settings.json`;
+                expect([cmd, configTarget(cmd)]).toEqual([cmd, "harness or git configuration"]);
+                expect([cmd, check(T("Bash"), bash(cmd))]).toEqual([cmd, expect.objectContaining({
+                    behavior: "ask", reason: expect.stringContaining("harness or git configuration"),
+                })]);
+            }
+        }
     });
 });
 

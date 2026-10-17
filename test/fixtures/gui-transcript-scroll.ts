@@ -8,18 +8,21 @@ import { anchoredTop, atBottom, restoredShown, positionCache, TURN_PAGE } from "
 // at the DOM boundary let these regressions run without listening on a socket.
 const frames = new Map<number, () => void>();
 let sequence = 0;
-const observers = new Set<() => void>();
+const observers = new Map<() => void, Set<Node>>();
 const raf = (fn: () => void) => { frames.set(++sequence, fn); return sequence; };
 const flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach((fn) => fn()); };
-const resize = () => observers.forEach((fn) => fn());
+const resize = (target?: Node) => observers.forEach((targets, fn) => { if (!target || targets.has(target)) fn(); });
 const cache = positionCache();
 let reduced = false;
 const prefs = { motion: "smooth" };
 let scrollBehavior: string | undefined;
+let scrollTarget = 0;
 let restoredOpen = false;
 let root = node("root");
 let top = 0;
 let scrollWrites = 0;
+let viewportHeight = 500;
+let deferSmooth = false;
 let partShift = 30;
 const turnHeights = new Map<string, number>();
 let omitPromptPart = false;
@@ -38,15 +41,15 @@ const decorate = (n: Node): any => Object.assign(n, {
     getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top, bottom: absolute(n) - top + height(n), height: height(n) }),
     querySelectorAll: (selector: string) => all(n).slice(1).filter((child) => matches(child, selector)),
     querySelector: (selector: string) => all(n).slice(1).find((child) => matches(child, selector)),
-    scrollTo: (options: any) => { scrollBehavior = options.behavior; (n as any).scrollTop = options.top; },
+    scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
     classList: { add() {}, remove() {} },
 });
 const create = (tag: string): any => {
     const n = decorate(renderer.createElement(tag));
     Object.defineProperties(n, {
         dataset: { get: () => ({ turn: n.props["data-turn"], find: n.props["data-find"] }) },
-        scrollTop: { get: () => top, set: (value) => { scrollWrites++; top = Math.max(0, Math.min(value, height(n) - 500)); } },
-        scrollHeight: { get: () => height(n) }, clientHeight: { get: () => 500 },
+        scrollTop: { get: () => top, set: (value) => { scrollWrites++; top = Math.max(0, Math.min(value, height(n) - viewportHeight)); } },
+        scrollHeight: { get: () => height(n) }, clientHeight: { get: () => viewportHeight },
     });
     return n;
 };
@@ -55,7 +58,11 @@ const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs,
     requestAnimationFrame: raf, cancelAnimationFrame: (id: number) => frames.delete(id),
-    ResizeObserver: class { constructor(private cb: () => void) {} observe() { observers.add(this.cb); } disconnect() { observers.delete(this.cb); } },
+    ResizeObserver: class {
+        constructor(private cb: () => void) {}
+        observe(target: Node) { if (!observers.has(this.cb)) observers.set(this.cb, new Set()); observers.get(this.cb)!.add(target); }
+        disconnect() { observers.delete(this.cb); }
+    },
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
     jumpTarget: jump, setJumpTarget: setJump, findOpen: () => false,
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
@@ -86,7 +93,61 @@ let dispose = mount(a);
 try {
     assert.equal(all(root).filter((n) => n.tag === "article").length, 40);
     assert.equal(top, 8050, "first visits follow the bottom");
+    viewportHeight = 240; resize(scroller());
+    assert.equal(top, 8310, "a pinned transcript follows a shorter scroller without content resizing");
+    assert.equal(button("jump"), undefined);
+    scroller().props.onScroll();
+    viewportHeight = 500; resize(scroller());
+    assert.equal(top, 8050, "a pinned transcript follows a taller scroller");
+    scroll(1200);
+    const anchorTop = turn("turn-10").getBoundingClientRect().top;
+    viewportHeight = 240; resize(scroller());
+    assert.equal(turn("turn-10").getBoundingClientRect().top, anchorTop, "resizing preserves an unstuck reader's anchor");
+    assert.ok(button("jump"), "observing the scroller must not enable following");
+    const anchorPartTop = turn("turn-10").children[0].getBoundingClientRect().top;
+    partShift += 12; resize(scroller());
+    assert.equal(turn("turn-10").children[0].getBoundingClientRect().top, anchorPartTop, "scroller resize restores the reading block after reflow");
+    partShift -= 12; viewportHeight = 500; resize(scroller());
+    deferSmooth = true;
+    button("jump").props.onClick();
+    assert.equal(scrollBehavior, "smooth");
+    const pendingWrites = scrollWrites;
+    viewportHeight = 240; resize(scroller());
+    assert.equal(scrollBehavior, "smooth", "resizing before the first scroll event keeps the jump smooth");
+    assert.equal(scrollWrites, pendingWrites);
+    scroll(1600); // A browser scroll event midway through the smooth jump.
+    const smoothWrites = scrollWrites;
+    viewportHeight = 180; resize(scroller());
+    assert.equal(scrollWrites, smoothWrites, "scroller resize must not cancel an in-flight smooth jump");
+    assert.equal(scrollTarget, 8370, "a jump retargets the new bottom when the scroller shrinks mid-flight");
+    scroll(scrollTarget - 30);
+    const nearBottomWrites = scrollWrites;
+    resize(scroller());
+    assert.equal(scrollBehavior, "smooth", "entering the following threshold must not snap the jump to its end");
+    assert.equal(scrollWrites, nearBottomWrites);
+    scroll(scrollTarget); resize(scroller());
+    assert.equal(button("jump"), undefined, "reaching the bottom resumes following");
+    deferSmooth = false;
+    viewportHeight = 500; resize(scroller());
+    assert.equal(scrollBehavior, "instant", "ordinary following resumes after the jump completes");
+    for (const input of ["onWheel", "onTouchStart", "onPointerDown", "onKeyDown"]) {
+        scroll(1200); deferSmooth = true;
+        button("jump").props.onClick();
+        scroller().props[input]();
+        const pendingInterruptedWrites = scrollWrites;
+        viewportHeight = 240; resize(scroller());
+        assert.equal(scrollWrites, pendingInterruptedWrites, `${input} cancels following before the first scroll event`);
+        scroll(1000);
+        const interruptedWrites = scrollWrites;
+        viewportHeight = 240; resize(scroller());
+        assert.equal(scrollWrites, interruptedWrites, `${input} interrupts the jump without resize pulling the reader back down`);
+        assert.ok(button("jump"));
+        viewportHeight = 500; resize(scroller());
+        deferSmooth = false;
+    }
     scroll(0);
+    resize(scroller());
+    assert.equal(top, 0, "a user scroll wins over following on resize");
     const before = turn("turn-5").getBoundingClientRect().top;
     button("earlier").props.onClick();
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "paging including button removal preserves the old turn");
@@ -122,9 +183,12 @@ try {
     button("jump").props.onClick();
     assert.equal(scrollBehavior, "instant", "app motion preference prevents smooth jumps");
     scroll(0);
+    prefs.motion = "smooth"; deferSmooth = true;
+    button("jump").props.onClick();
     setJump({ sessionId: "a", index: 2, seg: 0, query: "prompt", role: "user" });
     flush(); resize(); scroller().props.onScroll();
     assert.equal(turn("turn-2").getBoundingClientRect().top, 48, "explicit search navigation wins over saved position");
+    deferSmooth = false;
     resize();
     assert.equal(turn("turn-2").getBoundingClientRect().top, 48);
     scroll(0); setATurns(turns(131));

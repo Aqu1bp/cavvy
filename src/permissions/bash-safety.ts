@@ -570,7 +570,7 @@ const READ_ONLY_PROGRAMS = new Set([
 ]);
 
 const GIT_READ_ONLY = new Set([
-    "status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "blame", "describe", "shortlog", "reflog",
+    "status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "check-ignore", "blame", "describe", "shortlog", "reflog",
     "grep", "cat-file", "merge-base", "name-rev", "for-each-ref", "show-ref", "whatchanged", "count-objects", "version", "help",
 ]);
 
@@ -1729,12 +1729,26 @@ const WORKTREE = /\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/i
  * long command can't make it slow.
  */
 function climbs(text: string): boolean {
-    if (/[$`]/.test(text)) return true;
     for (const chunk of text.split(/[/\s'"]/)) {
-        const lastPattern = Math.max(chunk.lastIndexOf("*"), chunk.lastIndexOf("?"), chunk.lastIndexOf("["));
+        let dot = false;
+        let firstDot = false;
+        let boundary = true;
         for (let i = 0; i < chunk.length; i++) {
-            if (chunk[i] !== "." || (i > 0 && chunk[i - 1] !== "=" && chunk[i - 1] !== ":")) continue;
-            if (chunk[i + 1] === "." || i < lastPattern) return true;
+            const c = chunk[i]!;
+            if (c === "`") return true;
+            if (c === "$") {
+                // Only bare numeric parameters are safe: zsh's $?:h is ".".
+                // Conservatively reject modifiers, subscripts and nested forms.
+                // Consume the pair so $$? isn't scanned as $? again.
+                if (chunk[i - 1] === "\\" || !/[?#$]/.test(chunk[i + 1] ?? "") || /[:[({]/.test(chunk[i + 2] ?? "")) return true;
+                firstDot = boundary = false;
+                i++;
+                continue;
+            }
+            if ((dot && /[*?[]/.test(c)) || (firstDot && c === ".")) return true;
+            firstDot = boundary && c === ".";
+            dot ||= firstDot;
+            boundary = c === "=" || c === ":";
         }
     }
     return false;

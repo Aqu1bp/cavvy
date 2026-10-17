@@ -22,6 +22,7 @@ export function Transcript(p: { handle: SessionHandle }) {
     const [shown, setShown] = createSignal(restoredShown(p.handle.view.turns.map((t) => t.id), saved));
     let reading = saved?.anchor;
     let ready = false;
+    let smoothScroll = false;
     let frame = 0;
     const afterLayout = (fn: () => void) => {
         cancelAnimationFrame(frame);
@@ -41,7 +42,8 @@ export function Transcript(p: { handle: SessionHandle }) {
 
     const toBottom = (smooth = false) => {
         if (!scroller) return;
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth && prefs.motion !== "instant" && !matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "instant" });
+        smoothScroll = smooth && prefs.motion !== "instant" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: smoothScroll ? "smooth" : "instant" });
     };
 
     const capture = (): ScrollAnchor | undefined => {
@@ -79,10 +81,11 @@ export function Transcript(p: { handle: SessionHandle }) {
         if (!scroller || !content) return;
         const ro = new ResizeObserver(() => {
             if (!ready) return;
-            if (stick()) toBottom();
+            if (stick() || smoothScroll) toBottom(smoothScroll);
             else restore();
         });
         ro.observe(content);
+        ro.observe(scroller);
         onCleanup(() => ro.disconnect());
         afterLayout(() => {
             if (stick()) toBottom();
@@ -101,6 +104,7 @@ export function Transcript(p: { handle: SessionHandle }) {
 
     const earlier = () => {
         reading = capture();
+        smoothScroll = false;
         setStick(false);
         setShown((n) => n + PAGE);
         // Solid has inserted the page synchronously; compensate before paint.
@@ -108,6 +112,7 @@ export function Transcript(p: { handle: SessionHandle }) {
     };
     const toggleWork = (el: HTMLElement, toggle: () => void) => {
         const top = el.getBoundingClientRect().top;
+        smoothScroll = false;
         setStick(false);
         toggle();
         if (scroller) scroller.scrollTop = anchoredTop(scroller.scrollTop, el.getBoundingClientRect().top, top);
@@ -129,7 +134,14 @@ export function Transcript(p: { handle: SessionHandle }) {
 
     const onScroll = () => {
         if (!scroller || !ready) return;
+        if (scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1) smoothScroll = false;
         setStick(atBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight));
+        reading = capture();
+    };
+    const interruptJump = () => {
+        if (!smoothScroll) return;
+        smoothScroll = false;
+        setStick(false);
         reading = capture();
     };
 
@@ -145,6 +157,7 @@ export function Transcript(p: { handle: SessionHandle }) {
         reading = undefined; // Explicit navigation owns the next position.
         const need = turns().length - i;
         if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+        smoothScroll = false;
         setStick(false);
     };
 
@@ -182,7 +195,7 @@ export function Transcript(p: { handle: SessionHandle }) {
     return (
         <div class="transcript-wrap">
             <div class="transcript-fade" aria-hidden="true" />
-            <div class="transcript" ref={scroller} onScroll={onScroll} aria-label="Conversation">
+            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={interruptJump} onTouchStart={interruptJump} onPointerDown={interruptJump} onKeyDown={interruptJump} aria-label="Conversation">
                 <div class="transcript-col" ref={content}>
                     <Show when={p.handle.view.state.forkOf}>
                         {(f) => (

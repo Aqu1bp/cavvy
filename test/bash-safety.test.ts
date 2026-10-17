@@ -125,6 +125,12 @@ describe("isReadOnlyCommand: allowed", () => {
         "git status",
         "git log --oneline -5",
         "git diff HEAD~1 -- src",
+        "git check-ignore dist/cli.js",
+        "git check-ignore -q dist/cli.js",
+        "git check-ignore -v -n --no-index dist/cli.js",
+        "git check-ignore --verbose --non-matching --stdin -z",
+        "git check-ignore --quiet dist/cli.js",
+        "git -C /tmp/repo --no-pager check-ignore -vn dist/cli.js",
         "git show HEAD:package.json",
         "git branch",
         "git branch -a",
@@ -184,6 +190,9 @@ describe("isReadOnlyCommand: not read-only", () => {
     test.each([
         // compound commands with a write anywhere
         "git status && rm x",
+        "git check-ignore --output=out dist/cli.js",
+        "git -c core.pager=evil check-ignore dist/cli.js",
+        "git check-ignore dist/cli.js > out",
         "ls; rm -rf x",
         "ls\nrm x",
         "ls #c\nrm x",

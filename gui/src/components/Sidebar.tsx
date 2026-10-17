@@ -5,7 +5,7 @@
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { activate, app, handleFor, isUnread } from "../state/app";
+import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
@@ -439,8 +439,13 @@ export function Sidebar() {
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><Plus size={14} /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
-                <Show when={!all().length || (showArchived() && !sidebarIds(layout()).length)}>
-                    <div class="side-empty">{showArchived() ? "Nothing archived." : app.conn === "open" ? "No sessions yet. Start one from the composer." : "Connecting…"}</div>
+                <Show when={app.sessionsError || !all().length || (showArchived() && !sidebarIds(layout()).length)}>
+                    <div class="side-empty">
+                        <Show when={app.sessionsError} fallback={!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived." : "No sessions yet. Start one from the composer."}>
+                            <div>Couldn't load sessions.</div>
+                            <button class="ghost-btn" onClick={() => void refreshSessions().catch(reportError)}>Retry</button>
+                        </Show>
+                    </div>
                 </Show>
             </nav>
 
