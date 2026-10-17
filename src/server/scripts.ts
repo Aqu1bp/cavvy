@@ -346,9 +346,13 @@ const lockBody = (token: string) => `${process.pid}:${token}`;
 
 /** The lock, when it's been left behind: its holder has gone, or it's too old to be anyone's. */
 export function abandoned(lock: string): Found | undefined {
+    let fd: number | undefined;
     try {
-        const st = statSync(lock);
-        const raw = readFileSync(lock, "utf-8");
+        // One descriptor for the age, the inode and the body: by path, a lock replaced between two of them
+        // (on the old one's inode, say) would pair its body with the old one's age, and be found abandoned.
+        fd = lockFiles.open(lock, "r");
+        const st = fstatSync(fd);
+        const raw = readFileSync(fd, "utf-8");
         const found = { ino: st.ino, body: raw };
         const age = Date.now() - st.mtimeMs;
         const pid = /^(\d+)(?::[0-9a-f-]+)?$/.exec(raw.trim())?.[1];
@@ -364,6 +368,8 @@ export function abandoned(lock: string): Found | undefined {
     } catch {
         // released meanwhile
         return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
     }
 }
 

@@ -789,6 +789,34 @@ describe("second review", () => {
         }
     });
 
+    test("a lock's age, inode and body are read from one open file, so a lock replaced meanwhile isn't found abandoned", async () => {
+        resetStore();
+        const lock = `${scriptsFile()}.lock`;
+        // Held by a live process but over a minute old: abandoned, as far as its age says.
+        writeFileSync(lock, `${process.pid}:aaaaaaaa`);
+        const old = new Date(Date.now() - 120_000);
+        utimesSync(lock, old, old);
+        const real = lockFiles.open;
+        let opened = 0;
+        lockFiles.open = ((path: string, flags: string, mode?: number) => {
+            const fd = real(path, flags, mode);
+            if (path === lock) {
+                opened++;
+                // Another owner's lock takes its place on the same inode (written in place) just after it's opened.
+                writeFileSync(lock, `${process.pid}:bbbbbbbb`);
+            }
+            return fd;
+        }) as typeof lockFiles.open;
+        try {
+            // Its age and body are the new lock's, not the old age with the new body.
+            expect(abandoned(lock)).toBeUndefined();
+            expect(opened).toBe(1);
+        } finally {
+            lockFiles.open = real;
+            rmSync(lock, { force: true });
+        }
+    });
+
     test("the lock is never seen without a pid in it", async () => {
         resetStore();
         const dir = folder();
