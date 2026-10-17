@@ -40,6 +40,24 @@ test("pointed folders are forgotten only and may never overlap any account", () 
     expect(() => removeAccount("codex", "default", account("codex").folder)).toThrow(/Default/);
 });
 
+test("a separate default Claude secure-storage directory cannot become a named account", () => {
+    const previous = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+    const secure = join(outside, "secure-storage");
+    const alias = join(outside, "secure-alias");
+    mkdirSync(secure); symlinkSync(secure, alias);
+    process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = secure;
+    try {
+        for (const provider of ["claude-code", "codex"]) {
+            for (const folder of [secure, alias, join(alias, "nested"), outside]) {
+                expect(() => addAccount(provider, { id: "collision", name: "Collision", folder })).toThrow(/default CLI folder/);
+            }
+        }
+    } finally {
+        if (previous === undefined) delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+        else process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = previous;
+    }
+});
+
 test("ids, names, paths, defaults, projects and aliases are validated", () => {
     for (const id of ["..", "a/b", "a;echo", "default", "x".repeat(49)]) expect(() => addAccount("codex", { id, name: "Name" })).toThrow();
     for (const name of ["", "A\nB", "A; echo", "x".repeat(65), "A..B"]) expect(() => addAccount("codex", { id: "badname", name })).toThrow();

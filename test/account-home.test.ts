@@ -36,13 +36,19 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
             const managed = addAccount(provider, { id: "desktop", name: "Desktop" }, roots);
             removeAccount(provider, managed.id, managed.folder, roots);
             expect(existsSync(managed.folder)).toBe(false);
-            const external = addAccount(provider, { id: "external", name: "External", folder: join(home, `${provider}-cli-home`) }, roots);
-            removeAccount(provider, external.id, external.folder, roots);
+            const external = addAccount(provider, { id: "external", name: "External", folder: join(home, `${provider}-cli-home`) }, [home]);
+            removeAccount(provider, external.id, external.folder, [home]);
             expect(existsSync(external.folder)).toBe(true);
 
             const repo = join(home, `${provider}-repo`);
             mkdirSync(repo); writeFileSync(join(repo, ".git"), "gitdir: elsewhere");
             const project = join(home, `${provider}-project`); mkdirSync(project);
+            process.env.HARNESS_HOME = join(project, "state");
+            expect(() => addAccount(provider, { id: "chosen", name: "Chosen", folder: join(project, "cli-home") }, [project])).toThrow(/projects/);
+            const managedInProject = addAccount(provider, { id: "managed", name: "Managed" }, [project]);
+            removeAccount(provider, managedInProject.id, managedInProject.folder, [project]);
+            expect(existsSync(managedInProject.folder)).toBe(false);
+            process.env.HARNESS_HOME = join(home, ".harness");
             const alias = join(home, `${provider}-repo-link`); symlinkSync(repo, alias);
             for (const folder of [repo, join(repo, "account"), join(alias, "account"), project, join(project, "account")]) {
                 expect(() => addAccount(provider, { id: "refused", name: "Refused", folder }, [...roots, project])).toThrow(/projects/);

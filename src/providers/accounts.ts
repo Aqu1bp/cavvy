@@ -47,12 +47,24 @@ export function defaultAccount(provider: string): string {
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";
 }
-/** Only the matching CLI gets an inherited selector. Generic children never get either. */
+/** Fresh overrides for a CLI child; Default preserves the user's selectors verbatim. */
 export function accountEnv(provider: string, id = "default"): Record<string, string> {
     const a = account(provider, id);
-    const key = selector(provider);
-    const value = id === "default" ? process.env[key] : a.folder;
-    return value ? { [key]: value } : {};
+    if (id === "default") {
+        const env: Record<string, string> = {};
+        for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
+            if (process.env[key] !== undefined) env[key] = process.env[key]!;
+        }
+        return env;
+    }
+    // Recheck persisted accounts too: the user's default selectors (or symlinks)
+    // may have changed since this account was added.
+    separateFromDefault(accountRealPath(resolve(a.folder)));
+    // Secure storage can independently override Claude's config directory, even
+    // with an empty value (which selects the user's default keychain entry).
+    return provider === "claude-code"
+        ? { CLAUDE_CONFIG_DIR: a.folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: a.folder }
+        : { CODEX_HOME: a.folder };
 }
 export function hasNamedAccounts(): boolean {
     return ACCOUNT_PROVIDERS.some((p) => readAgentConfig(p)?.accounts?.length);
@@ -77,7 +89,7 @@ function projectFolder(folder: string, roots: string[], managed: boolean): boole
     if (roots.some((root) => {
         const real = accountRealPath(resolve(root));
         // Desktop starts in home, and sessions may also use a broad parent folder.
-        if (real === home || inside(harness, real)) return false;
+        if (real === home || (managed && inside(harness, real))) return false;
         // Harness owns this dedicated folder, even when its home is in a project.
         // Still protect projects opened at or below it before recursive removal.
         if (managed && real !== folder && inside(folder, real)) return false;
@@ -89,15 +101,23 @@ function projectFolder(folder: string, roots: string[], managed: boolean): boole
         if (managed || dirname(d) === d) return false;
     }
 }
+function separateFromDefault(folder: string): void {
+    for (const p of ACCOUNT_PROVIDERS) {
+        // Claude can keep its default keychain identity under a separate selector.
+        // Reusing that directory would make a named account share the user's login.
+        const secureStorage = p === "claude-code" ? process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR : undefined;
+        for (const base of [normalFolder(p), defaultFolder(p), ...(secureStorage ? [secureStorage] : [])]) {
+            const reserved = accountRealPath(resolve(base));
+            if (inside(folder, reserved) || inside(reserved, folder)) throw new RpcError("The default CLI folder cannot be an account folder", "invalid");
+        }
+    }
+}
 function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }, managed = false): string {
     if (typeof folder !== "string" || folder.length > 1024 || !isAbsolute(folder) || !/^[a-zA-Z0-9 /_.-]+$/.test(folder) || folder.split(/[\\/]/).includes("..")) throw new RpcError("Use an absolute account folder with plain characters and no '..'", "invalid");
     const real = accountRealPath(resolve(folder));
     if (real === sep || real === accountRealPath(homedir())) throw new RpcError("Choose a dedicated account folder", "invalid");
+    separateFromDefault(real);
     for (const p of ACCOUNT_PROVIDERS) {
-        for (const base of [normalFolder(p), defaultFolder(p)]) {
-            const reserved = accountRealPath(resolve(base));
-            if (inside(real, reserved) || inside(reserved, real)) throw new RpcError("The default CLI folder cannot be an account folder", "invalid");
-        }
         for (const a of readAgentConfig(p)?.accounts ?? []) {
             if (p === exclude?.provider && a.id === exclude.id) continue;
             const other = accountRealPath(a.folder);

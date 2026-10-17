@@ -1,6 +1,6 @@
 // Fake CLIs only: account selection must never become the environment of tools or hooks.
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { chmodSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
@@ -58,7 +58,7 @@ test("each status child receives only its chosen CLI selector and no overriding 
     expect(process.env.CODEX_HOME).toBe(originalCodex);
 });
 
-test("Default adds no selector and preserves only its CLI's inherited behavior", async () => {
+test("Default preserves the user's inherited selectors", async () => {
     delete process.env.CLAUDE_CONFIG_DIR;
     delete process.env.CODEX_HOME;
     await checkAgentCli("claude-code");
@@ -69,14 +69,43 @@ test("Default adds no selector and preserves only its CLI's inherited behavior",
     await checkAgentCli("claude-code");
     await checkAgentCli("codex");
     expect(starts()[2]).toMatchObject({ claudeConfigDir: originalClaude });
-    expect(starts()[2].codexHome).toBeUndefined();
+    expect(starts()[2].codexHome).toBe(originalCodex);
     expect(starts()[3]).toMatchObject({ codexHome: originalCodex });
-    expect(starts()[3].claudeConfigDir).toBeUndefined();
+    expect(starts()[3].claudeConfigDir).toBe(originalClaude);
+});
+
+test("legacy accounts and changed default selectors cannot launch into Default's identity", async () => {
+    const { accountEnv } = await import("../src/providers/accounts");
+    const { loginCommand } = await import("../src/backends/account-login");
+    // These accounts were seeded directly in providers.json above, as if an older
+    // version had accepted them. A later environment change must fail closed too.
+    for (const [provider, key] of [["claude-code", "CLAUDE_CONFIG_DIR"], ["claude-code", "CLAUDE_SECURESTORAGE_CONFIG_DIR"], ["codex", "CODEX_HOME"]]) {
+        const previous = process.env[key!];
+        process.env[key!] = folder;
+        try {
+            expect(() => accountEnv(provider!, "personal")).toThrow(/default CLI folder/);
+            expect(() => loginCommand(provider!, "personal")).toThrow(/default CLI folder/);
+            await expect(checkAgentCli(provider!, undefined, "personal")).rejects.toThrow(/default CLI folder/);
+            saveAgentConfig(provider!, { defaultAccount: "personal" });
+            await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/default CLI folder/);
+            expect(existsSync(log)).toBe(false);
+            // Default still gets the user's exact selectors, even when they overlap.
+            const expected = Object.fromEntries(["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]]));
+            expect(accountEnv(provider!)).toEqual(expected);
+            await checkAgentCli(provider!, undefined, "default");
+            expect(starts()).toHaveLength(1);
+            rmSync(log);
+        } finally {
+            if (previous === undefined) delete process.env[key!]; else process.env[key!] = previous;
+            saveAgentConfig(provider!, { defaultAccount: "default" });
+        }
+    }
 });
 
 test("agent shell and hook environments cannot inherit or reintroduce account selectors", async () => {
-    const env = childEnv({ CLAUDE_CONFIG_DIR: folder, CODEX_HOME: folder, CLAUDE_CODE_OAUTH_TOKEN: "fake-override" });
+    const env = childEnv({ CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder, CODEX_HOME: folder, CLAUDE_CODE_OAUTH_TOKEN: "fake-override" });
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
     expect(env.CODEX_HOME).toBeUndefined();
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     const command = 'test -z "$CLAUDE_CONFIG_DIR" && test -z "$CODEX_HOME" && printf clean';
