@@ -144,6 +144,16 @@ describe("embedded terminals", () => {
             await shells.stop();
         }
     }, 20_000);
+    test("a Ctrl-C the window sends as the terminal opens, before the shell has started, doesn't stop the shell", async () => {
+        const shells = new Terminals(); const owner = client();
+        try {
+            shells.open(owner, "early-ctrl-c", iso.home, 80, 24);
+            shells.write(owner, "early-ctrl-c", "\x03");
+            shells.write(owner, "early-ctrl-c", "printf '__%s__\\n' alive\n");
+            await until(() => owner.output().includes("__alive__\r\n"));
+            expect(owner.events.some((e) => e.type === "terminal.exit")).toBe(false);
+        } finally { await shells.stop(); }
+    });
     test("a command's last output, written just before it exits, arrives before its exit", async () => {
         // On Linux the PTY can still hold it when the process has exited: in CI, 5 of 300 such
         // commands had lost it when its exit was reported, before the terminal waited for the PTY's end.
