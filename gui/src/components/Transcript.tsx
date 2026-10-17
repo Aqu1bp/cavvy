@@ -42,8 +42,12 @@ export function Transcript(p: { handle: SessionHandle }) {
 
     const toBottom = (smooth = false) => {
         if (!scroller) return;
+        const height = scroller.scrollHeight;
+        // ResizeObserver can report both content and viewport without any new
+        // scroll range. Avoid redundant writes (and restarting a smooth jump).
+        if (Math.abs(Math.max(0, height - scroller.clientHeight) - scroller.scrollTop) <= 0.5) return;
         smoothScroll = smooth && prefs.motion !== "instant" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior: smoothScroll ? "smooth" : "instant" });
+        scroller.scrollTo({ top: height, behavior: smoothScroll ? "smooth" : "instant" });
     };
 
     const capture = (): ScrollAnchor | undefined => {

@@ -10,6 +10,7 @@ export default defineConfig({
     base: "./",
     resolve: { alias: { "@shared": shared } },
     clearScreen: false,
+    worker: { format: "es" },
     server: {
         port: 5173,
         strictPort: true,

@@ -200,7 +200,8 @@ export type Segment = { kind: "html"; key: string; html: string; answers?: [stri
 /** Renders one reply; keeps finished blocks between calls. */
 export class MarkdownRenderer {
     private html = new Map<string, Segment>();
-    private lexed?: { text: string; tokens: Token[] & { links?: unknown } };
+    private lexed?: { text: string; tokens: Token[] & { links?: unknown }; tailIndex: number; tailStart: number };
+    private references = "";
     /** Paths in the last render that `lookup` didn't know. */
     pending = new Set<string>();
     /** The last render looked up paths, so a change in what's known may change it. */
@@ -222,10 +223,47 @@ export class MarkdownRenderer {
         this.watching = false;
         this.paths = new Set();
         let tokens: Token[] & { links?: unknown };
+        let relexedFrom = Infinity;
         try {
             // Rendered again with the same text when answers arrive: lex it once.
-            tokens = this.lexed?.text === text ? this.lexed.tokens : md.lexer(text);
-            this.lexed = { text, tokens };
+            const previous = this.lexed;
+            if (previous?.text === text) tokens = previous.tokens;
+            else {
+                // Freeze only across a blank line after a closed, stable block.
+                // Adjacent blocks can change classification as markers arrive
+                // (e.g. '> b\n--'), and lists/quotes can absorb lazy continuations.
+                // Reference definitions can change earlier inline tokens, so any
+                // '[' takes the conservative full-lexer path. Normalized source
+                // (e.g. CRLF) and replacements also use the full lexer.
+                const append = previous && previous.tailStart >= 0 && text.startsWith(previous.text) && !text.includes("[");
+                relexedFrom = append ? previous.tailIndex : 0;
+                const tail = md.lexer(append ? text.slice(previous.tailStart) : text);
+                tokens = append ? Object.assign([...previous.tokens.slice(0, previous.tailIndex), ...tail], { links: tail.links }) : tail;
+                const raw = tokens.map((t) => t.raw).join("");
+                let tailIndex = 0;
+                let tailStart = raw === text ? 0 : -1;
+                let offset = 0;
+                let stable = false;
+                // Leave at least the final non-space block mutable, even if it
+                // currently ends in a blank line. Indented code, lists, quotes
+                // and HTML remain mutable until a later stable block closes.
+                let last = tokens.length - 1;
+                while (last > 0 && tokens[last]?.type === "space") last--;
+                for (let i = 0; tailStart >= 0 && i < last; i++) {
+                    const t = tokens[i]!;
+                    offset += t.raw.length;
+                    if (t.type !== "space") stable = t.type === "paragraph" || t.type === "heading" || t.type === "hr" || (t.type === "code" && (t as Tokens.Code).codeBlockStyle !== "indented");
+                    if (stable && raw.slice(offset - 2, offset) === "\n\n") {
+                        tailIndex = i + 1;
+                        tailStart = offset;
+                    }
+                }
+                this.lexed = { text, tokens, tailIndex, tailStart };
+            }
+            // A late reference definition must also invalidate cached HTML.
+            const references = JSON.stringify(tokens.links ?? {});
+            if (references !== this.references) this.html.clear();
+            this.references = references;
         } catch {
             return [{ kind: "html", key: "err", html: `<p>${escapeHtml(text)}</p>` }];
         }
@@ -234,21 +272,25 @@ export class MarkdownRenderer {
         tokens.forEach((t, i) => {
             if (t.type === "space" || t.type === "def") return;
             const last = i === tokens.length - 1;
+            // The same source can change block kind as nearby markers arrive.
+            const cacheKey = `${t.type}\0${t.raw}`;
             if (t.type === "code" && (t as Tokens.Code).codeBlockStyle !== "indented") {
                 const c = t as Tokens.Code;
                 const open = streaming && last && !/(`{3,}|~{3,})\s*$/.test(c.raw.trimEnd());
                 const key = `c${i}`;
-                const prev = this.html.get(c.raw);
+                const prev = this.html.get(cacheKey);
                 const seg: Segment = prev?.kind === "code" && prev.open === open ? prev : { kind: "code", key, lang: (c.lang ?? "").split(/\s/)[0] ?? "", code: c.text, open };
-                next.set(c.raw, seg);
+                next.set(cacheKey, seg);
                 out.push(seg);
                 return;
             }
-            const cached = this.html.get(t.raw);
+            const cached = this.html.get(cacheKey);
             const stale = lookup && cached?.kind === "html" && cached.answers?.some(([p, a]) => lookup(p) !== a);
-            if (cached && !stale) {
+            // Mutable tokens can change meaning without changing raw source
+            // (e.g. indentation in a paragraph followed by a list marker).
+            if (cached && !stale && i < relexedFrom) {
                 if (cached.kind === "html") this.note(cached.answers ?? []);
-                next.set(t.raw, cached);
+                next.set(cacheKey, cached);
                 out.push(cached);
                 return;
             }
@@ -266,12 +308,12 @@ export class MarkdownRenderer {
             // Same HTML as before (nothing new known yet): same object, so the DOM stays.
             if (cached?.kind === "html" && cached.html === html) {
                 cached.answers = [...answers];
-                next.set(t.raw, cached);
+                next.set(cacheKey, cached);
                 out.push(cached);
                 return;
             }
             const seg: Segment = { kind: "html", key: `h${i}:${t.raw.length}`, html, answers: [...answers] };
-            next.set(t.raw, seg);
+            next.set(cacheKey, seg);
             out.push(seg);
         });
         this.html = next;

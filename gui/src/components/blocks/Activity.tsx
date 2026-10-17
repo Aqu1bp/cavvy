@@ -46,6 +46,13 @@ export type Item =
 export function groupBlocks(blocks: Block[]): Item[] {
     const out: Item[] = [];
     let group: Extract<Item, { kind: "activity" }> | undefined;
+    // One reverse pass avoids slicing/scanning the remaining turn for every thought.
+    const nextKind: (Block["t"] | undefined)[] = new Array(blocks.length);
+    let next: Block["t"] | undefined;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+        nextKind[i] = next;
+        if (blocks[i]!.t !== "thinking") next = blocks[i]!.t;
+    }
     blocks.forEach((b, i) => {
         if (b.t === "tool") {
             if (!group) out.push((group = { kind: "activity", id: `g-${b.id}`, tools: [], steps: [] }));
@@ -55,8 +62,7 @@ export function groupBlocks(blocks: Block[]): Item[] {
         }
         if (b.t === "thinking") {
             // Thinking between two tool calls belongs to the work, not the reply.
-            const next = blocks.slice(i + 1).find((x) => x.t !== "thinking");
-            if (group && next?.t === "tool") {
+            if (group && nextKind[i] === "tool") {
                 group.steps.push(b);
                 return;
             }
@@ -168,6 +174,7 @@ function summarize(tools: ToolBlock[]): string {
     let agents = 0;
     let mcp = 0;
     const misc: string[] = [];
+    let todos = false;
     /** Changes that didn't happen: declined, or failed. */
     let declined = 0;
     const unchanged = new Set<string>();
@@ -216,7 +223,8 @@ function summarize(tools: ToolBlock[]): string {
                 agents++;
                 break;
             case "TodoWrite":
-                if (!misc.includes("updated todos")) misc.push("updated todos");
+                if (!todos) misc.push("updated todos");
+                todos = true;
                 break;
             case "AskUserQuestion":
                 misc.push("asked a question");
@@ -275,20 +283,26 @@ function groupIcon(tools: ToolBlock[]): string {
 
 const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streaming" || t.status === "awaiting";
 
-export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; agents?: AgentRun[] }) {
+export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; keepTail?: boolean; agents?: AgentRun[] }) {
     return <RenderBoundary raw={() => p.steps}><ActivityGroupContent {...p} /></RenderBoundary>;
 }
 
-function ActivityGroupContent(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; agents?: AgentRun[] }) {
+function ActivityGroupContent(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; keepTail?: boolean; agents?: AgentRun[] }) {
     const [open, setOpen] = createSignal(prefs.expandActivity);
-    // Find opens it to one of its calls; a lone call then shows as its row, the title find matched.
-    const [found, setFound] = createSignal(false);
-    createEffect(on(findReveal, (r) => r && p.tools.some((t) => t.id === r.part) && (setOpen(true), setFound(true))));
-    const runs = createMemo(() => (p.agents ?? []).filter((a) => p.tools.some((t) => t.agent && t.id === a.id)));
-    const plain = createMemo(() => p.tools.filter((t) => !runs().some((a) => a.id === t.id)));
-    const running = createMemo(() => plain().find(isLive));
-    const done = createMemo(() => plain().filter((t) => t !== running()));
-    const steps = createMemo(() => p.steps.filter((b) => b.t === "thinking" || done().includes(b)));
+    createEffect(on(findReveal, (r) => r && p.tools.some((t) => t.id === r.part) && setOpen(true)));
+    const agentIds = createMemo(() => new Set(p.tools.filter((t) => t.agent).map((t) => t.id)));
+    const runs = createMemo(() => (p.agents ?? []).filter((a) => agentIds().has(a.id)));
+    const runIds = createMemo(() => new Set(runs().map((a) => a.id)));
+    const plain = createMemo(() => p.tools.filter((t) => !runIds().has(t.id)));
+    const plainIds = createMemo(() => new Set(plain().map((t) => t.id)));
+    // Membership depends on structure, never on progress or elapsed time.
+    const steps = createMemo(() => p.steps.filter((b) => b.t === "thinking" || plainIds().has(b.id)));
+    // Keep the last call in place after it finishes, until more work arrives.
+    const tail = createMemo(() => {
+        const last = p.tools.at(-1);
+        return p.turnRunning && p.keepTail !== false && last && plainIds().has(last.id) ? last : undefined;
+    });
+    const done = createMemo(() => plain().filter((t) => !isLive(t) && t !== tail()));
     const stats = createMemo(() => {
         let added = 0;
         let removed = 0;
@@ -300,9 +314,19 @@ function ActivityGroupContent(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
         }
         return { added, removed };
     });
-    const failed = () => done().filter((t) => t.status === "error").length;
-    const denied = () => done().filter((t) => t.status === "denied").length;
-    const single = () => done().length === 1 && steps().length === 1 && !found();
+    const failed = createMemo(() => done().filter((t) => t.status === "error").length);
+    const denied = createMemo(() => done().filter((t) => t.status === "denied").length);
+    const single = createMemo(() => done().length === 1 && !steps().some((b) => b.t === "thinking"));
+    const agentRow = { t: "agents" as const };
+    const current = (b: ToolBlock | ThinkingBlock) => b.t === "tool" && (isLive(b) || b === tail());
+    // Preserve the original finished-work / agents / live-call order. For moves
+    // existing nodes within this list when necessary, retaining their owners.
+    const rows = createMemo(() => {
+        const finished: (ToolBlock | ThinkingBlock | typeof agentRow)[] = [];
+        const live: (ToolBlock | ThinkingBlock)[] = [];
+        for (const b of steps()) (current(b) ? live : finished).push(b);
+        return [...finished, agentRow, ...live];
+    });
 
     return (
         <>
@@ -335,75 +359,32 @@ function ActivityGroupContent(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
                             <ChevronRight size={14} class="chev" />
                         </span>
                     </button>
-                    <Show when={open()}>
-                        <div class="wkids">
-                            <Show when={single()} fallback={<For each={steps()}>{(b) => (b.t === "tool" ? <ToolRow tool={b} /> : <div class="wthought">{(b as ThinkingBlock).text.trim().split("\n")[0]}</div>)}</For>}>
-                                <div class="tool-detail" data-find-skip>
-                                    <ToolDetails tool={done()[0]!} />
-                                </div>
-                            </Show>
-                        </div>
-                    </Show>
                 </div>
             </Show>
-            <Show when={runs().length}>
-                <SubAgentsRow runs={runs()} />
-            </Show>
-            <Show when={running()} keyed>
-                {(t) => <RunningRow tool={t} />}
-            </Show>
-        </>
-    );
-}
-
-/** The call running now: what it's doing, shimmering, and for how long. */
-function RunningRow(p: { tool: ToolBlock }) {
-    return <RenderBoundary raw={() => p.tool}><RunningRowContent {...p} /></RenderBoundary>;
-}
-
-function RunningRowContent(p: { tool: ToolBlock }) {
-    const found = () => findReveal()?.part === p.tool.id;
-    const label = () => toolLabel(p.tool);
-    const verb = () => {
-        const t = p.tool;
-        if (t.status === "awaiting") return t.name === "AskUserQuestion" || t.name === "ExitPlanMode" ? RUNNING[t.name]! : "Waiting for approval";
-        if (t.status === "streaming") return `Preparing ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
-        return RUNNING[t.name] ?? `Running ${t.name}`;
-    };
-    const tail = () => (p.tool.progress ? stripAnsi(p.tool.progress).trimEnd().split("\n").slice(-4).join("\n") : undefined);
-    return (
-        <>
-            {/* Find counts a running call by its argument: the verb, the timer and the output's tail change as it runs. */}
-            <div class={`wrow live ${p.tool.status === "awaiting" ? "awaiting" : ""} ${found() ? "found" : ""}`} data-find={p.tool.id}>
-                <span class="slot">
-                    <Show when={p.tool.status === "awaiting"} fallback={<ToolIcon name={p.tool.name} size={16} />}>
-                        <Hand size={16} />
-                    </Show>
-                </span>
-                <span class={p.tool.status === "awaiting" ? "wverb" : "wverb shimmer"} data-find-skip>
-                    {verb()}
-                </span>
-                <Show when={label().arg && p.tool.status !== "streaming"}>
-                    <span class="warg mono truncate">{label().arg}</span>
-                </Show>
-                <Show when={p.tool.status === "streaming" && p.tool.receiving}>
-                    <span class="warg truncate" data-find-skip>
-                        {tokens(p.tool.receiving!)} chars
-                    </span>
-                </Show>
-                <Show when={p.tool.startedAt}>
-                    <span class="wtime num" data-find-skip>
-                        {duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}
-                    </span>
-                </Show>
+            {/* A call has one owner through streaming, running and completion.
+                Disclosure changes visibility, not ownership or local detail state. */}
+            <div class="activity-steps">
+                <For each={rows()}>{(b) => {
+                    if (b.t === "agents") return <Show when={runs().length}><SubAgentsRow runs={runs()} /></Show>;
+                    const isCurrent = () => current(b);
+                    const visible = () => open() || isCurrent();
+                    const [mounted, setMounted] = createSignal(visible());
+                    createEffect(() => { if (visible()) setMounted(true); });
+                    return <div class={isCurrent() ? "activity-step current" : "activity-step"} hidden={!visible()}>
+                        <Show when={mounted()}>
+                            {b.t === "tool" ? <ToolRow tool={b} activity={isCurrent()} detailsOnly={open() && single() && !isCurrent() && findReveal()?.part !== b.id} /> : <div class="wthought">{b.text.trim().split("\n")[0]}</div>}
+                        </Show>
+                    </div>;
+                }}</For>
             </div>
-            <Show when={tail()}>
-                <pre class="activity-tail" data-find-skip>
-                    {tail()}
-                </pre>
-            </Show>
         </>
     );
+}
+
+function runningVerb(t: ToolBlock): string {
+    if (t.status === "awaiting") return t.name === "AskUserQuestion" || t.name === "ExitPlanMode" ? RUNNING[t.name]! : "Waiting for approval";
+    if (t.status === "streaming") return `Preparing ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
+    return RUNNING[t.name] ?? `Running ${t.name}`;
 }
 
 const AGENT_STATUS: Record<AgentRun["status"], string> = {
@@ -553,15 +534,16 @@ export function OpenFileButton(p: { path: string; line?: number }) {
 }
 
 /** One call, as a plain line; opens into its details. */
-export function ToolRow(p: { tool: ToolBlock }) {
+export function ToolRow(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: boolean }) {
     return <RenderBoundary raw={() => p.tool}><ToolRowContent {...p} /></RenderBoundary>;
 }
 
-function ToolRowContent(p: { tool: ToolBlock }) {
+function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: boolean }) {
     const [open, setOpen] = createSignal(false);
+    createEffect(() => { if (p.detailsOnly) setOpen(true); });
     // Shown by find: its whole title, where the match may be past the cut.
     const found = () => findReveal()?.part === p.tool.id;
-    const label = () => toolLabel(p.tool);
+    const label = createMemo(() => toolLabel(p.tool));
     const meta = () => {
         const t = p.tool;
         if (t.status === "denied") return "Declined";
@@ -570,17 +552,25 @@ function ToolRowContent(p: { tool: ToolBlock }) {
     };
     return (
         <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
-            <div class="tool-head">
-                <button class="tool-line" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                    <span class="tool-icon">
-                        <ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />
+            <div class="tool-head" style={p.detailsOnly ? { display: "none" } : undefined}>
+                <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" ? "awaiting" : ""}` : "tool-line"} onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <span class={p.activity ? "tool-icon slot" : "tool-icon"}>
+                        <Show when={p.activity && p.tool.status === "awaiting"} fallback={<ToolIcon name={p.tool.name} agent={p.tool.agent} size={p.activity ? 16 : 14} />}>
+                            <Hand size={16} />
+                        </Show>
                     </span>
                     {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
-                    <span class="tool-verb" data-find-skip={isLive(p.tool) || undefined}>{label().verb}</span>{!isLive(p.tool) && " "}
-                    <Show when={label().arg}>
-                        <span class="tool-arg truncate" data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
+                    <span class={p.activity && isLive(p.tool) && p.tool.status !== "awaiting" ? "tool-verb wverb shimmer" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}</span>{!isLive(p.tool) && " "}
+                    <Show when={label().arg && (!p.activity || p.tool.status !== "streaming")}>
+                        <span class={p.activity ? "tool-arg warg mono truncate" : "tool-arg truncate"} data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
+                    </Show>
+                    <Show when={p.activity && p.tool.status === "streaming" && p.tool.receiving}>
+                        <span class="warg truncate" data-find-skip>{tokens(p.tool.receiving!)} chars</span>
                     </Show>
                     <span class="tool-meta" data-find-skip={isLive(p.tool) || undefined}>
+                        <Show when={p.activity && isLive(p.tool) && p.tool.startedAt}>
+                            <span class="wtime num" data-find-skip>{duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}</span>
+                        </Show>
                         <Show when={p.tool.sandboxed}>
                             <span class="tool-tag" title="Ran in the sandbox" data-find-skip>
                                 <ShieldCheck size={11} /> sandbox
@@ -600,14 +590,14 @@ function ToolRowContent(p: { tool: ToolBlock }) {
                                 {duration(p.tool.durationMs!)}
                             </span>
                         </Show>
-                        <StatusIcon tool={p.tool} />
+                        <Show when={!p.activity || !isLive(p.tool)}><StatusIcon tool={p.tool} /></Show>
                     </span>
                 </button>
                 <Show when={toolFile(p.tool)}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
             </div>
             <Show when={!open() && p.tool.status === "running" && p.tool.progress}>
-                <pre class="activity-tail nested" data-find-skip>
-                    {stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(-6).join("\n")}
+                <pre class={p.activity ? "activity-tail" : "activity-tail nested"} data-find-skip>
+                    {stripAnsi(p.tool.progress!).trimEnd().split("\n").slice(p.activity ? -4 : -6).join("\n")}
                 </pre>
             </Show>
             <Show when={open()}>
