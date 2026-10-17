@@ -523,11 +523,14 @@ describe("a last grep that finds nothing isn't an error", () => {
         return BashTool.run({ command }, { state: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, settings: env ? { env } : {}, signal: new AbortController().signal } as any);
     };
 
+    // Only BSD grep reads GREP_OPTIONS (GNU grep ignores it), so ask the grep on PATH.
+    const grepReadsOptions = Bun.spawnSync(["grep", "."], { stdin: Buffer.from("a line\n"), env: { ...process.env, GREP_OPTIONS: "--invert-match" } }).exitCode === 1;
+
     test("a search the environment inverted isn't taken for no matches", async () => {
         const conf = join(realpathSync(tempDir()), "rgrc");
         writeFileSync(conf, "--invert-match\n");
         for (const [command, env] of [
-            ["grep . f", { GREP_OPTIONS: "--invert-match" }],
+            ...(grepReadsOptions ? [["grep . f", { GREP_OPTIONS: "--invert-match" }] as const] : []),
             ["rg . f", { RIPGREP_CONFIG_PATH: conf }],
         ] as const) {
             const r = await bash(command, { f: "every line matches\n" }, env);
