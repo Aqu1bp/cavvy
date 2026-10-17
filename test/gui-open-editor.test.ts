@@ -258,3 +258,23 @@ describe("fs.image", () => {
         await rejects(call("fs.image", { sessionId: id, path: "nope.png" }), "not_found");
     });
 });
+
+describe("fs.image limits", () => {
+    test("a FIFO named like an image is refused at once, never read (it would block the server)", async () => {
+        const fifo = join(cwd, "preview.png");
+        expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+        const started = Date.now();
+        await rejects(call("fs.image", { sessionId: id, path: "preview.png" }), "not_image");
+        expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    test("10 MB at most: one byte over is refused, the limit itself is read", async () => {
+        const head = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const at = Buffer.alloc(10 * 1024 * 1024);
+        head.copy(at);
+        writeFileSync(join(cwd, "big.png"), at);
+        expect(await call("fs.image", { sessionId: id, path: "big.png" })).toMatchObject({ mediaType: "image/png" });
+        writeFileSync(join(cwd, "huge.png"), Buffer.concat([at, Buffer.alloc(1)]));
+        await rejects(call("fs.image", { sessionId: id, path: "huge.png" }), "limit");
+    });
+});

@@ -17,8 +17,8 @@ import { CopyButton, Spinner } from "./ui/bits";
 /** A prompt's images as thumbnails; the count alone when they can't be had. */
 function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
     const [urls] = createResource(
-        () => (p.sessionId && p.turn.pos ? { id: p.sessionId, pos: p.turn.pos } : undefined),
-        (k) => promptImages(k.id, k.pos).catch(() => [] as string[]),
+        () => (p.sessionId && p.turn.pos ? { id: p.sessionId, turn: { id: p.turn.id, pos: p.turn.pos } } : undefined),
+        (k) => promptImages(k.id, k.turn).catch(() => [] as string[]),
     );
     const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
     return (

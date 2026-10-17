@@ -1171,8 +1171,14 @@ describe("sessions", () => {
         expect(await c.call("session.promptImages", { id, ...turn.pos })).toEqual({ images: [{ mediaType: "image/png", data: png }] });
         await expect(c.call("session.promptImages", { id, seg: turn.pos!.seg, index: 999 })).rejects.toThrow(/no longer in the conversation/);
         await expect(c.call("session.promptImages", { id, seg: 7, index: 0 })).rejects.toThrow(/no longer in the conversation/);
+        await expect(c.call("session.promptImages", { id, seg: "0", index: [] })).rejects.toThrow(/no longer in the conversation/);
+        // Compacted, the prompt is in an earlier segment: its images come from the session file.
+        await c.call("session.compact", { id });
+        await c.until(id, (v) => v.turns.some((t) => t.blocks.some((b) => b.t === "compact")));
+        expect(c.view(id).turns.find((t) => t.blocks.some((b) => b.t === "compact"))!.pos).toEqual({ seg: turn.pos!.seg + 1, index: -1 });
+        expect(await c.call("session.promptImages", { id, ...turn.pos })).toEqual({ images: [{ mediaType: "image/png", data: png }] });
         c.close();
-    });
+    }, 30_000);
 
     test("rewind restores files and the conversation", async () => {
         const dir = project();

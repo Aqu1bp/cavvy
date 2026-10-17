@@ -4,7 +4,7 @@ import { MarkdownRenderer } from "../../lib/markdown";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
 import { linksVersion, paths } from "../../state/filelinks";
-import { fileImage } from "../../state/images";
+import { replyImages } from "../../state/images";
 import { setViewedImage } from "../../state/ui";
 import { CodeBlock } from "./CodeBlock";
 
@@ -25,11 +25,11 @@ export function onLinkClick(e: MouseEvent) {
 }
 
 /** Fills in the images lib/markdown.ts left without a src: files in the session's folders, read by the server. */
-function loadImages(root: HTMLElement, sessionId: string) {
+function loadImages(root: HTMLElement, load: (path: string) => Promise<string>) {
     for (const img of root.querySelectorAll<HTMLImageElement>("img.md-img[data-image-file]:not([src]):not([data-loading])")) {
         const path = img.dataset.imageFile!;
         img.dataset.loading = "1";
-        fileImage(sessionId, path).then(
+        load(path).then(
             (src) => {
                 img.src = src;
                 img.tabIndex = 0;
@@ -66,6 +66,7 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
 function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
     const r = new MarkdownRenderer();
     let root: HTMLDivElement | undefined;
+    const images = createMemo(() => (p.sessionId ? replyImages(p.sessionId) : undefined));
     // Unchanged blocks keep their objects; positional owners also keep a growing
     // code block mounted when its source changes. Only a reply
     // with paths in it looks again when what's known changes.
@@ -80,7 +81,8 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
         segments();
         const id = p.sessionId;
         if (!id) return;
-        if (root) loadImages(root, id);
+        const load = images();
+        if (root && load) loadImages(root, load);
         // What's on screen stays known (see lib/pathcache.ts), until the next render or unmount.
         onCleanup(paths.hold(id, r.paths));
         if (!r.pending.size || timer) return;

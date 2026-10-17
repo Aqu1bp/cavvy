@@ -12,7 +12,7 @@ import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reord
 import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
-import { readdirSync, readFileSync, realpathSync, statSync } from "fs";
+import { readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, harnessHome, paths } from "../config/paths";
@@ -36,6 +36,7 @@ import { gitRoot, gitBranch } from "../util/git";
 import { createWorktree, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
+import { readRegular } from "./git-changes";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
 import { expandPath, isInside, sniffImage } from "../util/files";
@@ -1528,14 +1529,19 @@ export class Engine {
         });
     }
 
-    /** An image file the GUI shows inline: confined like fs.open, judged by its bytes, never an SVG (it can carry script). */
-    private readImage(p: Record<string, any>): { mediaType: string; data: string } {
+    /**
+     * An image file the GUI shows inline: confined like fs.open, judged by its
+     * bytes, never an SVG (it can carry script). Read as a regular file to a
+     * bound, so a FIFO named like an image can't block the server.
+     */
+    private async readImage(p: Record<string, any>): Promise<{ mediaType: string; data: string }> {
         const { cwd, roots } = this.openScope(p);
         const t = confinePath(checkPathInput(p.path), cwd, roots);
         if (t.dir) throw new RpcError(`${p.path} is a folder`, "invalid");
-        const size = statSync(t.real).size;
-        if (size > MAX_SHOWN_IMAGE) throw new RpcError(`${p.path} is too large to show (${Math.round(size / 1024 / 1024)} MB)`, "limit");
-        const bytes = readFileSync(t.real);
+        const r = await readRegular(t.real, MAX_SHOWN_IMAGE);
+        if (!r) throw new RpcError(`${p.path} isn't a regular file that can be read`, "not_image");
+        if (!r.buf) throw new RpcError(`${p.path} is too large to show (images up to ${MAX_SHOWN_IMAGE / 1024 / 1024} MB)`, "limit");
+        const bytes = r.buf;
         const mediaType = sniffImage(bytes);
         if (!mediaType) throw new RpcError(`${p.path} isn't a PNG, JPEG, GIF or WebP image`, "not_image");
         return { mediaType, data: bytes.toString("base64") };
