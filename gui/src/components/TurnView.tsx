@@ -9,21 +9,23 @@ import { prefs } from "../state/prefs";
 import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
-import { promptImages } from "../state/images";
-import { app } from "../state/app";
+import { imagesReady, promptImages } from "../state/images";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 
 /** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
 function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
-    const [urls] = createResource(
+    const key = () => p.turn.prompt?.imagesKey;
+    const [fetched] = createResource(
         () => {
-            const key = p.turn.prompt?.imagesKey;
-            return p.sessionId && p.turn.pos && key && app.conn === "open" ? { id: p.sessionId, pos: p.turn.pos, key } : undefined;
+            const k = key();
+            return p.sessionId && p.turn.pos && k && imagesReady(p.sessionId) ? { id: p.sessionId, pos: p.turn.pos, key: k } : undefined;
         },
-        (k) => promptImages(k.id, k.pos, k.key).catch(() => [] as string[]),
+        (k) => promptImages(k.id, k.pos, k.key).then((urls) => ({ key: k.key, urls }), () => ({ key: k.key, urls: [] as string[] })),
     );
+    // Only the images the prompt has now: the last ones fetched stay while offline, never another prompt's.
+    const urls = () => (fetched()?.key === key() ? fetched()!.urls : undefined);
     const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
     return (
         <Show when={urls()?.length} fallback={<span class="chip tiny">{label()}</span>}>

@@ -4,9 +4,7 @@ import { MarkdownRenderer } from "../../lib/markdown";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
 import { linksVersion, paths } from "../../state/filelinks";
-import { replyImages } from "../../state/images";
-import { app } from "../../state/app";
-import { RpcError } from "../../lib/rpc";
+import { imagesReady, replyImages, transient } from "../../state/images";
 import { setViewedImage } from "../../state/ui";
 import { CodeBlock } from "./CodeBlock";
 
@@ -41,7 +39,7 @@ function loadImages(root: HTMLElement, load: (path: string) => Promise<string>) 
                 img.tabIndex = 0;
             },
             (e) => {
-                if (e instanceof RpcError && e.code === "disconnected") return void delete img.dataset.loading;
+                if (transient(e)) return void delete img.dataset.loading;
                 const label = document.createElement("span");
                 label.className = "md-image";
                 label.textContent = img.alt || "image";
@@ -89,7 +87,7 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
         const id = p.sessionId;
         if (!id) return;
         const load = images();
-        if (root && load && app.conn === "open") loadImages(root, load);
+        if (root && load && imagesReady(id)) loadImages(root, load);
         // What's on screen stays known (see lib/pathcache.ts), until the next render or unmount.
         onCleanup(paths.hold(id, r.paths));
         if (!r.pending.size || timer) return;

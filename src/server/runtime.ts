@@ -1768,9 +1768,11 @@ export class Runtime {
         const display = opts.display ?? text;
         const index = this.session.messages.length;
         this.turnSnapshotFloor = this.latestCheckpoint();
+        // No imagesKey yet: @mentioned images join the prompt's own once mentions are expanded below.
+        const { imagesKey: _provisional, ...attached } = attachedPrompt(opts.attachments);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attachedPrompt(opts.attachments), ...(opts.kind === "command" ? { command: true } : {}), index },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), index },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -1779,7 +1781,7 @@ export class Runtime {
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
         this.runStart = index;
-        this.pendingPrompt = { seg: this.segment, index, attachments: opts.attachments };
+        this.pendingPrompt = { seg: this.segment, index };
         if (this.backendModel()) this.backendTurns.set(turn.id, this.segment);
         this.responseBlocks = [];
         this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
@@ -1809,6 +1811,10 @@ export class Runtime {
                     if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) this.notice(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
                     parts.push(...opts.attachments);
                 }
+                // The images as they'll be kept, mentioned ones too: what promptImages returns, so what the key is of.
+                const images = parts.filter((p): p is AttachedPart => p.type === "image");
+                this.pendingPrompt = { seg: this.segment, index, attachments: images };
+                if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind });
             }
         } catch (e) {

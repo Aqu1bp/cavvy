@@ -5,7 +5,20 @@
 
 import type { Turn } from "@shared/protocol";
 import { ImageCache, promptKey } from "../lib/imagecache";
-import { rpc } from "./app";
+import { RpcError } from "../lib/rpc";
+import { handleFor, rpc } from "./app";
+import { sessionReadReady } from "./changes";
+
+/** The session can be asked: connected, and reopened after a reconnect (asking before that is refused with not_open). */
+export function imagesReady(sessionId: string): boolean {
+    const h = handleFor(sessionId);
+    return Boolean(h && sessionReadReady(h));
+}
+
+/** A failure that's down to the connection, not the image: asked again once the session is back. */
+export function transient(e: unknown): boolean {
+    return e instanceof RpcError && (e.code === "disconnected" || e.code === "not_open");
+}
 
 const toUrl = (i: { mediaType: string; data: string }) => `data:${i.mediaType};base64,${i.data}`;
 

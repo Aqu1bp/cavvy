@@ -1187,6 +1187,37 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("an @mentioned image is one of the prompt's images: counted, keyed and returned, live as after a reopen", async () => {
+        const c = await client();
+        const dir = project();
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        const gif = "R0lGODlhAQABAAAAACw=";
+        writeFileSync(join(dir, "shot.gif"), Buffer.from(gif, "base64"));
+        const id = await c.open("session.create", { cwd: dir });
+        await c.call("session.send", { id, text: "compare @shot.gif with this", images: [{ mediaType: "image/png", data: png }] });
+        await c.until(id, done);
+        const turn = lastTurn(c.view(id));
+        expect(turn.prompt?.images).toBe(2);
+        expect(turn.prompt?.imagesKey).toBeString();
+        expect((await c.call("session.promptImages", { id, ...turn.pos })).images).toEqual([
+            { mediaType: "image/gif", data: gif },
+            { mediaType: "image/png", data: png },
+        ]);
+        // Another prompt with the same attached image but another mention has another key.
+        writeFileSync(join(dir, "other.png"), Buffer.from(png, "base64"));
+        await c.call("session.send", { id, text: "and @other.png with this", images: [{ mediaType: "image/png", data: png }] });
+        await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2);
+        expect(lastTurn(c.view(id)).prompt?.imagesKey).not.toBe(turn.prompt!.imagesKey);
+        // Reopened, the replayed prompts have the keys the live ones had.
+        await c.call("session.close", { id });
+        const lock = `${findSessionAnywhere(id)}.lock`;
+        for (let i = 0; i < 50 && existsSync(lock); i++) await Bun.sleep(100);
+        const live = c.view(id).turns.filter((t) => t.prompt).map((t) => [t.prompt!.images, t.prompt!.imagesKey]);
+        const snap = await c.call("session.open", { id });
+        expect(snap.turns.filter((t: Turn) => t.prompt).map((t: Turn) => [t.prompt!.images, t.prompt!.imagesKey])).toEqual(live);
+        c.close();
+    }, 30_000);
+
     test("rewind restores files and the conversation", async () => {
         const dir = project();
         const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
