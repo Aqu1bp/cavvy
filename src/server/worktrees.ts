@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
-import { lstatSync, mkdirSync, realpathSync, statSync } from "fs";
+import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { gitArgv, gitEnv } from "../util/git";
 import { isInside } from "../util/files";
@@ -408,6 +408,26 @@ export function checkCreate(cwd: string): string {
     return repo.main;
 }
 
+/** Keep managed checkouts out of status and git add in every worktree, without changing tracked files. */
+function excludeManagedWorktrees(main: string, log?: Log) {
+    try {
+        const common = runGit(main, ["rev-parse", "--git-common-dir"])?.replace(/\n$/, "");
+        if (!common) throw new Error("Couldn't find the common Git directory.");
+        const file = resolve(main, common, "info", "exclude");
+        // An exclude (or info directory) linked into the checkout mustn't change tracked files.
+        for (const path of [dirname(file), file]) {
+            if (lexists(path) && lstatSync(path).isSymbolicLink()) throw new Error("Git's info/exclude is a symbolic link.");
+        }
+        let content = "";
+        try { content = readFileSync(file, "utf8"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+        if (content.split(/\r?\n/).some((line) => /^\/?\.claude\/worktrees\/?$/.test(line))) return;
+        mkdirSync(dirname(file), { recursive: true });
+        appendFileSync(file, `${content && !content.endsWith("\n") ? "\n" : ""}/.claude/worktrees/\n`);
+    } catch (e) {
+        logFailure(log, "couldn't exclude managed worktrees", String(e));
+    }
+}
+
 /** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
 export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string; commit: string }> {
     const cwd = resolve(o.path);
@@ -431,6 +451,7 @@ export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promis
         if (/invalid reference|not a valid object|unknown revision/.test(r.stderr)) throw new RpcError("The base isn't a branch or commit in this repository.", "bad_base");
         throw new RpcError("Git couldn't create the worktree.", "git_failed");
     }
+    if (isManaged(main, target.path, true)) excludeManagedWorktrees(main, log);
     return { path: target.path, branch, commit };
 }
 

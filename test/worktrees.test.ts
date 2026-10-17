@@ -1,5 +1,6 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, lstatSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -118,6 +119,114 @@ describe("creating a worktree", () => {
         expect(() => git(made.path, "rev-parse", "--abbrev-ref", "feat/login@{upstream}")).toThrow();
         expect(existsSync(sentinel)).toBe(false);
         expect(listWorktrees(main).find((w) => w.path === made.path)).toMatchObject({ managed: true, branch: "feat/login" });
+    });
+
+    test.each(["", "# local excludes\nother/\n", "# local excludes\nother/"])("excludes managed worktrees once, preserving existing content %p", async (content) => {
+        const main = repo(`exclude content ${content.length}`);
+        const file = join(main, ".git", "info", "exclude");
+        writeFileSync(file, content);
+        writeFileSync(join(main, ".gitignore"), "keep-me\n");
+        git(main, "add", ".gitignore");
+        git(main, "commit", "-m", "ignore fixture");
+        await createWorktree({ path: main, branch: "first" });
+        await createWorktree({ path: main, branch: "second" });
+        expect(readFileSync(file, "utf8")).toBe(`${content}${content && !content.endsWith("\n") ? "\n" : ""}/.claude/worktrees/\n`);
+        expect(git(main, "status", "--short")).toBe("");
+        expect(git(main, "check-ignore", ".claude/worktrees/first")).toBe(".claude/worktrees/first");
+        expect(git(main, "add", "--dry-run", "-A")).toBe("");
+        expect(readFileSync(join(main, ".gitignore"), "utf8")).toBe("keep-me\n");
+        writeFileSync(join(main, ".claude", "settings.json"), "{}\n");
+        expect(git(main, "status", "--short", "--untracked-files=all")).toBe("?? .claude/settings.json");
+    });
+
+    test.each(["/.claude/worktrees/", ".claude/worktrees/", "/.claude/worktrees", ".claude/worktrees"])("keeps an equivalent existing exclude %p", async (line) => {
+        const main = repo(`exclude equivalent ${line.startsWith("/")}-${line.endsWith("/")}`);
+        const file = join(main, ".git", "info", "exclude");
+        const content = `# keep this\r\n${line}`;
+        writeFileSync(file, content);
+        await createWorktree({ path: main, branch: "new" });
+        expect(readFileSync(file, "utf8")).toBe(content);
+        expect(git(main, "status", "--short")).toBe("");
+    });
+
+    test("creates missing info/exclude and uses the common Git dir from a linked checkout", async () => {
+        const main = repo("exclude common");
+        const common = join(realpathSync(iso.home), "separate git dir");
+        git(main, "init", `--separate-git-dir=${common}`);
+        const linked = join(realpathSync(iso.home), "exclude linked");
+        git(main, "worktree", "add", "-b", "linked", linked);
+        const own = git(linked, "rev-parse", "--absolute-git-dir");
+        rmSync(join(common, "info"), { recursive: true });
+        const made = await createWorktree({ path: linked, branch: "new" });
+        expect(readFileSync(join(common, "info", "exclude"), "utf8")).toBe("/.claude/worktrees/\n");
+        expect(existsSync(join(own, "info", "exclude"))).toBe(false);
+        expect(existsSync(join(main, ".gitignore"))).toBe(false);
+        expect(git(main, "status", "--short")).toBe("");
+        mkdirSync(join(linked, ".claude", "worktrees", "local"), { recursive: true });
+        writeFileSync(join(linked, ".claude", "worktrees", "local", "file"), "ignored");
+        expect(git(linked, "status", "--short")).toBe("");
+        expect(git(made.path, "status", "--short")).toBe("");
+    });
+
+    test("an exclude write failure doesn't fail worktree creation", async () => {
+        const main = repo("exclude failure");
+        const file = join(main, ".git", "info", "exclude");
+        const content = readFileSync(file, "utf8");
+        const append = fs.appendFileSync;
+        const fault = spyOn(fs, "appendFileSync").mockImplementation((path, data, options) => {
+            if (path === file) throw new Error("simulated exclude write failure");
+            return append(path, data, options);
+        });
+        const logged: string[] = [];
+        try {
+            const made = await createWorktree({ path: main, branch: "new" }, (m) => logged.push(m));
+            expect(git(made.path, "branch", "--show-current")).toBe("new");
+            expect(listWorktrees(main).find((w) => w.path === made.path)?.managed).toBe(true);
+        } finally {
+            fault.mockRestore();
+        }
+        expect(readFileSync(file, "utf8")).toBe(content);
+        expect(logged).toHaveLength(1);
+        expect(logged[0]).toContain("couldn't exclude managed worktrees");
+    });
+
+    test.each(["exclude", "info"])("doesn't follow a linked %s into tracked files", async (linked) => {
+        const main = repo(`exclude symlink ${linked}`);
+        const ignore = join(main, ".gitignore");
+        writeFileSync(ignore, "original\n");
+        git(main, "add", ".gitignore");
+        git(main, "commit", "-m", "ignore fixture");
+        const info = join(main, ".git", "info");
+        if (linked === "exclude") {
+            rmSync(join(info, "exclude"));
+            symlinkSync(ignore, join(info, "exclude"));
+        } else {
+            const target = join(main, "local-info");
+            mkdirSync(target);
+            symlinkSync(ignore, join(target, "exclude"));
+            rmSync(info, { recursive: true });
+            symlinkSync(target, info);
+        }
+        const logged: string[] = [];
+        const made = await createWorktree({ path: main, branch: "new" }, (m) => logged.push(m));
+        expect(git(made.path, "branch", "--show-current")).toBe("new");
+        expect(readFileSync(ignore, "utf8")).toBe("original\n");
+        expect(git(main, "diff", "--", ".gitignore")).toBe("");
+        expect(logged).toHaveLength(1);
+        expect(logged[0]).toContain("symbolic link");
+    });
+
+    test("a chosen location is excluded only when inside the managed directory", async () => {
+        const main = repo("exclude chosen");
+        const file = join(main, ".git", "info", "exclude");
+        const content = readFileSync(file, "utf8");
+        const outside = join(main, ".claude", "worktrees-elsewhere");
+        mkdirSync(outside, { recursive: true });
+        await createWorktree({ path: main, branch: "outside", location: join(outside, "new") });
+        expect(readFileSync(file, "utf8")).toBe(content);
+        mkdirSync(managedDir(main));
+        await createWorktree({ path: main, branch: "inside", location: join(managedDir(main), "new") });
+        expect(readFileSync(file, "utf8")).toBe(`${content}/.claude/worktrees/\n`);
     });
 
     test("starts from another branch or commit, in a folder the user named", async () => {
