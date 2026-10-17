@@ -54,7 +54,7 @@ if (!scenario) {
     const home = realpathSync(homedir());
     if (!root?.startsWith(realpathSync(tmpdir()) + sep) || home !== join(root, "home") || process.env.HARNESS_NO_KEYCHAIN !== "1") throw new Error("Expected temporary HOME and disabled keychain");
     const parent = Object.fromEntries(["HOME", ...selectors].map((key) => [key, process.env[key] ?? null]));
-    const defaultEnv = Object.fromEntries(Object.entries(parent).map(([key, value]) => [key, key !== "HOME" && value ? resolve(value) : value]));
+    const defaultEnv = parent;
     const bin = join(root, "bin"), cwd = join(home, "project");
     for (const dir of [bin, cwd, process.env.HARNESS_HOME!]) mkdirSync(dir, { recursive: true });
     const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -101,7 +101,20 @@ if (!scenario) {
         while (!check()) { if (Date.now() > end) throw new Error(`Timed out: ${process.env.HARNESS_TEST_ISOLATION_PHASE}`); await Bun.sleep(10); }
     };
 
-    test("Engine/RPC lifecycle preserves Default and confines named accounts", async () => {
+    test.skipIf(scenario !== "relative")("relative Default selectors refuse login, probes and models before spawning", async () => {
+        const { loginCommand } = await import("../src/backends/account-login");
+        const { checkAgentCli } = await import("../src/backends/index");
+        for (const provider of providers) {
+            expect(() => accountEnv(provider)).toThrow(/relative.*absolute path/);
+            expect(() => loginCommand(provider)).toThrow(/relative.*absolute path/);
+            await expect(checkAgentCli(provider)).rejects.toThrow(/relative.*absolute path/);
+            await expect(createBackend(getProvider(provider)!).listModels()).rejects.toThrow(/relative.*absolute path/);
+        }
+        expect(starts()).toHaveLength(0);
+        expect(snapshot()).toEqual(before);
+    });
+
+    test.skipIf(scenario === "relative")("Engine/RPC lifecycle preserves Default and confines named accounts", async () => {
         // Exercise the real CLI catalogs while excluding unrelated network providers.
         const engine = new Engine({ startCwd: cwd, listModels: async () => Promise.all(providers.map(async (provider) => ({ provider: getProvider(provider)!, status: "ok" as const, models: await createBackend(getProvider(provider)!).listModels() }))) });
         const events: ServerEvent[] = [];

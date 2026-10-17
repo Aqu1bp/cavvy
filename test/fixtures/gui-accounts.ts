@@ -223,3 +223,17 @@ test("external account removal describes keeping its folder and sends the exact 
         expect(f.calls.some((c) => c.method === "accounts.remove")).toBe(false);
     } finally { f.dispose(); }
 });
+
+test("invalid accounts remain visible as unavailable and removal promises to leave the folder untouched", async () => {
+    const f = fixture([defaultAccount, { ...personal, invalid: true, description: "Invalid account folder" }]);
+    try {
+        expect(text(f.root)).toContain("Unavailable");
+        f.button("Actions for Personal").props.onClick();
+        f.button("Remove").props.onClick();
+        expect(text(f.root)).toContain("Forget this account and leave its folder untouched");
+        expect(text(f.root)).not.toContain("Delete the Harness-created folder");
+        f.button("Confirm removal").props.onClick();
+        await settle();
+        expect(f.calls).toContainEqual({ method: "accounts.remove", params: { provider: "claude-code", id: "personal", confirmedFolder: "/fake/personal" } });
+    } finally { f.dispose(); }
+});

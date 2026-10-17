@@ -1,5 +1,6 @@
 // Agent backends: which program runs each one.
 
+import { accountEnv } from "../providers/accounts";
 import type { ProviderDef } from "../providers/registry";
 import type { AgentBackendClient } from "./types";
 import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-code";
@@ -42,6 +43,7 @@ export interface AgentCliStatus {
  * credential files.
  */
 export async function checkAgentCli(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {
+    accountEnv(providerId, accountId);
     const cli = providerId === "codex" ? CODEX_CLI : CLAUDE_CLI;
     const base = { signIn: cli.signIn, signOut: providerId === "codex" ? "codex logout" : "claude auth logout", installHint: cli.install };
     const path = findCli(providerId, cli);

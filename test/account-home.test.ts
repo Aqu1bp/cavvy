@@ -37,7 +37,7 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
                 for (const root of [process.cwd(), ...roots]) {
                     expect(() => addAccount("claude-code", { id: "relative", name: "Relative", folder: join(root, "profile") }, roots)).toThrow(/default CLI folder/);
                 }
-                expect(accountEnv("claude-code")[key]).toBe(join(process.cwd(), "profile"));
+                expect(() => accountEnv("claude-code")).toThrow(new RegExp(`relative ${key}.*absolute path`));
             } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
         }
     });

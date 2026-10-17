@@ -1296,6 +1296,7 @@ export class Engine {
     private async accountsList(provider: string, refresh = false): Promise<AccountInfo[]> {
         accountProvider(provider);
         return Promise.all(listAccounts(provider).map(async (a) => {
+            if (a.invalid) return { ...a, description: "Invalid account folder: use a non-empty absolute path with no '..'" };
             const key = `${provider}:${a.id}`;
             if (refresh) {
                 try {
@@ -1935,7 +1936,6 @@ export class Engine {
             case "accounts.remove": {
                 const provider = str(p.provider, "provider");
                 const id = str(p.id, "id");
-                account(provider, id);
                 for (const rt of this.runtimes.values()) {
                     if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn before removing it", "busy");
                 }

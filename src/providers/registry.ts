@@ -311,6 +311,8 @@ export interface CliAccount {
     name: string;
     folder: string;
     managed: boolean;
+    /** Invalid saved metadata stays visible and removable, but cannot be used. */
+    invalid?: boolean;
 }
 
 interface ProvidersFile {
@@ -378,10 +380,11 @@ export function readAgentConfig(id: string): AgentCliConfig | undefined {
     if (typeof a.path === "string" && a.path.trim()) out.path = a.path.trim();
     if (Array.isArray(a.args)) out.args = a.args.filter((x): x is string => typeof x === "string");
     if (Array.isArray(a.accounts)) {
-        for (const x of a.accounts) {
-            if (!x || !validAccountFolder(x.folder)) throw new Error("Invalid account folder: use a non-empty absolute path with no '..'");
-        }
-        out.accounts = a.accounts.filter((x) => typeof x.id === "string" && typeof x.name === "string");
+        out.accounts = a.accounts.filter((x) => x && typeof x.id === "string" && typeof x.name === "string").map((x) => ({
+            ...x,
+            folder: typeof x.folder === "string" ? x.folder : "",
+            ...(!validAccountFolder(x.folder) ? { invalid: true } : {}),
+        }));
     }
     if (typeof a.defaultAccount === "string") out.defaultAccount = a.defaultAccount;
     return out;

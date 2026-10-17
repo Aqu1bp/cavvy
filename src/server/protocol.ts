@@ -748,6 +748,7 @@ export type ArchiveResult =
     | { archived: false; ignored: string[]; total: number; confirm: string };
 
 export interface AccountInfo {
+    invalid?: boolean;
     id: string;
     name: string;
     folder: string;

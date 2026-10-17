@@ -104,7 +104,7 @@ export function Accounts(p: { provider: ProviderInfo }) {
                 return <div class="account-row">
                     <div class="account-identity">
                         <div class="account-title"><strong>{a.name}</strong><Show when={a.id === (p.provider.agentCli?.defaultAccount ?? "default")}><span class="chip tiny" title="Used for new sessions">Default for new sessions</span></Show></div>
-                        <div class="small muted account-status" title={a.description}>{a.signedIn === true ? "Signed in" : a.signedIn === false ? "Not signed in" : "Status not checked"}{a.email ? ` · ${a.email}` : ""}{a.plan ? ` · ${a.plan}` : ""}</div>
+                        <div class="small muted account-status" title={a.description}>{a.invalid ? "Unavailable" : a.signedIn === true ? "Signed in" : a.signedIn === false ? "Not signed in" : "Status not checked"}{a.email ? ` · ${a.email}` : ""}{a.plan ? ` · ${a.plan}` : ""}</div>
                     </div>
                     <button ref={anchor} class="hb sm" disabled={busy()} aria-label={`Actions for ${a.name}`} aria-haspopup="menu" aria-expanded={menu() === a.id} onClick={() => setMenu(menu() === a.id ? undefined : a.id)}><MoreHorizontal size={16} /></button>
                     <Menu open={menu() === a.id} anchor={() => anchor} onClose={() => setMenu(undefined)} label={`${a.name} account actions`} width={220} align="end">
@@ -133,7 +133,7 @@ export function Accounts(p: { provider: ProviderInfo }) {
         <div class="account-actions"><button class="link-btn small" disabled={busy()} onClick={() => void work(refresh)}>Refresh status</button></div>
         <Show when={actionError()}><span class="account-error" role="alert">{actionError()}</span></Show>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>
-            <p>{a().managed ? "Delete the Harness-created folder" : "Forget this account and leave its folder untouched"}: <code class="account-path">{a().folder}</code>?</p>
+            <p>{a().managed && !a().invalid ? "Delete the Harness-created folder" : "Forget this account and leave its folder untouched"}: <code class="account-path">{a().folder}</code>?</p>
             <p>Removing an account does not revoke its sign-in. To sign out first, run <code>{p.provider.id === "codex" ? "codex logout" : "claude auth logout"}</code> with this account's folder.</p>
             <Show when={removeError()}><p class="account-error" role="alert">{removeError()}</p></Show>
             <div class="dialog-actions">

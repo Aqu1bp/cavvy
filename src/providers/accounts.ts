@@ -2,6 +2,7 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync } from "fs";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import { homedir } from "os";
+import { createHash } from "crypto";
 import { paths } from "../config/paths";
 import { canonical } from "../util/files";
 import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount, validAccountFolder } from "./registry";
@@ -39,25 +40,31 @@ export function listAccounts(provider: string): CliAccount[] {
     accountProvider(provider);
     return [{ id: "default", name: "Default", folder: defaultFolder(provider), managed: false }, ...(readAgentConfig(provider)?.accounts ?? [])];
 }
-export function account(provider: string, id = "default"): CliAccount {
+function findAccount(provider: string, id: string): CliAccount {
     accountProvider(provider);
     if (!validAccountId(id)) throw new RpcError("Invalid account id", "invalid");
     const found = listAccounts(provider).find((a) => a.id === id);
     if (!found) throw new RpcError("Account no longer exists; choose another account", "not_found");
     return found;
 }
+export function account(provider: string, id = "default"): CliAccount {
+    const found = findAccount(provider, id);
+    if (found.invalid) throw new RpcError("Invalid account folder: use a non-empty absolute path with no '..'", "invalid");
+    return found;
+}
 export function defaultAccount(provider: string): string {
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";
 }
-/** Default anchors relative selectors to the launch cwd; unset/empty stay exact. */
+/** Default preserves the launching shell selectors exactly; relative paths are unsafe. */
 export function accountEnv(provider: string, id = "default", cwd = homedir()): Record<string, string> {
     const a = account(provider, id);
     if (id === "default") {
         const env: Record<string, string> = {};
         for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
             const value = process.env[key];
-            if (value !== undefined) env[key] = value && !isAbsolute(value) ? resolve(launchCwd, value) : value;
+            if (value && !isAbsolute(value)) throw new RpcError(`Default cannot use relative ${key}; set it to an absolute path`, "invalid");
+            if (value !== undefined) env[key] = value;
         }
         return env;
     }
@@ -66,6 +73,8 @@ export function accountEnv(provider: string, id = "default", cwd = homedir()): R
     if (!validAccountFolder(a.folder)) throw new RpcError("Invalid account folder: use a non-empty absolute path with no '..'", "invalid");
     const folder = accountRealPath(resolve(a.folder));
     separateFromDefault(folder, [cwd]);
+    validateIdentityFiles(provider, folder);
+    if (provider === "claude-code") separateKeychain(folder, id);
     // Secure storage can independently override Claude's config directory, even
     // with an empty value (which selects the user's default keychain entry).
     return provider === "claude-code"
@@ -78,7 +87,7 @@ export function hasNamedAccounts(): boolean {
 /** Read afresh: accounts added during a session must immediately be protected. */
 export function accountFolders(): string[] {
     if (!hasNamedAccounts()) return [];
-    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
+    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).filter((a) => !a.invalid).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
 }
 /** Default homes stay usable; their sign-in files are protected only alongside named accounts. */
 export function accountCredentialFiles(): string[] {
@@ -138,7 +147,7 @@ function validateFolder(folder: unknown, roots: string[], exclude?: { provider: 
     separateFromDefault(real, roots);
     for (const p of ACCOUNT_PROVIDERS) {
         for (const a of readAgentConfig(p)?.accounts ?? []) {
-            if (p === exclude?.provider && a.id === exclude.id) continue;
+            if (a.invalid || (p === exclude?.provider && a.id === exclude.id)) continue;
             const other = accountRealPath(a.folder);
             if (inside(real, other) || inside(other, real)) throw new RpcError("Accounts must have separate, non-overlapping folders", "invalid");
         }
@@ -146,6 +155,44 @@ function validateFolder(folder: unknown, roots: string[], exclude?: { provider: 
     if (projectFolder(real, roots, managed)) throw new RpcError("Account folders must be outside projects", "invalid");
     if (existsSync(real) && !statSync(real).isDirectory()) throw new RpcError("Account folder is not a directory", "invalid");
     return real;
+}
+/** Only metadata is inspected; credential and configuration contents belong to the CLI. */
+function validateIdentityFiles(provider: string, folder: string): void {
+    const names = provider === "claude-code" ? [".claude.json", ".credentials.json"] : ["auth.json", "config.toml"];
+    for (const name of names) {
+        const file = join(folder, name);
+        try {
+            const stat = lstatSync(file);
+            if (stat.isSymbolicLink()) {
+                let target: string;
+                try { target = realpathSync(file); }
+                catch { throw new RpcError(`Cannot resolve account ${name} symlink; use a private file inside the account folder`, "invalid"); }
+                if (!inside(target, folder)) throw new RpcError(`Account ${name} links outside its folder`, "invalid");
+            }
+            // A hard link has no target path. Its other names cannot be proven
+            // private from lstat, so shared identity files must be copied first.
+            if (stat.nlink > 1 && !stat.isDirectory()) throw new RpcError(`Account ${name} has hard links; use a private copy inside the account folder`, "invalid");
+        } catch (e: any) {
+            if (e.code === "ENOENT") continue;
+            if (e instanceof RpcError) throw e;
+            throw new RpcError(`Cannot check account ${name}`, "invalid");
+        }
+    }
+}
+function keychainService(raw: string): string {
+    return "Claude Code-credentials" + (raw ? "-" + createHash("sha256").update(raw.normalize("NFC")).digest("hex").slice(0, 8) : "");
+}
+function separateKeychain(folder: string, excludeId?: string): void {
+    const secure = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+    const config = process.env.CLAUDE_CONFIG_DIR;
+    // The config-only helper is unverified: reserve both raw and absolute hashes.
+    const defaults = secure !== undefined ? [secure] : config ? [config, resolve(launchCwd, config)] : [""];
+    const service = keychainService(folder);
+    if (defaults.some((raw) => keychainService(raw) === service)) throw new RpcError("Account keychain service collides with Default", "invalid");
+    for (const a of readAgentConfig("claude-code")?.accounts ?? []) {
+        if (a.invalid || a.id === excludeId) continue;
+        if (keychainService(accountRealPath(resolve(a.folder))) === service) throw new RpcError("Accounts must have separate keychain services", "invalid");
+    }
 }
 export function addAccount(provider: string, input: { id: string; name: string; folder?: string }, projectRoots: string[] = []): CliAccount {
     accountProvider(provider);
@@ -160,6 +207,8 @@ export function addAccount(provider: string, input: { id: string; name: string; 
     const expected = join(accountRealPath(paths.home()), "accounts", provider, input.id);
     const requested = input.folder ?? expected;
     const folder = validateFolder(requested, projectRoots, undefined, managed);
+    validateIdentityFiles(provider, folder);
+    if (provider === "claude-code") separateKeychain(folder);
     // Ownership is never adopted for a pre-existing directory, even at our expected path.
     if (managed && (existsSync(expected) || folder !== resolve(expected))) throw new RpcError("Managed account folder already exists or crosses a symlink", "invalid");
     try { mkdirSync(folder, { recursive: true, mode: 0o700 }); }
@@ -183,11 +232,11 @@ export function setDefaultAccount(provider: string, id: string): void {
     writeProvidersFile(pf);
 }
 export function removeAccount(provider: string, id: string, confirmedFolder: string, projectRoots: string[] = []): void {
-    const a = account(provider, id);
+    const a = findAccount(provider, id);
     if (id === "default") throw new RpcError("The Default account cannot be removed", "invalid");
     if (confirmedFolder !== a.folder) throw new RpcError("Confirm the exact account folder before removing it", "invalid");
     const pf = readProvidersFileForUpdate();
-    if (a.managed) {
+    if (a.managed && !a.invalid) {
         const expected = join(accountRealPath(paths.home()), "accounts", provider, id);
         // Every component below our home must remain in place; rm never follows child symlinks.
         const home = accountRealPath(paths.home());

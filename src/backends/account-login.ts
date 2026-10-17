@@ -5,9 +5,10 @@ import { CLAUDE_CLI, CODEX_CLI, extraArgs, requireCli } from "./cli";
 
 export function loginCommand(provider: string, id = "default"): { argv: string[]; env: Record<string, string> } {
     accountProvider(provider);
+    const env = accountEnv(provider, id);
     const cli = provider === "codex" ? CODEX_CLI : CLAUDE_CLI;
     return {
         argv: [requireCli(provider, cli), ...extraArgs(provider), ...(provider === "codex" ? ["login"] : ["auth", "login"])],
-        env: { ...childEnv(), ...accountEnv(provider, id) },
+        env: { ...childEnv(), ...env },
     };
 }
