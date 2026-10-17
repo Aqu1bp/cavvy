@@ -11,6 +11,8 @@ export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefine
 export const [rewindOpen, setRewindOpen] = createSignal(false);
 /** The session the delete dialog asks about. */
 export const [deleteRequest, setDeleteRequest] = createSignal<{ id: string; title: string; projectName: string } | undefined>();
+/** The image shown full size over everything (a prompt's or a reply's). */
+export const [viewedImage, setViewedImage] = createSignal<{ src: string; alt: string } | undefined>();
 /** Files checked in the review pane when Commit was clicked. */
 export const [commitRequest, setCommitRequest] = createSignal<{ id: string; paths: string[] } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */

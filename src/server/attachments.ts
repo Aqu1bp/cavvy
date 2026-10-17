@@ -3,6 +3,7 @@
 // from its bytes (not its name or MIME type), every cap is checked again,
 // and anything wrong is an error back to the composer, never a silent drop.
 
+import { createHash } from "crypto";
 import { ATTACH_LIMITS, type FileChip, type WireFile } from "./protocol";
 import { RpcError } from "./rpc-error";
 import { MEDIA_BUDGET, base64Size } from "../util/media";
@@ -102,11 +103,18 @@ export function fileChips(parts: readonly { type: string }[]): FileChip[] {
     });
 }
 
-/** A turn prompt's attachment fields: how many images, which files. */
-export function attachedPrompt(parts: readonly { type: string }[] | undefined): { images?: number; files?: FileChip[] } {
-    const images = (parts ?? []).filter((p) => p.type === "image").length;
+/** A turn prompt's attachment fields: how many images and what's in them (imagesKey), which files. */
+export function attachedPrompt(parts: readonly { type: string }[] | undefined): { images?: number; imagesKey?: string; files?: FileChip[] } {
+    const images = (parts ?? []).filter((p): p is ImagePart => p.type === "image");
     const files = fileChips(parts ?? []);
-    return { ...(images ? { images } : {}), ...(files.length ? { files } : {}) };
+    return { ...(images.length ? { images: images.length, imagesKey: imagesKey(images) } : {}), ...(files.length ? { files } : {}) };
+}
+
+/** The same for the same images, in the same order, and only then: what the GUI keeps fetched images by. */
+function imagesKey(images: readonly ImagePart[]): string {
+    const h = createHash("sha256");
+    for (const i of images) h.update(`${i.mediaType}\0${i.data.length}\0`).update(i.data);
+    return h.digest("base64url").slice(0, 32);
 }
 
 /** Attachments back to the input box, as the composer sends them. */

@@ -234,3 +234,47 @@ describe("fs.exists", () => {
         await rejects(call("fs.exists", { sessionId: id, paths: "a.ts" }), "invalid");
     });
 });
+
+describe("fs.image", () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+
+    test("an image in the session's folders comes back by its bytes, whatever its name", async () => {
+        writeFileSync(join(cwd, "mock.png"), png);
+        writeFileSync(join(cwd, "named.jpg"), png);
+        expect(await call("fs.image", { sessionId: id, path: "mock.png" })).toEqual({ mediaType: "image/png", data: png.toString("base64") });
+        expect(await call("fs.image", { sessionId: id, path: join(cwd, "named.jpg") })).toMatchObject({ mediaType: "image/png" });
+    });
+
+    test("not an image, an SVG, a folder, outside the roots or through a link out: refused", async () => {
+        writeFileSync(join(cwd, "fake.png"), "not really");
+        writeFileSync(join(cwd, "pic.svg"), `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`);
+        writeFileSync(join(outside, "out.png"), png);
+        symlinkSync(join(outside, "out.png"), join(cwd, "out-link.png"));
+        await rejects(call("fs.image", { sessionId: id, path: "fake.png" }), "not_image");
+        await rejects(call("fs.image", { sessionId: id, path: "pic.svg" }), "not_image");
+        await rejects(call("fs.image", { sessionId: id, path: "dir with space" }), "invalid");
+        await rejects(call("fs.image", { sessionId: id, path: join(outside, "out.png") }), "outside");
+        await rejects(call("fs.image", { sessionId: id, path: "out-link.png" }), "outside");
+        await rejects(call("fs.image", { sessionId: id, path: "nope.png" }), "not_found");
+    });
+});
+
+describe("fs.image limits", () => {
+    test("a FIFO named like an image is refused at once, never read (it would block the server)", async () => {
+        const fifo = join(cwd, "preview.png");
+        expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+        const started = Date.now();
+        await rejects(call("fs.image", { sessionId: id, path: "preview.png" }), "not_image");
+        expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    test("10 MB at most: one byte over is refused, the limit itself is read", async () => {
+        const head = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const at = Buffer.alloc(10 * 1024 * 1024);
+        head.copy(at);
+        writeFileSync(join(cwd, "big.png"), at);
+        expect(await call("fs.image", { sessionId: id, path: "big.png" })).toMatchObject({ mediaType: "image/png" });
+        writeFileSync(join(cwd, "huge.png"), Buffer.concat([at, Buffer.alloc(1)]));
+        await rejects(call("fs.image", { sessionId: id, path: "huge.png" }), "limit");
+    });
+});

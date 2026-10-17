@@ -13,7 +13,7 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { RpcError } = await import("../src/server/rpc-error");
-const { checkFiles, checkMedia, sanitizeName } = await import("../src/server/attachments");
+const { attachedPrompt, checkFiles, checkMedia, sanitizeName } = await import("../src/server/attachments");
 const { framedText, readsPdf, forBackend, attachmentsNote, fitMedia, fitRequest, REQUEST_LIMIT } = await import("../src/providers/files");
 const { MEDIA_BUDGET, base64Size } = await import("../src/util/media");
 const { OpenAICompatProvider } = await import("../src/providers/openai-compat");
@@ -248,6 +248,18 @@ describe("session.send with files", () => {
         } finally {
             await engine.stop();
         }
+    });
+});
+
+describe("a prompt's imagesKey", () => {
+    const img = (data: string, mediaType = "image/png") => ({ type: "image" as const, mediaType, data });
+    test("the same images in the same order give the same key, and anything else another", () => {
+        const key = (parts: { type: string }[]) => attachedPrompt(parts).imagesKey;
+        expect(key([img("QUFB"), img("QkJC")])).toBe(key([{ type: "text" }, img("QUFB"), img("QkJC")]));
+        expect(key([img("QUFB"), img("QkJC")])).not.toBe(key([img("QkJC"), img("QUFB")]));
+        expect(key([img("QUFB")])).not.toBe(key([img("QUFB", "image/gif")]));
+        expect(key([img("QUFBQkJC")])).not.toBe(key([img("QUFB"), img("QkJC")]));
+        expect(attachedPrompt([{ type: "text" }])).toEqual({});
     });
 });
 

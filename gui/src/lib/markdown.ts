@@ -2,8 +2,11 @@
 //
 // Safety: the text comes from a model that may have read hostile content, so
 //   raw HTML is shown as text, links only open http(s)/mailto (and only through
-//   the app, never navigating the window), and images are never loaded: a
-//   remote image URL is a way to send data out the moment it's displayed.
+//   the app, never navigating the window), and remote images are never
+//   loaded: an image URL is a way to send data out the moment it's displayed.
+//   An image that's a file in the session's folders is shown: the element
+//   carries no src, only data-image-file, and the caller fills it in with the
+//   file's bytes from the server (which checks they're an image).
 //
 // Speed: while a reply streams, it's split into top-level blocks and each
 //   finished block's HTML is cached by its source, so only the block still
@@ -94,12 +97,18 @@ interface LinkContext {
 }
 let ctx: LinkContext | undefined;
 
-/** A link to a known file, or undefined (and noted as pending when not asked yet). */
-function fileLink(ref: PathRef, inner: string): string | undefined {
+/** The absolute path of a known file, or undefined (and noted as pending when not asked yet). */
+function knownFile(ref: PathRef): string | undefined {
     if (!ctx || ctx.inLink || ctx.refs >= MAX_REFS) return undefined;
     ctx.refs++;
     const abs = ctx.lookup(ref.path);
     ctx.answers.set(ref.path, abs);
+    return abs ?? undefined;
+}
+
+/** A link to a known file, or undefined (and noted as pending when not asked yet). */
+function fileLink(ref: PathRef, inner: string): string | undefined {
+    const abs = knownFile(ref);
     if (!abs) return undefined;
     const at = ref.line ? `:${ref.line}${ref.col ? `:${ref.col}` : ""}` : "";
     const pos = `${ref.line ? ` data-line="${ref.line}"` : ""}${ref.col ? ` data-col="${ref.col}"` : ""}`;
@@ -173,7 +182,10 @@ md.use({
         image({ href, text }: Tokens.Image) {
             const url = safeHref(href);
             const label = escapeHtml(text || "image");
-            return url ? `<a class="md-image" href="${escapeHtml(url)}" data-external="1" title="Images aren't loaded automatically. Open ${escapeHtml(url)}">${label}</a>` : `<span class="md-image">${label}</span>`;
+            if (url) return `<a class="md-image" href="${escapeHtml(url)}" data-external="1" title="Images aren't loaded automatically. Open ${escapeHtml(url)}">${label}</a>`;
+            const ref = hrefPath(href);
+            const abs = ref && knownFile(ref);
+            return abs ? `<img class="md-img" data-image-file="${escapeHtml(abs)}" alt="${label}" title="${escapeHtml(abs)}">` : `<span class="md-image">${label}</span>`;
         },
         code({ text, lang }: Tokens.Code) {
             return `<pre class="md-pre"><code${lang ? ` data-lang="${escapeHtml(lang)}"` : ""}>${escapeHtml(text)}</code></pre>`;

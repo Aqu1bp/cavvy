@@ -36,9 +36,13 @@ import { gitRoot, gitBranch } from "../util/git";
 import { createWorktree, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
+import { readRegular } from "./git-changes";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
-import { expandPath, isInside } from "../util/files";
+import { expandPath, isInside, sniffImage } from "../util/files";
+
+/** The largest image file shown inline in a reply. */
+const MAX_SHOWN_IMAGE = 10 * 1024 * 1024;
 import { maskKey, redact } from "../util/redact";
 import { cleanTitle, modelSummary, Runtime } from "./runtime";
 import { forkUiLog } from "./history";
@@ -1525,6 +1529,24 @@ export class Engine {
         });
     }
 
+    /**
+     * An image file the GUI shows inline: confined like fs.open, judged by its
+     * bytes, never an SVG (it can carry script). Read as a regular file to a
+     * bound, so a FIFO named like an image can't block the server.
+     */
+    private async readImage(p: Record<string, any>): Promise<{ mediaType: string; data: string }> {
+        const { cwd, roots } = this.openScope(p);
+        const t = confinePath(checkPathInput(p.path), cwd, roots);
+        if (t.dir) throw new RpcError(`${p.path} is a folder`, "invalid");
+        const r = await readRegular(t.real, MAX_SHOWN_IMAGE);
+        if (!r) throw new RpcError(`${p.path} isn't a regular file that can be read`, "not_image");
+        if (!r.buf) throw new RpcError(`${p.path} is too large to show (images up to ${MAX_SHOWN_IMAGE / 1024 / 1024} MB)`, "limit");
+        const bytes = r.buf;
+        const mediaType = sniffImage(bytes);
+        if (!mediaType) throw new RpcError(`${p.path} isn't a PNG, JPEG, GIF or WebP image`, "not_image");
+        return { mediaType, data: bytes.toString("base64") };
+    }
+
     private async commandProvider(cwd: string): Promise<string | undefined> {
         const usable = async (ref: string | undefined) => {
             const model = ref && resolveModelInfo(ref);
@@ -1842,6 +1864,8 @@ export class Engine {
             }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
+            case "session.promptImages":
+                return { images: this.runtime(p.id).promptImages(num(p.seg, -1), num(p.index, -1)) };
             case "session.dequeue": {
                 const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
                 if (!q) return { removed: false };
@@ -2029,6 +2053,8 @@ export class Engine {
                 return this.openInEditor(p);
             case "fs.exists":
                 return this.pathsExist(p);
+            case "fs.image":
+                return this.readImage(p);
             case "commands.list": {
                 const cwd = resolve(expandHome(str(p.cwd, "cwd")));
                 const provider = optStr(p.provider) ?? await this.commandProvider(cwd);

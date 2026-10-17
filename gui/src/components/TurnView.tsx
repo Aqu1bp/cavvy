@@ -8,12 +8,43 @@ import { formatSize } from "../lib/attachments";
 import { prefs } from "../state/prefs";
 import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
-import { findReveal } from "../state/ui";
+import { findReveal, setViewedImage } from "../state/ui";
+import { imagesReady, promptImages } from "../state/images";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 
-export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }) {
+/** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
+function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
+    const key = () => p.turn.prompt?.imagesKey;
+    const [fetched] = createResource(
+        () => {
+            const k = key();
+            return p.sessionId && p.turn.pos && k && imagesReady(p.sessionId) ? { id: p.sessionId, pos: p.turn.pos, key: k } : undefined;
+        },
+        (k) => promptImages(k.id, k.pos, k.key).then((urls) => ({ key: k.key, urls }), () => ({ key: k.key, urls: [] as string[] })),
+    );
+    // Only the images the prompt has now: the last ones fetched stay while offline, never another prompt's.
+    const urls = () => {
+        const f = fetched();
+        const k = key();
+        return f && k && f.key === k ? f.urls : undefined;
+    };
+    const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
+    return (
+        <Show when={urls()?.length} fallback={<span class="chip tiny">{label()}</span>}>
+            <For each={urls()}>
+                {(src, i) => (
+                    <button class="prompt-image" title="View full size" aria-label={`View image ${i() + 1} of ${urls()!.length}`} onClick={() => setViewedImage({ src, alt: `Image ${i() + 1} attached to the prompt` })}>
+                        <img src={src} alt="" />
+                    </button>
+                )}
+            </For>
+        </Show>
+    );
+}
+
+export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (index: number) => void }) {
     const [expanded, setExpanded] = createSignal(false);
     const text = () => p.turn.prompt?.text ?? "";
     const long = () => text().split("\n").length > 14 || text().length > 1400;
@@ -38,7 +69,7 @@ export function UserPrompt(p: { turn: Turn; onRewind?: (index: number) => void }
                 <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
                     <span class="prompt-attachments" data-find-skip>
                         <Show when={p.turn.prompt?.images}>
-                            <span class="chip tiny">{p.turn.prompt!.images} image{p.turn.prompt!.images === 1 ? "" : "s"}</span>
+                            {(n) => <PromptImages sessionId={p.sessionId} turn={p.turn} count={n()} />}
                         </Show>
                         <For each={p.turn.prompt?.files ?? []}>
                             {(f) => (
@@ -446,7 +477,7 @@ function TurnViewContent(p: TurnViewProps) {
         <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""}`} data-turn={p.turn.id} aria-busy={running()}>
             <Show when={p.turn.prompt}>
                 <h2 class="sr-only" data-find-skip>You said</h2>
-                <UserPrompt turn={p.turn} onRewind={p.onRewind} />
+                <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
             </Show>
             <Show when={hasOutput()}>
                 <div class="reply">

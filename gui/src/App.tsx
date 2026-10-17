@@ -28,6 +28,7 @@ import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RunSheet } from "./components/RunSheet";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { CommitDialog } from "./components/CommitDialog";
+import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function ToastItem(p: { toast: Toast }) {
@@ -315,6 +316,7 @@ export function App() {
             <RunSheet />
             <DeleteSessionDialog />
             <CommitDialog />
+            <ImageViewer />
             <Toasts />
         </div>
     );

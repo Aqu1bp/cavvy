@@ -857,3 +857,29 @@
     overflow-wrap: anywhere;
     color: var(--fg-muted);
 }
+
+/* ---- Image viewer -------------------------------------------------- */
+
+.dialog.image-viewer {
+    width: auto !important;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 24vh);
+    background: transparent;
+    box-shadow: none;
+}
+
+.image-viewer .dialog-body {
+    padding: 0;
+    display: flex;
+    justify-content: center;
+}
+
+.image-viewer img {
+    display: block;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 24vh);
+    object-fit: contain;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    cursor: zoom-out;
+}

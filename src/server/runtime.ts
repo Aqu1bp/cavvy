@@ -212,6 +212,8 @@ export class Runtime {
     private turnId?: string;
     /** Where the running turn's messages start (its prompt, and what was sent meanwhile, from here on). */
     private runStart?: number;
+    /** The running turn's prompt attachments, shown before its message is in the session (the system prompt may still be built). */
+    private pendingPrompt?: { seg: number; index: number; attachments?: AttachedPart[] };
     private turnStartedAt = 0;
     /** Settles when the running turn has ended (and written how). */
     private turnDone?: Promise<void>;
@@ -1766,9 +1768,11 @@ export class Runtime {
         const display = opts.display ?? text;
         const index = this.session.messages.length;
         this.turnSnapshotFloor = this.latestCheckpoint();
+        // No imagesKey yet: @mentioned images join the prompt's own once mentions are expanded below.
+        const { imagesKey: _provisional, ...attached } = attachedPrompt(opts.attachments);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attachedPrompt(opts.attachments), ...(opts.kind === "command" ? { command: true } : {}), index },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), index },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -1777,6 +1781,7 @@ export class Runtime {
         this.op({ op: "turn", turn });
         this.turnId = turn.id;
         this.runStart = index;
+        this.pendingPrompt = { seg: this.segment, index };
         if (this.backendModel()) this.backendTurns.set(turn.id, this.segment);
         this.responseBlocks = [];
         this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
@@ -1806,6 +1811,10 @@ export class Runtime {
                     if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) this.notice(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
                     parts.push(...opts.attachments);
                 }
+                // The images as they'll be kept, mentioned ones too: what promptImages returns, so what the key is of.
+                const images = parts.filter((p): p is AttachedPart => p.type === "image");
+                this.pendingPrompt = { seg: this.segment, index, attachments: images };
+                if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind });
             }
         } catch (e) {
@@ -1818,6 +1827,7 @@ export class Runtime {
             this.busy = false;
             this.abort = undefined;
             this.runStart = undefined;
+            this.pendingPrompt = undefined;
             this.cancelInteractions({ keepDelegated: true });
             this.closeOpen();
             this.turnId = undefined;
@@ -2282,6 +2292,16 @@ export class Runtime {
         const out = find(this.session.messages) ?? readSegments(this.session.path).reduce<string | undefined>((hit, seg) => hit ?? find(seg.messages), undefined);
         if (out === undefined) throw new Error("That output is no longer in the conversation.");
         return redact(out);
+    }
+
+    /** The images of the prompt at `pos` (Turn.pos), from before a compaction too. */
+    promptImages(seg: number, index: number): { mediaType: string; data: string }[] {
+        const messages = seg === this.segment ? this.session.messages : readSegments(this.session.path)[seg]?.messages;
+        const m = messages?.[index];
+        const pending = this.pendingPrompt;
+        const parts = m?.role === "user" ? m.content : pending && pending.seg === seg && pending.index === index ? (pending.attachments ?? []) : undefined;
+        if (!parts) throw new RpcError("That prompt is no longer in the conversation.", "not_found");
+        return toWire(parts.filter((p): p is AttachedPart => p.type === "image")).images ?? [];
     }
 
     exportMarkdown(): string {
