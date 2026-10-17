@@ -15,15 +15,30 @@ export interface CostEstimate {
  */
 export function costOf(usage: Usage, model: ModelInfo | undefined): CostEstimate {
     if (typeof usage.cost === "number") return { usd: usage.cost, estimated: Boolean(usage.costEstimated), unknown: false };
-    const p = usage.fastMode ? (promptTokens(usage) > 272_000 ? model?.fastPricingLong ?? model?.fastPricing : model?.fastPricing) : model?.pricing;
-    if (!p) return { usd: 0, estimated: true, unknown: true };
-    const usd =
-        (usage.inputTokens * p.input +
-            usage.outputTokens * p.output +
-            (usage.cacheReadTokens ?? 0) * (p.cacheRead ?? p.input) +
-            (usage.cacheWriteTokens ?? 0) * (p.cacheWrite ?? p.input)) /
-        1e6;
+    const parts = usageCostParts(usage, model);
+    if (!parts) return { usd: 0, estimated: true, unknown: true };
+    const usd = parts.input + parts.output + parts.cacheRead + parts.cacheWrite;
     return { usd, estimated: true, unknown: false };
+}
+
+/** Per-token-type list prices. Thresholds use the whole prompt, before splitting
+ * its components, so every part of a long-context request uses the same tier. */
+export function usageCostParts(usage: Usage, model: ModelInfo | undefined) {
+    let p = usage.fastMode ? (promptTokens(usage) > 272_000 ? model?.fastPricingLong ?? model?.fastPricing : model?.fastPricing) : model?.pricing;
+    if (!usage.fastMode && model?.pricingLong && promptTokens(usage) > (model.longContextThreshold ?? 200_000)) p = model.pricingLong;
+    // Historical Sonnet 4/4.5 long-context rates. Newer models have flat rates.
+    if (!usage.fastMode && p && model?.provider === "anthropic" && /^claude-sonnet-4(?:-5)?(?:-20\d{6})?$/.test(model.id) && promptTokens(usage) > 200_000) {
+        p = { input: p.input * 2, output: p.output * 1.5, cacheRead: (p.cacheRead ?? p.input) * 2, cacheWrite: (p.cacheWrite ?? p.input) * 2 };
+    }
+    if (!p) return undefined;
+    const hour = Math.min(usage.cacheWriteTokens ?? 0, usage.cacheWrite1hTokens ?? 0);
+    return {
+        input: usage.inputTokens * p.input / 1e6,
+        output: usage.outputTokens * p.output / 1e6,
+        cacheRead: (usage.cacheReadTokens ?? 0) * (p.cacheRead ?? p.input) / 1e6,
+        cacheWrite: (((usage.cacheWriteTokens ?? 0) - hour) * (p.cacheWrite ?? p.input) + hour * p.input * 2) / 1e6,
+        cacheSavings: (usage.cacheReadTokens ?? 0) * Math.max(0, p.input - (p.cacheRead ?? p.input)) / 1e6,
+    };
 }
 
 export function addUsage(a: Usage, b: Usage): Usage {

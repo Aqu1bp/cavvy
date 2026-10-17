@@ -6,6 +6,8 @@ const shared = fileURLToPath(new URL("../src/server", import.meta.url));
 
 export default defineConfig({
     plugins: [solid()],
+    // Match Harness's --no-env-file launch policy; builds need no dotenv data.
+    envDir: false,
     // Relative URLs: the same build loads from the desktop app (tauri://) and from `harness gui` (http://).
     base: "./",
     resolve: { alias: { "@shared": shared } },

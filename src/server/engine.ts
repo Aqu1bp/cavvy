@@ -2081,7 +2081,7 @@ export class Engine {
             case "limits.get":
                 return [...this.limits.values()];
             case "usage.summary":
-                return usageSummary(usageDays(p.days));
+                return usageSummary(usageDays(p.days), Date.now(), [...this.limits.values()]);
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }

@@ -1,0 +1,5 @@
+{"timestamp":"2026-10-10T10:00:00Z","type":"session_meta","payload":{"session_id":"old-codex"}}
+{"timestamp":"2026-10-10T10:01:00Z","type":"turn_context","payload":{"model":"gpt-6-astra"}}
+{"timestamp":"2026-10-10T11:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":10}}}}
+{"timestamp":"2026-10-10T11:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":10}}}}
+{"timestamp":"2026-10-10T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":10}}}}

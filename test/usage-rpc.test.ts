@@ -142,6 +142,10 @@ describe("usage.summary", () => {
         await c.until(() => done(c.view(id)));
         const s = await c.call<UsageSummary>("usage.summary", { days: 1 });
         expect(s.days).toBe(1);
+        expect(s.interval).toBe("hour");
+        expect(s.sources).toHaveLength(3);
+        expect(s.limits).toEqual(await c.call("limits.get"));
+        expect((await c.call<UsageSummary>("usage.summary", { days: 90 })).interval).toBe("day");
         const mock = s.rows.find((r) => r.provider === "mock" && r.model === "mock-opus")!;
         expect(mock.sessions).toBe(1);
         expect(mock.inputTokens + mock.outputTokens).toBeGreaterThan(0);
@@ -156,7 +160,7 @@ describe("usage.summary", () => {
         for (const days of [3, "7", null]) {
             const e = await c.call("usage.summary", { days }).catch((x) => x);
             expect(e).toBeInstanceOf(Error);
-            expect(e.message).toBe("days must be one of 1, 7, 30");
+            expect(e.message).toBe("days must be one of 1, 7, 30, 90");
             expect(e.code).toBe("bad_request");
         }
         c.close();
