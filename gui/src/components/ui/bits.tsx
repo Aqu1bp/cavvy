@@ -43,13 +43,14 @@ export function CopyButton(p: { text: () => string; label?: string; class?: stri
 }
 
 /** A circle showing how full something is (the context window). Neutral: grey until it's nearly full. */
-export function Ring(p: { value: number; size?: number; stroke?: number; title?: string; neutral?: boolean }) {
+export function Ring(p: { value: number; size?: number; stroke?: number; title?: string; neutral?: boolean; /** Overrides the tint the value alone would pick. */ tone?: "warning" | "danger" | "normal" }) {
     const size = p.size ?? 18;
     const stroke = p.stroke ?? 2.5;
     const r = (size - stroke) / 2;
     const c = 2 * Math.PI * r;
     const v = () => Math.max(0, Math.min(1, p.value));
-    const tone = () => (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warning)" : p.neutral ? "var(--fg-muted)" : "var(--accent)");
+    const tone = () => p.tone === "danger" ? "var(--danger)" : p.tone === "warning" ? "var(--warning)" : p.tone === "normal" ? (p.neutral ? "var(--fg-muted)" : "var(--accent)")
+        : (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warning)" : p.neutral ? "var(--fg-muted)" : "var(--accent)");
     return (
         <svg class="ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={p.title}>
             <title>{p.title}</title>

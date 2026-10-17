@@ -58,6 +58,14 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
     // The more urgent of the two. With neither known (no context size, no plan
     // report), the ring stays empty and neutral rather than implying a share.
     const urgency = () => Math.max(view().pct ?? 0, meter()?.reached ? 1 : (meter()?.top ?? 0) / 100);
+    // Each source keeps its own thresholds: context nears compaction sooner,
+    // while a plan only turns red at 90% or once a limit is reached.
+    const tone = (): "danger" | "warning" | "normal" => {
+        const ctx = view().pct ?? 0, plan = meter()?.top ?? 0;
+        if (ctx >= 0.85 || meter()?.reached || plan >= 90) return "danger";
+        if (ctx >= 0.7 || plan >= 80) return "warning";
+        return "normal";
+    };
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
         meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}` : undefined,
@@ -104,7 +112,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                     if (e.key === "ArrowDown") { e.preventDefault(); enterPanel(); }
                 }}
             >
-                <span aria-hidden="true"><Ring value={urgency()} size={18} stroke={2.4} neutral /></span>
+                <span aria-hidden="true"><Ring value={urgency()} size={18} stroke={2.4} neutral tone={tone()} /></span>
             </button>
             <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="end" width={288} class="ctx-card usage-card">
                 <div ref={panel} id={panelId} role="dialog" aria-label="Context and usage" tabIndex={-1}
