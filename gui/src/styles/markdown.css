@@ -158,6 +158,14 @@
     text-align: left;
     border-bottom: 1px solid var(--border);
     vertical-align: top;
+    overflow-wrap: break-word;
+}
+
+.md th :not(pre) > code,
+.md td :not(pre) > code,
+.md th > code,
+.md td > code {
+    overflow-wrap: break-word;
 }
 
 .md th {

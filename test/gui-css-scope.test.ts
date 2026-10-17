@@ -5,6 +5,19 @@ import { parseRules } from "./helpers/contrast";
 
 const gui = join(import.meta.dir, "../gui/src");
 
+test("markdown tables preserve word widths while prose still wraps long content", () => {
+    const rules = parseRules(readFileSync(join(gui, "styles/markdown.css"), "utf8"));
+    const declaration = (selector: string, property: string) =>
+        rules.findLast((rule) => rule.selectors.includes(selector) && rule.decls.has(property))?.decls.get(property);
+    for (const selector of [".md th", ".md td", ".md th > code", ".md td > code", ".md th :not(pre) > code", ".md td :not(pre) > code"]) {
+        expect(declaration(selector, "overflow-wrap")).toBe("break-word");
+    }
+    expect(declaration(".md", "overflow-wrap")).toBe("anywhere");
+    expect(declaration(".md :not(pre) > code", "overflow-wrap")).toBe("anywhere");
+    expect(declaration(".md-table", "overflow-x")).toBe("auto");
+    expect(declaration(".md .md-pre", "overflow-x")).toBe("auto");
+});
+
 test("forced-colors selection outlines preserve keyboard focus on selected controls", () => {
     const css = readFileSync(join(gui, "styles/base.css"), "utf8");
     const forced = css.match(/@media\s*\(forced-colors:\s*active\)\s*\{([\s\S]*?)\n\}/)?.[1];

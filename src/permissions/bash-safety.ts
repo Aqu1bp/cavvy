@@ -10,7 +10,7 @@ import { accountCredentialFiles, accountFolders } from "../providers/accounts";
 export interface SimpleCommand {
     text: string;
     argv: string[];
-    /** The operator before it: ";", "\n", "&&", "||", "|" or "&" (none for the first). */
+    /** The operator before it (none for the first), including case terminators. */
     after?: string;
     /**
      * A redirection on it that the shell can fail on before it runs: any but
@@ -277,9 +277,11 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
                 text += c;
                 continue;
             }
-            const doubled = (c === "|" || c === "&") && n === c;
+            const doubled = (c === "|" || c === "&" || c === ";") && n === c;
             if (doubled) i++;
-            endCommand(doubled ? c + c : c);
+            let op = doubled ? c + c : c;
+            if (c === ";" && cmd[i + 1] === "&") { op += "&"; i++; }
+            endCommand(op);
             continue;
         }
         if (c === ">" || c === "<") {
@@ -412,6 +414,7 @@ const WRAPPERS = new Map<string, Wrapper>([
     ["env", { short: "uPCa", long: ["unset", "chdir", "argv0"], split: { short: "S", long: "split-string" } }],
     ["timeout", TIMEOUT],
     ["gtimeout", TIMEOUT],
+    ["parallel", { short: "jSaNnLsdI", long: ["jobs", "sshlogin", "arg-file", "max-args", "max-lines", "delimiter", "colsep", "replace", "tagstring", "results", "joblog", "workdir"] }],
     ["xargs", { short: "aEILnsPdJRS", attached: "eil", long: ["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"] }],
     ["sudo", { short: "aCcDgpRrTtUu", attached: "h", long: ["user", "group", "close-from", "chdir", "chroot", "host", "prompt", "role", "type", "command-timeout", "other-user", "login-class", "auth-type"] }],
     ["doas", { short: "aCu" }],
@@ -1807,8 +1810,10 @@ export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefin
             const branch = typeof dir === "string" ? headBranch(resolve(dir, ...dirs)) : undefined;
             // Without a refspec git pushes the current branch (push.default "simple").
             if (!specs.length && branch && DEFAULT_BRANCH.test(branch)) return `git push from ${branch}`;
+            if (!specs.length && dir === null) return "git push (branch unknown)";
             for (const spec of specs) {
                 let dst = spec.replace(/^\+/, "").split(":").pop()!;
+                if ((dst === "HEAD" || dst === "@") && dir === null) return "git push to HEAD (branch unknown)";
                 if ((dst === "HEAD" || dst === "@") && branch) dst = branch;
                 if (DEFAULT_BRANCH.test(dst)) return `git push to ${dst.replace(/^refs\/heads\//, "")}`;
             }
@@ -1888,24 +1893,127 @@ function cdDestination(argv: string[], text: string): string | undefined {
     return to !== undefined && argv.length === i + 1 && !/^[-~+]|\$|[*?[]/.test(to) && !/\$/.test(text) ? to : undefined;
 }
 
+/** Find case's structural `in`, past a quoted or substituted selector. */
+function caseHeader(text: string): { end: number; found: boolean } | undefined {
+    const start = /^case[ \t]+/.exec(text)?.[0].length;
+    if (start === undefined) return undefined;
+    let quote: string | undefined;
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i]!;
+        if (ch === "\\" && quote !== "'") { i++; continue; }
+        if (quote) {
+            if (ch === quote) quote = undefined;
+            continue;
+        }
+        if (ch === "'" || ch === '"' || ch === "`") { quote = ch; continue; }
+        if (ch === "(") depth++;
+        else if (ch === ")") depth = Math.max(0, depth - 1);
+        else if (!depth && i > start && /[ \t]/.test(text[i - 1]!) && text.slice(i, i + 2) === "in" && (i + 2 === text.length || /[ \t]/.test(text[i + 2]!))) {
+            let end = i + 2;
+            while (text[end] === " " || text[end] === "\t") end++;
+            return { end, found: true };
+        }
+    }
+    return { end: text.length, found: false };
+}
+
+/** Bodies are extra evidence for protective checks, never grounds for approving shell syntax. */
+function commandBodies(cmd: string): { commands: SimpleCommand[]; compoundAt: number } {
+    const commands: SimpleCommand[] = [];
+    const cases: ("in" | "pattern" | "body")[] = [];
+    let compoundAt = -1;
+    for (const c of analyzeCommand(cmd).commands) {
+        let text = c.text;
+        if (/^;;|^;&/.test(c.after ?? "") && cases.length) cases[cases.length - 1] = "pattern";
+        for (let n = 0; n < 32; n++) {
+            const header = caseHeader(text);
+            if (header) {
+                cases.push(header.found ? "pattern" : "in");
+                text = text.slice(header.end);
+            } else if (/^esac(?:[ \t]|$)/.test(text)) {
+                cases.pop();
+                text = text.replace(/^esac[ \t]*/, "");
+            } else if (cases.at(-1) === "in" && /^in(?:[ \t]|$)/.test(text)) {
+                cases[cases.length - 1] = "pattern";
+                text = text.replace(/^in[ \t]*/, "");
+            } else if (cases.at(-1) === "pattern") {
+                // A pattern can contain quoted ')' and alternatives split at '|'.
+                const end = text.match(/^(?:'[^']*'|"[^"]*"|\\.|[^)'"\\])*\)/);
+                if (!end) { text = ""; break; }
+                cases[cases.length - 1] = "body";
+                text = text.slice(end[0].length).trimStart();
+            } else {
+                const prefix = /^(?:(?:if|then|elif|else|while|until|do|done|fi|!)(?:[ \t]+|$)|(?:function[ \t]+[\w.-]+(?:[ \t]*\(\))?|[\w.-]+[ \t]*\(\))[ \t]*|[{}](?:[ \t]+|$)|[()])/.exec(text);
+                if (!prefix) {
+                    if (/^(for|select)(?:[ \t]|$)/.test(text)) text = "";
+                    else break;
+                } else text = text.slice(prefix[0].length).trimStart();
+            }
+            if (compoundAt < 0) compoundAt = commands.length;
+        }
+        if (text !== c.text && compoundAt < 0) compoundAt = commands.length;
+        if (text) commands.push(...(text === c.text ? [c] : analyzeCommand(text).commands));
+    }
+    return { commands, compoundAt };
+}
+
+/** The programs find may execute, including multiple -exec primaries. */
+function findCommands(argv: string[]): { argv: string[]; changesDir: boolean }[] {
+    const out: { argv: string[]; changesDir: boolean }[] = [];
+    for (let i = 1; i < argv.length; i++) {
+        if (!/^-(exec|execdir|ok|okdir)$/.test(argv[i]!)) continue;
+        const start = i + 1;
+        const changesDir = argv[i]!.endsWith("dir");
+        while (i + 1 < argv.length && argv[i + 1] !== ";" && !(argv[i + 1] === "+" && argv[i] === "{}")) i++;
+        out.push({ argv: argv.slice(start, i + 1), changesDir });
+    }
+    return out;
+}
+
 /**
- * The commands of a command line with the directory each runs in, following
- * `cd`. null: a `cd` the text doesn't settle (see cdDestination). `programs`: what
- * each one runs, through its wrappers (runLevels). `cd` is matched exactly:
- * `CD x` is /usr/bin/cd, which changes the directory of its own process only.
+ * Commands and the directories they may run in, through wrappers, compound
+ * bodies and literal shell scripts. null means a directory we can't settle.
+ * Keep this protective view separate from the syntax used by allow/read-only
+ * checks: seeing a loop's body doesn't make the loop safe to approve.
  */
 export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: string[]; programs: string[][]; dir: string | null | undefined; text: string }[] {
     const out: { argv: string[]; programs: string[][]; dir: string | null | undefined; text: string }[] = [];
-    let dir: string | null | undefined = cwd;
-    for (const c of analyzeCommand(cmd).commands) {
-        const argv = effectiveArgv(c.argv);
-        if (argv[0] === "cd" || argv[0] === "pushd") {
-            const to = cdDestination(argv, c.text);
-            if (dir !== undefined) dir = dir === null || to === undefined ? null : resolve(dir, to);
-            continue;
+    let remaining = 256_000;
+    const visit = (script: string, initial: string | null | undefined, depth: number) => {
+        if (depth > 4 || (depth > 0 && script.length > remaining)) return;
+        remaining = Math.max(0, remaining - script.length);
+        const body = commandBodies(script);
+        // A loop can run zero or many times, and a branch need not run at all.
+        const uncertain = body.compoundAt >= 0 && body.commands.slice(body.compoundAt).some((c) => /^(cd|pushd)$/.test(effectiveArgv(c.argv)[0] ?? ""));
+        let dir = initial;
+        for (const [index, c] of body.commands.entries()) {
+            if (uncertain && index === body.compoundAt) dir = null;
+            const argv = effectiveArgv(c.argv);
+            if (argv[0] === "cd" || argv[0] === "pushd") {
+                const to = cdDestination(argv, c.text);
+                if (dir !== undefined) dir = dir === null || to === undefined ? null : resolve(dir, to);
+                continue;
+            }
+            const programs = runLevels(c.argv).map((l) => l.argv);
+            out.push({ argv, programs, dir, text: c.text });
+            for (const [level, args] of programs.entries()) {
+                if (runs(args[0], "parallel") && programs[level + 1]) {
+                    const inner = programs[level + 1]!;
+                    const end = inner.findIndex((a) => /^:::+$|^::::$/.test(a));
+                    visit(inner.slice(0, end < 0 ? undefined : end).join(" "), dir, depth + 1);
+                }
+                if (runs(args[0], ...SHELLS)) {
+                    const at = args.findIndex((a, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
+                    if (at > 0 && args[at + 1] !== undefined) visit(args[at + 1]!, dir, depth + 1);
+                }
+                if (runs(args[0], "find")) for (const inner of findCommands(args)) {
+                    visit(inner.argv.map(shellWord).join(" "), inner.changesDir ? null : dir, depth + 1);
+                }
+            }
         }
-        out.push({ argv, programs: runLevels(c.argv).map((l) => l.argv), dir, text: c.text });
-    }
+    };
+    visit(cmd, cwd, 0);
     return out;
 }
 
@@ -1916,7 +2024,8 @@ export function configTarget(cmd: string, harnessHome?: string): string | undefi
     const unquoted = a.commands.map((c, k) => c.argv.filter((_, i) => !messages[k]!.includes(i)).join(" ")).join(" ; ");
     // In every spelling: on a case-insensitive volume `.harneſſ/` is `.harness/`.
     const homes = harnessHome ? spellings(harnessHome) : [];
-    for (const text of [withoutMessages(cmd), unquoted].flatMap(spellings)) {
+    const bodies = commandsWithDirs(withoutMessages(cmd), undefined).flatMap((c) => c.programs.map((argv) => argv.join(" ")));
+    for (const text of [withoutMessages(cmd), unquoted, ...bodies].flatMap(spellings)) {
         if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "harness or git configuration";
         if (GIT_EXEC_CONFIG.test(text)) return "git settings that run programs";
         if (homes.some((h) => text.includes(h))) return "harness configuration";

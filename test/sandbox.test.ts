@@ -10,8 +10,8 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
 const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, accessNeeded, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT, WORKTREE_HINT } = await import("../src/permissions/sandbox");
-const { pushesDefaultBranch } = await import("../src/permissions/bash-safety");
-const { BashTool, BashOutputTool, KillShellTool, killAllShells } = await import("../src/tools/bash");
+const { pushesDefaultBranch, commandsWithDirs, configTarget, isReadOnlyCommand, shellWord } = await import("../src/permissions/bash-safety");
+const { BashTool, BashOutputTool, KillShellTool, killAllShells, sandboxOutputHint } = await import("../src/tools/bash");
 import type { Sandbox } from "../src/permissions/sandbox";
 
 afterAll(cleanup);
@@ -217,6 +217,142 @@ describe("accessNeeded", () => {
     });
 });
 
+describe("programs inside shell bodies", () => {
+    const shapes = [
+        (c: string) => `mkdir -p /tmp/x && cd /tmp/x && for n in 29 48 50; do ${c}; done`,
+        (c: string) => `while read n; do ${c}; done < list.txt`,
+        (c: string) => `until false; do ${c}; done`,
+        (c: string) => `if true; then ${c}; fi`,
+        (c: string) => `if false; then true; elif true; then ${c}; else true; fi`,
+        (c: string) => `case "$n" in a|b) true ;; *) ${c} ;; esac`,
+        (c: string) => `f() { ${c}; }; f`,
+        (c: string) => `f-name() { ${c}; }; f-name`,
+        (c: string) => `case x\nin x) ${c};; esac`,
+        (c: string) => `case $(printf x) in x) ${c};; esac`,
+        (c: string) => `case $(printf in) in x) ${c};; esac`,
+        (c: string) => `case "a in b" in *) ${c};; esac`,
+        (c: string) => `case x in a) true ;& x) ${c};; esac`,
+        (c: string) => `case x in a) true ;;& x) ${c};; esac`,
+        (c: string) => `function f { ${c}; }; f`,
+        (c: string) => `{ ${c}; }`,
+        (c: string) => `( ${c} )`,
+        ...["sh", "bash", "zsh", "dash"].map((sh) => (c: string) => `${sh} -c ${shellWord(c)}`),
+        (c: string) => `bash -lc ${shellWord(`for n in 1; do ${c}; done`)}`,
+        ...["-exec", "-execdir", "-ok", "-okdir"].map((flag) => (c: string) => `find . -name '*.md' ${flag} ${c} {} \\;`),
+        (c: string) => `find . -exec ${c} {} +`,
+        (c: string) => `parallel ${c} ::: 29 48`,
+        (c: string) => `parallel ${shellWord(c)} ::: 29 48`,
+        (c: string) => `parallel --jobs 2 ${c} ::: 29 48`,
+        (c: string) => `xargs -n 1 ${c}`,
+    ];
+
+    test.each(shapes.map((shape) => [shape("gh issue view 29"), shape] as const))("detects programs in %s", (_, shape) => {
+        expect(accessNeeded(shape("gh issue view 29"))).toEqual({ host: "gh" });
+        expect(accessNeeded(shape("curl -s https://example.com"))).toEqual({ network: "curl" });
+        expect(accessNeeded(shape("echo gh"))).toEqual({});
+        expect(looksDestructive(shape("git reset --hard"))).toBe("git reset --hard");
+        expect(looksDestructive(shape("git status"))).toBeUndefined();
+        expect(pushesDefaultBranch(shape("git push origin main"))).toBe("git push to main");
+        expect(pushesDefaultBranch(shape("git push origin topic"))).toBeUndefined();
+        expect(configTarget(shape("git config core.hooksPath /tmp/hooks"))).toBeDefined();
+        expect(configTarget(shape("git status"))).toBeUndefined();
+        expect(isReadOnlyCommand(shape("rm scratch"))).toBe(false);
+    });
+
+    test("substitutions in loop headers do not hide the body", () => {
+        expect(accessNeeded("for n in $(seq 1 3); do curl -s https://example.com; done")).toEqual({ network: "curl" });
+        expect(accessNeeded("for n in 1; do for m in 2; do gh issue view 29; done; done")).toEqual({ host: "gh" });
+        expect(accessNeeded("case x in a) true;; b) case y in *) gh issue view 29;; esac;; esac")).toEqual({ host: "gh" });
+    });
+
+    test.each([
+        "echo 'for n in 1; do gh issue view 29; done'",
+        "printf '%s' 'bash -c gh'",
+        "find . -name gh",
+        "for n in gh curl; do echo $n; done",
+        "case gh in gh) echo gh;; esac",
+        "bash -c 'echo gh'",
+        "parallel echo gh ::: 29 48",
+        "'if' gh issue view 29",
+        "echo do gh issue view 29",
+    ])("does not execute data in %p", (cmd) => {
+        expect(accessNeeded(cmd)).toEqual({});
+    });
+
+    test("directory changes in loops and branches remain unknown afterwards", () => {
+        for (const cmd of [
+            "for n in 1 2; do cd sub; git status; done; git status",
+            "while true; do git status; cd sub; done; git status",
+            "if true; then cd sub; fi; git status",
+        ]) {
+            const commands = commandsWithDirs(cmd, "/project").filter((c) => c.argv[0] === "git");
+            expect(commands.length).toBeGreaterThan(0);
+            expect(commands.every((c) => c.dir === null)).toBe(true);
+        }
+        const commands = commandsWithDirs("bash -c 'cd sub; git status'; git status", "/project");
+        expect(commands.filter((c) => c.argv[0] === "git").map((c) => c.dir)).toEqual(["/project/sub", "/project"]);
+        expect(commandsWithDirs("find . -execdir git status \\;", "/project").at(-1)?.dir).toBeNull();
+    });
+
+    test("compound bodies preserve known directories before them and protect uncertain pushes", () => {
+        const ws = real(tempDir());
+        mkdirSync(join(ws, ".git"));
+        writeFileSync(join(ws, ".git", "HEAD"), "ref: refs/heads/main\n");
+        expect(pushesDefaultBranch("git push; for n in 1; do cd sub; done", ws)).toBe("git push from main");
+        expect(pushesDefaultBranch("cd .; { git push; }", ws)).toBe("git push from main");
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push", ws)).toBe("git push (branch unknown)");
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push origin HEAD", ws)).toBe("git push to HEAD (branch unknown)");
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push origin topic", ws)).toBeUndefined();
+    });
+
+    test("nested scripts have a bounded depth and leave outer commands visible", () => {
+        let cmd = "gh issue view 29";
+        for (let i = 0; i < 4; i++) cmd = `sh -c ${shellWord(cmd)}`;
+        expect(accessNeeded(cmd)).toEqual({ host: "gh" });
+        for (let i = 0; i < 8; i++) cmd = `sh -c ${shellWord(cmd)}`;
+        expect(commandsWithDirs(cmd, undefined).length).toBeLessThanOrEqual(5);
+        expect(accessNeeded(`${cmd}; curl https://example.com`)).toEqual({ network: "curl" });
+        expect(accessNeeded(`echo ${"x".repeat(260_000)}; gh issue view 29`)).toEqual({ host: "gh" });
+    });
+});
+
+describe("sandbox output hints", () => {
+    const sandbox: Sandbox = { kind: "seatbelt", policy: { writable: [], readOnly: [], unreadable: [], gitDirs: [] } };
+    const blocked = "failed to read configuration: open /home/test/.config/gh/config.yml: operation not permitted";
+
+    test.each([blocked, "Read-only file system", "Could not resolve host: example.com", "getaddrinfo ENOTFOUND example.com"])("exit zero still reports strong evidence: %p", (output) => {
+        const hint = sandboxOutputHint(sandbox, output, undefined, false);
+        expect(hint).toContain("may have been blocked");
+        expect(hint).toContain(SANDBOX_HINT);
+    });
+
+    test.each(["fetch failed", "Connection refused", "Failed to connect", "all tests passed"])("exit zero ignores weak evidence: %p", (output) => {
+        expect(sandboxOutputHint(sandbox, output, undefined, false)).toBeUndefined();
+    });
+
+    test("failures retain the existing broader hints", () => {
+        expect(sandboxOutputHint(sandbox, "fetch failed", undefined, true)).toContain(SANDBOX_HINT);
+        expect(sandboxOutputHint(sandbox, blocked, undefined, true)).not.toContain("may have been blocked");
+    });
+
+    test.each([0, 1, null])("BashOutput includes hints at status %p, even when filtered", async (exitCode) => {
+        const shell = { output: blocked, readOffset: 0, exitCode, sandboxed: true,
+            sandboxHint: () => sandboxOutputHint(sandbox, blocked, undefined, exitCode !== null && exitCode !== 0) };
+        const ctx = { state: { shells: new Map([["test", shell]]) } } as any;
+        expect((await BashOutputTool.run({ bash_id: "test", filter: "no-match" }, ctx)).content).toContain(SANDBOX_HINT);
+        shell.sandboxed = false;
+        expect((await BashOutputTool.run({ bash_id: "test" }, ctx)).content).not.toContain(SANDBOX_HINT);
+    });
+
+    test("unsandboxed foreground output does not get a sandbox hint", async () => {
+        const ws = real(tempDir());
+        const ctx = { state: { cwd: ws, projectRoot: ws, shells: new Map() }, settings: {}, signal: new AbortController().signal } as any;
+        const result = await BashTool.run({ command: `printf '%s' ${shellWord(blocked)}` }, ctx);
+        expect(result.isError).toBe(false);
+        expect(result.content).toBe(blocked);
+    });
+});
+
 describe("Bash allowedHosts validation", () => {
     const v = (allowedHosts: unknown) => BashTool.validate!({ command: "true", allowedHosts } as any, {} as any);
     test("host names, wildcards and ports pass", () => {
@@ -350,6 +486,22 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
     const bash = (command: string, sb: Sandbox | null = sandbox) => BashTool.run({ command }, ctx(sb));
 
     afterAll(() => killAllShells({ state }));
+
+    test("a blocked write followed by success carries a tentative hint", async () => {
+        const command = "touch .git/hooks/blocked; true";
+        const result = await bash(command);
+        expect(result.isError).toBe(false);
+        expect(result.content).toContain("may have been blocked");
+        expect(result.content).toContain(SANDBOX_HINT);
+        const started = await BashTool.run({ command, run_in_background: true }, ctx());
+        const id = started.content.match(/shell (\S+) \(pid/)![1]!;
+        const shell = state.shells.get(id);
+        for (let i = 0; i < 100 && shell.exitCode === null; i++) await Bun.sleep(20);
+        expect(shell.exitCode).toBe(0);
+        const output = await BashOutputTool.run({ bash_id: id }, ctx());
+        expect(output.content).toContain("may have been blocked");
+        expect(output.content).toContain(SANDBOX_HINT);
+    });
 
     test("works in the workspace and temp dirs", async () => {
         const r = await bash(`echo hi > out.txt && mkdir -p d && mv out.txt d/ && cat d/out.txt && echo t > "${join(tmpdir(), `sbx-test-${process.pid}`)}" && echo done`);

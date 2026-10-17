@@ -598,7 +598,8 @@ export function looksDestructive(cmd: string, cwd?: string, depth = 0): string |
 }
 
 /** Output that suggests the sandbox got in the way. */
-export function blockedBySandbox(output: string): boolean {
+export function blockedBySandbox(output: string, strongOnly = false): boolean {
+    if (strongOnly) return /Operation not permitted|Read-only file system|\bEPERM\b|\bEROFS\b|Could not resolve|nodename nor servname|Name or service not known|Temporary failure in name resolution|ENOTFOUND|EAI_AGAIN/i.test(output);
     return /Operation not permitted|Read-only file system|EPERM|EROFS|Failed to open PTY|Could not resolve|nodename nor servname|Name or service not known|Temporary failure in name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|Network is unreachable|Failed to connect|fetch failed|Connection refused|sandbox-exec|bwrap:/i.test(output);
 }
 
