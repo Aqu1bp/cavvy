@@ -149,9 +149,12 @@ describe("embedded terminals", () => {
         try {
             shells.open(owner, "early-ctrl-c", iso.home, 80, 24);
             shells.write(owner, "early-ctrl-c", "\x03");
+            // dash's prompt. Then a pause before typing: in CI on Linux, a line sent in the same write as the Ctrl-C never ran.
+            await until(() => owner.output().endsWith("$ "));
+            await Bun.sleep(300);
+            expect(owner.events.some((e) => e.type === "terminal.exit")).toBe(false);
             shells.write(owner, "early-ctrl-c", "printf '__%s__\\n' alive\n");
             await until(() => owner.output().includes("__alive__\r\n"));
-            expect(owner.events.some((e) => e.type === "terminal.exit")).toBe(false);
         } finally { await shells.stop(); }
     });
     test("a command's last output, written just before it exits, arrives before its exit", async () => {
