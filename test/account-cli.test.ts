@@ -5,7 +5,7 @@ import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const { home, cleanup } = isolate();
-const { saveAgentConfig, BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+const { saveAgentConfig, readAgentConfig, removeAgentConfig, BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 const { checkAgentCli, createBackend } = await import("../src/backends/index");
 const { claudePermissions } = await import("../src/backends/claude-code");
 const { childEnv } = await import("../src/util/env");
@@ -286,8 +286,11 @@ for (const [provider, files] of [["claude-code", [".claude.json", ".credentials.
         writeFileSync(target, "fixture only");
         const saved = [{ id: "personal", name: "Personal", folder, managed: false }];
         try {
-            for (const kind of ["symlink", "dangling", "hardlink"]) {
+            const shared = join(candidate, "shared-identity");
+            for (const kind of ["symlink", "dangling", "hardlink", "internal-link-to-hardlink"]) {
                 if (kind === "hardlink") linkSync(target, identity);
+                // An internal symlink whose target is a hard link to another identity.
+                else if (kind === "internal-link-to-hardlink") { linkSync(target, shared); symlinkSync(shared, identity); }
                 else symlinkSync(kind === "dangling" ? join(root, "missing-identity") : target, identity);
                 expect(() => addAccount(provider, { id: "linked", name: "Linked", folder: candidate })).toThrow(/outside|symlink|hard links/);
                 saveAgentConfig(provider, { accounts: [{ id: "linked", name: "Linked", folder: candidate, managed: false }], defaultAccount: "linked" });
@@ -297,6 +300,7 @@ for (const [provider, files] of [["claude-code", [".claude.json", ".credentials.
                 await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/outside|symlink|hard links/);
                 expect(existsSync(log)).toBe(false);
                 rmSync(identity);
+                rmSync(shared, { force: true });
                 saveAgentConfig(provider, { accounts: saved, defaultAccount: "default" });
             }
             const internal = join(candidate, "private-identity");
@@ -313,23 +317,26 @@ for (const [provider, files] of [["claude-code", [".claude.json", ".credentials.
 }
 
 test("an invalid preferred account cannot reject other providers' model listings", async () => {
-    const { listAllModels, forgetClient } = await import("../src/providers/models");
-    const { writeJson } = await import("../src/config/settings");
+    const { listAllModels } = await import("../src/providers/models");
+    const { readJson, writeJson } = await import("../src/config/settings");
     const { paths } = await import("../src/config/paths");
-    const { createHash } = await import("crypto");
+    const { listAccounts } = await import("../src/providers/accounts");
+    const savedCodex = readAgentConfig("codex");
+    const previousCache = existsSync(paths.modelCache()) ? readJson(paths.modelCache()) : undefined;
     saveAgentConfig("claude-code", { accounts: [{ id: "invalid", name: "Invalid", folder: "relative", managed: false }], defaultAccount: "invalid" });
-    const previousKey = process.env.OPENAI_API_KEY;
-    process.env.OPENAI_API_KEY = FAKE.openai;
-    const fp = createHash("sha256").update(FAKE.openai).digest("hex").slice(0, 10) + "|https://api.openai.com/v1";
-    writeJson(paths.modelCache(), { version: 3, providers: { openai: { fp, fetchedAt: Date.now(), models: [{ provider: "openai", id: "cached-fixture" }] } } });
+    // A CLI provider's cache key needs no API key, so earlier key lookups in this process can't change it.
+    const codex = savedCodex ?? {};
+    if (!savedCodex) saveAgentConfig("codex", {});
+    const fp = `cli|${codex.path ?? ""}|${(codex.args ?? []).join("\0")}|${codex.defaultAccount ?? "default"}|${listAccounts("codex").find((a) => a.id === (codex.defaultAccount ?? "default"))!.folder}`;
+    writeJson(paths.modelCache(), { version: 3, providers: { codex: { fp, fetchedAt: Date.now(), models: [{ provider: "codex", id: "cached-fixture" }] } } });
     try {
         const listings = await listAllModels({ cachedOnly: true });
         expect(listings.find((l) => l.provider.id === "claude-code")).toMatchObject({ status: "error", models: [], error: expect.stringContaining("Invalid account folder") });
-        expect(listings.find((l) => l.provider.id === "openai")).toMatchObject({ status: "cached", models: [{ id: "cached-fixture" }] });
+        expect(listings.find((l) => l.provider.id === "codex")).toMatchObject({ status: "cached", models: [{ id: "cached-fixture" }] });
         expect(existsSync(log)).toBe(false);
     } finally {
         saveAgentConfig("claude-code", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }], defaultAccount: "default" });
-        if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey;
-        forgetClient("openai");
+        if (!savedCodex) removeAgentConfig("codex");
+        if (previousCache === undefined) rmSync(paths.modelCache(), { force: true }); else writeJson(paths.modelCache(), previousCache);
     }
 });

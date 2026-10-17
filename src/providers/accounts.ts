@@ -162,12 +162,14 @@ function validateIdentityFiles(provider: string, folder: string): void {
     for (const name of names) {
         const file = join(folder, name);
         try {
-            const stat = lstatSync(file);
+            let stat = lstatSync(file);
             if (stat.isSymbolicLink()) {
                 let target: string;
                 try { target = realpathSync(file); }
                 catch { throw new RpcError(`Cannot resolve account ${name} symlink; use a private file inside the account folder`, "invalid"); }
                 if (!inside(target, folder)) throw new RpcError(`Account ${name} links outside its folder`, "invalid");
+                // The CLI opens the target, so its link count is the one that matters.
+                stat = statSync(target);
             }
             // A hard link has no target path. Its other names cannot be proven
             // private from lstat, so shared identity files must be copied first.

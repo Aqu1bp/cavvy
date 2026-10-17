@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { ServerEvent } from "../src/server/protocol";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -92,7 +92,9 @@ exit 7
             command: { argv: ["not-the-cli"], env: { CLAUDE_CONFIG_DIR: "client-injected" } } } as any);
         await until(() => first.output().includes("secret-before"));
         const original = readFileSync(join(dir, "starts"), "utf8");
-        expect(original.trim().split("|")[1]).toBe(folder);
+        // Accounts launch with the canonical folder (macOS temp dirs live under /private).
+        const launched = join(realpathSync(dir), "original-account");
+        expect(original.trim().split("|")[1]).toBe(launched);
         engine.dropClient(first);
         // A later config change cannot alter an already-running login's env.
         saveAgentConfig("claude-code", { accounts: [{ id: "work", name: "Changed", folder: join(dir, "changed-account"), managed: false }] });
@@ -103,10 +105,11 @@ exit 7
         expect(listed).toHaveLength(1);
         expect(listed[0]?.login).toEqual({ provider: "claude-code", accountId: "work", name: "Work" });
         expect(JSON.stringify(listed)).not.toContain(folder);
+        expect(JSON.stringify(listed)).not.toContain(launched);
         expect(await engine.handle(back, "terminal.attach", { id: "login", have: 0, login: { provider: "codex", accountId: "default" }, env: { CLAUDE_CONFIG_DIR: "client-injected" } } as any)).toEqual(listed[0]!);
         expect(back.events).toEqual([{ type: "terminal.data", id: "login", data: "", reset: true, pos: expect.any(Number) }]);
         await engine.handle(back, "terminal.write", { id: "login", data: "show\n" });
-        await until(() => back.output().includes(`env=${folder}`));
+        await until(() => back.output().includes(`env=${launched}`));
         expect(back.output()).not.toContain("secret-");
         expect(readFileSync(join(dir, "starts"), "utf8")).toBe(original);
         engine.dropClient(back);
