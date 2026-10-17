@@ -79,6 +79,8 @@ const KEEP = 250_000;
 const SCROLLBACK = 1_000_000;
 /** How long a window that went away has to come back before its terminals are stopped. */
 const GRACE_MS = 10 * 60_000;
+/** How long a shell's last output has, once it exits, to arrive before its exit is reported without the rest. */
+const DRAIN_MS = 1000;
 /** Entering or leaving the alternate screen (vim, htop, less). */
 const ALT_SCREEN = /\x1b\[\?(?:1049|1047|47)([hl])/g;
 
@@ -311,7 +313,10 @@ export class Terminals {
             if (entry.unacked >= MAX_UNACKED) entry.holding = true;
             if (!entry.holding) this.sendRest(id, entry);
         };
-        const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
+        // The end of the PTY's output: every process holding it has gone, and all it wrote has been read.
+        let ended!: () => void;
+        const end = new Promise<void>((done) => { ended = done; });
+        const ptyOptions: Bun.TerminalOptions = { ...size, name: "xterm-256color", exit: () => ended(), data: (_t, bytes) => {
             const text = decoder.decode(bytes, { stream: true });
             // Login URLs, codes and echoed input must never enter replay/flow-control history.
             // Slow or absent viewers lose output; attaching never reruns the login command.
@@ -327,22 +332,25 @@ export class Terminals {
             typist?.output(text);
             if (pending.length >= 32_768) flush();
             else if (entry && !entry.timer) entry.timer = setTimeout(flush, 16);
-        } });
-        let proc: ReturnType<typeof Bun.spawn>;
-        try {
-            proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(false), ...opts.command.env } : terminalEnv(), terminal, detached: true });
-        } catch (e) {
-            terminal.close();
-            throw e;
-        }
+        } };
+        // Bun creates the PTY here, rather than taking a Bun.Terminal made beforehand, so that it
+        // makes it the shell's controlling terminal (setsid, then TIOCSCTTY): it does that only for
+        // a PTY it creates in spawn. Without one, Ctrl+C (SIGINT) and resizes (SIGWINCH) reach no
+        // process, and shells that need one for job control (dash, zsh) go without.
+        // (On a failed spawn, Bun closes the PTY it made.)
+        const proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(false), ...opts.command.env } : terminalEnv(), terminal: ptyOptions, detached: true });
+        const terminal = proc.terminal!;
         let guard: ReturnType<typeof parentGuard>;
         try { guard = parentGuard(proc.pid); }
         catch (e) { terminal.close(); proc.kill("SIGKILL"); throw e; }
         const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, login: opts.login ? { ...opts.login } : undefined, forgetOutput: opts.command ? () => { decoder = new TextDecoder(); } : undefined, process: proc, terminal, guard, size, out: "", outState: "ground", discard: false, total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
-        void proc.exited.then((exitCode) => {
+        void proc.exited.then(async (exitCode) => {
             opts.onExit?.();
+            // What it wrote just before exiting can still be on its way from the PTY: wait for the
+            // end of the output, but only briefly, as a background job it left can keep the PTY open.
+            await Promise.race([end, Bun.sleep(DRAIN_MS)]);
             if (this.shells.get(id) !== shellEntry) return;
             if (!opts.command) pending += decoder.decode();
             flush();
