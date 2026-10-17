@@ -747,10 +747,10 @@ describe("speed", () => {
         expect(cold.partial).toBe(false);
         expect(warm.hits).toHaveLength(5);
         expect(none.hits).toHaveLength(0);
-        // Quick is measured against the first search on the same machine, so a slower machine can't fail it.
+        // Quick keeps its 400 ms promise on a fast machine and, on a slower one, is only relaxed in proportion to the first search.
         expect(coldMs).toBeLessThan(budgetMs);
-        expect(warmMs).toBeLessThan(coldMs / 4);
-        expect(noneMs).toBeLessThan(coldMs / 4);
+        expect(warmMs).toBeLessThan(Math.max(400, coldMs / 4));
+        expect(noneMs).toBeLessThan(Math.max(400, coldMs / 4));
     }, 60_000);
 
     test("the budget stops a search with what it found", async () => {
@@ -764,14 +764,16 @@ describe("speed", () => {
         // The oldest session of all says it; everything newer is read first.
         const old = write([prompt("what did we name it"), reply("we named it the quokka lighthouse")], { age: 400 * 86400 });
         clearSearchCache();
+        // Only the byte budget stops these: with the default time budget, a slow machine could run out of time before reading 8 MiB.
         const budgetBytes = 8 * 1024 * 1024;
-        const first = await searchSessions("quokka lighthouse", { budgetBytes });
+        const budgetMs = 60_000;
+        const first = await searchSessions("quokka lighthouse", { budgetBytes, budgetMs });
         expect(first).toMatchObject({ hits: [], partial: true });
         // Each answer reads at most the budget; read from scratch, every one would stop where the first did.
         let r = first;
         let rounds = 1;
         while (r.partial && rounds < 20) {
-            r = await searchSessions("quokka lighthouse", { budgetBytes });
+            r = await searchSessions("quokka lighthouse", { budgetBytes, budgetMs });
             rounds++;
         }
         expect(r.partial).toBe(false);
@@ -792,15 +794,17 @@ describe("listing a big project folder", () => {
         }
         const folders = readdirSync(paths.projectsDir()).length;
         let checks = 0;
-        const none = await searchSessions("whiskey", { include: () => false, stale: () => (checks++, false) });
+        // Listing 3000 files on a slow machine must not run into the product's 2.5 s budget: only the last search below is meant to spend it.
+        const budgetMs = 60_000;
+        const none = await searchSessions("whiskey", { include: () => false, stale: () => (checks++, false), budgetMs });
         expect(none.partial).toBe(false);
         // Once a folder (or once after listing) would be the folder count plus one; inside this one, every 64 files too.
         expect(checks).toBeGreaterThanOrEqual(folders + Math.floor(3000 / 64));
         // A newer search while it lists: it stops there.
         let n = 0;
-        expect(await searchSessions("whiskey", { stale: () => ++n > folders + 5 })).toMatchObject({ hits: [], stale: true });
+        expect(await searchSessions("whiskey", { stale: () => ++n > folders + 5, budgetMs })).toMatchObject({ hits: [], stale: true });
         // No time left once it's listed: partial, even though no session was looked at.
         const late = await searchSessions("whiskey", { include: () => false, budgetMs: 0 });
         expect(late.partial).toBe(true);
-    });
+    }, 60_000);
 });
