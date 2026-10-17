@@ -157,6 +157,14 @@ describe("embedded terminals", () => {
             await until(() => owner.output().includes("__alive__\r\n"));
         } finally { await shells.stop(); }
     });
+    test("a command typed as the terminal opens, before the shell has started, still runs", async () => {
+        const shells = new Terminals(); const owner = client();
+        try {
+            shells.open(owner, "typed-early", iso.home, 80, 24);
+            shells.write(owner, "typed-early", "printf '__%s__\\n' typed-early\n");
+            await until(() => owner.output().includes("__typed-early__\r\n"));
+        } finally { await shells.stop(); }
+    });
     test("a command's last output, written just before it exits, arrives before its exit", async () => {
         // On Linux the PTY can still hold it when the process has exited: in CI, 5 of 300 such
         // commands had lost it when its exit was reported, before the terminal waited for the PTY's end.
