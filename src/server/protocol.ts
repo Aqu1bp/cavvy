@@ -832,7 +832,7 @@ export interface PlanLimits {
 }
 
 /** The ranges the Usage view offers, in days. */
-export const USAGE_DAYS = [1, 7, 30] as const;
+export const USAGE_DAYS = [1, 7, 30, 90] as const;
 export type UsageDays = (typeof USAGE_DAYS)[number];
 
 /** Tokens and cost of one provider's model over the range. */
@@ -856,18 +856,41 @@ export interface UsageRow {
     unknown: boolean;
 }
 
+export type UsageSource = "claude-code" | "codex" | "api";
+export interface UsageCostTypes { input: number; cacheRead: number; cacheWrite: number; output: number; unallocated: number }
+export interface UsageTotals {
+    inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+    cost: number; planEquivalent: number; unknown: boolean;
+    costByType: UsageCostTypes; cacheSavings: number;
+}
+export interface UsageSourceRow extends UsageTotals { source: UsageSource; label: string; sessions: number }
+export interface UsageBucket extends UsageTotals {
+    at: number; sessions: number;
+    sources: Record<UsageSource, UsageTotals>;
+}
+export interface UsageAccountRow extends UsageRow { source: UsageSource; accountId: string }
+/** Sparse detail for source/provider/model/account within each UTC hour or day. */
+export interface UsageDetailBucket extends UsageAccountRow { at: number }
+
 export interface UsageSummary {
     days: UsageDays;
     /** Start of the range (ms). */
     since: number;
     rows: UsageRow[];
     /** The rows added up (sessions apart: one can use several models). */
-    totals: Pick<UsageRow, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cost" | "planEquivalent" | "unknown">;
+    totals: UsageTotals;
+    sources: UsageSourceRow[];
+    accounts: UsageAccountRow[];
+    interval: "hour" | "day";
+    series: UsageBucket[];
+    buckets: UsageDetailBucket[];
+    /** Existing #26 reports; also available via limits.get. */
+    limits: PlanLimits[];
     /** Sessions with any usage in the range. */
     sessions: number;
     /** Records from before usage was dated, placed at their session's last activity. */
     approxDated: number;
-    /** Alias-only records priced using today's model listing rather than a recorded concrete model. */
+    /** Legacy alias-only records lacking a recorded historical concrete model; may be unpriced. */
     approxPriced?: number;
     /** Why not everything was read (too many sessions, too much to read in time). */
     truncated?: string;

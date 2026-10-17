@@ -87,6 +87,8 @@ export interface Usage {
     outputTokens: number;
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
+    /** Portion of cache writes using Anthropic's one-hour TTL. */
+    cacheWrite1hTokens?: number;
     reasoningTokens?: number;
     /** The provider actually served this response at fast speed. */
     fastMode?: boolean;
@@ -160,6 +162,8 @@ export interface ModelInfo {
     fastPricing?: ModelInfo["pricing"];
     /** OpenAI fast-service prices above 272k input tokens. */
     fastPricingLong?: ModelInfo["pricing"];
+    pricingLong?: ModelInfo["pricing"];
+    longContextThreshold?: number;
     /** Anthropic: effort levels this model accepts. */
     effortLevels?: Effort[];
     /** Anthropic: adaptive thinking supported. */
