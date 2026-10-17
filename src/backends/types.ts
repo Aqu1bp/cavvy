@@ -41,6 +41,8 @@ export interface BackendPermission {
     asksAlways?: boolean;
     /** One of the backend's own sub-agents asks (Codex's): the prompt says which, and a no stops only it. */
     agentLabel?: string;
+    /** The call it asks about, as its tool_start names it: its row waits while it asks. */
+    callId?: string;
 }
 
 export type PermissionAnswer =

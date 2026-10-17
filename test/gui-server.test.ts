@@ -283,6 +283,126 @@ describe("connecting", () => {
         expect(rt.idle).toBe(true);
     }
 
+    test("a call that arrived whole but waits behind another is queued, and says which background command it checks", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "projects.trust", { path: cwd, trust: true });
+            rt.ws.settings.permissions = { allow: ["Bash"] };
+            await engine.handle(c, "session.send", { id, text: "waitcheck please" });
+            const tools = () => (rt.snapshot().turns.at(-1)?.blocks ?? []).filter((b): b is ToolBlock => b.t === "tool");
+            let queued: ToolBlock | undefined;
+            for (let i = 0; i < 500 && !queued; i++) {
+                const now = tools();
+                const waiting = now.some((b) => b.name === "Bash" && b.status === "running" && b.input?.command === "sleep 1; echo done");
+                queued = waiting ? now.find((b) => b.name === "BashOutput" && b.status === "queued") : undefined;
+                if (!queued) await Bun.sleep(10);
+            }
+            expect(queued).toBeDefined();
+            expect(queued!.receiving).toBeUndefined();
+            expect(queued!.startedAt).toBeUndefined();
+            expect(queued!.title).toMatch(/^BashOutput\(bash_\d+\)$/);
+            expect(queued!.job).toMatchObject({ label: "Run the slow suite" });
+            expect(queued!.job!.startedAt).toBeLessThanOrEqual(Date.now());
+            await whenIdle(rt);
+            const check = tools().find((b) => b.name === "BashOutput")!;
+            expect(check.status).toBe("ok");
+            expect(check.job?.label).toBe("Run the slow suite");
+            await engine.stop();
+            // Reopened: the check still names what it checked.
+            const { Engine } = await import("../src/server/engine");
+            const reopened = new Engine();
+            const next = { subs: new Set<string>(), send() {} };
+            reopened.clients.add(next);
+            try {
+                const view = (await reopened.handle(next, "session.open", { id })) as SessionSnapshot;
+                const again = view.turns.at(-1)!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.name === "BashOutput")!;
+                expect(again.job).toEqual(check.job);
+            } finally {
+                await reopened.stop();
+            }
+        } finally {
+            await engine.stop();
+        }
+    }, 20_000);
+
+    test("a queued call that's interrupted before it runs ends, and keeps what it was about through a reopen", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "projects.trust", { path: cwd, trust: true });
+            rt.ws.settings.permissions = { allow: ["Bash"] };
+            await engine.handle(c, "session.send", { id, text: "waitcheck please" });
+            const check = () => (rt.snapshot().turns.at(-1)?.blocks ?? []).find((b): b is ToolBlock => b.t === "tool" && b.name === "BashOutput");
+            for (let i = 0; i < 500 && check()?.status !== "queued"; i++) await Bun.sleep(10);
+            expect(check()?.status).toBe("queued");
+            const job = check()!.job;
+            expect(job?.label).toBe("Run the slow suite");
+            await engine.handle(c, "session.interrupt", { id });
+            await whenIdle(rt);
+            expect(check()).toMatchObject({ status: "error", summary: "Interrupted" });
+            await engine.stop();
+            const { Engine } = await import("../src/server/engine");
+            const reopened = new Engine();
+            const next = { subs: new Set<string>(), send() {} };
+            reopened.clients.add(next);
+            try {
+                const view = (await reopened.handle(next, "session.open", { id })) as SessionSnapshot;
+                const again = view.turns.at(-1)!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.name === "BashOutput")!;
+                expect(again.status).toBe("error");
+                expect(again.job).toEqual(job);
+            } finally {
+                await reopened.stop();
+            }
+        } finally {
+            await engine.stop();
+        }
+    }, 20_000);
+
+    test("a sub-agent's call that asks waits in its view, and once approved shows running from the answer", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "write a release note" });
+        let during: unknown;
+        let answeredAt = 0;
+        const ask = await c.answer(id, { kind: "permission", choice: "yes" }, () => {
+            during = c.view(id).agents[0]?.blocks.find((b) => b.t === "tool" && b.name === "Write")?.status;
+            Bun.sleepSync(300);
+            answeredAt = Date.now();
+        });
+        expect(ask.kind === "permission" && ask.agentId).toBe(c.view(id).agents[0]!.id);
+        expect(during).toBe("awaiting");
+        await c.until(id, (v) => v.agents[0]?.blocks.some((b) => b.t === "tool" && b.name === "Write" && b.status !== "awaiting") ?? false);
+        const write = c.view(id).agents[0]!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.name === "Write")!;
+        expect(write.startedAt).toBeGreaterThanOrEqual(answeredAt);
+        await c.until(id, done, 15_000);
+        expect(c.view(id).agents[0]!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.name === "Write")!.status).toBe("ok");
+        c.close();
+    }, 20_000);
+
+    test("a background command's label is redacted whole before it's cut, so a secret across the cut doesn't show", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const { engine, rt } = await engineWithSession();
+        const secret = "zq7-SECRET-VALUE-0123456789";
+        try {
+            const command = `sleep 60 # ${"x".repeat(120 - 11 - 10)}${secret}`;
+            rt.toolState.shells.set("bash_900", { id: "bash_900", command, startedAt: 1234, output: "", readOffset: 0, exitCode: null, sandboxed: false, kill: async () => "gone" as const });
+            // Registered after the shell started (as a secret entered later in the session is).
+            registerSecret(secret, "late-secret");
+            const { job } = (rt as any).jobOf({ type: "tool_call", id: "c1", name: "BashOutput", input: { bash_id: "bash_900" } });
+            expect(job.startedAt).toBe(1234);
+            expect(job.label).not.toContain(secret.slice(0, 10));
+            expect(job.label.length).toBeLessThanOrEqual(120);
+            // The same for the description of the call that started it.
+            rt.toolState.shells.set("bash_901", { id: "bash_901", command: "sleep 60", startedAt: 1234, output: "", readOffset: 0, exitCode: null, sandboxed: false, kill: async () => "gone" as const });
+            (rt as any).shellDescriptions.set("bash_901", `${"y".repeat(110)}${secret}`);
+            const described = (rt as any).jobOf({ type: "tool_call", id: "c2", name: "KillShell", input: { shell_id: "bash_901" } }).job;
+            expect(described.label).toStartWith("yyyy");
+            expect(described.label).not.toContain(secret.slice(0, 10));
+        } finally {
+            unregisterSecret(secret);
+            await engine.stop();
+        }
+    });
+
     test("live and reopened snapshot cards keep steered turn ids and include external writes in the badge", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();
         try {
@@ -1052,8 +1172,15 @@ describe("sessions", () => {
         expect(c.events.flatMap((e) => (e.type === "notify" && e.kind === "permission" ? [e.body] : []))[0]).toBe("Wants to create a file");
         const edit = await c.answer(id, { kind: "permission", choice: "yes" });
         expect(edit.kind === "permission" && edit.diff?.added).toBeGreaterThan(0);
-        const bash = await c.answer(id, { kind: "permission", choice: "yes" });
+        // Answered a while after it asked: it shows running from the answer, not from when it asked.
+        let answeredAt = 0;
+        const bash = await c.answer(id, { kind: "permission", choice: "yes" }, () => {
+            Bun.sleepSync(300);
+            answeredAt = Date.now();
+        });
         expect(bash.kind === "permission" && bash.command).toContain("bun test");
+        await c.until(id, (v) => tools(lastTurn(v)).some((b) => b.name === "Bash" && b.status !== "awaiting"));
+        expect(tools(lastTurn(c.view(id))).find((b) => b.name === "Bash")!.startedAt).toBeGreaterThanOrEqual(answeredAt);
         await c.until(id, done, 15_000);
 
         const t = lastTurn(c.view(id));
@@ -2191,10 +2318,19 @@ describe("sub-agents", () => {
             const id = await c.open("session.create", { cwd: project() });
             await c.call("session.setModel", { id, ref: "codex:default", persist: false });
             await c.call("session.send", { id, text: "count the files with a sub-agent" });
-            // Its command asks (Manual mode), naming it.
-            const ask = await c.answer(id, { kind: "permission", choice: "yes" });
+            // Its command asks (Manual mode), naming it; its row, when there is one yet, waits with it.
+            let during: string | undefined;
+            let answeredAt = 0;
+            const ask = await c.answer(id, { kind: "permission", choice: "yes" }, () => {
+                during = c.view(id).agents[0]?.blocks.find((b) => b.t === "tool" && b.name === "Bash")?.status;
+                answeredAt = Date.now();
+            });
             await c.until(id, done, 30_000);
             const v = c.view(id);
+            if (!early) {
+                expect(during).toBe("awaiting");
+                expect(v.agents[0]!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.name === "Bash")!.startedAt).toBeGreaterThanOrEqual(answeredAt);
+            }
             // Asked before Codex said whose thread it is, it's a sub-agent of Codex's, not yet that chip.
             expect(ask.kind === "permission" && [ask.toolName, ask.agentLabel, ask.agentId]).toEqual(early ? ["Bash", "Codex sub-agent", undefined] : ["Bash", "Count the files", v.agents[0]?.id]);
             expect(v.agents).toHaveLength(1);

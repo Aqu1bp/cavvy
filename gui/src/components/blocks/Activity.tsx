@@ -10,6 +10,7 @@ import {
     Check,
     ChevronRight,
     ClipboardList,
+    Clock,
     FilePen,
     FilePlus2,
     FileText,
@@ -27,7 +28,7 @@ import {
     X,
 } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
-import { duration, firstChangedLine, plural, splitTitle, stripAnsi, tokens } from "../../lib/format";
+import { duration, firstChangedLine, plural, sleepSeconds, splitTitle, stripAnsi, tokens } from "../../lib/format";
 import { now } from "../../lib/clock";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
@@ -136,6 +137,7 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     const input = t.input ?? {};
     let a = arg;
     if (t.name === "Bash") a = String(input.command ?? arg ?? "").split("\n")[0];
+    if (t.job && (t.name === "BashOutput" || t.name === "KillShell")) a = t.job.label;
     if (t.name === "Task") a = String(input.description ?? arg ?? "");
     if (t.name === "AskUserQuestion") a = String(input.question ?? arg ?? "");
     if (t.name === "TodoWrite" || t.name === "ExitPlanMode") a = undefined;
@@ -281,7 +283,17 @@ function groupIcon(tools: ToolBlock[]): string {
     return tools[0]?.name ?? "";
 }
 
-const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streaming" || t.status === "awaiting";
+const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streaming" || t.status === "queued" || t.status === "awaiting";
+
+const elapsed = (ms: number) => duration(Math.max(0, ms)).replace(/^(\d+)ms$/, "0s");
+
+/** How long a running call has run; a wait, against how long it waits. */
+function liveTime(t: ToolBlock): string | undefined {
+    if (!t.startedAt) return undefined;
+    const ran = elapsed(now() - t.startedAt);
+    const wait = t.name === "Bash" && t.status === "running" ? sleepSeconds(t.input?.command) : undefined;
+    return wait ? `${ran} of ${elapsed(wait * 1000)}` : ran;
+}
 
 export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; keepTail?: boolean; agents?: AgentRun[] }) {
     return <RenderBoundary raw={() => p.steps}><ActivityGroupContent {...p} /></RenderBoundary>;
@@ -384,6 +396,8 @@ function ActivityGroupContent(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
 function runningVerb(t: ToolBlock): string {
     if (t.status === "awaiting") return t.name === "AskUserQuestion" || t.name === "ExitPlanMode" ? RUNNING[t.name]! : "Waiting for approval";
     if (t.status === "streaming") return `Preparing ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
+    if (t.status === "queued") return `Then ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
+    if (t.name === "Bash" && sleepSeconds(t.input?.command)) return "Waiting";
     return RUNNING[t.name] ?? `Running ${t.name}`;
 }
 
@@ -493,6 +507,9 @@ function StatusIcon(p: { tool: ToolBlock }) {
             <Match when={p.tool.status === "awaiting"}>
                 <Hand size={12} class="tone-warn pulse" />
             </Match>
+            <Match when={p.tool.status === "queued"}>
+                <Clock size={12} class="tone-muted" />
+            </Match>
             <Match when={p.tool.status === "error"}>
                 <X size={12} class="tone-err" />
             </Match>
@@ -553,14 +570,15 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
     return (
         <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
             <div class="tool-head" style={p.detailsOnly ? { display: "none" } : undefined}>
-                <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" ? "awaiting" : ""}` : "tool-line"} onClick={() => setOpen(!open())} aria-expanded={open()}>
+                <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-line"} onClick={() => setOpen(!open())} aria-expanded={open()}>
                     <span class={p.activity ? "tool-icon slot" : "tool-icon"}>
-                        <Show when={p.activity && p.tool.status === "awaiting"} fallback={<ToolIcon name={p.tool.name} agent={p.tool.agent} size={p.activity ? 16 : 14} />}>
-                            <Hand size={16} />
-                        </Show>
+                        <Switch fallback={<ToolIcon name={p.tool.name} agent={p.tool.agent} size={p.activity ? 16 : 14} />}>
+                            <Match when={p.activity && p.tool.status === "awaiting"}><Hand size={16} /></Match>
+                            <Match when={p.activity && p.tool.status === "queued"}><Clock size={16} /></Match>
+                        </Switch>
                     </span>
                     {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
-                    <span class={p.activity && isLive(p.tool) && p.tool.status !== "awaiting" ? "tool-verb wverb shimmer" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}</span>{!isLive(p.tool) && " "}
+                    <span class={p.activity && isLive(p.tool) && p.tool.status !== "awaiting" && p.tool.status !== "queued" ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}</span>{!isLive(p.tool) && " "}
                     <Show when={label().arg && (!p.activity || p.tool.status !== "streaming")}>
                         <span class={p.activity ? "tool-arg warg mono truncate" : "tool-arg truncate"} data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
                     </Show>
@@ -568,8 +586,11 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
                         <span class="warg truncate" data-find-skip>{tokens(p.tool.receiving!)} chars</span>
                     </Show>
                     <span class="tool-meta" data-find-skip={isLive(p.tool) || undefined}>
-                        <Show when={p.activity && isLive(p.tool) && p.tool.startedAt}>
-                            <span class="wtime num" data-find-skip>{duration(Math.max(0, now() - p.tool.startedAt!)).replace(/^(\d+)ms$/, "0s")}</span>
+                        <Show when={p.activity && isLive(p.tool) && p.tool.job}>
+                            {(job) => <span class="wjob num" data-find-skip title="How long ago the background command started">started {elapsed(now() - job().startedAt)} ago</span>}
+                        </Show>
+                        <Show when={p.activity && isLive(p.tool) && liveTime(p.tool)}>
+                            {(time) => <span class="wtime num" data-find-skip>{time()}</span>}
                         </Show>
                         <Show when={p.tool.sandboxed}>
                             <span class="tool-tag" title="Ran in the sandbox" data-find-skip>

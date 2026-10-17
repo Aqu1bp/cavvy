@@ -537,6 +537,17 @@ button.wrow:hover {
     color: var(--warning);
 }
 
+/* Arrived, and waiting for the call before it to finish. */
+.wrow.queued {
+    color: var(--fg-subtle);
+}
+
+.wrow .wjob {
+    font-size: 0.857rem;
+    color: var(--fg-subtle);
+    flex: none;
+}
+
 .wrow .warg {
     font-size: 0.857rem;
     color: color-mix(in srgb, var(--fg-muted) 70%, var(--fg));

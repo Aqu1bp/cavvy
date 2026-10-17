@@ -410,7 +410,7 @@ function TurnViewContent(p: TurnViewProps) {
     const streamingTail = () => {
         const item = items().at(-1);
         if (!item) return false;
-        if (item.kind === "activity") return item.tools.some((t) => t.status === "running" || t.status === "streaming" || t.status === "awaiting");
+        if (item.kind === "activity") return item.tools.some((t) => t.status === "running" || t.status === "streaming" || t.status === "queued" || t.status === "awaiting");
         const b = item.block;
         if (b.t === "text") return writing();
         if (b.t === "thinking") return thinking(b);

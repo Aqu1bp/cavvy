@@ -223,6 +223,8 @@ export class Runtime {
     private responseBlocks: string[] = [];
     /** Tool call id -> the turn its block is in. */
     private toolTurn = new Map<string, string>();
+    /** Background shell id -> the description of the call that started it, whole (a block's input is cut). */
+    private shellDescriptions = new Map<string, string>();
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
     private agentLabels = new Map<string, string>();
     private agentText = new Map<string, string>();
@@ -1062,6 +1064,7 @@ export class Runtime {
                     status: "running",
                     startedAt: Date.now(),
                     receiving: undefined,
+                    ...this.jobOf(e.call),
                 };
                 if (turnId && this.blockIn(turnId, e.call.id)) this.patchBlock(e.call.id, patch, turnId);
                 else {
@@ -1127,7 +1130,7 @@ export class Runtime {
     }
 
     /** The finished model response: its text is the redacted copy the session stored. */
-    private finishResponse(msg: { content: { type: string; text?: string }[] }) {
+    private finishResponse(msg: { content: { type: string; text?: string }[]; stopReason?: string }) {
         this.closeOpen();
         const turnId = this.turnId;
         if (!turnId) return;
@@ -1145,6 +1148,37 @@ export class Runtime {
             if (b?.t === "thinking" && !b.text.trim()) this.op({ op: "block.remove", turnId, blockId: id });
         }
         this.responseBlocks = [];
+        // Its calls have arrived whole. Those not started yet wait their turn (a call runs after the one before it finishes), or, cut off or declined, never run.
+        const notRun = msg.stopReason === "max_tokens" || msg.stopReason === "refusal";
+        for (const part of msg.content) {
+            if (part.type !== "tool_call") continue;
+            const call = part as unknown as ToolCallPart;
+            const at = this.toolTurn.get(call.id);
+            const b = this.blockIn(at, call.id);
+            if (b?.t !== "tool" || b.status !== "streaming") continue;
+            if (notRun) this.patchBlock(call.id, { status: "error", summary: "Not run", receiving: undefined }, at);
+            else this.patchBlock(call.id, { status: "queued", title: this.toolMeta(call).title, input: trimInput(call.input), receiving: undefined, ...this.jobOf(call) }, at);
+        }
+    }
+
+    /** A Bash call that started a background shell: what it said it was, for the calls that check on it. */
+    private noteShell(call: ToolCallPart, summary: string | undefined) {
+        const shell = call.name === "Bash" ? /^Running in background as (\S+)$/.exec(summary ?? "")?.[1] : undefined;
+        const description = (call.input as { description?: unknown } | undefined)?.description;
+        if (shell && typeof description === "string" && description.trim()) this.shellDescriptions.set(shell, description);
+    }
+
+    /** For a call about a background shell: the shell, as the call that started it described it. */
+    private jobOf(call: ToolCallPart): Pick<ToolBlock, "job"> {
+        if (call.name !== "BashOutput" && call.name !== "KillShell") return {};
+        const input = (call.input ?? {}) as Record<string, unknown>;
+        const id = String(input.bash_id ?? input.shell_id ?? "");
+        const shell = this.toolState.shells.get(id);
+        if (!shell) return {};
+        // Redacted whole, before it's cut: a secret registered since, across the cut, would otherwise show its first part.
+        const d = this.shellDescriptions.get(id);
+        const label = redact(d ?? shell.command).trim().split("\n")[0]!.slice(0, 120);
+        return { job: { label, startedAt: shell.startedAt } };
     }
 
     private toolEnded(call: ToolCallPart, result: ToolResult, durationMs: number, title?: string) {
@@ -1164,8 +1198,9 @@ export class Runtime {
         // A new file (Write says "Wrote", an Edit with an empty old_string "Created"): no "before" side.
         if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
         this.patchBlock(call.id, patch, this.toolTurn.get(call.id));
+        this.noteShell(call, d?.summary);
         const b = this.blockIn(this.toolTurn.get(call.id), call.id) as ToolBlock | undefined;
-        this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, at: Date.now() });
+        this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, job: b?.job, at: Date.now() });
         if (call.name === "TodoWrite") this.setState({ todos: this.toolState.todos.map((t) => ({ ...t })) });
         // A Task's result is its sub-agent's report (a delegated task's comes when it settles). One
         // still working (Claude Code's in the background) only says it started: its report comes when it ends.
@@ -1284,7 +1319,7 @@ export class Runtime {
                 break;
             case "tool_start": {
                 this.agentText.delete(id);
-                const block: ToolBlock = { ...toolBlockFromCall(e.call, { title: e.title, category: e.tool?.category as ToolCategoryId | undefined }), startedAt: Date.now() };
+                const block: ToolBlock = { ...toolBlockFromCall(e.call, { title: e.title, category: e.tool?.category as ToolCategoryId | undefined }), startedAt: Date.now(), ...this.jobOf(e.call) };
                 this.op({ op: "agent.block", id, block });
                 this.agentPatch(id, { toolCount: a.toolCount + 1, activity: e.title });
                 break;
@@ -1303,6 +1338,7 @@ export class Runtime {
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
+                this.noteShell(e.call, d?.summary);
                 // Its own sub-agent's call: the result is that one's report, as a Task's in a turn is (one still working only says it started).
                 const sub = e.call.name === "Task" ? this.view.agents.find((x) => x.id === e.call.id && x.parentId === id) : undefined;
                 if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(sub.id, { report: redact(withoutActionsNote(e.result.content)) });
@@ -1390,8 +1426,10 @@ export class Runtime {
         const turn = findTurn(this.view, turnId);
         // Tool calls that never finished (interrupted, or not run after a denial).
         for (const b of turn?.blocks ?? []) {
-            if (b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "awaiting")) {
+            if (b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "queued" || b.status === "awaiting")) {
                 this.patchBlock(b.id, { status: reason === "aborted" ? "error" : "error", summary: reason === "aborted" ? "Interrupted" : "Not run", progress: undefined, receiving: undefined }, turnId);
+                // Never ended, so never recorded: what it was about is kept for a reopen all the same.
+                if (b.job) this.ui.write({ t: "tool", id: b.id, job: b.job, at: Date.now() });
             }
         }
         const status: TurnStatus = reason;
@@ -1527,18 +1565,25 @@ export class Runtime {
         if (req.signal?.aborted) return { allow: false };
         if (req.callId && this.blockIn(this.toolTurn.get(req.callId), req.callId)) this.patchBlock(req.callId, { status: "awaiting" });
         const asking = this.agentAsking(req);
+        // A sub-agent's call: its row in that agent's view, which waits too.
+        const subCall = asking && req.callId ? this.view.agents.find((a) => a.id === asking.id)?.blocks.find((b) => b.t === "tool" && b.id === req.callId) : undefined;
+        const patchSubCall = (patch: Partial<ToolBlock>) => subCall && asking && this.op({ op: "agent.block.patch", id: asking.id, blockId: subCall.id, patch });
         if (asking) {
             it.agentId = asking.id;
             this.agentPatch(asking.id, { status: "waiting", activity: "Waiting for approval" });
+            patchSubCall({ status: "awaiting" });
         }
         // Withdrawn when its sub-agent is stopped.
         const withdraw = () => this.settle(it.id, undefined);
         req.signal?.addEventListener("abort", withdraw, { once: true });
         const answer = await this.interact(it).finally(() => req.signal?.removeEventListener("abort", withdraw));
         if (asking && this.view.agents.find((a) => a.id === asking.id)?.status === "waiting") this.agentPatch(asking.id, { status: "running", activity: req.title });
+        const choice = answer?.kind === "permission" && !req.signal?.aborted ? answer.choice : "no";
+        // Approved, it starts now: the time it shows running (a wait's countdown) doesn't count the time it waited for the answer.
+        const after: Partial<ToolBlock> = req.signal?.aborted ? { status: "error", summary: "Interrupted" } : choice === "no" ? { status: "denied" } : { status: "running", startedAt: Date.now() };
+        patchSubCall(after);
         if (req.signal?.aborted) return { allow: false };
-        const choice = answer?.kind === "permission" ? answer.choice : "no";
-        if (req.callId && this.blockIn(this.toolTurn.get(req.callId), req.callId)) this.patchBlock(req.callId, { status: choice === "no" ? "denied" : "running" });
+        if (req.callId && this.blockIn(this.toolTurn.get(req.callId), req.callId)) this.patchBlock(req.callId, after);
         switch (choice) {
             case "yes":
                 return { allow: true };

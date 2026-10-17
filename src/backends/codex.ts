@@ -1136,7 +1136,7 @@ class CodexTurn {
                 // Codex 0.162 asks about every command in untrusted mode, `cat` included. One that wants
                 // the network says something, and one in another folder isn't checked where it runs.
                 const asksAlways = !net && !elsewhere && codexPolicy(this.turnMode ?? this.host.mode(), []).approvalPolicy === "untrusted";
-                const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel });
+                const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }
             case "item/fileChange/requestApproval": {
