@@ -6,8 +6,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
+import { secretsSnapshot } from "./helpers/secrets";
 
 const iso = isolate();
+const restoreSecrets = await secretsSnapshot();
 const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
 const { startMockLlm } = await import("../scripts/mock-llm");
@@ -37,6 +39,7 @@ beforeAll(async () => {
 afterAll(async () => {
     await srv.stop();
     mock.stop();
+    restoreSecrets();
     iso.cleanup();
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
 });

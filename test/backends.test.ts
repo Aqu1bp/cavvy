@@ -6,8 +6,10 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
+import { secretsSnapshot } from "./helpers/secrets";
 
 const { cleanup } = isolate();
+const restoreSecrets = await secretsSnapshot();
 const registry = await import("../src/providers/registry");
 const { clientFor, forgetClient, listAllModels } = await import("../src/providers/models");
 const { Agent } = await import("../src/agent/agent");
@@ -49,6 +51,7 @@ const claudeBin = wrapper("claude", "fake-claude.ts");
 const codexBin = wrapper("codex", "fake-codex.ts");
 
 afterAll(() => {
+    restoreSecrets();
     cleanup();
     rmSync(bin, { recursive: true, force: true });
     // The fakes' settings would reach other test files' fake CLIs (FAKE_LOG points into the folder just removed).

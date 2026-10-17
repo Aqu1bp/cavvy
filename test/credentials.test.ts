@@ -2,8 +2,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
+import { secretsSnapshot } from "./helpers/secrets";
 
 const iso = isolate();
+const restoreSecrets = await secretsSnapshot();
 const creds = await import("../src/auth/credentials");
 const { detectKeyProvider, validateKey } = await import("../src/auth/detect");
 const { redact, registerSecret, unregisterSecret, containsSecret, maskKey, knownSecrets } = await import("../src/util/redact");
@@ -14,6 +16,7 @@ import type { ProviderDef } from "../src/providers/registry";
 
 const WORK = tempDir("harness-cred-");
 afterAll(() => {
+    restoreSecrets();
     rmSync(WORK, { recursive: true, force: true });
     iso.cleanup();
 });

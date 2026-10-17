@@ -98,7 +98,8 @@ test("a window key stays stable when storage reads succeed but writing fails", a
         setItem() { writes++; throw new Error("Storage quota exceeded"); },
     } });
     try {
-        const { windowKey } = await import("../gui/src/lib/platform");
+        // The key is module state, and earlier files in this process may already have set it, so load a copy of the module.
+        const { windowKey } = await import("../gui/src/lib/platform?fresh-window-key");
         const key = windowKey();
         expect(key).toMatch(/^[0-9a-f]{32}$/);
         expect(windowKey()).toBe(key);
