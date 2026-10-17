@@ -1530,15 +1530,23 @@ export class Engine {
     }
 
     /**
-     * An image file the GUI shows inline: confined like fs.open, judged by its
-     * bytes, never an SVG (it can carry script). Read as a regular file to a
+     * An image file a reply links to, anywhere on this machine (the model can
+     * read any file already, and showing one sends nothing out; mockups often
+     * live in /tmp). Relative paths are the session's. Judged by its bytes,
+     * never an SVG (it can carry script), and read as a regular file to a
      * bound, so a FIFO named like an image can't block the server.
      */
     private async readImage(p: Record<string, any>): Promise<{ mediaType: string; data: string }> {
-        const { cwd, roots } = this.openScope(p);
-        const t = confinePath(checkPathInput(p.path), cwd, roots);
-        if (t.dir) throw new RpcError(`${p.path} is a folder`, "invalid");
-        const r = await readRegular(t.real, MAX_SHOWN_IMAGE);
+        const { cwd } = this.openScope(p);
+        const path = checkPathInput(p.path);
+        let real: string;
+        try {
+            real = realpathSync(expandPath(path, cwd));
+        } catch {
+            throw new RpcError(`${p.path} doesn't exist`, "not_found");
+        }
+        if (statSync(real).isDirectory()) throw new RpcError(`${p.path} is a folder`, "invalid");
+        const r = await readRegular(real, MAX_SHOWN_IMAGE);
         if (!r) throw new RpcError(`${p.path} isn't a regular file that can be read`, "not_image");
         if (!r.buf) throw new RpcError(`${p.path} is too large to show (images up to ${MAX_SHOWN_IMAGE / 1024 / 1024} MB)`, "limit");
         const bytes = r.buf;
