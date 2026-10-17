@@ -1737,8 +1737,10 @@ function climbs(text: string): boolean {
             const c = chunk[i]!;
             if (c === "`") return true;
             if (c === "$") {
-                // These expand to digits; consume the pair so $$? isn't scanned as $? again.
-                if (chunk[i - 1] === "\\" || !/[?#$]/.test(chunk[i + 1] ?? "")) return true;
+                // Only bare numeric parameters are safe: zsh's $?:h is ".".
+                // Conservatively reject modifiers, subscripts and nested forms.
+                // Consume the pair so $$? isn't scanned as $? again.
+                if (chunk[i - 1] === "\\" || !/[?#$]/.test(chunk[i + 1] ?? "") || /[:[({]/.test(chunk[i + 2] ?? "")) return true;
                 firstDot = boundary = false;
                 i++;
                 continue;

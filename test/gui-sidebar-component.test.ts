@@ -1,6 +1,6 @@
 // Compile the actual Sidebar with Solid client reactivity; fake only rendering,
 // clocks, and external services. No HTTP/WebSocket server is needed.
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { readFileSync } from "fs";
 import { transformSync } from "../gui/node_modules/@babel/core/lib/index.js";
 import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
@@ -24,6 +24,9 @@ function fixture(count = 60) {
         updatedAt: 100 - i, status: "idle", messages: 2, pinned: false, settled: false, archived: false, live: true,
     })));
     const [sessionsLoaded, setSessionsLoaded] = solid.createSignal(true);
+    const [sessionsError, setSessionsError] = solid.createSignal(false);
+    const refreshSessions = mock(async () => {});
+    const reportError = mock((_e: unknown) => {});
     const [conn, setConn] = solid.createSignal("open");
     const [archived, setArchived] = solid.createSignal<SessionSummary[]>([]);
     const [activeId, setActiveId] = solid.createSignal<string>();
@@ -31,7 +34,7 @@ function fixture(count = 60) {
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [motion, setMotion] = solid.createSignal("instant");
     let reduced = false;
-    const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); } };
+    const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
     const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
     const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
@@ -68,7 +71,7 @@ function fixture(count = 60) {
         })),
         setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
-        handleFor: () => undefined, isUnread: () => true, activate: setActiveId,
+        handleFor: () => undefined, isUnread: () => true, activate: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         isTauri: false, mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {},
         setDeleteRequest() {}, chooseProject() {}, newSession() {}, openProject() {}, pin() {}, rename() {}, archive() {}, settle() {},
@@ -83,7 +86,7 @@ function fixture(count = 60) {
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -335,3 +338,40 @@ test("sidebar waits for the first list and retains loaded state across reconnect
         }
     } finally { f.dispose(); }
 });
+
+for (const archived of [false, true]) {
+    test(`sidebar shows a retryable list failure in the ${archived ? "archived" : "active"} view`, async () => {
+        const f = fixture(0);
+        const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty");
+        const contents = () => f.descendants(empty()).map((n) => n.text ?? n.content);
+        const retry = () => f.descendants(empty()).find((n) => n.tag === "button" && f.descendants(n).some((child) => child.text === "Retry"));
+        try {
+            f.setSessionsLoaded(false);
+            if (archived) {
+                f.nodes.find((n) => n.props.title === "View options").props.onClick();
+                f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
+            }
+            f.setSessionsError(true);
+            expect(contents()).toContain("Couldn't load sessions.");
+            expect(contents()).not.toContain("Loading sessions…");
+            expect(contents()).not.toContain("No sessions yet. Start one from the composer.");
+            expect(contents()).not.toContain("Nothing archived.");
+            const error = new Error("Still unavailable");
+            f.refreshSessions.mockRejectedValueOnce(error);
+            retry().props.onClick();
+            await Promise.resolve();
+            expect(f.refreshSessions).toHaveBeenCalledTimes(1);
+            expect(f.reportError).toHaveBeenCalledWith(error);
+            expect(contents()).toContain("Couldn't load sessions.");
+            f.refreshSessions.mockImplementationOnce(async () => {
+                solid.batch(() => { f.setSessionsLoaded(true); f.setSessionsError(false); });
+            });
+            retry().props.onClick();
+            await Promise.resolve();
+            expect(f.refreshSessions).toHaveBeenCalledTimes(2);
+            expect(empty().content).toBe(archived ? "Nothing archived." : "No sessions yet. Start one from the composer.");
+            expect(contents()).not.toContain("Couldn't load sessions.");
+            expect(contents()).not.toContain("Retry");
+        } finally { f.dispose(); }
+    });
+}

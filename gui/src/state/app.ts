@@ -150,6 +150,7 @@ export interface AppState {
     sessions: SessionSummary[];
     archived: SessionSummary[];
     sessionsLoaded: boolean;
+    sessionsError: boolean;
     models: ProviderModels[];
     modelsLoading: boolean;
     /** Models have been listed at least once (so "none" means none). */
@@ -199,6 +200,7 @@ export const [app, setApp] = createStore<AppState>({
     sessions: [],
     archived: [],
     sessionsLoaded: false,
+    sessionsError: false,
     models: [],
     modelsLoading: false,
     modelsLoaded: false,
@@ -477,7 +479,10 @@ export function requestTrust(path: string, then: () => void, purpose?: "mcp-appr
 
 export async function refreshSessions() {
     const markers = new Map(deleted);
-    const lists = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]);
+    const lists = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]).catch((e) => {
+        setApp("sessionsError", true);
+        throw e;
+    });
     // A list confirms a missed restore, but cannot undo a deletion that happened
     // while either request was in flight (including a second deletion after Undo).
     const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id))) as typeof lists;
@@ -500,6 +505,7 @@ export async function refreshSessions() {
         setApp("sessions", reconcile(orderSessions(list), { key: "id" }));
         setApp("archived", reconcile(orderSessions(archived), { key: "id" }));
         setApp("sessionsLoaded", true);
+        setApp("sessionsError", false);
     });
 }
 

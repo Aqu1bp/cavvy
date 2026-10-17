@@ -14,8 +14,8 @@ for (const spy of [onEvent, onState, onSlow, connect]) spy.mockRestore();
 if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
 else Reflect.deleteProperty(globalThis, "document");
 
-const original = { sessionsLoaded: app.sessionsLoaded, sessions: [...app.sessions], archived: [...app.archived], activeId: app.activeId, seen: { ...app.seen } };
-afterEach(() => setApp({ sessionsLoaded: false, sessions: [], archived: [], activeId: undefined, seen: {} }));
+const original = { conn: app.conn, sessionsError: app.sessionsError, sessionsLoaded: app.sessionsLoaded, sessions: [...app.sessions], archived: [...app.archived], activeId: app.activeId, seen: { ...app.seen } };
+afterEach(() => setApp({ conn: original.conn, sessionsError: false, sessionsLoaded: false, sessions: [], archived: [], activeId: undefined, seen: {} }));
 afterAll(() => setApp(original));
 const s = (id: string, patch: Partial<SessionSummary> = {}): SessionSummary => ({ id, cwd: "/project", projectName: "project", title: id,
     createdAt: 1, updatedAt: 1, messages: 2, status: "idle", pinned: false, settled: false, archived: false, live: true, ...patch });
@@ -71,3 +71,35 @@ test("sessions become loaded only after both lists apply and stay loaded while r
         expect(app.sessions).toEqual([]);
     } finally { call.mockRestore(); }
 });
+
+for (const archived of [false, true]) {
+    test(`failure of the ${archived ? "archived" : "active"} list is recorded and a successful retry clears it`, async () => {
+        setApp("conn", "open");
+        let fail = true;
+        const error = new Error("List failed");
+        const call = spyOn(rpc, "call").mockImplementation(async (_method: any, params: any) => {
+            if (fail && !!params.archived === archived) throw error;
+            return [s(params.archived ? "archived" : "active", { archived: !!params.archived })];
+        });
+        try {
+            await expect(refreshSessions()).rejects.toBe(error);
+            expect(app.conn).toBe("open");
+            expect(app.sessionsLoaded).toBe(false);
+            expect(app.sessionsError).toBe(true);
+            expect(app.sessions).toEqual([]);
+            expect(app.archived).toEqual([]);
+            fail = false;
+            await refreshSessions();
+            expect(app.sessionsLoaded).toBe(true);
+            expect(app.sessionsError).toBe(false);
+            expect(app.sessions.map((s) => s.id)).toEqual(["active"]);
+            expect(app.archived.map((s) => s.id)).toEqual(["archived"]);
+            fail = true;
+            await expect(refreshSessions()).rejects.toBe(error);
+            expect(app.sessionsLoaded).toBe(true);
+            expect(app.sessionsError).toBe(true);
+            expect(app.sessions.map((s) => s.id)).toEqual(["active"]);
+            expect(app.archived.map((s) => s.id)).toEqual(["archived"]);
+        } finally { call.mockRestore(); }
+    });
+}

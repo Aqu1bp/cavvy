@@ -806,6 +806,21 @@ describe("Bash", () => {
         configTarget("cp " + ".claude/worktrees/x/a ".repeat(10000) + "out");
         expect(performance.now() - started).toBeLessThan(2000);
     });
+
+    test("zsh continuations of numeric parameters still protect config from an allowed cp", async () => {
+        const { configTarget } = await import("../src/permissions/bash-safety");
+        settings.permissions!.allow = ["Bash(cp:*)"];
+        for (const parameter of ["$?", "$#", "$$"]) {
+            for (const suffix of [":h", "[1]:h", "{name}", "(name)"]) {
+                const segment = `.${parameter}${suffix}`;
+                const cmd = `cp /dev/null .claude/worktrees/x/${segment}/${segment}/settings.json`;
+                expect([cmd, configTarget(cmd)]).toEqual([cmd, "harness or git configuration"]);
+                expect([cmd, check(T("Bash"), bash(cmd))]).toEqual([cmd, expect.objectContaining({
+                    behavior: "ask", reason: expect.stringContaining("harness or git configuration"),
+                })]);
+            }
+        }
+    });
 });
 
 describe("network, MCP and other tools", () => {
