@@ -736,21 +736,26 @@ describe("speed", () => {
         let t = performance.now();
         const cold = await searchSessions("november widget", { limit: 50, budgetMs });
         const coldMs = performance.now() - t;
+        // Once read, nothing is read again: with a one-byte budget, a search that reread a file would stop partial.
         t = performance.now();
-        const warm = await searchSessions("November Widget", { limit: 50, budgetMs });
+        const warm = await searchSessions("November Widget", { limit: 50, budgetMs, budgetBytes: 1 });
         const warmMs = performance.now() - t;
         t = performance.now();
-        const none = await searchSessions("nothing says this anywhere", { limit: 50, budgetMs });
+        const none = await searchSessions("nothing says this anywhere", { limit: 50, budgetMs, budgetBytes: 1 });
         const noneMs = performance.now() - t;
         console.log(`search: ${(bytes / 1024 / 1024).toFixed(0)} MB in 200 sessions: first ${coldMs.toFixed(0)} ms, again ${warmMs.toFixed(0)} ms, no match ${noneMs.toFixed(0)} ms`);
         expect(cold.hits).toHaveLength(5);
         expect(cold.partial).toBe(false);
         expect(warm.hits).toHaveLength(5);
+        expect(warm.partial).toBe(false);
         expect(none.hits).toHaveLength(0);
-        // Quick keeps its 400 ms promise on a fast machine and, on a slower one, is only relaxed in proportion to the first search.
-        expect(coldMs).toBeLessThan(budgetMs);
-        expect(warmMs).toBeLessThan(Math.max(400, coldMs / 4));
-        expect(noneMs).toBeLessThan(Math.max(400, coldMs / 4));
+        expect(none.partial).toBe(false);
+        // Times are kept loose, as CI machines are about ten times slower than a laptop: the first
+        // search reads 38 MB (about 0.25 s on a laptop, 1.5 s in CI), and searching what it cached
+        // is about a hundred times quicker than that on both.
+        expect(coldMs).toBeLessThan(10_000);
+        expect(warmMs).toBeLessThan(coldMs / 10);
+        expect(noneMs).toBeLessThan(coldMs / 10);
     }, 60_000);
 
     test("the budget stops a search with what it found", async () => {
