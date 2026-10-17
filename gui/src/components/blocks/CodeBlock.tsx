@@ -1,12 +1,20 @@
-import { createEffect, createSignal, on, Show } from "solid-js";
+import { RenderBoundary } from "../ui/ErrorBoundary";
+import { createEffect, createSignal, on, onCleanup, Show } from "solid-js";
 import { highlight } from "../../lib/highlight";
 import { CopyButton } from "../ui/bits";
 
 const LABELS: Record<string, string> = { ts: "TypeScript", typescript: "TypeScript", tsx: "TSX", js: "JavaScript", javascript: "JavaScript", jsx: "JSX", py: "Python", python: "Python", rs: "Rust", rust: "Rust", go: "Go", sh: "Shell", bash: "Shell", shell: "Shell", zsh: "Shell", console: "Console", json: "JSON", yaml: "YAML", yml: "YAML", toml: "TOML", md: "Markdown", markdown: "Markdown", html: "HTML", css: "CSS", sql: "SQL", diff: "Diff", swift: "Swift", kotlin: "Kotlin", java: "Java", c: "C", cpp: "C++", ruby: "Ruby", rb: "Ruby", php: "PHP" };
 
 export function CodeBlock(p: { code: string; lang?: string; streaming?: boolean; bare?: boolean; maxHeight?: number }) {
+    return <RenderBoundary raw={() => p.code}><CodeBlockContent {...p} /></RenderBoundary>;
+}
+
+function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean; bare?: boolean; maxHeight?: number }) {
     const [html, setHtml] = createSignal<string>();
+    const [failure, setFailure] = createSignal<unknown>();
+    createEffect(() => { if (failure()) throw failure(); });
     let token = 0;
+    onCleanup(() => token++);
     createEffect(
         on(
             () => [p.code, p.lang, p.streaming] as const,
@@ -16,6 +24,8 @@ export function CodeBlock(p: { code: string; lang?: string; streaming?: boolean;
                 if (streaming || !lang) return setHtml(undefined);
                 void highlight(code, lang).then((h) => {
                     if (mine === token) setHtml(h);
+                }).catch((error) => {
+                    if (mine === token) setFailure(() => error || new Error("Highlighting failed"));
                 });
             },
         ),

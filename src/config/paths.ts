@@ -2,7 +2,7 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { mkdirSync } from "fs";
 
-export const APP_NAME = "harness";
+export { APP_NAME } from "./name";
 export const APP_TITLE = "Harness";
 export const APP_VERSION = "1.0.0";
 

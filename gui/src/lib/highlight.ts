@@ -85,7 +85,12 @@ async function highlighter(): Promise<HighlighterCore> {
         const [{ createHighlighterCore, createCssVariablesTheme }, { createJavaScriptRegexEngine }] = await Promise.all([import("shiki/core"), import("shiki/engine/javascript")]);
         const theme = createCssVariablesTheme({ name: "harness", variablePrefix: "--shiki-", variableDefaults: {}, fontStyle: true });
         return createHighlighterCore({ themes: [theme], langs: [], engine: createJavaScriptRegexEngine({ forgiving: true }) });
-    })();
+    })().catch((error) => {
+        // Chunk loading can fail transiently. Keep successful initialization shared,
+        // but let a boundary Retry (or the next block) attempt initialization again.
+        core = undefined;
+        throw error;
+    });
     return core;
 }
 

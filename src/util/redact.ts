@@ -4,7 +4,7 @@
 // not own (e.g. a teammate's key in a .env file) are caught by pattern.
 
 import { SECRET_PATTERNS as PATTERNS } from "./secret-patterns";
-import { APP_NAME } from "../config/paths";
+import { APP_NAME } from "../config/name";
 
 const exact = new Map<string, { label: string; prefix?: Uint32Array }>();
 let revision = 0;

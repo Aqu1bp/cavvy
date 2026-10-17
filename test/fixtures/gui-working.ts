@@ -1,3 +1,4 @@
+import { boundary } from "../helpers/render-boundary";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
@@ -12,6 +13,7 @@ const grouping = activity.slice(activity.indexOf("export function groupBlocks"),
 const [clock, setClock] = solid.createSignal(61_000);
 const stub = () => node("widget");
 const scope = {
+    RenderBoundary: boundary(),
     duration, turnDuration, now: clock, prefs: { showThinking: false }, findReveal: () => undefined,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub,
     Brain: stub, ChevronRight: stub, SquareTerminal: stub, Info: stub, AlertCircle: stub, AlertTriangle: stub,

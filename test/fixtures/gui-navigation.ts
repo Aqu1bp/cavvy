@@ -1,3 +1,4 @@
+import { boundary } from "../helpers/render-boundary";
 import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 import { readFileSync } from "node:fs";
@@ -74,11 +75,12 @@ const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url)
 const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense"]);
 const widgets = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
-    app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
+    // Stubs first: a component given explicitly below wins.
+    ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
+    RenderBoundary: boundary(), Spinner: () => node("Spinner"), activate: second.activate, app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
     prefs: { sidebar: false }, isTauri: mode === "desktop", os: "other",
     settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
-    ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
 });
 const root = node("root");
 const dispose = renderer.render(App, root);
@@ -122,7 +124,7 @@ try {
             await settle();
             assert.ok(second.handleFor("saved")?.ready());
         } else if (mode === "transient" || mode === "retry") {
-            assert.ok(text(root).includes("Waiting to reopen your session"));
+            assert.ok(text(root).includes("Couldn't open this session"));
             if (mode === "retry") {
                 failure = undefined;
                 all(root).find((n) => n.tag === "button" && text(n) === "Retry opening session")!.props.onClick();
