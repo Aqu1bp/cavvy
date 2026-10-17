@@ -490,16 +490,17 @@ function envSplit(s: string): string[] {
  * one it runs. `at` is where it starts in argv (-1 for one that env -S's
  * string gave, whose levels come last and start with that env's own).
  */
-export function runLevels(argv0: string[], depth = 0): { argv: string[]; at: number }[] {
-    const out: { argv: string[]; at: number }[] = [];
+export function runLevels(argv0: string[], depth = 0, budget?: CommandBudget): { argv: string[]; at: number; depth?: number }[] {
+    const out: { argv: string[]; at: number; depth?: number }[] = [];
     let at = 0;
     for (let n = 0; n < 16 && at < argv0.length; n++) {
         while (at < argv0.length && ASSIGNMENT.test(argv0[at]!)) at++;
         if (at >= argv0.length) break;
+        if (budget && --budget.commands < 0) { budget.exhausted = true; return out; }
         const argv = argv0.slice(at);
-        out.push({ argv, at: depth ? -1 : at });
+        out.push({ argv, at: depth ? -1 : at, ...(budget ? { depth } : {}) });
         const w = wrapperOf(argv[0]);
-        if (!w) break;
+        if (!w) return out;
         const env = runs(argv[0], "env");
         let operands = w.operands ?? 0;
         let optsDone = false;
@@ -531,11 +532,15 @@ export function runLevels(argv0: string[], depth = 0): { argv: string[]; at: num
         }
         if (script !== undefined) {
             // `env -S 'rm -rf' ~` runs `rm -rf ~`: env goes on with the string's words, then the rest.
-            if (depth < 4) out.push(...runLevels([argv[0]!, ...envSplit(script), ...argv.slice(j)], depth + 1));
+            if (depth < (budget?.maxDepth ?? 4) && (!budget || script.length <= budget.bytes)) {
+                if (budget) budget.bytes -= script.length;
+                out.push(...runLevels([argv[0]!, ...envSplit(script), ...argv.slice(j)], depth + 1, budget));
+            } else if (budget) budget.exhausted = true;
             return out;
         }
         at += j;
     }
+    if (budget && at < argv0.length) budget.exhausted = true;
     return out;
 }
 
@@ -1793,7 +1798,8 @@ const PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pac
  * can read "push the branch" as covering it.
  */
 export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefined {
-    for (const { programs, dir } of commandsWithDirs(cmd, cwd)) {
+    const commands = commandsWithDirs(cmd, cwd);
+    for (const { programs, dir } of commands) {
         for (const argv of programs) {
             if (!runs(argv[0], "git")) continue;
             const { index: i, dirs } = gitSubcommand(argv);
@@ -1819,7 +1825,7 @@ export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefin
             }
         }
     }
-    return undefined;
+    return commands.exhausted ? ANALYSIS_LIMIT : undefined;
 }
 
 // git's own options that take a value as the next word.
@@ -1919,15 +1925,19 @@ function caseHeader(text: string): { end: number; found: boolean } | undefined {
 }
 
 /** Bodies are extra evidence for protective checks, never grounds for approving shell syntax. */
-function commandBodies(cmd: string): { commands: SimpleCommand[]; compoundAt: number } {
+function commandBodies(original: SimpleCommand[], heredoc: boolean, budget: CommandBudget): { commands: SimpleCommand[]; compoundAt: number } {
+    // The lexer deliberately retains heredoc lines as conservative evidence. Never
+    // interpret those data lines as shell structure or discover bodies in them.
+    if (heredoc) return { commands: original, compoundAt: -1 };
     const commands: SimpleCommand[] = [];
     const cases: ("in" | "pattern" | "body")[] = [];
     let compoundAt = -1;
-    for (const c of analyzeCommand(cmd).commands) {
+    for (const c of original) {
         let text = c.text;
         if (/^;;|^;&/.test(c.after ?? "") && cases.length) cases[cases.length - 1] = "pattern";
         for (let n = 0; n < 32; n++) {
-            const header = caseHeader(text);
+            if (--budget.commands < 0) { budget.exhausted = true; return { commands: original, compoundAt: -1 }; }
+            const header = cases.at(-1) === "pattern" ? undefined : caseHeader(text);
             if (header) {
                 cases.push(header.found ? "pattern" : "in");
                 text = text.slice(header.end);
@@ -1951,25 +1961,46 @@ function commandBodies(cmd: string): { commands: SimpleCommand[]; compoundAt: nu
                 } else text = text.slice(prefix[0].length).trimStart();
             }
             if (compoundAt < 0) compoundAt = commands.length;
+            if (n === 31) budget.exhausted = true;
         }
         if (text !== c.text && compoundAt < 0) compoundAt = commands.length;
+        if (text !== c.text) {
+            budget.bytes -= text.length;
+            if (budget.bytes < 0) { budget.exhausted = true; return { commands: original, compoundAt: -1 }; }
+        }
         if (text) commands.push(...(text === c.text ? [c] : analyzeCommand(text).commands));
     }
     return { commands, compoundAt };
 }
 
 /** The programs find may execute, including multiple -exec primaries. */
-function findCommands(argv: string[]): { argv: string[]; changesDir: boolean }[] {
+function findCommands(argv: string[], budget: CommandBudget): { argv: string[]; changesDir: boolean }[] {
     const out: { argv: string[]; changesDir: boolean }[] = [];
     for (let i = 1; i < argv.length; i++) {
         if (!/^-(exec|execdir|ok|okdir)$/.test(argv[i]!)) continue;
+        if (--budget.commands < 0) { budget.exhausted = true; break; }
         const start = i + 1;
         const changesDir = argv[i]!.endsWith("dir");
-        while (i + 1 < argv.length && argv[i + 1] !== ";" && !(argv[i + 1] === "+" && argv[i] === "{}")) i++;
-        out.push({ argv: argv.slice(start, i + 1), changesDir });
+        let end = start;
+        while (end < argv.length && argv[end] !== ";" && !(argv[end] === "+" && argv[end - 1] === "{}")) end++;
+        // An earlier -exec may be another primary's operand (`-name -exec`).
+        // Retain every candidate, as the legacy destructive check did.
+        out.push({ argv: argv.slice(start, end), changesDir });
     }
     return out;
 }
+
+export const ANALYSIS_LIMIT = "unknown command effects (shell analysis incomplete; needs review)";
+
+interface CommandBudget {
+    commands: number;
+    bytes: number;
+    maxDepth: number;
+    exhausted: boolean;
+}
+
+type LocatedCommand = { argv: string[]; programs: string[][]; dir: string | null | undefined; text: string };
+type LocatedCommands = LocatedCommand[] & { exhausted: boolean };
 
 /**
  * Commands and the directories they may run in, through wrappers, compound
@@ -1977,54 +2008,96 @@ function findCommands(argv: string[]): { argv: string[]; changesDir: boolean }[]
  * Keep this protective view separate from the syntax used by allow/read-only
  * checks: seeing a loop's body doesn't make the loop safe to approve.
  */
-export function commandsWithDirs(cmd: string, cwd: string | undefined): { argv: string[]; programs: string[][]; dir: string | null | undefined; text: string }[] {
-    const out: { argv: string[]; programs: string[][]; dir: string | null | undefined; text: string }[] = [];
-    let remaining = 256_000;
+export function commandsWithDirs(cmd: string, cwd: string | undefined): LocatedCommands {
+    const out: LocatedCommands = Object.assign([], { exhausted: false });
+    const budget: CommandBudget = { commands: 1024, bytes: 256_000, maxDepth: 4, exhausted: false };
+    const seen = new Map<string, number>();
+    const emitted = new Set<string>();
     const visit = (script: string, initial: string | null | undefined, depth: number) => {
-        if (depth > 4 || (depth > 0 && script.length > remaining)) return;
-        remaining = Math.max(0, remaining - script.length);
-        const body = commandBodies(script);
-        // A loop can run zero or many times, and a branch need not run at all.
-        const uncertain = body.compoundAt >= 0 && body.commands.slice(body.compoundAt).some((c) => /^(cd|pushd)$/.test(effectiveArgv(c.argv)[0] ?? ""));
-        let dir = initial;
-        for (const [index, c] of body.commands.entries()) {
-            if (uncertain && index === body.compoundAt) dir = null;
-            const argv = effectiveArgv(c.argv);
-            if (argv[0] === "cd" || argv[0] === "pushd") {
-                const to = cdDestination(argv, c.text);
-                if (dir !== undefined) dir = dir === null || to === undefined ? null : resolve(dir, to);
-                continue;
-            }
-            const programs = runLevels(c.argv).map((l) => l.argv);
-            out.push({ argv, programs, dir, text: c.text });
-            for (const [level, args] of programs.entries()) {
-                if (runs(args[0], "parallel") && programs[level + 1]) {
-                    const inner = programs[level + 1]!;
-                    const end = inner.findIndex((a) => /^:::+$|^::::$/.test(a));
-                    visit(inner.slice(0, end < 0 ? undefined : end).join(" "), dir, depth + 1);
-                }
-                if (runs(args[0], ...SHELLS)) {
-                    const at = args.findIndex((a, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
-                    if (at > 0 && args[at + 1] !== undefined) visit(args[at + 1]!, dir, depth + 1);
-                }
-                if (runs(args[0], "find")) for (const inner of findCommands(args)) {
-                    visit(inner.argv.map(shellWord).join(" "), inner.changesDir ? null : dir, depth + 1);
-                }
-            }
+        const key = JSON.stringify({ script, dir: initial });
+        // A shallower visit has at least as much depth available. Keep directories
+        // in the key: the same checkout/push can mean different things after cd.
+        if ((seen.get(key) ?? Infinity) <= depth) return;
+        if (depth > budget.maxDepth || script.length > budget.bytes || budget.commands <= 0) {
+            budget.exhausted = true;
+            return;
         }
+        seen.set(key, depth);
+        budget.bytes -= script.length;
+        const analysis = analyzeCommand(script);
+        // Bound wrapper processing before effectiveArgv or runLevels can walk
+        // adversarial argument lists (including recursive time/nice wrappers).
+        if (analysis.commands.some((c) => c.argv.length > budget.commands)) {
+            budget.exhausted = true;
+            return;
+        }
+        const body = commandBodies(analysis.commands, !!analysis.heredoc, budget);
+        const uncertain = body.compoundAt >= 0 && body.commands.slice(body.compoundAt).some((c) => /^(cd|pushd)$/.test(effectiveArgv(c.argv)[0] ?? ""));
+        const children: [string, string | null | undefined, number][] = [];
+        const collect = (commands: SimpleCommand[], supplemental: boolean) => {
+            let dir = initial;
+            for (const [index, c] of commands.entries()) {
+                if (supplemental && uncertain && index === body.compoundAt) dir = null;
+                if (--budget.commands < 0) { budget.exhausted = true; return; }
+                const argv = effectiveArgv(c.argv);
+                if (argv[0] === "cd" || argv[0] === "pushd") {
+                    const to = cdDestination(argv, c.text);
+                    if (dir !== undefined) dir = dir === null || to === undefined ? null : resolve(dir, to);
+                    continue;
+                }
+                const id = JSON.stringify({ text: c.text, argv: c.argv, dir });
+                if (emitted.has(id)) continue;
+                emitted.add(id);
+                const levels = runLevels(c.argv, depth, budget);
+                const programs = levels.map((l) => l.argv);
+                out.push({ argv, programs, dir, text: c.text });
+                for (const [level, args] of programs.entries()) {
+                    const childDepth = levels[level]!.depth! + 1;
+                    // Only expand the first parallel template. Recursing through
+                    // every overlapping suffix multiplies work without new evidence.
+                    if (runs(args[0], "parallel") && programs[level + 1]) {
+                        const inner = programs[level + 1]!;
+                        const end = inner.findIndex((a) => /^:::+$|^::::$/.test(a));
+                        children.push([inner.slice(0, end < 0 ? undefined : end).join(" "), dir, childDepth]);
+                        break;
+                    }
+                    if (runs(args[0], ...SHELLS)) {
+                        const at = args.findIndex((a, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
+                        if (at > 0 && args[at + 1] !== undefined) children.push([args[at + 1]!, dir, childDepth]);
+                    }
+                    if (runs(args[0], "eval")) children.push([args.slice(1).join(" "), dir, childDepth]);
+                    if (runs(args[0], "find")) for (const inner of findCommands(args, budget)) {
+                        children.push([inner.argv.map(shellWord).join(" "), inner.changesDir ? null : dir, childDepth]);
+                    }
+                }
+            }
+        };
+        // Preserve the entire legacy view, including directory tracking, before
+        // appending extra evidence. Parser state can never delete that view.
+        collect(analysis.commands, false);
+        if (body.compoundAt >= 0) collect(body.commands, true);
+        if (analysis.heredoc && children.length) {
+            // The lexer does not distinguish heredoc data from real commands.
+            // Do not parse possible data as scripts, or silently lose the old
+            // destructive recursion for a real shell/find command beside it.
+            budget.exhausted = true;
+        } else for (const [inner, dir, childDepth] of children) visit(inner, dir, childDepth);
     };
     visit(cmd, cwd, 0);
+    out.exhausted = budget.exhausted;
     return out;
 }
 
 export function configTarget(cmd: string, harnessHome?: string): string | undefined {
+    const commands = commandsWithDirs(withoutMessages(cmd), undefined);
+    if (commands.exhausted) return ANALYSIS_LIMIT;
     if (isReadOnlyCommand(cmd)) return undefined;
     const a = analyzeCommand(cmd);
     const messages = messageWords(a);
     const unquoted = a.commands.map((c, k) => c.argv.filter((_, i) => !messages[k]!.includes(i)).join(" ")).join(" ; ");
     // In every spelling: on a case-insensitive volume `.harneſſ/` is `.harness/`.
     const homes = harnessHome ? spellings(harnessHome) : [];
-    const bodies = commandsWithDirs(withoutMessages(cmd), undefined).flatMap((c) => c.programs.map((argv) => argv.join(" ")));
+    const bodies = commands.flatMap((c) => c.programs.map((argv) => argv.join(" ")));
     for (const text of [withoutMessages(cmd), unquoted, ...bodies].flatMap(spellings)) {
         if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "harness or git configuration";
         if (GIT_EXEC_CONFIG.test(text)) return "git settings that run programs";
