@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to a pull request cancels the run it replaces. Runs on main
+# each have their own commit, so they all finish.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.3.14
+  HARNESS_NO_KEYCHAIN: "1"
+
+jobs:
+  checks:
+    name: Typecheck and GUI build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: gui
+      - run: bun run typecheck
+      - run: bun run gui:typecheck
+      - run: bun run gui:build
+
+  test:
+    name: Tests (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      - name: Set a git identity for tests that commit
+        run: git config --global user.name "Harness CI" && git config --global user.email "ci@harness.invalid"
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: gui
+      - name: Run this shard's test files
+        run: bun scripts/test-shard.ts ${{ matrix.shard }} 4 --reporter=junit --reporter-outfile=junit-${{ matrix.shard }}.xml
+      # Feeds `bun scripts/test-shard.ts --timings`, which rebalances the shards.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: junit-${{ matrix.shard }}
+          path: junit-${{ matrix.shard }}.xml
+          retention-days: 14
+
+  # The one check to require before merging: it passes only when every job
+  # above passed, however the matrix changes.
+  ci:
+    name: ci
+    if: always()
+    needs: [checks, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        run: |
+          echo '${{ toJSON(needs) }}'
+          test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
