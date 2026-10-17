@@ -53,6 +53,9 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
       - name: Set a git identity for tests that commit
         run: git config --global user.name "Harness CI" && git config --global user.email "ci@harness.invalid"
+      # sandbox-differential.test.ts compares against origin/main, which a shallow checkout doesn't have.
+      - name: Fetch origin/main
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: gui

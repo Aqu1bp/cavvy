@@ -14,13 +14,22 @@ import { join } from "path";
 const root = join(import.meta.dir, "..");
 const timingsPath = join(root, "test", "timings.json");
 
-// The files `bun test` finds under test/ (bunfig.toml's root): its four
-// name patterns, skipping node_modules and hidden directories.
+// The files `bun test` finds under test/ (bunfig.toml's root): its four name
+// patterns in any case, hidden files included, skipping node_modules and
+// hidden directories.
+const testName = /(\.test|_test|\.spec|_spec)\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$/;
 function testFiles(): string[] {
-    const glob = new Bun.Glob("**/*{.test,_test,.spec,_spec}.{js,jsx,ts,tsx,mjs,cjs,mts,cts}");
     const files: string[] = [];
-    for (const path of glob.scanSync({ cwd: join(root, "test"), dot: false })) {
-        if (path.split("/").includes("node_modules")) continue;
+    for (const path of new Bun.Glob("**/*").scanSync({ cwd: join(root, "test"), dot: true })) {
+        const parts = path.split("/");
+        const dirs = parts.slice(0, -1);
+        if (dirs.some(d => d.startsWith(".") || d === "node_modules")) continue;
+        const name = parts.at(-1)!;
+        if (!testName.test(name.toLowerCase())) continue;
+        // Bun runs `x.test.TS` in a full run but not when named by path, so
+        // the shards would skip it without failing.
+        const ext = name.slice(name.lastIndexOf("."));
+        if (ext !== ext.toLowerCase()) throw new Error(`test/${path}: give it a lower-case extension, or the CI shards can't run it`);
         files.push(`test/${path}`);
     }
     return files.sort();
@@ -48,18 +57,22 @@ export function split(files: string[], timings: Record<string, number>, total: n
     return shards.map(s => s.files.sort());
 }
 
-// Each JUnit report has one top-level <testsuite> per file, whose name is the
-// file's path; nested ones are named after their describe blocks.
+// A file's time is the sum of its <testcase> times. The time on a file's own
+// <testsuite> leaves out its describe blocks (gui-server.test.ts reads 0s
+// for about 115s of tests).
 function timingsFromJUnit(paths: string[]): Record<string, number> {
     const timings: Record<string, number> = {};
     for (const path of paths) {
         const xml = readFileSync(path, "utf8");
-        for (const m of xml.matchAll(/<testsuite name="([^"]+)" file="([^"]+)"[^>]*? time="([0-9.]+)"/g)) {
-            if (m[1] !== m[2]) continue;
-            timings[m[1]!] = Math.round(Number(m[3]) * 10) / 10;
+        for (const [testcase] of xml.matchAll(/<testcase\s[^>]*>/g)) {
+            const file = /\sfile="([^"]+)"/.exec(testcase)?.[1];
+            const time = Number(/\stime="([0-9.]+)"/.exec(testcase)?.[1]);
+            if (file && Number.isFinite(time)) timings[file] = (timings[file] ?? 0) + time;
         }
     }
-    return Object.fromEntries(Object.entries(timings).sort(([a], [b]) => a.localeCompare(b)));
+    return Object.fromEntries(Object.entries(timings)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([file, time]) => [file, Math.round(time * 10) / 10]));
 }
 
 if (import.meta.main) {
