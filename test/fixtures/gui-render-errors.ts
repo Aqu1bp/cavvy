@@ -61,13 +61,13 @@ test("unbounded render throws; boundary contains it, redacts text/copy/log, and 
     } finally { dispose(); unregisterSecret(registered); }
 });
 
-for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "RunningRow", "ToolDetails", "ActivityGroup", "TurnView"]) {
+for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails", "ActivityGroup", "TurnView"]) {
     test(`${kind} catches setup errors at its public boundary and leaves siblings usable`, () => {
-        const file = kind === "TurnView" ? kind : ["ToolRow", "RunningRow", "ToolDetails", "ActivityGroup"].includes(kind) ? "blocks/Activity" : `blocks/${kind}`;
+        const file = kind === "TurnView" ? kind : ["ToolRow", "ToolDetails", "ActivityGroup"].includes(kind) ? "blocks/Activity" : `blocks/${kind}`;
         const props: Record<string, unknown> = {
             Markdown: { text: "plain markdown" }, CodeBlock: { code: "safe code", lang: 42 },
             DiffView: { diff: { path: "broken", hunks: null } },
-            ToolRow: { tool: { name: null } }, RunningRow: { tool: { name: null } },
+            ToolRow: { tool: { name: null } },
             ToolDetails: { tool: null }, ActivityGroup: { steps: [], tools: null },
             TurnView: { turn: { blocks: null } },
         };
@@ -181,7 +181,7 @@ test("root failure offers Reload and safe Copy details", async () => {
 
 /** Execute the actual highlighting module, replacing only dynamic module loading. */
 function retryingHighlighter(failure: "import" | "initialize" = "import") {
-    const original = readFileSync(new URL("../../gui/src/lib/highlight.ts", import.meta.url), "utf8");
+    const original = readFileSync(new URL("../../gui/src/lib/highlight-core.ts", import.meta.url), "utf8");
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(original)
         .replace(/\bimport\(/g, "loadModule(").replace(/^export /gm, "");
     let loads = 0;

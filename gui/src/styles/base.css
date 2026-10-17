@@ -188,31 +188,22 @@ h3 {
     animation: pulse 1.4s ease-in-out infinite;
 }
 
+/* A continuous compositor animation. Text stays readable without repainting
+   a clipped background on every frame, including on high-refresh displays. */
 @keyframes shimmer {
-    from {
-        background-position: -72px 0, 0 0;
-    }
-    to {
-        background-position: calc(100% + 72px) 0, 0 0;
-    }
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
 }
 
-/* Text that sweeps while something is in progress: a narrow highlight that
-   steps across (stepped, so it costs a few frames a second, not sixty). */
 .shimmer {
-    color: transparent;
-    background: linear-gradient(90deg, transparent, var(--fg), transparent) no-repeat, linear-gradient(var(--fg-muted), var(--fg-muted));
-    background-size: 72px 100%, 100% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    animation: shimmer 2.2s steps(30) infinite;
+    color: var(--fg-muted);
+    animation: shimmer 2.2s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
     .shimmer {
         animation: none;
-        background: none;
-        color: var(--fg-muted);
+        opacity: 1;
     }
 }
 

@@ -423,7 +423,7 @@ function TurnViewContent(p: TurnViewProps) {
     const renderItem = (it: () => Item) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
-                {(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} agents={p.agents} />}
+                {(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} keepTail={items().at(-1) === g()} agents={p.agents} />}
             </Match>
             <Match when={it().kind === "block" && (it() as { block: Block }).block}>
                 {(b) => (

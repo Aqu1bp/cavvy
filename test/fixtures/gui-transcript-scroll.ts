@@ -93,6 +93,9 @@ let dispose = mount(a);
 try {
     assert.equal(all(root).filter((n) => n.tag === "article").length, 40);
     assert.equal(top, 8050, "first visits follow the bottom");
+    const pinnedWrites = scrollWrites;
+    for (let i = 0; i < 20; i++) resize(scroller());
+    assert.equal(scrollWrites, pinnedWrites, "unchanged pinned geometry must not write scroll position again");
     viewportHeight = 240; resize(scroller());
     assert.equal(top, 8310, "a pinned transcript follows a shorter scroller without content resizing");
     assert.equal(button("jump"), undefined);
