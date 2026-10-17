@@ -334,25 +334,42 @@ const LOCK_STALE_MS = 60_000;
 /** A lock with no pid in it yet: being made, or left by a process that died making it. */
 const LOCK_EMPTY_STALE_MS = 5000;
 
-/** The lock's inode when it's been left behind: its holder has gone, or it's too old to be anyone's. */
-function abandoned(lock: string): number | undefined {
+/** A lock found abandoned: its inode and what it said, which together say which lock it was. */
+type Found = { ino: number; body: string };
+
+/**
+ * The lock's body is `<pid>:<token>`, the token made fresh for each lock. A filesystem can give a freed inode
+ * to the next file made (ext4 does), so an inode alone can't say whether a lock is the one seen before.
+ * (Locks from before the token hold just the pid.)
+ */
+const lockBody = (token: string) => `${process.pid}:${token}`;
+
+/** The lock, when it's been left behind: its holder has gone, or it's too old to be anyone's. */
+export function abandoned(lock: string): Found | undefined {
+    let fd: number | undefined;
     try {
-        const st = statSync(lock);
-        const body = readFileSync(lock, "utf-8").trim();
+        // One descriptor for the age, the inode and the body: by path, a lock replaced between two of them
+        // (on the old one's inode, say) would pair its body with the old one's age, and be found abandoned.
+        fd = lockFiles.open(lock, "r");
+        const st = fstatSync(fd);
+        const raw = readFileSync(fd, "utf-8");
+        const found = { ino: st.ino, body: raw };
         const age = Date.now() - st.mtimeMs;
-        const pid = /^\d+$/.test(body) ? Number(body) : 0;
-        if (!pid) return age > LOCK_EMPTY_STALE_MS ? st.ino : undefined;
-        if (age > LOCK_STALE_MS) return st.ino;
+        const pid = /^(\d+)(?::[0-9a-f-]+)?$/.exec(raw.trim())?.[1];
+        if (!pid) return age > LOCK_EMPTY_STALE_MS ? found : undefined;
+        if (age > LOCK_STALE_MS) return found;
         try {
-            process.kill(pid, 0);
+            process.kill(Number(pid), 0);
             return undefined;
         } catch (e) {
             // EPERM: running, as another user.
-            return (e as NodeJS.ErrnoException).code === "ESRCH" ? st.ino : undefined;
+            return (e as NodeJS.ErrnoException).code === "ESRCH" ? found : undefined;
         }
     } catch {
         // released meanwhile
         return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
     }
 }
 
@@ -360,9 +377,11 @@ function abandoned(lock: string): number | undefined {
  * Remove the abandoned lock, if it's still the one found abandoned. Two
  * processes can find it at once, and by the time the second removes it the
  * first may have made its own: so it's removed only while holding
- * `<lock>.takeover`. True when it's gone.
+ * `<lock>.takeover`, and only if it still has the inode and the body found
+ * (the first's lock may have the freed inode, but not the same token).
+ * True when it's gone, or isn't the one found.
  */
-function takeOver(lock: string, ino: number): boolean {
+export function takeOver(lock: string, found: Found): boolean {
     const guard = `${lock}.takeover`;
     let fd: number;
     try {
@@ -377,7 +396,7 @@ function takeOver(lock: string, ino: number): boolean {
         return false;
     }
     try {
-        if (statSync(lock).ino === ino) unlinkSync(lock);
+        if (statSync(lock).ino === found.ino && readFileSync(lock, "utf-8") === found.body) unlinkSync(lock);
         return true;
     } catch {
         return true;
@@ -393,10 +412,10 @@ function takeOver(lock: string, ino: number): boolean {
 
 const busy = () => new RpcError("The project scripts are being saved by another Harness window; try again", "busy");
 
-type LockId = { ino: number; dev: number };
+type LockId = { ino: number; dev: number; token: string };
 
 /**
- * Make the lock, already holding this process's pid, so no one ever sees it
+ * Make the lock, already holding this process's pid and a new token, so no one ever sees it
  * empty: written aside, then linked into place (EEXIST: it's held). Undefined
  * when it's held. Where there are no hard links, it's made in place instead.
  */
@@ -404,13 +423,14 @@ type LockId = { ino: number; dev: number };
 export const lockFiles = { link: linkSync, open: openSync };
 
 function makeLock(lock: string): LockId | undefined {
-    const tmp = `${lock}.${process.pid}.${randomUUID()}`;
+    const token = randomUUID();
+    const tmp = `${lock}.${process.pid}.${token}`;
     try {
-        writeFileSync(tmp, String(process.pid), { flag: "wx", mode: 0o600 });
+        writeFileSync(tmp, lockBody(token), { flag: "wx", mode: 0o600 });
         const id = statSync(tmp);
         try {
             lockFiles.link(tmp, lock);
-            return { ino: id.ino, dev: id.dev };
+            return { ino: id.ino, dev: id.dev, token };
         } catch (e) {
             const code = (e as NodeJS.ErrnoException).code;
             if (code === "EEXIST") return undefined;
@@ -424,11 +444,11 @@ function makeLock(lock: string): LockId | undefined {
             throw e;
         }
         try {
-            writeSync(fd, String(process.pid));
+            writeSync(fd, lockBody(token));
             // The file this process made, by its descriptor: the path may name another process's lock by
             // now (it was taken over meanwhile), and that one mustn't be taken for ours. Then it's held.
             const made = fstatSync(fd);
-            const id = { ino: made.ino, dev: made.dev };
+            const id = { ino: made.ino, dev: made.dev, token };
             return stillMine(lock, id) ? id : undefined;
         } finally {
             closeSync(fd);
@@ -444,11 +464,11 @@ function makeLock(lock: string): LockId | undefined {
     }
 }
 
-/** The lock at `lock` is the one this process made. */
-function stillMine(lock: string, mine: LockId): boolean {
+/** The lock at `lock` is the one this process made: its inode, and the token no other lock has. */
+export function stillMine(lock: string, mine: LockId): boolean {
     try {
         const there = statSync(lock);
-        return there.ino === mine.ino && there.dev === mine.dev;
+        return there.ino === mine.ino && there.dev === mine.dev && readFileSync(lock, "utf-8").endsWith(`:${mine.token}`);
     } catch {
         return false;
     }
@@ -466,8 +486,8 @@ async function withLock<T>(fn: (fence: () => void) => T): Promise<T> {
     const deadline = Date.now() + LOCK_WAIT_MS;
     let mine: LockId | undefined;
     while (!(mine = makeLock(lock))) {
-        const ino = abandoned(lock);
-        if (ino !== undefined && takeOver(lock, ino)) continue;
+        const found = abandoned(lock);
+        if (found && takeOver(lock, found)) continue;
         if (Date.now() > deadline) throw busy();
         await Bun.sleep(10);
     }
