@@ -30,3 +30,5 @@ The whole suite takes about 20 minutes on a Mac. When several agents run it at o
   ```
 
 - **ci:** passes only when every job above passed. Branch protection requires this check.
+
+**For now:** some tests fail on Linux, tracked in #135, #136, #137 and #138, so `ci` fails on every pull request until those are fixed and isn't required yet. Until then, compare your pull request's failures with those issues. Anything not listed there is yours to fix.
