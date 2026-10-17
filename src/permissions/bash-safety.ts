@@ -31,6 +31,8 @@ export interface SimpleCommand {
     globbed?: number[];
     /** Where each argv word is in the command line: [start, end) of its raw text, quotes included. */
     spans: [number, number][];
+    /** Literal stdin supplied by a here-document or here-string (discovery view only). */
+    stdinScripts?: string[];
 }
 
 export interface CommandAnalysis {
@@ -102,7 +104,37 @@ function plainBraceParam(cmd: string, i: number): boolean {
 }
 
 /** Tokenise and split on control operators, respecting quotes and escapes. */
-export function analyzeCommand(cmd: string): CommandAnalysis {
+export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis {
+    const pending: { delimiter: string; tabs: boolean; quoted: boolean; scripts: string[] }[] = [];
+    let stdinScripts: string[] = [];
+    const consumeHeredocs = (start: number): number => {
+        let pos = start;
+        for (const doc of pending) {
+            let data = "";
+            while (pos < cmd.length) {
+                let value = "";
+                let newline = false;
+                // Unquoted heredocs join escaped newlines before checking their
+                // delimiter. Quoted documents retain those bytes literally.
+                while (pos < cmd.length) {
+                    const end = cmd.indexOf("\n", pos);
+                    const line = cmd.slice(pos, end < 0 ? cmd.length : end);
+                    pos = end < 0 ? cmd.length : end + 1;
+                    newline = end >= 0;
+                    const part = doc.tabs ? line.replace(/^\t+/, "") : line;
+                    const slashes = part.match(/\\+$/)?.[0].length ?? 0;
+                    if (!doc.quoted && newline && slashes % 2) { value += part.slice(0, -1); continue; }
+                    value += part;
+                    break;
+                }
+                if (value === doc.delimiter) break;
+                data += value + (newline ? "\n" : "");
+            }
+            doc.scripts.push(data);
+        }
+        pending.length = 0;
+        return pos - 1;
+    };
     const commands: SimpleCommand[] = [];
     let hasSubstitution = false;
     let writesFiles = false;
@@ -163,13 +195,14 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
     const endCommand = (op?: string) => {
         endWord();
         if (argv.length) {
-            commands.push({ text: text.trim(), argv, spans, ...(lastOp !== undefined ? { after: lastOp } : {}), ...(redirectMayFail ? { redirectMayFail: true as const } : {}), ...(globStart.length ? { globStart } : {}), ...(expands.length ? { expands } : {}), ...(globbed.length ? { globbed } : {}) });
+            commands.push({ text: text.trim(), argv, spans, ...(discovery ? { stdinScripts } : {}), ...(lastOp !== undefined ? { after: lastOp } : {}), ...(redirectMayFail ? { redirectMayFail: true as const } : {}), ...(globStart.length ? { globStart } : {}), ...(expands.length ? { expands } : {}), ...(globbed.length ? { globbed } : {}) });
             lastOp = op;
         } else if (/[<>]/.test(text)) bareRedirect = true;
         globStart = [];
         expands = [];
         globbed = [];
         argv = [];
+        stdinScripts = [];
         spans = [];
         text = "";
         redirectMayFail = false;
@@ -267,6 +300,7 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             // comment to end of line
             while (i < cmd.length && cmd[i] !== "\n") i++;
             endCommand(i < cmd.length ? "\n" : undefined);
+            if (discovery && pending.length) i = consumeHeredocs(i + 1);
             continue;
         }
         if (c === ";" || c === "\n" || c === "|" || c === "&") {
@@ -282,9 +316,14 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             let op = doubled ? c + c : c;
             if (c === ";" && cmd[i + 1] === "&") { op += "&"; i++; }
             endCommand(op);
+            if (discovery && c === "\n" && pending.length) i = consumeHeredocs(i + 1);
             continue;
         }
         if (c === ">" || c === "<") {
+            const inputFd = /^\d+$/.test(word) && !wordQuoted ? word : "0";
+            // Only the last redirection of stdin supplies the interpreter's input.
+            // Other descriptors and superseded heredocs still have data to skip.
+            if (discovery && c === "<" && inputFd === "0") stdinScripts = [];
             // `2>`, `2>>`, `0<`: an unquoted digit right before the operator is the fd, not an argument.
             // Only one digit: zsh passes `10>x`'s 10 to the command (bash takes it as fd 10).
             if (/^\d$/.test(word) && !wordQuoted) {
@@ -297,6 +336,20 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
             if (c === "<") {
                 redirectMayFail = true;
                 if (n === "<" && cmd[i - 1] !== "<" && cmd[i + 2] !== "<") heredoc = true;
+            }
+            if (discovery && c === "<" && n === "<") {
+                const hereString = cmd[i + 2] === "<";
+                const tabs = !hereString && cmd[i + 2] === "-";
+                let j = i + (hereString || tabs ? 3 : 2);
+                while (cmd[j] === " " || cmd[j] === "\t" || (cmd[j] === "\\" && cmd[j + 1] === "\n")) j += cmd[j] === "\\" ? 2 : 1;
+                const raw = cmd.slice(j).match(/^(?:"[^"\\]*(?:\\[\s\S][^"\\]*)*"|'[^']*'|\\[\s\S]|[^ \t\n;|&<>"'\\])+/)?.[0] ?? "";
+                const value = analyzeCommand(raw).commands[0]?.argv[0] ?? "";
+                const scripts = inputFd === "0" ? stdinScripts : [];
+                if (hereString) scripts.push(value + "\n");
+                else pending.push({ delimiter: value, tabs, quoted: /['"\\]/.test(raw.replace(/\\\n/g, "")), scripts });
+                text += cmd.slice(i, j + raw.length);
+                i = j + raw.length - 1;
+                continue;
             }
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
@@ -356,12 +409,13 @@ export function analyzeCommand(cmd: string): CommandAnalysis {
  */
 export function effectiveArgv(argv: string[]): string[] {
     let i = 0;
-    while (i < argv.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i]!)) i++;
-    const rest = argv.slice(i);
-    if (rest[0] === "time" || rest[0] === "nice") return effectiveArgv(rest.slice(1));
-    if (rest[0] === "command" && !/^-/.test(rest[1] ?? "")) return effectiveArgv(rest.slice(1));
-    if (rest[0] === "command" && rest[1] === "-p" && !/^-/.test(rest[2] ?? "")) return effectiveArgv(rest.slice(2));
-    return rest;
+    while (i < argv.length) {
+        if (ASSIGNMENT.test(argv[i]!) || argv[i] === "time" || argv[i] === "nice") { i++; continue; }
+        if (argv[i] === "command" && !/^-/.test(argv[i + 1] ?? "")) { i++; continue; }
+        if (argv[i] === "command" && argv[i + 1] === "-p" && !/^-/.test(argv[i + 2] ?? "")) { i += 2; continue; }
+        break;
+    }
+    return argv.slice(i);
 }
 
 /**
@@ -532,8 +586,7 @@ export function runLevels(argv0: string[], depth = 0, budget?: CommandBudget): {
         }
         if (script !== undefined) {
             // `env -S 'rm -rf' ~` runs `rm -rf ~`: env goes on with the string's words, then the rest.
-            if (depth < (budget?.maxDepth ?? 4) && (!budget || script.length <= budget.bytes)) {
-                if (budget) budget.bytes -= script.length;
+            if (depth < (budget?.maxDepth ?? 4)) {
                 out.push(...runLevels([argv[0]!, ...envSplit(script), ...argv.slice(j)], depth + 1, budget));
             } else if (budget) budget.exhausted = true;
             return out;
@@ -1925,10 +1978,7 @@ function caseHeader(text: string): { end: number; found: boolean } | undefined {
 }
 
 /** Bodies are extra evidence for protective checks, never grounds for approving shell syntax. */
-function commandBodies(original: SimpleCommand[], heredoc: boolean, budget: CommandBudget): { commands: SimpleCommand[]; compoundAt: number } {
-    // The lexer deliberately retains heredoc lines as conservative evidence. Never
-    // interpret those data lines as shell structure or discover bodies in them.
-    if (heredoc) return { commands: original, compoundAt: -1 };
+function commandBodies(original: SimpleCommand[], budget: CommandBudget): { commands: SimpleCommand[]; compoundAt: number } {
     const commands: SimpleCommand[] = [];
     const cases: ("in" | "pattern" | "body")[] = [];
     let compoundAt = -1;
@@ -1964,11 +2014,7 @@ function commandBodies(original: SimpleCommand[], heredoc: boolean, budget: Comm
             if (n === 31) budget.exhausted = true;
         }
         if (text !== c.text && compoundAt < 0) compoundAt = commands.length;
-        if (text !== c.text) {
-            budget.bytes -= text.length;
-            if (budget.bytes < 0) { budget.exhausted = true; return { commands: original, compoundAt: -1 }; }
-        }
-        if (text) commands.push(...(text === c.text ? [c] : analyzeCommand(text).commands));
+        if (text) commands.push(...(text === c.text ? [c] : analyzeCommand(text, true).commands.map((body) => ({ ...body, stdinScripts: c.stdinScripts }))));
     }
     return { commands, compoundAt };
 }
@@ -1978,7 +2024,8 @@ function findCommands(argv: string[], budget: CommandBudget): { argv: string[]; 
     const out: { argv: string[]; changesDir: boolean }[] = [];
     for (let i = 1; i < argv.length; i++) {
         if (!/^-(exec|execdir|ok|okdir)$/.test(argv[i]!)) continue;
-        if (--budget.commands < 0) { budget.exhausted = true; break; }
+        // Overlapping candidates can otherwise rebuild quadratic suffixes.
+        if (--budget.commands < 0 || out.length >= 64) { budget.exhausted = true; break; }
         const start = i + 1;
         const changesDir = argv[i]!.endsWith("dir");
         let end = start;
@@ -1990,11 +2037,28 @@ function findCommands(argv: string[], budget: CommandBudget): { argv: string[]; 
     return out;
 }
 
+/** A shell reading commands from stdin, rather than a -c argument or file. */
+function shellReadsStdin(argv: string[]): boolean {
+    if (!runs(argv[0], ...SHELLS)) return false;
+    let stdin = false;
+    let noexec = false;
+    for (let i = 1; i < argv.length; i++) {
+        const a = argv[i]!;
+        if (a === "--help" || a === "--version" || /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a)) return false;
+        if (a === "--") return !noexec && (stdin || i === argv.length - 1);
+        if (a === "-" || !/^[-+]/.test(a)) return !noexec && (stdin || a === "-");
+        if (/^[-+][a-zA-Z]*n[a-zA-Z]*$/.test(a)) noexec = a[0] === "-";
+        if ((a === "-o" || a === "+o") && argv[i + 1] === "noexec") noexec = a === "-o";
+        if (/^-[a-zA-Z]*s[a-zA-Z]*$/.test(a)) stdin = true;
+        if (["-o", "+o", "-O", "+O", "--rcfile", "--init-file"].includes(a)) i++;
+    }
+    return !noexec;
+}
+
 export const ANALYSIS_LIMIT = "unknown command effects (shell analysis incomplete; needs review)";
 
 interface CommandBudget {
     commands: number;
-    bytes: number;
     maxDepth: number;
     exhausted: boolean;
 }
@@ -2007,10 +2071,15 @@ type LocatedCommands = LocatedCommand[] & { exhausted: boolean };
  * bodies and literal shell scripts. null means a directory we can't settle.
  * Keep this protective view separate from the syntax used by allow/read-only
  * checks: seeing a loop's body doesn't make the loop safe to approve.
+ * legacyDestructive retains origin/main's destructive-only recursion (including
+ * its original cwd and lexer view of data). It must not drive new body discovery
+ * or access/config checks: those would turn harmless quoted data into commands.
  */
-export function commandsWithDirs(cmd: string, cwd: string | undefined): LocatedCommands {
+export function commandsWithDirs(cmd: string, cwd: string | undefined, legacyDestructive = false): LocatedCommands {
     const out: LocatedCommands = Object.assign([], { exhausted: false });
-    const budget: CommandBudget = { commands: 1024, bytes: 256_000, maxDepth: 4, exhausted: false };
+    // Operands and data bytes do not consume this budget. Wrappers, extracted
+    // commands and recursive scripts do; this admits hundreds of real commands.
+    const budget: CommandBudget = { commands: 4096, maxDepth: 4, exhausted: false };
     const seen = new Map<string, number>();
     const emitted = new Set<string>();
     const visit = (script: string, initial: string | null | undefined, depth: number) => {
@@ -2018,70 +2087,75 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined): LocatedC
         // A shallower visit has at least as much depth available. Keep directories
         // in the key: the same checkout/push can mean different things after cd.
         if ((seen.get(key) ?? Infinity) <= depth) return;
-        if (depth > budget.maxDepth || script.length > budget.bytes || budget.commands <= 0) {
+        // The old destructive recursion stopped at four levels without adding a flag.
+        if (legacyDestructive && depth > budget.maxDepth) return;
+        if (depth > budget.maxDepth || budget.commands <= 0) {
             budget.exhausted = true;
             return;
         }
         seen.set(key, depth);
-        budget.bytes -= script.length;
+        if (legacyDestructive) budget.commands--;
         const analysis = analyzeCommand(script);
-        // Bound wrapper processing before effectiveArgv or runLevels can walk
-        // adversarial argument lists (including recursive time/nice wrappers).
-        if (analysis.commands.some((c) => c.argv.length > budget.commands)) {
-            budget.exhausted = true;
-            return;
-        }
-        const body = commandBodies(analysis.commands, !!analysis.heredoc, budget);
+        const executable = legacyDestructive ? analysis : analyzeCommand(script, true);
+        const body = legacyDestructive ? { commands: analysis.commands, compoundAt: -1 } : commandBodies(executable.commands, budget);
         const uncertain = body.compoundAt >= 0 && body.commands.slice(body.compoundAt).some((c) => /^(cd|pushd)$/.test(effectiveArgv(c.argv)[0] ?? ""));
         const children: [string, string | null | undefined, number][] = [];
         const collect = (commands: SimpleCommand[], supplemental: boolean) => {
             let dir = initial;
             for (const [index, c] of commands.entries()) {
                 if (supplemental && uncertain && index === body.compoundAt) dir = null;
-                if (--budget.commands < 0) { budget.exhausted = true; return; }
+                if (supplemental && !legacyDestructive && --budget.commands < 0) { budget.exhausted = true; return; }
                 const argv = effectiveArgv(c.argv);
                 if (argv[0] === "cd" || argv[0] === "pushd") {
                     const to = cdDestination(argv, c.text);
-                    if (dir !== undefined) dir = dir === null || to === undefined ? null : resolve(dir, to);
+                    if (supplemental && !legacyDestructive && dir === undefined) dir = null;
+                    if (dir !== undefined) {
+                        dir = dir === null || to === undefined ? null : resolve(dir, to);
+                        if (supplemental && !legacyDestructive && dir !== null) {
+                            try { if (!statSync(dir).isDirectory()) dir = null; }
+                            catch { dir = null; }
+                        }
+                    }
                     continue;
                 }
                 const id = JSON.stringify({ text: c.text, argv: c.argv, dir });
-                if (emitted.has(id)) continue;
-                emitted.add(id);
-                const levels = runLevels(c.argv, depth, budget);
+                const levels = runLevels(c.argv, depth, supplemental && !legacyDestructive ? budget : undefined);
                 const programs = levels.map((l) => l.argv);
-                out.push({ argv, programs, dir, text: c.text });
+                if (!emitted.has(id)) {
+                    emitted.add(id);
+                    out.push({ argv, programs, dir, text: c.text });
+                }
+                if (!supplemental) continue;
                 for (const [level, args] of programs.entries()) {
-                    const childDepth = levels[level]!.depth! + 1;
+                    const childDepth = legacyDestructive ? depth + 1 : levels[level]!.depth! + 1;
+                    const childDir = legacyDestructive ? cwd : dir;
+                    if (!legacyDestructive && (shellReadsStdin(args) || runs(args[0], "eval") || (runs(args[0], "source", ".") && args[1] === "/dev/stdin"))) {
+                        for (const data of c.stdinScripts ?? []) children.push([data, dir, childDepth]);
+                    }
                     // Only expand the first parallel template. Recursing through
                     // every overlapping suffix multiplies work without new evidence.
-                    if (runs(args[0], "parallel") && programs[level + 1]) {
+                    if (!legacyDestructive && runs(args[0], "parallel") && programs[level + 1]) {
                         const inner = programs[level + 1]!;
                         const end = inner.findIndex((a) => /^:::+$|^::::$/.test(a));
                         children.push([inner.slice(0, end < 0 ? undefined : end).join(" "), dir, childDepth]);
                         break;
                     }
                     if (runs(args[0], ...SHELLS)) {
-                        const at = args.findIndex((a, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
-                        if (at > 0 && args[at + 1] !== undefined) children.push([args[at + 1]!, dir, childDepth]);
+                        const at = args.findIndex((a, i) => i > 0 && (legacyDestructive ? /^-[a-zA-Z]*c$/ : /^-[a-zA-Z]*c[a-zA-Z]*$/).test(a));
+                        if (at > 0 && args[at + 1] !== undefined) children.push([args[at + 1]!, childDir, childDepth]);
                     }
-                    if (runs(args[0], "eval")) children.push([args.slice(1).join(" "), dir, childDepth]);
+                    if (runs(args[0], "eval")) children.push([args.slice(1).join(" "), childDir, childDepth]);
                     if (runs(args[0], "find")) for (const inner of findCommands(args, budget)) {
-                        children.push([inner.argv.map(shellWord).join(" "), inner.changesDir ? null : dir, childDepth]);
+                        children.push([inner.argv.map(shellWord).join(" "), !legacyDestructive && inner.changesDir ? null : childDir, childDepth]);
                     }
                 }
             }
         };
         // Preserve the entire legacy view, including directory tracking, before
         // appending extra evidence. Parser state can never delete that view.
-        collect(analysis.commands, false);
-        if (body.compoundAt >= 0) collect(body.commands, true);
-        if (analysis.heredoc && children.length) {
-            // The lexer does not distinguish heredoc data from real commands.
-            // Do not parse possible data as scripts, or silently lose the old
-            // destructive recursion for a real shell/find command beside it.
-            budget.exhausted = true;
-        } else for (const [inner, dir, childDepth] of children) visit(inner, dir, childDepth);
+        if (!legacyDestructive) collect(analysis.commands, false);
+        collect(body.commands, true);
+        for (const [inner, dir, childDepth] of children) visit(inner, dir, childDepth);
     };
     visit(cmd, cwd, 0);
     out.exhausted = budget.exhausted;

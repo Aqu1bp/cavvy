@@ -503,10 +503,14 @@ const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rm
  * file there (it discards that file's changes) and not when it's a branch.
  */
 export function looksDestructive(cmd: string, cwd?: string): string | undefined {
+    return destructiveIn(cmd, cwd, false) ?? destructiveIn(cmd, cwd, true);
+}
+
+function destructiveIn(cmd: string, cwd: string | undefined, legacy: boolean): string | undefined {
     const text = withoutMessages(cmd);
     if (DELETE_WORD.test(text)) return text.match(DELETE_WORD)![2];
     if (DELETE_CALL.test(text)) return "deletes files";
-    const commands = commandsWithDirs(cmd, cwd);
+    const commands = commandsWithDirs(cmd, cwd, legacy);
     for (const { programs, dir, text: body } of commands) {
         // Shell quote concatenation can reveal inline deletion only after decoding
         // a child script. Keep the former recursive text checks in this traversal.
