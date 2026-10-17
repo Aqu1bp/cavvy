@@ -8,7 +8,9 @@ import { chromeFixture } from "./helpers/chrome";
 
 const chrome = [process.env.HARNESS_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((p) => p && existsSync(p));
 
-const sandboxArgs = (uid: number | undefined) => uid === 0 ? ["--no-sandbox"] : [];
+// As root Chrome refuses its sandbox. On GitHub's runners it can't make one either: Ubuntu's AppArmor blocks the
+// user namespaces it needs ("No usable sandbox!"), and the runner is a throwaway machine.
+const sandboxArgs = (uid: number | undefined, ci = false) => uid === 0 || ci ? ["--no-sandbox"] : [];
 type Browser = Pick<ReturnType<typeof Bun.spawn>, "exitCode" | "exited" | "kill">;
 
 async function waitForExit(browser: Browser, ms: number): Promise<boolean> {
@@ -59,8 +61,9 @@ test("shell find searches displayed text without ANSI escapes", () => {
     expect(result.exitCode, result.stderr.toString()).toBe(0);
 });
 
-test("Chrome disables its sandbox only when running as root", () => {
+test("Chrome disables its sandbox only when running as root or in CI", () => {
     expect(sandboxArgs(0)).toEqual(["--no-sandbox"]);
+    expect(sandboxArgs(1000, true)).toEqual(["--no-sandbox"]);
     expect(sandboxArgs(1000)).toEqual([]);
     expect(sandboxArgs(undefined)).toEqual([]);
 });
@@ -130,7 +133,7 @@ test.skipIf(!chrome)("find reveals live arguments and linked paths without count
         });
         browser = Bun.spawn([
             chrome!, "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-            ...sandboxArgs(process.getuid?.()),
+            ...sandboxArgs(process.getuid?.(), !!process.env.CI),
             "--disable-background-networking", `--user-data-dir=${profile}`, "--remote-debugging-port=0",
         ], { stdout: "ignore", stderr: Bun.file(join(scratch, "chrome.log")) });
         try {
