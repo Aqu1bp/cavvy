@@ -49,7 +49,7 @@ const runSheet = createRunSheet({
 const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "PlanMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
 const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,

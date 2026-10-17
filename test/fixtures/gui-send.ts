@@ -26,6 +26,7 @@ const rpc = { call: async (method: string, params: any) => {
     return { queued: false };
 } };
 const noop = () => {};
+const contextOpenings: boolean[] = [];
 const mcpOpenings: { focus?: string }[] = [];
 function mount(key: string) {
     return createRoot((dispose) => ({ ...createComposerDraft(() => key), dispose }));
@@ -55,9 +56,10 @@ mock.module("../../gui/src/state/app", () => ({
 mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
 mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: noop }));
 mock.module("../../gui/src/state/ui", () => ({
+    setContextCardOpen: (open: boolean) => contextOpenings.push(open),
     setMcpOpen: (value: { focus?: string }) => mcpOpenings.push(value),
     ...Object.fromEntries([
-        "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setModePickerOpen",
+        "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setFolderPickerOpen", "setModePickerOpen",
         "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab",
     ].map((name) => [name, noop])),
 }));
@@ -236,4 +238,11 @@ const beforeMcp = created;
 assert.equal(await send("/mcp"), "command");
 assert.equal(created, beforeMcp);
 assert.equal(mcpOpenings.length, 2);
+assert.deepEqual(calls, []);
+
+// /context must open the shared composer usage card without a server call.
+app.activeId = "original";
+calls.length = 0;
+assert.equal(await send("/context"), "command");
+assert.deepEqual(contextOpenings, [true]);
 assert.deepEqual(calls, []);

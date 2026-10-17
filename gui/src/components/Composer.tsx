@@ -4,19 +4,15 @@ import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { comparePicks, setComparePicks, contextCardOpen, focusComposer, modePickerOpen, modelPickerOpen, setContextCardOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
-import { cost, tokens } from "../lib/format";
+import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
 import { EffortMenu, FastModeToggle, ModelPicker, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
-import { Popover } from "./ui/Popover";
-import { Ring } from "./ui/bits";
-import { PlanMeter } from "./PlanMeter";
+import { ComposerMeter } from "./ComposerMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
-import { contextView } from "../lib/context";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
 
@@ -24,75 +20,6 @@ import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
 
 type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
-
-/** The ring, and on hover what it stands for: tokens, spend, and compacting now. */
-function ContextRing(p: { sessionId: string }) {
-    let btn: HTMLButtonElement | undefined;
-    let closeTimer: ReturnType<typeof setTimeout> | undefined;
-    // Shared so /context can open it.
-    const [open, setOpen] = [contextCardOpen, setContextCardOpen];
-    const st = () => handleFor(p.sessionId)?.view.state;
-    const view = () => contextView(st(), open());
-    const pct = () => view().pct ?? 0;
-    const show = () => (clearTimeout(closeTimer), setOpen(true));
-    const hide = () => (closeTimer = setTimeout(() => setOpen(false), 160));
-    onCleanup(() => clearTimeout(closeTimer));
-    return (
-        <Show when={view().ring}>
-            <button
-                ref={btn}
-                class="hb ctx-ring"
-                aria-haspopup="dialog"
-                aria-expanded={open()}
-                aria-label={view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(pct() * 100)}% used`}
-                onMouseEnter={show}
-                onMouseLeave={hide}
-                onClick={() => setOpen(!open())}
-            >
-                <Ring value={pct()} size={18} stroke={2.4} neutral />
-            </button>
-            <Popover open={open()} anchor={() => btn} onClose={() => setOpen(false)} placement="top" align="end" width={264} class="ctx-card">
-                <div onMouseEnter={show} onMouseLeave={hide}>
-                    <div class="ctx-label">Context window</div>
-                    <div class="ctx-line">
-                        <span class="num">{view().line}</span>
-                        <Show when={view().pct !== undefined}>
-                            <span class="ctx-pct num">{Math.round(pct() * 100)}%</span>
-                        </Show>
-                    </div>
-                    <Show when={view().pct !== undefined}>
-                        <div class="ctx-bar">
-                            <div class={`ctx-fill ${pct() >= 0.85 ? "danger" : pct() >= 0.7 ? "warn" : ""}`} style={{ width: `${Math.min(100, pct() * 100)}%` }} />
-                        </div>
-                    </Show>
-                    <div class="ctx-grid">
-                        <span>Spent</span>
-                        <span class="num" title={st()!.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>
-                            {cost(st()!.cost, st()!.costUnknown)}
-                        </span>
-                        <span>Tokens</span>
-                        <span class="num">
-                            {tokens(st()!.tokensIn)} in · {tokens(st()!.tokensOut)} out
-                        </span>
-                    </div>
-                    <div class="ctx-foot">
-                        <span>{app.settings.autoCompact === false ? "Automatic compaction is off." : "Compacts on its own near the limit."}</span>
-                        <button
-                            class="ghost-btn outlined"
-                            disabled={st()!.busy}
-                            onClick={() => {
-                                setOpen(false);
-                                void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
-                            }}
-                        >
-                            Compact now
-                        </button>
-                    </div>
-                </div>
-            </Popover>
-        </Show>
-    );
-}
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
     const whileMounted = createLifetimeGuard();
@@ -573,10 +500,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="hb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
-                    <PlanMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
-                    <Show when={p.sessionId}>
-                        <ContextRing sessionId={p.sessionId!} />
-                    </Show>
+                    <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show
                         when={busy() && !hasContent()}
                         fallback={
