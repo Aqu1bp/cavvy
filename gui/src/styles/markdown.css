@@ -139,7 +139,7 @@
     font-size: 0.85em;
 }
 
-/* An image file in the session's folders, filled in once the server has read it. */
+/* A local image file a reply links to, filled in once the server has read it. */
 .md img.md-img {
     display: block;
     max-width: 100%;

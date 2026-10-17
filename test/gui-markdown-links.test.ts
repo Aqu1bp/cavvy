@@ -240,8 +240,14 @@ describe("images", () => {
     });
 
     test("alt text and paths are escaped", () => {
-        const html = render(`![a"><script>](/tmp/a"onerror="x.png)`).html;
+        const html = render(`![a"><script>](</tmp/a"onerror="x.png>)`).html;
+        expect(html).toContain(`<img class="md-img" data-image-file="/tmp/a&quot;onerror=&quot;x.png" alt="a&quot;&gt;&lt;script&gt;"`);
         expect(html).not.toContain("<script>");
         expect(html).not.toMatch(/ onerror=/);
+    });
+
+    test("~ and :line suffixes: the path goes to the server as written, the position dropped", () => {
+        expect(render("![](~/shots/a.png)").html).toContain(`data-image-file="~/shots/a.png"`);
+        expect(render("![](shots/a.png:12)").html).toContain(`data-image-file="shots/a.png"`);
     });
 });

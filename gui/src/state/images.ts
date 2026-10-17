@@ -1,7 +1,7 @@
 // Images the transcript shows (see lib/imagecache.ts). The CSP allows data:
 // and blob: images, nothing remote. A prompt's images come from the session
-// by the turn's position; a reply's from files in the session's folders,
-// which the server reads and checks are really images.
+// by the turn's position; a reply's from local files it links to, which the
+// server reads and checks are really images.
 
 import type { Turn } from "@shared/protocol";
 import { ImageCache, promptKey } from "../lib/imagecache";

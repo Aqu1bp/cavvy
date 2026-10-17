@@ -1540,12 +1540,14 @@ export class Engine {
         const { cwd } = this.openScope(p);
         const path = checkPathInput(p.path);
         let real: string;
+        let dir: boolean;
         try {
             real = realpathSync(expandPath(path, cwd));
+            dir = statSync(real).isDirectory();
         } catch {
             throw new RpcError(`${p.path} doesn't exist`, "not_found");
         }
-        if (statSync(real).isDirectory()) throw new RpcError(`${p.path} is a folder`, "invalid");
+        if (dir) throw new RpcError(`${p.path} is a folder`, "invalid");
         const r = await readRegular(real, MAX_SHOWN_IMAGE);
         if (!r) throw new RpcError(`${p.path} isn't a regular file that can be read`, "not_image");
         if (!r.buf) throw new RpcError(`${p.path} is too large to show (images up to ${MAX_SHOWN_IMAGE / 1024 / 1024} MB)`, "limit");
