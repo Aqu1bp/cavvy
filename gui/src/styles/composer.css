@@ -696,7 +696,7 @@
     text-align: right;
 }
 
-/* ---- Context ring and its card -------------------------------------------- */
+/* ---- Composer usage ring and its card -------------------------------------------- */
 
 .ctx-ring[aria-expanded="true"] {
     background: var(--bg-hover);
@@ -728,28 +728,6 @@
     color: var(--fg-muted);
 }
 
-.ctx-bar {
-    height: 6px;
-    margin-top: 8px;
-    border-radius: 3px;
-    overflow: hidden;
-    background: var(--bg-active);
-}
-
-.ctx-fill {
-    height: 100%;
-    border-radius: 3px;
-    background: var(--fg-muted);
-}
-
-.ctx-fill.warn {
-    background: var(--warning);
-}
-
-.ctx-fill.danger {
-    background: var(--danger);
-}
-
 .ctx-grid {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -766,20 +744,18 @@
     text-align: right;
 }
 
-.ctx-foot {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 12px -12px 0;
-    padding: 10px 12px 0;
-    border-top: 1px solid var(--hairline);
-    font-size: 0.857rem;
-    color: var(--fg-muted);
-}
-
-.ctx-foot .ghost-btn {
-    margin-left: auto;
-}
+/* The shared Popover handles placement and scrolling; cap the card on small screens. */
+.usage-card { max-width: calc(100vw - 16px); overflow-wrap: anywhere; }
+.usage-card .ctx-label { margin: 0; }
+.usage-card .ctx-pct { flex: none; }
+.usage-card .ctx-grid { margin-top: 6px; }
+.usage-section + .usage-section { border-top: 1px solid var(--hairline); margin-top: 12px; padding-top: 12px; }
+.usage-account { margin-top: 6px; font-size: 0.857rem; }
+.usage-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; color: var(--fg-muted); font-size: 0.786rem; }
+.usage-actions > span { flex: 1 1 120px; }
+.usage-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.usage-switches .ghost-btn { max-width: 100%; white-space: normal; height: auto; min-height: 24px; }
+.usage-switches { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 
 /* ---- Model picker: a provider rail, then that provider's models ------------ */
 
@@ -1087,41 +1063,7 @@
     text-overflow: ellipsis;
 }
 
-/* ---- Plan meter: the agent CLI's plan limits, beside the context ring ------ */
-
-.plan-meter {
-    width: auto;
-    gap: 6px;
-    padding: 0 8px;
-    font-size: 0.821rem;
-    color: var(--fg-muted);
-}
-
-.plan-gauge {
-    width: 18px;
-    height: 5px;
-    border-radius: 3px;
-    overflow: hidden;
-    background: var(--bg-active);
-}
-
-.plan-gauge > span {
-    display: block;
-    height: 100%;
-    background: var(--fg-muted);
-}
-
-.plan-meter.warn .plan-gauge > span {
-    background: var(--warning);
-}
-
-.plan-meter.danger {
-    color: var(--danger);
-}
-
-.plan-meter.danger .plan-gauge > span {
-    background: var(--danger);
-}
+/* ---- Plan details inside the usage card -------------------------------- */
 
 .plan-asof {
     font-weight: 400;
@@ -1251,5 +1193,4 @@
     font-weight: 600;
     white-space: nowrap;
 }
-.account-plan-meter { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .plan-account-hint { color: var(--fg-muted); font-size: 11px; }

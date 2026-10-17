@@ -3,7 +3,6 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
-import { componentCode, elements, node } from "./gui-component-harness";
 import type { AgentEvent } from "../src/agent/agent";
 import type { BackendTurn } from "../src/backends/types";
 import type { AccountInfo, PlanLimits, ServerEvent } from "../src/server/protocol";
@@ -184,24 +183,4 @@ test("a newer Codex read on another account does not suppress a delayed account 
     expect(reports).toHaveLength(1);
     expect(reports[0]!.limits).toMatchObject({ provider: "codex", accountId: "personal" });
     expect(work.find((e) => e.type === "limits")!.limits).toMatchObject({ provider: "codex", accountId: "work", reached: true });
-});
-
-
-test("PlanMeter starts on Home's default account and uses an open session's own account", () => {
-    const providers = [{ id: "codex", name: "Codex", agentCli: { plan: "ChatGPT plan", defaultAccount: "work", accounts: [{ id: "personal", name: "Personal" }, { id: "work", name: "Work" }] } }];
-    const limits = Object.fromEntries([report("codex", "personal", 80), report("codex", "work", 20)].map((l) => [planLimitKey(l.provider, l.accountId), l]));
-    let settingsTab: string | undefined;
-    const PlanMeter = componentCode("PlanMeter", {
-        app: { providers, limits }, handleFor: () => ({ view: { state: { model: { provider: "codex" }, accounts: { codex: "personal" } } } }),
-        planLimitKey, meterOf, limitAlternatives, windowLine: (w: { pct: number }) => `${w.pct}%`,
-        now: () => Date.now(), createMemo: (fn: () => unknown) => { const value = fn(); return () => value; },
-        createSignal: (value: unknown) => [() => value, () => {}], createEffect: () => {}, onCleanup: () => {},
-        node, Show: "Show", For: "For", Popover: "Popover", setSettingsTab: (tab: string) => { settingsTab = tab; },
-    });
-    const home = elements(PlanMeter({ provider: "codex" }), "button");
-    expect(home[0]!.props["aria-label"]).toBe("ChatGPT plan · Work usage: 20%");
-    home.find((b) => b.children.includes("Usage"))!.props.onClick();
-    expect(settingsTab).toBe("usage");
-    const session = elements(PlanMeter({ sessionId: "session" }), "button");
-    expect(session[0]!.props["aria-label"]).toBe("ChatGPT plan · Personal usage: 80%");
 });
