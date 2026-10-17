@@ -16,6 +16,7 @@ interface File { file: string; source: Source; account: string; size: number; mt
 interface State { model: string; session: string; total?: number[]; signature?: string; undated: number[]; sawMeta?: boolean; forkAnchor?: number; serviceTier?: string; unmodeled?: UsageRecord[] }
 interface Cached { file: File; offset: number; guard: { digest: string; length: number }; state: State; records: UsageRecord[] }
 const cache = new Map<string, Cached>();
+let cacheKey: string | undefined;
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const n = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 const str = (v: unknown) => typeof v === "string" ? v.slice(0, 300) : "";
@@ -119,8 +120,10 @@ async function* discover(roots: Root[]): AsyncGenerator<DiscoveryItem> {
                 else if (e.isFile() && e.name.endsWith(".jsonl") && (source !== "codex" || e.name.startsWith("rollout-"))) {
                     if (seenFiles.has(file)) { yield undefined; continue; }
                     seenFiles.add(file);
-                    const st = await stat(file);
-                    yield { file, source, account, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, dev: st.dev };
+                    try {
+                        const st = await stat(file);
+                        yield { file, source, account, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, dev: st.dev };
+                    } catch (e: any) { if (e.code !== "ENOENT") yield "Some transcript files or folders could not be read."; }
                 } else yield undefined;
             }
         } catch (e: any) { if (e.code !== "ENOENT") yield "Some transcript files or folders could not be read."; }
@@ -162,7 +165,8 @@ async function scan(since: number) {
     };
     const roots = [{ root: paths.projectsDir(), source: "api" as Source, account: "default" }, ...(["claude-code", "codex"] as const).flatMap(source => listAccounts(source).filter(a => !a.invalid).flatMap(a => (source === "codex" ? ["sessions", "archived_sessions"] : ["projects"]).map(sub => ({ root: join(a.folder, sub), source, account: a.id }))))];
     const key = JSON.stringify(roots);
-    if (!discovery || discovery.key !== key || since < discovery.since) {
+    if (cacheKey !== key) { cache.clear(); cacheKey = key; }
+    if (!discovery || discovery.key !== key || since !== discovery.since) {
         if (discovery) await discovery.walker.return(undefined);
         discovery = { key, since, walker: discover(roots), files: new Map(), missing: new Set(cache.keys()), done: false };
     }
@@ -188,6 +192,7 @@ async function scan(since: number) {
     // file together so a slow metadata pass cannot starve all transcript reads.
     const files = [...discovery.files.values()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
     for (const [path, entry] of cache) if (entry.file.mtimeMs >= since && !discovery.files.has(path)) files.push(entry.file);
+    if (files.length > usageBounds.maxFiles) truncated ??= `Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`;
     for (let f of files.slice(0, Math.max(0, usageBounds.maxFiles))) {
         if (spent()) break;
         let entry = cache.get(f.file);
@@ -270,6 +275,7 @@ async function scan(since: number) {
 }
 export function clearUsageCache() {
     cache.clear();
+    cacheKey = undefined;
     if (discovery) void discovery.walker.return(undefined);
     discovery = undefined;
 }

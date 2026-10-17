@@ -322,6 +322,89 @@ test("discovery reserves reading time, resumes across refreshes and keeps cached
     } finally { reader.clearUsageCache(); }
 });
 
+test("discovery restarts when the range narrows then widens between refreshes", async () => {
+    let elapsed = 0;
+    const { opendir } = await import("fs/promises");
+    const reader = await readerWith({ Date: { now: () => elapsed, parse: Date.parse }, listAccounts: () => [],
+        opendir: async (dir: string) => ({ async *[Symbol.asyncIterator]() {
+            for await (const entry of await opendir(dir)) { elapsed += 10; yield entry; }
+        } }) });
+    reader.usageBounds.maxMs = 40;
+    const wide = now - 3 * 86400000, narrow = now - 86400000;
+    for (let i = 0; i < 9; i++) {
+        const file = write(join(iso.home, `projects/${i}.jsonl`), harnessLine());
+        utimesSync(file, (now - 2 * 86400000) / 1000, (now - 2 * 86400000) / 1000);
+    }
+    try {
+        const first = await reader.scanUsage(wide);
+        expect(first.files).toHaveLength(3);
+        expect(first.truncated).toContain("took too long");
+        expect((await reader.scanUsage(narrow)).files).toHaveLength(0);
+        let scan = await reader.scanUsage(wide);
+        for (let refresh = 0; scan.truncated && refresh < 6; refresh++) scan = await reader.scanUsage(wide);
+        expect(scan.truncated).toBeUndefined();
+        expect(scan.files).toHaveLength(9);
+    } finally { reader.clearUsageCache(); }
+});
+
+test.each(["ENOENT", "EACCES"])("a discovery stat %s failure preserves surviving siblings", async (code) => {
+    const { stat } = await import("fs/promises");
+    let fail = false, failedFile = "";
+    const reader = await readerWith({ listAccounts: () => [], stat: async (file: string) => {
+        if (fail) { fail = false; failedFile = file; throw Object.assign(new Error(code), { code }); }
+        return stat(file);
+    } });
+    for (let i = 0; i < 3; i++) write(join(iso.home, `projects/${i}.jsonl`), harnessLine());
+    try {
+        expect((await reader.scanUsage()).files).toHaveLength(3);
+        fail = true;
+        const scan = await reader.scanUsage();
+        expect(scan.files).toHaveLength(2);
+        expect(scan.files.every((f: any) => f.records[0].session !== failedFile)).toBe(true);
+        if (code === "ENOENT") expect(scan.truncated).toBeUndefined();
+        else expect(scan.truncated).toBe("Some transcript files or folders could not be read.");
+    } finally { reader.clearUsageCache(); }
+});
+
+test("every refresh over the file budget reports truncation including cached candidates", async () => {
+    const reader = await readerWith({ listAccounts: () => [] });
+    reader.usageBounds.maxFiles = 2;
+    for (let i = 0; i < 3; i++) write(join(iso.home, `projects/${i}.jsonl`), harnessLine());
+    try {
+        for (let refresh = 0; refresh < 6; refresh++) {
+            const scan = await reader.scanUsage(now - 86400000);
+            expect(scan.files).toHaveLength(2);
+            expect(scan.truncated).toBe("Only 2 transcript files could be scanned; some sessions are left out.");
+        }
+    } finally { reader.clearUsageCache(); }
+});
+
+test.each([false, true])("changing roots clears retired cache entries with discovery paused: %s", async (paused) => {
+    let elapsed = 0, root = join(iso.home, "original");
+    const { realpath, stat } = await import("fs/promises");
+    const reader = await readerWith({ Date: { now: () => elapsed, parse: Date.parse },
+        paths: { projectsDir: () => root }, listAccounts: () => [],
+        stat: async (file: string) => { elapsed += 30; return stat(file); } });
+    for (const dir of ["original", "migrated"]) {
+        for (let i = 0; i < 2; i++) write(join(iso.home, dir, `${i}.jsonl`), harnessLine());
+    }
+    try {
+        reader.usageBounds.maxMs = paused ? 40 : 4000;
+        const first = await reader.scanUsage();
+        expect(first.files).toHaveLength(paused ? 1 : 2);
+        if (paused) expect(first.truncated).toContain("took too long");
+        else expect(first.truncated).toBeUndefined();
+        root = join(iso.home, "migrated");
+        reader.usageBounds.maxMs = 40;
+        const migrated = await reader.scanUsage();
+        expect(migrated.truncated).toContain("took too long");
+        expect(migrated.files).toHaveLength(1);
+        expect(migrated.files[0].records[0].session.startsWith(await realpath(root) + "/")).toBe(true);
+        reader.usageBounds.maxMs = 4000;
+        expect((await reader.scanUsage()).files).toHaveLength(2);
+    } finally { reader.clearUsageCache(); }
+});
+
 test("aggregation yields a macrotask between bounded batches of cached records", async () => {
     write(join(iso.home, "projects/p/batches.jsonl"), harnessLine().repeat(4001));
     const records = (await scanUsage()).files[0]!.records;
