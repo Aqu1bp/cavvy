@@ -687,6 +687,11 @@ describe("files git converts on check-in", () => {
         git(dir, "commit", "-q", "-m", "init");
         rmSync(join(dir, "big.lfs"));
         git(dir, "checkout", "--", "big.lfs");
+        // Checkout writes the file and the index in one clock tick on a coarse-clock filesystem (ext4), which
+        // git takes as racy. Record the file as an hour old so it's older than the index whatever the granularity.
+        const past = new Date(Date.now() - 3600_000);
+        utimesSync(join(dir, "big.lfs"), past, past);
+        git(dir, "update-index", "--refresh");
         const marked = () => Bun.spawnSync(["ls", marks]).stdout.toString().split("\n").filter(Boolean);
         const clear = () => {
             for (const m of marked()) rmSync(join(marks, m));
