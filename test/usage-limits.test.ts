@@ -669,22 +669,19 @@ describe("usage over 24h, 7d and 30d", () => {
 
     test("24 hours", async () => {
         const s = await usageSummary(1, now);
-        expect(s.rows.length).toBe(4);
+        expect(s.rows.length).toBe(3);
         expect(row(s, "anthropic:claude-sonnet-4-5")).toMatchObject({ providerName: "Anthropic API", sessions: 1, inputTokens: 100_000, outputTokens: 10_000, cacheReadTokens: 200_000, cost: 0.51, unknown: false, plan: false });
         // Unpriced: unknown, never $0, whether marked or not.
         expect(row(s, "vertex:google/gemini-3.5-flash")).toMatchObject({ cost: 0, unknown: true });
         expect(row(s, "custom:foo")).toMatchObject({ cost: 0, unknown: true });
-        // On the plan: what the API would have charged, 0.01×4 + 0.002×20 + 1×0.2 = $0.28.
-        const cc = row(s, "claude-code:claude-opus-5-5");
-        expect(cc).toMatchObject({ plan: true, unknown: false });
-        expect(cents(cc.cost)).toBe(0.28);
-        expect(cents(cc.planEquivalent)).toBe(0.28);
-        expect(cents(s.totals.cost)).toBe(0.79);
-        expect(s.totals).toMatchObject({ inputTokens: 161_000, outputTokens: 17_100, cacheReadTokens: 1_200_000, unknown: true });
+        // CLI records here are deliberately ignored: only native transcripts count.
+        expect(row(s, "claude-code:claude-opus-5-5")).toBeUndefined();
+        expect(cents(s.totals.cost)).toBe(0.51);
+        expect(s.totals).toMatchObject({ inputTokens: 151_000, outputTokens: 15_100, cacheReadTokens: 200_000, unknown: true });
         expect(s.sessions).toBe(1);
         expect(s.approxDated).toBe(0);
         expect(costText(row(s, "custom:foo"))).toBe("unknown");
-        expect(costText(s.totals)).toBe("$0.79 + unknown");
+        expect(costText(s.totals)).toBe("$0.51 + unknown");
     });
 
     test("7 days: undated records at the next dated one's time, or the file's last write", async () => {
@@ -692,10 +689,9 @@ describe("usage over 24h, 7d and 30d", () => {
         const sonnet = row(s, "anthropic:claude-sonnet-4-5");
         expect(sonnet).toMatchObject({ sessions: 3, inputTokens: 160_000, outputTokens: 10_000 });
         expect(cents(sonnet.cost)).toBe(0.69); // 0.51 + 0.15 + 0.03
-        // 0.02×10 + 0.001×50 + 0.1×1 = $0.35
-        expect(cents(row(s, "codex:gpt-6-astra").cost)).toBe(0.35);
-        expect(cents(s.totals.cost)).toBe(1.32); // 0.69 + 0.28 + 0.35
-        expect(cents(s.totals.planEquivalent)).toBe(0.63);
+        expect(row(s, "codex:gpt-6-astra")).toBeUndefined();
+        expect(cents(s.totals.cost)).toBe(0.69);
+        expect(cents(s.totals.planEquivalent)).toBe(0);
         expect(s.sessions).toBe(3);
         expect(s.approxDated).toBe(2);
     });
@@ -703,44 +699,43 @@ describe("usage over 24h, 7d and 30d", () => {
     test("30 days", async () => {
         const s = await usageSummary(30, now);
         expect(row(s, "anthropic:claude-sonnet-4-5")).toMatchObject({ sessions: 4, inputTokens: 162_000 });
-        expect(cents(s.totals.cost)).toBe(2.32);
+        expect(cents(s.totals.cost)).toBe(1.69);
         expect(s.sessions).toBe(4);
         expect(s.truncated).toBeUndefined();
     });
 
     test("cached by mtime: a write is read again", async () => {
-        expect(cents((await usageSummary(1, now)).totals.cost)).toBe(0.79);
+        expect(cents((await usageSummary(1, now)).totals.cost)).toBe(0.51);
         const file = join(dir, "s1.jsonl");
         writeFileSync(file, readFileSync(file, "utf-8") + JSON.stringify({ t: "usage", usage: u(1, 1), cost: 1, model: "anthropic:claude-sonnet-4-5", at: now - H }) + "\n");
         utimesSync(file, (now - H + 1000) / 1000, (now - H + 1000) / 1000);
-        expect(cents((await usageSummary(1, now)).totals.cost)).toBe(1.79);
+        expect(cents((await usageSummary(1, now)).totals.cost)).toBe(1.51);
     });
 
     test("bounded: past the bounds it says what it left out", async () => {
         usageBounds.maxFiles = 2;
         const s = await usageSummary(30, now);
-        expect(s.truncated).toBe("Only the 2 most recently active sessions were read.");
-        // The two written last: the torn s5 (nothing in it) and s1.
-        expect(s.sessions).toBe(1);
-        expect(cents(s.totals.cost)).toBe(0.79);
+        expect(s.truncated).toContain("2 transcript files");
+        // Directory iteration order is not a recency guarantee. Both discovery
+        // and reading are bounded; any partial subset must be labelled.
+        expect(s.sessions).toBeLessThanOrEqual(2);
+        expect(cents(s.totals.cost)).toBeLessThanOrEqual(1.69);
         clearUsageCache();
         usageBounds.maxFiles = 5000;
         usageBounds.maxBytes = 10;
         expect((await usageSummary(30, now)).truncated).toMatch(/too much to read/);
     });
 
-    test("legacy folded sub-agent usage keeps its recorded cost without assuming missing billing means a plan", async () => {
-        // Folded lines carry the summed tokens and the record's cost, without usage.cost.
+    test("legacy folded CLI records cannot double count native usage", async () => {
         session("s6", [
             { t: "usage", usage: u(1_000, 100), cost: 8, model: "claude-code:claude-opus-5-5", at: now - H },
             { t: "usage", usage: u(10_000, 2_000, 1_000_000), cost: 0, model: "codex:gpt-6-astra", at: now - H },
         ], now - H);
         const s = await usageSummary(1, now);
-        expect(cents(row(s, "claude-code:claude-opus-5-5").cost)).toBe(8.28); // 8 billed + 0.28 on the plan (s1)
-        const codex = row(s, "codex:gpt-6-astra");
-        expect(cents(codex.cost)).toBe(1.2); // 0.01×10 + 0.002×50 + 1×1
-        expect(codex.plan).toBe(false);
-        expect(cents(codex.planEquivalent)).toBe(0);
+        expect(row(s, "claude-code:claude-opus-5-5")).toBeUndefined();
+        expect(row(s, "codex:gpt-6-astra")).toBeUndefined();
+        expect(cents(s.totals.cost)).toBe(0.51);
+        expect(s.totals.planEquivalent).toBe(0);
     });
 
     test("out of time: says so, and the view doesn't call it no usage", async () => {
@@ -754,7 +749,7 @@ describe("usage over 24h, 7d and 30d", () => {
 
     test("only the offered ranges", () => {
         expect(usageDays(7)).toBe(7);
-        for (const bad of [3, "7", 0, -1, 365, undefined, null]) expect(() => usageDays(bad)).toThrow("days must be one of 1, 7, 30");
+        for (const bad of [3, "7", 0, -1, 365, undefined, null]) expect(() => usageDays(bad)).toThrow("days must be one of 1, 7, 30, 90");
     });
 });
 
