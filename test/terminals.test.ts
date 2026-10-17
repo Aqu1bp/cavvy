@@ -166,7 +166,10 @@ describe("embedded terminals", () => {
                 const owner = client();
                 shells.open(owner, `fast-${i}`, iso.home, 80, 24, { command: { argv: ["/bin/sh", "-c", "printf '__%s__' fast"], env: {} } });
                 await until(() => owner.events.some((e) => e.type === "terminal.exit"));
-                expect(owner.output()).toContain("__fast__");
+                // Only what came before the exit counts: output arriving after it would be too late for the window.
+                const exit = owner.events.findIndex((e) => e.type === "terminal.exit");
+                const before = owner.events.slice(0, exit).filter((e) => e.type === "terminal.data").map((e) => e.data).join("");
+                expect(before).toContain("__fast__");
                 shells.close(owner, `fast-${i}`);
             }
         } finally { await shells.stop(); }
