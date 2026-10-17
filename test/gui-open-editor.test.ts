@@ -234,3 +234,27 @@ describe("fs.exists", () => {
         await rejects(call("fs.exists", { sessionId: id, paths: "a.ts" }), "invalid");
     });
 });
+
+describe("fs.image", () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+
+    test("an image in the session's folders comes back by its bytes, whatever its name", async () => {
+        writeFileSync(join(cwd, "mock.png"), png);
+        writeFileSync(join(cwd, "named.jpg"), png);
+        expect(await call("fs.image", { sessionId: id, path: "mock.png" })).toEqual({ mediaType: "image/png", data: png.toString("base64") });
+        expect(await call("fs.image", { sessionId: id, path: join(cwd, "named.jpg") })).toMatchObject({ mediaType: "image/png" });
+    });
+
+    test("not an image, an SVG, a folder, outside the roots or through a link out: refused", async () => {
+        writeFileSync(join(cwd, "fake.png"), "not really");
+        writeFileSync(join(cwd, "pic.svg"), `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`);
+        writeFileSync(join(outside, "out.png"), png);
+        symlinkSync(join(outside, "out.png"), join(cwd, "out-link.png"));
+        await rejects(call("fs.image", { sessionId: id, path: "fake.png" }), "not_image");
+        await rejects(call("fs.image", { sessionId: id, path: "pic.svg" }), "not_image");
+        await rejects(call("fs.image", { sessionId: id, path: "dir with space" }), "invalid");
+        await rejects(call("fs.image", { sessionId: id, path: join(outside, "out.png") }), "outside");
+        await rejects(call("fs.image", { sessionId: id, path: "out-link.png" }), "outside");
+        await rejects(call("fs.image", { sessionId: id, path: "nope.png" }), "not_found");
+    });
+});

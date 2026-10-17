@@ -212,3 +212,38 @@ describe("re-rendering as answers arrive", () => {
         expect(html).toContain(`data-file="/p/lib/y.ts"`);
     });
 });
+
+describe("images", () => {
+    const IMAGES = new Set(["mock.png", "/Users/me/proj/shot.png"]);
+    const withImages = (p: string) => (IMAGES.has(p) ? (p.startsWith("/") ? p : `${ROOT}/${p}`) : lookup(p));
+
+    test("a known file in the session is an image with no src: the caller fills it in", () => {
+        const { html } = render("![the mockup](mock.png)", withImages);
+        expect(html).toContain(`<img class="md-img" data-image-file="${ROOT}/mock.png" alt="the mockup"`);
+        expect(html).not.toContain("src=");
+        expect(render("![](file:///Users/me/proj/shot.png)", withImages).html).toContain(`data-image-file="/Users/me/proj/shot.png"`);
+    });
+
+    test("an unknown path is a label until it's known, and is asked about", () => {
+        const r = render("![preview](other.png)", withImages);
+        expect(r.html).toContain(`<span class="md-image">preview</span>`);
+        expect(r.pending).toEqual(["other.png"]);
+        expect(render("![preview](missing/x.png)", withImages).html).toContain(`<span class="md-image">preview</span>`);
+    });
+
+    test("remote images are never loaded, and nothing is shown without a session", () => {
+        const remote = render("![x](https://example.com/a.png)", withImages).html;
+        expect(remote).not.toContain("<img");
+        expect(remote).toContain(`class="md-image" href="https://example.com/a.png" data-external="1"`);
+        expect(render("![x](mock.png)", null).html).not.toContain("<img");
+    });
+
+    test("an image inside a link stays a label (no links inside links)", () => {
+        expect(render("[![x](mock.png)](https://example.com)", withImages).html).not.toContain("<img");
+    });
+
+    test("alt text and paths are escaped", () => {
+        const html = render(`![a"><script>](mock.png)`, withImages).html;
+        expect(html).not.toContain("<script>");
+    });
+});

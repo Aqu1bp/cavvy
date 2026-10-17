@@ -4,6 +4,8 @@ import { MarkdownRenderer } from "../../lib/markdown";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
 import { linksVersion, paths } from "../../state/filelinks";
+import { fileImage } from "../../state/images";
+import { setViewedImage } from "../../state/ui";
 import { CodeBlock } from "./CodeBlock";
 
 function openFile(a: HTMLElement) {
@@ -11,8 +13,10 @@ function openFile(a: HTMLElement) {
     void openInEditor(a.dataset.file ?? "", n(a.dataset.line), { col: n(a.dataset.col) });
 }
 
-/** Links in rendered markdown open outside the app, never in its window; file links open in the editor. */
+/** Links in rendered markdown open outside the app, never in its window; file links open in the editor; images open full size. */
 export function onLinkClick(e: MouseEvent) {
+    const img = (e.target as HTMLElement).closest<HTMLImageElement>("img.md-img");
+    if (img?.src) return setViewedImage({ src: img.src, alt: img.alt });
     const a = (e.target as HTMLElement).closest("a");
     if (!a) return;
     e.preventDefault();
@@ -20,7 +24,34 @@ export function onLinkClick(e: MouseEvent) {
     else if (a.dataset.file) openFile(a);
 }
 
+/** Fills in the images lib/markdown.ts left without a src: files in the session's folders, read by the server. */
+function loadImages(root: HTMLElement, sessionId: string) {
+    for (const img of root.querySelectorAll<HTMLImageElement>("img.md-img[data-image-file]:not([src]):not([data-loading])")) {
+        const path = img.dataset.imageFile!;
+        img.dataset.loading = "1";
+        fileImage(sessionId, path).then(
+            (src) => {
+                img.src = src;
+                img.tabIndex = 0;
+            },
+            () => {
+                const label = document.createElement("span");
+                label.className = "md-image";
+                label.textContent = img.alt || "image";
+                label.title = `${path} couldn't be shown`;
+                img.replaceWith(label);
+            },
+        );
+    }
+}
+
 function onLinkKey(e: KeyboardEvent) {
+    const img = (e.target as HTMLElement).closest<HTMLImageElement>("img.md-img");
+    if (img?.src && e.key === "Enter") {
+        e.preventDefault();
+        setViewedImage({ src: img.src, alt: img.alt });
+        return;
+    }
     const a = (e.target as HTMLElement).closest("a");
     if (e.key !== "Enter" || !a?.dataset.file) return;
     e.preventDefault();
@@ -34,6 +65,7 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
 
 function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
     const r = new MarkdownRenderer();
+    let root: HTMLDivElement | undefined;
     // Unchanged blocks keep their objects; positional owners also keep a growing
     // code block mounted when its source changes. Only a reply
     // with paths in it looks again when what's known changes.
@@ -48,6 +80,7 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
         segments();
         const id = p.sessionId;
         if (!id) return;
+        if (root) loadImages(root, id);
         // What's on screen stays known (see lib/pathcache.ts), until the next render or unmount.
         onCleanup(paths.hold(id, r.paths));
         if (!r.pending.size || timer) return;
@@ -61,7 +94,7 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     });
     onCleanup(() => clearTimeout(timer));
     return (
-        <div class={`md ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
+        <div ref={root} class={`md ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
             <Index each={segments()}>
                 {(s) => {
                     const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });

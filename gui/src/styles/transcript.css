@@ -296,6 +296,34 @@
     white-space: normal;
 }
 
+.prompt-image {
+    width: 96px;
+    height: 72px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-hover);
+    box-shadow: inset 0 0 0 1px var(--border);
+    cursor: zoom-in;
+}
+
+.prompt-image img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.prompt-image:hover img {
+    opacity: 0.88;
+}
+
+.prompt-image:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .prompt-attachments .chip .truncate {
     min-width: 0;
     max-width: 180px;

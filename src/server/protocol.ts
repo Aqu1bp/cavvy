@@ -1233,6 +1233,8 @@ export interface Methods {
     "session.stopAgent": { params: { id: string; agentId?: string }; result: { stopped: number } };
     "session.export": { params: { id: string }; result: { markdown: string } };
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
+    /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
+    "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
     /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     "models.list": { params: { refresh?: boolean }; result: ProviderModels[] };
@@ -1282,6 +1284,8 @@ export interface Methods {
     "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
+    /** A PNG, JPEG, GIF or WebP file inside the session's folders (judged by its bytes), for showing an image the model's reply names. */
+    "fs.image": { params: { sessionId?: string; cwd?: string; path: string }; result: { mediaType: string; data: string } };
     /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
     "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };

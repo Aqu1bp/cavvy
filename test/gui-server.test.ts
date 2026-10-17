@@ -1159,6 +1159,21 @@ describe("sessions", () => {
         c.close();
     });
 
+    test("a prompt's images come back by its turn's position; a position with no prompt is refused", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        await c.call("session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: png }] });
+        await c.until(id, done);
+        const turn = lastTurn(c.view(id));
+        expect(turn.prompt?.images).toBe(1);
+        expect(turn.pos).toBeDefined();
+        expect(await c.call("session.promptImages", { id, ...turn.pos })).toEqual({ images: [{ mediaType: "image/png", data: png }] });
+        await expect(c.call("session.promptImages", { id, seg: turn.pos!.seg, index: 999 })).rejects.toThrow(/no longer in the conversation/);
+        await expect(c.call("session.promptImages", { id, seg: 7, index: 0 })).rejects.toThrow(/no longer in the conversation/);
+        c.close();
+    });
+
     test("rewind restores files and the conversation", async () => {
         const dir = project();
         const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
