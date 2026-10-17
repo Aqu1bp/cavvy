@@ -85,6 +85,12 @@ class Client {
     /** `window`: the window's key, presented as the GUI does. */
     constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port, window?: string) {
         this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`, ...(window ? [`window.${window}`] : [])], headers } as any);
+        // Calls the connection took with it fail then, saying why, rather than waiting out the test's timeout.
+        this.ws.addEventListener("close", (e) => {
+            const closed = new Error(`The connection closed before the reply came (${(e as CloseEvent).code} ${(e as CloseEvent).reason})`.trim());
+            for (const w of this.waiting.values()) w.reject(closed);
+            this.waiting.clear();
+        });
         this.ws.onmessage = (m) => {
             this.raw.push(String(m.data));
             const msg = JSON.parse(String(m.data));
@@ -103,8 +109,15 @@ class Client {
             }
             const w = this.waiting.get(msg.id);
             this.waiting.delete(msg.id);
-            if (msg.error) w?.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code }));
-            else w?.resolve(msg.result);
+            // Settled in a task of its own, not inside Bun's WebSocket client's message callback: the
+            // caller's next steps, run from inside that callback, can make Bun's client lose a frame
+            // the server sent and drop the connection (1002, "unsupported control frame"), as a
+            // test opening twelve terminals did nearly every time. A client in a process of its own,
+            // as the GUI's is, and one reading the frames itself, got every frame intact.
+            setImmediate(() => {
+                if (msg.error) w?.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code }));
+                else w?.resolve(msg.result);
+            });
         };
     }
 
@@ -118,7 +131,10 @@ class Client {
     call<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
         const id = this.next++;
         this.ws.send(JSON.stringify({ id, method, params }));
-        return new Promise((resolve, reject) => this.waiting.set(id, { resolve, reject }));
+        const reply = new Promise<T>((resolve, reject) => this.waiting.set(id, { resolve, reject }));
+        // A call nobody waits for may be cut off by a close: that's not an unhandled rejection.
+        reply.catch(() => {});
+        return reply;
     }
 
     async open(method: "session.create" | "session.open" | "cliSessions.import" | "session.fork", params: Record<string, unknown>): Promise<string> {
@@ -2885,10 +2901,27 @@ describe("reopening a Claude Code session", () => {
     }, 90_000);
 });
 
+/**
+ * The shell the terminal tests run: named, not /bin/sh (bash on macOS, dash on Ubuntu), so they
+ * run the same everywhere. Its prompt, "$ ", says it's reading.
+ */
+const TEST_SHELL = "/bin/dash";
+const PROMPT = /\$ $/;
+/** Closes every terminal the window has, from a connection of its own, even ones another connection has. */
+async function closeWindowTerminals(window: string) {
+    const sweep = await client(window);
+    try {
+        for (const { id } of await sweep.call<{ id: string }[]>("terminal.list")) {
+            await sweep.call("terminal.attach", { id }).catch(() => {});
+            await sweep.call("terminal.close", { id }).catch(() => {});
+        }
+    } finally { sweep.close(); }
+}
+
 describe("terminal WebSocket transport", () => {
     // A plain shell with an empty home: none of the user's own startup files run.
     const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
-    beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("terminal-home-"); });
+    beforeAll(() => { process.env.SHELL = TEST_SHELL; process.env.HOME = tempDir("terminal-home-"); });
     afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
     test("streams only to its owning window, whose shell outlives a reload and is attached again with the window's key", async () => {
         const a = await client(WINDOW); const b = await client();
@@ -2906,6 +2939,8 @@ describe("terminal WebSocket transport", () => {
             await a.call("terminal.open", { id, cwd: project(), cols: 80, rows: 24 });
             await expect(b.call("terminal.write", { id, data: "exit\n" })).rejects.toThrow("not open");
             await a.call("terminal.resize", { id, cols: 99, rows: 33 });
+            // Typed once the shell is reading, as the window would.
+            await waitFor(() => PROMPT.test(output()));
             await a.call("terminal.write", { id, data: "printf '__owner_shell__%s\\n' $$; stty size\n" });
             await waitFor(() => /__owner_shell__\d+\r?\n/.test(output()) && output().includes("33 99"));
             const pid = Number(output().match(/__owner_shell__(\d+)/)![1]);
@@ -2933,13 +2968,18 @@ describe("terminal WebSocket transport", () => {
             await waitFor(() => gone(pid));
             // A connection without a key is the window: its shell stops with it.
             await b.call("terminal.open", { id: "keyless", cwd: project(), cols: 80, rows: 24 });
-            await b.call("terminal.write", { id: "keyless", data: "printf '__keyless__%s\\n' $$\n" });
             const keylessOut = () => b.events.filter((e) => e.type === "terminal.data" && e.id === "keyless").map((e) => (e as { data: string }).data).join("");
+            await waitFor(() => PROMPT.test(keylessOut()));
+            await b.call("terminal.write", { id: "keyless", data: "printf '__keyless__%s\\n' $$\n" });
             await waitFor(() => /__keyless__\d+/.test(keylessOut()));
             const keyless = Number(keylessOut().match(/__keyless__(\d+)/)![1]);
             b.close();
             await waitFor(() => gone(keyless));
-        } finally { a.close(); b.close(); reloaded?.close(); stranger?.close(); }
+        } finally {
+            a.close(); b.close(); reloaded?.close(); stranger?.close();
+            // Failing midway, it leaves no shell for the window's later tests to find.
+            await closeWindowTerminals(WINDOW);
+        }
     }, 15_000);
 
     test("a reloaded window that attaches before its old connection's close arrives keeps the shell", async () => {
@@ -2959,7 +2999,10 @@ describe("terminal WebSocket transport", () => {
             const deadline = Date.now() + 5000;
             while (!data(reloaded).includes("__kept__\r\n")) { if (Date.now() > deadline) throw new Error("timed out"); await Bun.sleep(20); }
             await reloaded.call("terminal.close", { id });
-        } finally { old.close(); reloaded?.close(); }
+        } finally {
+            old.close(); reloaded?.close();
+            await closeWindowTerminals(WINDOW);
+        }
     }, 15_000);
 
     test("a malformed window key is refused", async () => {
@@ -2970,7 +3013,7 @@ describe("terminal WebSocket transport", () => {
 describe("project scripts", () => {
     // Run in a plain shell with an empty home, as above.
     const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
-    beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("scripts-home-"); });
+    beforeAll(() => { process.env.SHELL = TEST_SHELL; process.env.HOME = tempDir("scripts-home-"); });
     afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
     const waitFor = async (check: () => boolean, what = "project script") => {
         const deadline = Date.now() + 8000;
@@ -3077,7 +3120,10 @@ describe("project scripts", () => {
             await Bun.sleep(500);
             expect(output(back).split("__ran__").length - 1).toBe(1);
             await back.call("terminal.close", { id });
-        } finally { c.close(); back?.close(); }
+        } finally {
+            c.close(); back?.close();
+            await closeWindowTerminals(WINDOW);
+        }
     }, 20_000);
 
     test("a script that doesn't exist, or a folder that's gone, opens no terminal", async () => {
@@ -3151,7 +3197,7 @@ describe("project scripts", () => {
 describe("the setup script, run in a worktree created from the GUI", () => {
     // Run in a plain shell with an empty home, as above.
     const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
-    beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("setup-home-"); });
+    beforeAll(() => { process.env.SHELL = TEST_SHELL; process.env.HOME = tempDir("setup-home-"); });
     afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
     /** Past the Typist's latest typing time (TYPE_BY_MS, 3 s), so a command that was going to be typed has been. */
     const PAST_TYPING_MS = 3400;
