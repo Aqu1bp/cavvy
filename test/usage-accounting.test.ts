@@ -46,13 +46,12 @@ function alias(model: string) {
     writeFileSync(join(cache, "models.json"), JSON.stringify({ version: 3, providers: { "claude-code": { fetchedAt: now, fp: "test", models: [{ provider: "claude-code", id: "opus", name: `Opus (${model})` }] } } }));
 }
 
-test("Codex API-key estimates are cost, only plan records contribute plan equivalent", async () => {
+test("Harness CLI records are excluded even when native transcripts are unavailable", async () => {
     records("api", [{ model: "codex:gpt-6-astra", usage: { inputTokens: 1_000_000, outputTokens: 0 }, cost: 0 }]);
-    let summary = await usageSummary(1, now);
-    expect(summary.rows[0]).toMatchObject({ cost: 10, planEquivalent: 0, plan: false });
     records("plan", [{ model: "codex:gpt-6-astra", usage: { inputTokens: 1_000_000, outputTokens: 0, cost: 0 }, cost: 0 }]);
-    summary = await usageSummary(1, now);
-    expect(summary.totals).toMatchObject({ cost: 20, planEquivalent: 10 });
+    const summary = await usageSummary(1, now);
+    expect(summary.rows).toEqual([]);
+    expect(summary.totals).toMatchObject({ cost: 0, planEquivalent: 0 });
 });
 
 test("PR 11's undated top-level unknown flag remains unpriced in Usage", async () => {
@@ -96,24 +95,25 @@ test("new usage lines retain time and resolved model alongside unknown pricing t
     expect(loaded.costUnknown).toBe(true);
     expect(loaded.usageByModel.get("codex:default")).toMatchObject({ unknown: true, cost: 0 });
     const summary = await usageSummary(1);
-    expect(summary.rows[0]).toMatchObject({ model: "gpt-unpriced", cost: 0, unknown: true });
+    // Persistence still retains this record; the dashboard uses native CLI transcripts.
+    expect(summary.rows).toEqual([]);
     expect(summary.approxDated).toBe(0);
     expect(summary.approxPriced).toBe(0);
 });
 
-test("recorded concrete models keep historical prices when Claude aliases move; legacy aliases are approximate", async () => {
-    alias("claude-opus-4-1");
-    records("resolved", [{ model: "claude-code:opus", usage: { inputTokens: 1_000_000, outputTokens: 0, cost: 0, resolvedModel: "claude-code:claude-opus-4-1" }, cost: 0 }]);
-    const before = await usageSummary(1, now);
-    expect(before.rows[0]).toMatchObject({ model: "claude-opus-4-1", cost: 15 });
-    expect(before.approxPriced).toBe(0);
-    alias("claude-opus-5-5");
-    const after = await usageSummary(1, now);
-    expect(after.rows).toEqual(before.rows);
-    records("legacy", [{ model: "claude-code:opus", usage: { inputTokens: 1_000_000, outputTokens: 0, cost: 0 }, cost: 0 }]);
-    const legacy = await usageSummary(1, now);
-    expect(legacy.rows.find((r) => r.model === "opus")?.cost).toBe(4);
-    expect(legacy.approxPriced).toBe(1);
+test("native concrete models keep historical prices when Claude aliases move", async () => {
+    const native = join(process.env.CLAUDE_CONFIG_DIR!, "projects", "fixture");
+    mkdirSync(native, { recursive: true });
+    const file = join(native, "resolved.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "assistant", timestamp: new Date(now - 1000).toISOString(), sessionId: "fixture", message: { id: "m1", model: "claude-opus-4-1", usage: { input_tokens: 1_000_000, output_tokens: 0 } } }) + "\n");
+    try {
+        alias("claude-opus-4-1");
+        const before = await usageSummary(1, now);
+        expect(before.rows[0]).toMatchObject({ model: "claude-opus-4-1", cost: 15 });
+        expect(before.approxPriced).toBe(0);
+        alias("claude-opus-5-5");
+        expect((await usageSummary(1, now)).rows).toEqual(before.rows);
+    } finally { rmSync(native, { recursive: true, force: true }); }
 });
 
 test("cache evicts least recently used files even when every file is still in range", async () => {
@@ -134,7 +134,7 @@ test("cache evicts least recently used files even when every file is still in ra
 
 async function agentFor(provider: "claude-code" | "codex", id = "default") {
     const bin = join(cwd, `${provider}-fake`);
-    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts")}" "$@"\n`);
+    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" --no-env-file "${join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts")}" "$@"\n`);
     chmodSync(bin, 0o755);
     saveAgentConfig(provider, { path: bin });
     forgetClient(provider);
