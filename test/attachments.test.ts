@@ -7,8 +7,10 @@ import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { secretsSnapshot } from "./helpers/secrets";
 
 const iso = isolate();
+const restoreSecrets = await secretsSnapshot();
 const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
@@ -40,6 +42,7 @@ writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:moc
 
 afterAll(() => {
     mock.stop();
+    restoreSecrets();
     iso.cleanup();
 });
 

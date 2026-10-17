@@ -9,8 +9,10 @@ import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
+import { secretsSnapshot } from "./helpers/secrets";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
+const restoreSecrets = await secretsSnapshot();
 const settingsMod = await import("../src/config/settings");
 const { paths, projectStateDir } = await import("../src/config/paths");
 const { trustFolder, isTrusted } = await import("../src/config/trust");
@@ -33,7 +35,10 @@ const { stripAnsi } = await import("../src/ui/ansi");
 import type { Message } from "../src/providers/types";
 import type { AgentEvent } from "../src/agent/agent";
 
-afterAll(cleanup);
+afterAll(() => {
+    restoreSecrets();
+    cleanup();
+});
 
 const ROOT = resolve(import.meta.dir, "..");
 const toolState = (cwd: string) => ({ cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }) as any;
