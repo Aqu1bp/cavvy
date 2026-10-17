@@ -72,6 +72,22 @@ test("default selectors and named account folders contribute separate account/ti
     expect(usageDays(90)).toBe(90);
 });
 
+test("an invalid saved account folder is skipped, never resolved against the server's folder", async () => {
+    const cwd = process.cwd();
+    const work = join(iso.home, "server-cwd");
+    write(join(work, "projects/p/decoy.jsonl"), fixture("claude-current.jsonl").replaceAll("claude-session", "decoy-session"));
+    saveAgentConfig("claude-code", { accounts: [{ id: "broken", name: "Broken", folder: "", managed: false }] });
+    process.chdir(work);
+    try {
+        const s = await usageSummary(90, now);
+        expect(s.sessions).toBe(0);
+        expect(s.accounts.some(a => a.accountId === "broken")).toBe(false);
+    } finally {
+        process.chdir(cwd);
+        saveAgentConfig("claude-code", { accounts: [] });
+    }
+});
+
 test("incremental cache resumes appends, keeps reducer state and ignores torn tails until completed", async () => {
     const file = write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl") + '{"type":"response_item","payload":{"content":"' + "x".repeat(200_000) + '"}}\n');
     const cold = await scanUsage(); expect(cold.bytesRead).toBeGreaterThan(200000);

@@ -160,7 +160,7 @@ async function scan(since: number) {
         if (Date.now() - start > usageBounds.maxMs) return truncated ??= "Reading the sessions took too long; earlier ones are left out.";
         if (bytes >= usageBounds.maxBytes) return truncated ??= "There was too much to read; earlier sessions are left out.";
     };
-    const roots = [{ root: paths.projectsDir(), source: "api" as Source, account: "default" }, ...(["claude-code", "codex"] as const).flatMap(source => listAccounts(source).flatMap(a => (source === "codex" ? ["sessions", "archived_sessions"] : ["projects"]).map(sub => ({ root: join(a.folder, sub), source, account: a.id }))))];
+    const roots = [{ root: paths.projectsDir(), source: "api" as Source, account: "default" }, ...(["claude-code", "codex"] as const).flatMap(source => listAccounts(source).filter(a => !a.invalid).flatMap(a => (source === "codex" ? ["sessions", "archived_sessions"] : ["projects"]).map(sub => ({ root: join(a.folder, sub), source, account: a.id }))))];
     const key = JSON.stringify(roots);
     if (!discovery || discovery.key !== key || since < discovery.since) {
         if (discovery) await discovery.walker.return(undefined);
