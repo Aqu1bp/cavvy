@@ -1,5 +1,5 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createMemo, For, Match, onCleanup, Switch } from "solid-js";
+import { createEffect, createMemo, Index, Match, onCleanup, Switch } from "solid-js";
 import { MarkdownRenderer } from "../../lib/markdown";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
@@ -34,7 +34,8 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
 
 function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
     const r = new MarkdownRenderer();
-    // Same objects for unchanged blocks, so <For> keeps their DOM. Only a reply
+    // Unchanged blocks keep their objects; positional owners also keep a growing
+    // code block mounted when its source changes. Only a reply
     // with paths in it looks again when what's known changes.
     const segments = createMemo(() => {
         const segs = r.segments(p.text, Boolean(p.streaming), p.sessionId ? paths.lookup(p.sessionId) : undefined);
@@ -61,14 +62,16 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     onCleanup(() => clearTimeout(timer));
     return (
         <div class={`md ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
-            <For each={segments()}>
-                {(s) => (
-                    <Switch>
-                        <Match when={s.kind === "code" && s}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
-                        <Match when={s.kind === "html" && s}>{(h) => <div class="md-block" innerHTML={h().html} />}</Match>
-                    </Switch>
-                )}
-            </For>
+            <Index each={segments()}>
+                {(s) => {
+                    const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });
+                    const html = createMemo(() => { const part = s(); return part.kind === "html" ? part : undefined; });
+                    return <Switch>
+                        <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
+                        <Match when={html()}>{(h) => <div class="md-block" innerHTML={h().html} />}</Match>
+                    </Switch>;
+                }}
+            </Index>
         </div>
     );
 }

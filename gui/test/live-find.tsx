@@ -55,7 +55,8 @@ async function run() {
 
         setFindReveal({ turnId: "turn", part: "second" });
         await frame();
-        check(row("first").classList.contains("live") && row("second").classList.contains("tool"), "fixture must exercise both live rendering paths");
+        // One row component draws every call; running calls are styled as live activity.
+        check(row("first").querySelector(".tool-line.live") && row("second").classList.contains("tool"), "fixture must render both calls through the shared row");
         for (const status of ["running", "awaiting"] as const) {
             setTools(1, "status", status);
             await frame();
