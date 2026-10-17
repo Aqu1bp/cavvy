@@ -1321,7 +1321,7 @@ export class Engine {
                     source: on ? "your plan" : undefined,
                     keyUrl: p.keyUrl,
                     requiresKey: false,
-                    agentCli: { accounts: listAccounts(p.id).length > 1 ? await this.accountsList(p.id) : undefined, defaultAccount: defaultAccount(p.id), installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
+                    agentCli: { accounts: await this.accountsList(p.id), defaultAccount: defaultAccount(p.id), installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
                 });
                 continue;
             }

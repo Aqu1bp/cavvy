@@ -71,17 +71,25 @@ export function accountCredentialFiles(): string[] {
 export function accountProtectedPaths(): string[] {
     return [...new Set([...accountFolders(), ...accountCredentialFiles()])];
 }
-function projectFolder(folder: string, roots: string[]): boolean {
+function projectFolder(folder: string, roots: string[], managed: boolean): boolean {
+    const home = accountRealPath(homedir());
+    const harness = accountRealPath(paths.home());
     if (roots.some((root) => {
         const real = accountRealPath(resolve(root));
+        // Desktop starts in home, and sessions may also use a broad parent folder.
+        if (real === home || inside(harness, real)) return false;
+        // Harness owns this dedicated folder, even when its home is in a project.
+        // Still protect projects opened at or below it before recursive removal.
+        if (managed && real !== folder && inside(folder, real)) return false;
         return inside(folder, real) || inside(real, folder);
     })) return true;
     for (let d = folder; ; d = dirname(d)) {
+        if (d === home) return false;
         if (existsSync(join(d, ".git"))) return true;
-        if (dirname(d) === d) return false;
+        if (managed || dirname(d) === d) return false;
     }
 }
-function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }): string {
+function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }, managed = false): string {
     if (typeof folder !== "string" || folder.length > 1024 || !isAbsolute(folder) || !/^[a-zA-Z0-9 /_.-]+$/.test(folder) || folder.split(/[\\/]/).includes("..")) throw new RpcError("Use an absolute account folder with plain characters and no '..'", "invalid");
     const real = accountRealPath(resolve(folder));
     if (real === sep || real === accountRealPath(homedir())) throw new RpcError("Choose a dedicated account folder", "invalid");
@@ -96,7 +104,7 @@ function validateFolder(folder: unknown, roots: string[], exclude?: { provider: 
             if (inside(real, other) || inside(other, real)) throw new RpcError("Accounts must have separate, non-overlapping folders", "invalid");
         }
     }
-    if (projectFolder(real, roots)) throw new RpcError("Account folders must be outside projects", "invalid");
+    if (projectFolder(real, roots, managed)) throw new RpcError("Account folders must be outside projects", "invalid");
     if (existsSync(real) && !statSync(real).isDirectory()) throw new RpcError("Account folder is not a directory", "invalid");
     return real;
 }
@@ -112,7 +120,7 @@ export function addAccount(provider: string, input: { id: string; name: string; 
     const managed = input.folder === undefined;
     const expected = join(accountRealPath(paths.home()), "accounts", provider, input.id);
     const requested = input.folder ?? expected;
-    const folder = validateFolder(requested, projectRoots);
+    const folder = validateFolder(requested, projectRoots, undefined, managed);
     // Ownership is never adopted for a pre-existing directory, even at our expected path.
     if (managed && (existsSync(expected) || folder !== resolve(expected))) throw new RpcError("Managed account folder already exists or crosses a symlink", "invalid");
     try { mkdirSync(folder, { recursive: true, mode: 0o700 }); }
@@ -149,7 +157,7 @@ export function removeAccount(provider: string, id: string, confirmedFolder: str
         for (const d of [join(paths.home(), "accounts"), dirname(expected), expected]) {
             if (existsSync(d) && lstatSync(d).isSymbolicLink()) throw new RpcError("Refusing to delete a symlinked account folder", "invalid");
         }
-        validateFolder(expected, projectRoots, { provider, id });
+        validateFolder(expected, projectRoots, { provider, id }, true);
         rmSync(expected, { recursive: true, force: true });
     }
     const cfg = pf.agents![provider]!;
