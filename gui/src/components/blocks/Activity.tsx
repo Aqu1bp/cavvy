@@ -1,3 +1,4 @@
+import { RenderBoundary } from "../ui/ErrorBoundary";
 // Tool calls, the way the transcript shows them: a run of calls folds into
 // one line ("Read 3 files, searched 2 patterns · +13 −1"), which opens into
 // a row per call, which opens into the call's details.
@@ -275,6 +276,10 @@ function groupIcon(tools: ToolBlock[]): string {
 const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streaming" || t.status === "awaiting";
 
 export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; agents?: AgentRun[] }) {
+    return <RenderBoundary raw={() => p.steps}><ActivityGroupContent {...p} /></RenderBoundary>;
+}
+
+function ActivityGroupContent(p: { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; agents?: AgentRun[] }) {
     const [open, setOpen] = createSignal(prefs.expandActivity);
     // Find opens it to one of its calls; a lone call then shows as its row, the title find matched.
     const [found, setFound] = createSignal(false);
@@ -353,6 +358,10 @@ export function ActivityGroup(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
 
 /** The call running now: what it's doing, shimmering, and for how long. */
 function RunningRow(p: { tool: ToolBlock }) {
+    return <RenderBoundary raw={() => p.tool}><RunningRowContent {...p} /></RenderBoundary>;
+}
+
+function RunningRowContent(p: { tool: ToolBlock }) {
     const found = () => findReveal()?.part === p.tool.id;
     const label = () => toolLabel(p.tool);
     const verb = () => {
@@ -545,6 +554,10 @@ export function OpenFileButton(p: { path: string; line?: number }) {
 
 /** One call, as a plain line; opens into its details. */
 export function ToolRow(p: { tool: ToolBlock }) {
+    return <RenderBoundary raw={() => p.tool}><ToolRowContent {...p} /></RenderBoundary>;
+}
+
+function ToolRowContent(p: { tool: ToolBlock }) {
     const [open, setOpen] = createSignal(false);
     // Shown by find: its whole title, where the match may be past the cut.
     const found = () => findReveal()?.part === p.tool.id;
@@ -670,6 +683,10 @@ function Todos(p: { todos: TodoEntry[] }) {
 }
 
 function ToolDetails(p: { tool: ToolBlock }) {
+    return <RenderBoundary raw={() => p.tool}><ToolDetailsContent {...p} /></RenderBoundary>;
+}
+
+function ToolDetailsContent(p: { tool: ToolBlock }) {
     const t = () => p.tool;
     const input = () => t().input ?? {};
     return (

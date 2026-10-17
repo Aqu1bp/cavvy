@@ -1,6 +1,7 @@
+import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { createEffect, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
-import { app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
@@ -258,37 +259,50 @@ export function App() {
                 </Show>
                 <main class="main">
                     <Reconnecting />
-                    <Switch
-                        fallback={
-                            <>
+                    <RenderBoundary resetKey={() => `${app.activeId}:${settingsTab()}:${agentFocus()}`}>
+                        <Switch
+                            fallback={
+                                <>
+                                    <Header />
+                                    <Home />
+                                </>
+                            }
+                        >
+                            <Match when={settingsTab()}>
+                                <SettingsPage />
+                            </Match>
+                            <Match when={app.opening?.id === app.activeId && app.opening}>
+                                {(opening) => <>
+                                    <Header />
+                                    <div class="session-opening" aria-busy={!opening().error}>
+                                        <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
+                                            <p role="alert">Couldn't open this session: {opening().error}</p>
+                                            <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
+                                        </Show>
+                                    </div>
+                                </>}
+                            </Match>
+                            <Match when={active() && agent()}>
+                                <AgentView handle={active()!} agent={agent()!} />
+                            </Match>
+                            <Match when={active()} keyed>
+                                {(h) => <SessionView handle={h} />}
+                            </Match>
+                            <Match when={app.activeId}>
                                 <Header />
-                                <Home />
-                            </>
-                        }
-                    >
-                        <Match when={settingsTab()}>
-                            <SettingsPage />
-                        </Match>
-                        <Match when={active() && agent()}>
-                            <AgentView handle={active()!} agent={agent()!} />
-                        </Match>
-                        <Match when={active()} keyed>
-                            {(h) => <SessionView handle={h} />}
-                        </Match>
-                        <Match when={app.activeId}>
-                            <Header />
-                            <div class="home">
-                                <div class="home-inner">
-                                    <p class="muted" role="status">Waiting to reopen your session…</p>
-                                    <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
+                                <div class="home">
+                                    <div class="home-inner">
+                                        <p class="muted" role="status">Waiting to reopen your session…</p>
+                                        <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
+                                    </div>
                                 </div>
-                            </div>
-                        </Match>
-                    </Switch>
-                    <TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} />
+                            </Match>
+                        </Switch>
+                    </RenderBoundary>
+                    <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>
                 </main>
                 <Show when={review() && active() && !settingsTab()}>
-                    <ReviewPane handle={active()!} />
+                    <RenderBoundary resetKey={() => app.activeId}><ReviewPane handle={active()!} /></RenderBoundary>
                 </Show>
             </Show>
             <CommandPalette />

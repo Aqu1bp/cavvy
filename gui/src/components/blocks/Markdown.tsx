@@ -1,3 +1,4 @@
+import { RenderBoundary } from "../ui/ErrorBoundary";
 import { createEffect, createMemo, For, Match, onCleanup, Switch } from "solid-js";
 import { MarkdownRenderer } from "../../lib/markdown";
 import { openExternal } from "../../lib/platform";
@@ -28,6 +29,10 @@ function onLinkKey(e: KeyboardEvent) {
 
 /** With `sessionId`, paths to files in that session's folders become links (see lib/markdown.ts). */
 export function Markdown(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
+    return <RenderBoundary raw={() => p.text}><MarkdownContent {...p} /></RenderBoundary>;
+}
+
+function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
     const r = new MarkdownRenderer();
     // Same objects for unchanged blocks, so <For> keeps their DOM. Only a reply
     // with paths in it looks again when what's known changes.
