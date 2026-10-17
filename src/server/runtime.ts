@@ -286,6 +286,17 @@ export class Runtime {
         return this.view.state.status;
     }
 
+    get waitingKind(): Interaction["kind"] | undefined {
+        return this.status === "waiting" ? this.view.state.interactions[0]?.kind : undefined;
+    }
+
+    get sidebarTurnStartedAt(): number | undefined {
+        if (!this.busy) return undefined;
+        // Queued prompts can start a new visible turn within one agent.run().
+        const turn = this.turnId ? findTurn(this.view, this.turnId) : undefined;
+        return turn?.startedAt ?? this.view.state.activity?.since;
+    }
+
     /** The last task's result, including an interrupted run after reopening. */
     get lastTurnStatus(): TurnStatus | undefined {
         return this.view.turns.at(-1)?.status;
@@ -1434,6 +1445,7 @@ export class Runtime {
         this.pending.delete(id);
         this.setState({ interactions: this.pendingList() });
         if (!this.pending.size) this.setStatus(this.busy ? "running" : "idle");
+        else this.engine.sessionChanged(this);
         p.resolve(r);
     }
 
@@ -1677,6 +1689,8 @@ export class Runtime {
         // Where it starts: its own prompt, or the tool results it rides along with.
         this.uiTurn = { seg: this.segment, index: this.session.messages.length, at: turn.startedAt! };
         this.ui.write({ t: "turn", ...this.uiTurn });
+        this.lastActive = turn.startedAt!;
+        this.engine.sessionChanged(this);
         return texts;
     }
 
@@ -1748,6 +1762,7 @@ export class Runtime {
         this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
         this.turnStartedAt = Date.now();
+        this.lastActive = this.turnStartedAt;
         const display = opts.display ?? text;
         const index = this.session.messages.length;
         this.turnSnapshotFloor = this.latestCheckpoint();
@@ -1924,6 +1939,8 @@ export class Runtime {
         const blockId = this.newId();
         this.op({ op: "block", turnId: turn.id, block: { t: "shell", id: blockId, command, output: "", running: true } });
         this.setState({ busy: true, status: "running", activity: { label: "Running", since: Date.now(), detail: command.slice(0, 80) } });
+        this.lastActive = turn.startedAt!;
+        this.engine.sessionChanged(this);
         let status: TurnStatus = "done";
         const lines = lineRedactor();
         try {
@@ -1971,6 +1988,8 @@ export class Runtime {
         this.busy = true;
         const ac = (this.abort = new AbortController());
         this.setState({ busy: true, status: "running", activity: { label: "Compacting conversation", since: Date.now() } });
+        this.lastActive = Date.now();
+        this.engine.sessionChanged(this);
         try {
             await this.agent.compact({ auto: false, signal: ac.signal, instructions });
         } catch (e) {

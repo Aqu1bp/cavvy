@@ -478,6 +478,10 @@ export interface SessionSummary {
     updatedAt: number;
     messages: number;
     status: SessionStatus;
+    /** The first pending request, including sessions no client has open. */
+    waitingKind?: Interaction["kind"];
+    /** Start of the visible turn, independent of its current tool or activity. */
+    turnStartedAt?: number;
     pinned: boolean;
     archived: boolean;
     /** Set aside: done with for now, listed apart from the sessions still in play. */

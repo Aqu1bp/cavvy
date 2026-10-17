@@ -19,6 +19,7 @@ import { DelayedPending } from "../lib/delayed-pending";
 import { safeRenderText } from "../lib/render-error";
 import { afterFailedReopen } from "../lib/reopen";
 import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
+import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
 import { composerDrafts } from "../lib/composer-draft";
 
@@ -478,6 +479,11 @@ export async function refreshSessions() {
     // A list confirms a missed restore, but cannot undo a deletion that happened
     // while either request was in flight (including a second deletion after Undo).
     const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id))) as typeof lists;
+    // The open search result can be older than the server's list window.
+    const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
+    if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
+        (active.archived ? archived : list).push(active);
+    }
     batch(() => {
         for (const s of [...list, ...archived]) sessionPresent(s.id);
     });
@@ -488,8 +494,10 @@ export async function refreshSessions() {
         setApp("seen", seen);
         saveSeen();
     }
-    setApp("sessions", reconcile(list, { key: "id" }));
-    setApp("archived", reconcile(archived, { key: "id" }));
+    batch(() => {
+        setApp("sessions", reconcile(orderSessions(list), { key: "id" }));
+        setApp("archived", reconcile(orderSessions(archived), { key: "id" }));
+    });
 }
 
 export async function refreshModels(refresh = false) {
@@ -580,13 +588,15 @@ function upsertSession(s: SessionSummary) {
     }
     const key = s.archived ? "archived" : "sessions";
     const other = s.archived ? "sessions" : "archived";
-    setApp(other, (list) => list.filter((x) => x.id !== s.id));
-    setApp(key, (list) => {
-        const i = list.findIndex((x) => x.id === s.id);
-        if (i < 0) return [s, ...list];
-        const next = list.slice();
-        next[i] = { ...list[i], ...s };
-        return next;
+    batch(() => {
+        setApp(other, (list) => list.filter((x) => x.id !== s.id));
+        setApp(key, (list) => {
+            const i = list.findIndex((x) => x.id === s.id);
+            if (i < 0) return orderSessions([s, ...list]);
+            const next = list.slice();
+            next[i] = s;
+            return orderSessions(next);
+        });
     });
     if (s.id === app.activeId) markSeen(s.id, s.updatedAt);
 }

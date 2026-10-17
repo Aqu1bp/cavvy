@@ -1,6 +1,8 @@
 // What the user does, as calls to the server.
 
 import { createSignal } from "solid-js";
+import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
+import { sidebarOrder } from "./sidebar";
 import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
@@ -326,7 +328,19 @@ export async function pin(id: string, pinned: boolean) {
 
 /** Set aside (or back in play). Sending to it puts it back too. */
 export async function settle(id: string, settled: boolean) {
-    await rpc.call("session.settle", { id, settled }).catch(reportError);
+    try {
+        await rpc.call("session.settle", { id, settled });
+    } catch (e) {
+        return reportError(e);
+    }
+    if (settled) {
+        toast("Session settled", "info", {
+            label: "Undo",
+            run: async () => {
+                await rpc.call("session.settle", { id, settled: false });
+            },
+        });
+    }
 }
 
 /** After the confirm dialog. The server moves its files to the trash; Undo puts them back. */
@@ -437,11 +451,12 @@ export function toggleSidebar() {
 
 /** Go to the next/previous session in the sidebar's order. */
 export function cycleSession(dir: 1 | -1) {
-    const list = app.sessions;
-    if (!list.length) return;
-    const i = list.findIndex((s) => s.id === app.activeId);
-    const next = list[(i + dir + list.length) % list.length];
-    if (next) void activate(next.id);
+    const ids = sidebarOrder() ?? sidebarIds(sidebarEntries(app.sessions, app.archived, {
+        activeId: app.activeId, groupBy: prefs.groupBy, archived: false,
+        settledOpen: prefs.settledOpen, cards: SESSION_PAGE, settled: SESSION_PAGE, archive: SESSION_PAGE,
+    }));
+    const next = adjacentSession(ids, app.activeId, dir);
+    if (next) void activate(next);
 }
 
 export function activeHandle() {

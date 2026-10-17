@@ -129,6 +129,10 @@
     mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent 100%);
 }
 
+.side-list > [data-session-row] {
+    flex: none;
+}
+
 .side-empty {
     padding: 14px 10px;
     color: var(--fg-subtle);

@@ -128,3 +128,32 @@ export function firstChangedLine(diff?: { hunks?: { newStart: number; lines: { t
     }
     return undefined;
 }
+
+/** Resolve duplicate initials by adding word initials, then a stable path suffix. */
+export function projectMonograms(projects: readonly { cwd: string; projectName: string }[]): Map<string, string> {
+    const unique = [...new Map(projects.map((p) => [p.cwd, p])).values()].sort((a, b) => a.cwd.localeCompare(b.cwd));
+    const result = new Map<string, string>();
+    const used = new Set<string>();
+    const counts = new Map<string, number>();
+    for (const p of unique) counts.set(monogram(p.projectName), (counts.get(monogram(p.projectName)) ?? 0) + 1);
+    for (const p of unique) {
+        const base = monogram(p.projectName);
+        const words = p.projectName.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+        let label = base;
+        if (counts.get(base)! > 1) label = words.length > 2 ? words.map((w) => w[0]).join("").slice(0, 3) : (words.join("").slice(0, 3) || base);
+        const candidate = label;
+        let suffix = 2;
+        while (used.has(label)) label = `${candidate}${suffix++}`;
+        used.add(label);
+        result.set(p.cwd, label);
+    }
+    return result;
+}
+
+/** Dark, saturated backgrounds keep white initials readable in every theme. */
+const PROJECT_COLORS = ["#844237", "#745316", "#336744", "#236773", "#405c9b", "#70499a", "#91436d", "#515c6c"];
+export function projectColor(identity: string): string {
+    let hash = 0;
+    for (const c of identity) hash = (Math.imul(hash, 31) + c.codePointAt(0)!) | 0;
+    return PROJECT_COLORS[(hash >>> 0) % PROJECT_COLORS.length]!;
+}

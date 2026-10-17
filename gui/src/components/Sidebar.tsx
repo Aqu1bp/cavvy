@@ -2,14 +2,17 @@
 // about, and its branch and model. Ones you've settled fold into a list at the
 // bottom; sending to one brings it back.
 
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
-import type { RunMember, SessionSummary } from "@shared/protocol";
+import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread } from "../state/app";
 import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
-import { ago, basename, duration, monogram, since } from "../lib/format";
+import { ago, monogram, projectColor, projectMonograms, since } from "../lib/format";
+import { holdSidebar, sidebarEntries, sidebarIds, SESSION_PAGE, type SidebarEntry } from "../lib/session-order";
+import { sessionStatus } from "../lib/session-status";
+import { setSidebarOrder } from "../state/sidebar";
 import { now } from "../lib/clock";
 import { isTauri, mod, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
@@ -17,12 +20,14 @@ import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
 /** Cards shown before "Show more". */
-const PAGE = 25;
+const PAGE = SESSION_PAGE;
 
-export function Monogram(p: { name: string; size?: number }) {
+export function Monogram(p: { name: string; cwd?: string; label?: string; size?: number }) {
     return (
-        <span class="mg" style={p.size ? { width: `${p.size}px`, height: `${p.size}px`, "font-size": `${(p.size * 0.47).toFixed(1)}px` } : undefined} aria-hidden="true">
-            {monogram(p.name)}
+        <span class="mg" style={{ "background-color": projectColor(p.cwd ?? p.name),
+            ...(p.size ? { width: `${p.size}px`, height: `${p.size}px`, "font-size": `${(p.size * 0.47).toFixed(1)}px` } : {}),
+        }} aria-hidden="true">
+            {p.label ?? monogram(p.name)}
         </span>
     );
 }
@@ -30,18 +35,6 @@ export function Monogram(p: { name: string; size?: number }) {
 function branchOf(s: SessionSummary): string | undefined {
     if (s.id === app.activeId) return handleFor(s.id)?.view.state.branch;
     return handleFor(s.id)?.view.state.branch ?? app.projects.find((p) => p.path === s.cwd)?.branch;
-}
-
-/** What it's doing, when that's worth a word; otherwise its card shows how long ago. */
-function statusWord(s: SessionSummary): { text: string; tone: string } | undefined {
-    if (s.status === "waiting") return { text: "Needs you", tone: "warn" };
-    if (s.status === "running") {
-        const since = handleFor(s.id)?.view.state.activity?.since;
-        const ms = since ? now() - since : 0;
-        return { text: ms >= 1000 ? `Working ${duration(ms).replace(/ \d+s$/, "")}` : "Working", tone: "info" };
-    }
-    if (s.status === "error") return { text: "Stopped", tone: "err" };
-    return undefined;
 }
 
 /** The model it last used: the open session's own, else the one it was saved with. */
@@ -77,7 +70,7 @@ function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) =>
     const close = () => p.setOpen(false);
     return (
         <Menu label="Session actions" returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} onClose={close} align="end" width={220}>
-            <button role="menuitem" class="menu-item compact" onClick={() => (close(), p.onRename())}>
+            <button role="menuitem" class="menu-item compact" onClick={() => batch(() => { p.onRename(); close(); })}>
                 <Pencil size={14} /> Rename
             </button>
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void pin(p.s.id, !p.s.pinned))}>
@@ -127,58 +120,16 @@ function useRowMenu(more: () => HTMLElement | undefined) {
     return { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
 }
 
-/** A session on its own, or a run's sessions together (where its latest one would be), in the order they started. */
-type CardItem = { key: string; s: SessionSummary; run?: undefined };
-type RunItem = { key: string; run: RunMember; sessions: SessionSummary[] };
-type Item = CardItem | RunItem;
-
-function withRuns(list: SessionSummary[]): Item[] {
-    const members = new Map<string, SessionSummary[]>();
-    for (const s of list) if (s.run) members.set(s.run.id, [...(members.get(s.run.id) ?? []), s]);
-    const out: Item[] = [];
-    for (const s of list) {
-        if (!s.run) out.push({ key: s.id, s });
-        else if (members.has(s.run.id)) {
-            out.push({ key: `run:${s.run.id}`, run: s.run, sessions: members.get(s.run.id)!.sort((a, b) => a.createdAt - b.createdAt) });
-            members.delete(s.run.id);
-        }
-    }
-    return out;
-}
-
-function RunGroup(p: { run: RunMember; sessions: SessionSummary[] }) {
-    return (
-        <div class="run-group" role="group" aria-label={`${p.sessions.length} models: ${p.run.label}`}>
-            <div class="run-head" title={p.run.label}>
-                <Layers size={12} />
-                <span class="truncate">{p.run.label}</span>
-                <span class="run-count">{p.sessions.length}</span>
-            </div>
-            <For each={p.sessions}>{(s) => <SessionCard s={s} />}</For>
-        </div>
-    );
-}
-
-/** By key, so a card stays put (its menu, a rename under way) while the list changes around it. */
-function Items(p: { list: SessionSummary[]; limit?: number }) {
-    const items = createMemo(() => withRuns(p.list));
-    const byKey = createMemo(() => new Map(items().map((i) => [i.key, i])));
-    const keys = createMemo(() => items().slice(0, p.limit).map((i) => i.key));
-    // A key is always a run or always a session; what's in it is read anew as the list changes.
-    return (
-        <For each={keys()}>
-            {(key) => <Show when={byKey().get(key)}>{(item) => (key.startsWith("run:") ? <RunGroup run={(item() as RunItem).run} sessions={(item() as RunItem).sessions} /> : <SessionCard s={(item() as CardItem).s} />)}</Show>}
-        </For>
-    );
-}
-
-function SessionCard(p: { s: SessionSummary }) {
+function SessionCard(p: { s: SessionSummary; label?: string; hold: (id: string, held: boolean) => void }) {
     const r = useRename(() => p.s);
     const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
+    const id = p.s.id;
+    createEffect(() => p.hold(id, menu() || r.editing()));
+    onCleanup(() => p.hold(id, false));
     let el: HTMLDivElement | undefined;
     let more: HTMLButtonElement | undefined;
     const current = () => app.activeId === p.s.id;
-    const word = () => statusWord(p.s);
+    const word = () => sessionStatus(p.s, now());
     const unread = () => isUnread(p.s) && !current();
     const provider = () => modelOf(p.s)?.split(":")[0];
     // Working in the background: it's fine, it can recede.
@@ -191,10 +142,10 @@ function SessionCard(p: { s: SessionSummary }) {
         >
             <button class="card-hit" onClick={() => void activate(p.s.id)} onDblClick={() => r.setEditing(true)} aria-current={current() ? "page" : undefined} title={`${p.s.title}\n${p.s.cwd}`}>
                 <span class="l1">
-                    <Monogram name={p.s.projectName} />
+                    <Monogram name={p.s.projectName} cwd={p.s.cwd} label={p.label} />
                     <span class="truncate">{p.s.projectName}</span>
                     <Show when={word()} fallback={<span class={`st when ${unread() ? "unread" : ""}`}>{(now(), since(p.s.updatedAt))}</span>}>
-                        {(w) => <span class={`st tone-${w().tone}`}>{w().text}</span>}
+                        {(w) => <span class={`st tone-${w().tone} ${p.s.status === "idle" && unread() ? "unread" : ""}`}>{w().text}</span>}
                     </Show>
                 </span>
                 <Show when={!r.editing()} fallback={<span class="l2" />}>
@@ -228,9 +179,12 @@ function SessionCard(p: { s: SessionSummary }) {
     );
 }
 
-function SessionRow(p: { s: SessionSummary }) {
+function SessionRow(p: { s: SessionSummary; label?: string; hold: (id: string, held: boolean) => void }) {
     const r = useRename(() => p.s);
     const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
+    const id = p.s.id;
+    createEffect(() => p.hold(id, menu() || r.editing()));
+    onCleanup(() => p.hold(id, false));
     let more: HTMLButtonElement | undefined;
     const current = () => app.activeId === p.s.id;
     return (
@@ -239,7 +193,7 @@ function SessionRow(p: { s: SessionSummary }) {
                 when={!r.editing()}
                 fallback={
                     <>
-                        <Monogram name={p.s.projectName} />
+                        <Monogram name={p.s.projectName} cwd={p.s.cwd} label={p.label} />
                         {r.input()}
                     </>
                 }
@@ -251,14 +205,14 @@ function SessionRow(p: { s: SessionSummary }) {
                     aria-current={current() ? "page" : undefined}
                     title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
-                    <Monogram name={p.s.projectName} />
+                    <Monogram name={p.s.projectName} cwd={p.s.cwd} label={p.label} />
                     <Show when={p.s.pinned}>
                         <Pin size={12} class="slim-pin" />
                     </Show>
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                 </button>
                 <span class="slim-end">
-                    <span class="t">{(now(), since(p.s.updatedAt))}</span>
+                    <span class={`t tone-${sessionStatus(p.s, now())?.tone ?? "muted"}`}>{sessionStatus(p.s, now())?.text ?? (now(), since(p.s.updatedAt))}</span>
                     <span class="slim-acts">
                         <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
                             <Show when={p.s.pinned} fallback={<Pin size={13} />}>
@@ -319,26 +273,77 @@ export function Sidebar() {
     const [showArchived, setShowArchived] = createSignal(false);
     const [viewOpen, setViewOpen] = createSignal(false);
     const [shown, setShown] = createSignal(PAGE);
-    let viewBtn: HTMLButtonElement | undefined;
-
-    const pinnedFirst = (list: SessionSummary[]) => [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)];
-    const cards = createMemo(() => (showArchived() ? [] : pinnedFirst(app.sessions.filter((s) => !s.settled))));
-    const settledList = createMemo(() => (showArchived() ? [] : app.sessions.filter((s) => s.settled)));
-    const items = createMemo(() => withRuns(cards()));
-    // A run's sessions are in worktrees of their own, listed under the project the run started from.
-    const byProject = createMemo(() => {
-        const out: { name: string; cwd: string; sessions: SessionSummary[] }[] = [];
-        const by = new Map<string, SessionSummary[]>();
-        for (const s of cards()) {
-            const name = s.run ? basename(s.run.cwd) : s.projectName;
-            if (!by.has(name)) {
-                by.set(name, []);
-                out.push({ name, cwd: s.run?.cwd ?? s.cwd, sessions: by.get(name)! });
-            }
-            by.get(name)!.push(s);
-        }
-        return out;
+    const [settledShown, setSettledShown] = createSignal(PAGE);
+    const [archiveShown, setArchiveShown] = createSignal(PAGE);
+    const [hovered, setHovered] = createSignal(false);
+    const [manualLayout, setManualLayout] = createSignal(false);
+    const allowLayout = () => { setManualLayout(true); queueMicrotask(() => setManualLayout(false)); };
+    const [locked, setLocked] = createSignal<Set<string>>(new Set());
+    const hold = (id: string, held: boolean) => setLocked((previous) => {
+        if (previous.has(id) === held) return previous;
+        const next = new Set(previous);
+        if (held) next.add(id); else next.delete(id);
+        return next;
     });
+    let viewBtn: HTMLButtonElement | undefined;
+    let listEl: HTMLElement | undefined;
+    let frame = 0;
+    const animations = new Set<Animation>();
+    const all = createMemo(() => [...app.sessions, ...app.archived]);
+    const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
+    const monograms = createMemo(() => projectMonograms(all()));
+    const held = () => (hovered() && !manualLayout()) || locked().size > 0;
+    const layout = createMemo<SidebarEntry[]>((previous) => {
+        const next = sidebarEntries(app.sessions, app.archived, {
+            activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
+            settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
+        });
+        return holdSidebar(previous ?? [], next, held(), all(), app.activeId);
+    });
+    const entriesByKey = createMemo(() => new Map(layout().map((entry) => [entry.key, entry])));
+    // Capture before Solid moves keyed rows; animate only after the new layout is painted.
+    const keys = createMemo<string[]>((previous) => {
+        const next = layout().map((entry) => entry.key);
+        if (previous?.length === next.length && previous.every((key, i) => key === next[i])) return previous;
+        if (held()) return next;
+        const before = new Map<string, number>();
+        for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row]") ?? []) before.set(el.dataset.sessionRow!, el.getBoundingClientRect().top);
+        for (const animation of animations) animation.cancel();
+        animations.clear();
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+            if (held() || prefs.motion === "instant" || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+            for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row]") ?? []) {
+                const old = before.get(el.dataset.sessionRow!);
+                if (old === undefined) continue;
+                const delta = old - el.getBoundingClientRect().top;
+                if (!delta) continue;
+                const animation = el.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: prefs.motion === "smooth" ? 260 : 160, easing: "ease-out" });
+                animations.add(animation);
+                animation.onfinish = () => animations.delete(animation);
+            }
+        });
+        return next;
+    });
+    createEffect(() => setSidebarOrder(sidebarIds(layout())));
+    createEffect(() => {
+        const pause = held();
+        for (const animation of animations) {
+            if (pause) animation.pause(); else animation.play();
+        }
+    });
+    onCleanup(() => {
+        cancelAnimationFrame(frame);
+        for (const animation of animations) animation.cancel();
+        setSidebarOrder(undefined);
+    });
+    const showMore = (page: "cards" | "settled" | "archived") => {
+        if (page === "cards") setShown((n) => n + PAGE);
+        else if (page === "settled") setSettledShown((n) => n + PAGE);
+        else setArchiveShown((n) => n + PAGE);
+        // Explicit paging is intentional movement, even with the pointer on its button.
+        allowLayout();
+    };
 
     return (
         <SidebarFrame>
@@ -386,62 +391,56 @@ export function Sidebar() {
                 </Menu>
             </div>
 
-            <nav class="side-list" aria-label="Session list">
-                <Show when={showArchived()}>
-                    <div class="shelf">
-                        <span>Archived</span>
-                        <i />
-                        <button class="shelf-btn" onClick={() => setShowArchived(false)}>
-                            Done
-                        </button>
-                    </div>
-                    <For each={app.archived}>{(s) => <SessionRow s={s} />}</For>
-                </Show>
-                <Show
-                    when={prefs.groupBy === "project"}
-                    fallback={
-                        <>
-                            <Items list={cards()} limit={shown()} />
-                            <Show when={items().length > shown()}>
-                                <button class="slim more" onClick={() => setShown((n) => n + PAGE)}>
-                                    <Plus size={14} />
-                                    <span>Show {Math.min(PAGE, items().length - shown())} more</span>
-                                </button>
-                            </Show>
-                        </>
+            <nav ref={listEl} class="side-list" aria-label="Session list"
+                onPointerEnter={() => setHovered(true)}
+                onPointerLeave={() => setHovered(false)}>
+                <For each={keys()}>{(key) => {
+                    const entry = () => entriesByKey().get(key)!;
+                    // A held row keeps its component (and menu/rename) through status changes.
+                    const kind = untrack(() => entry().kind);
+                    if (kind === "run") {
+                        const group = () => entry() as Extract<SidebarEntry, { kind: "run" }>;
+                        const members = () => group().ids.filter((id) => sessions().has(id));
+                        const run = () => sessions().get(members()[0]!)?.run;
+                        return <div class="run-group" data-session-row={key} role="group" aria-label={`${members().length} models: ${run()?.label ?? ""}`}>
+                            <div class="run-head" title={run()?.label}>
+                                <Layers size={12} /><span class="truncate">{run()?.label}</span><span class="run-count">{members().length}</span>
+                            </div>
+                            <For each={members()}>{(id) => {
+                                const s = () => sessions().get(id)!;
+                                return <Show when={s()}>
+                                    <Show when={!group().row} fallback={<SessionRow s={s()} label={monograms().get(s().cwd)} hold={hold} />}>
+                                        <SessionCard s={s()} label={monograms().get(s().cwd)} hold={hold} />
+                                    </Show>
+                                </Show>;
+                            }}</For>
+                        </div>;
                     }
-                >
-                    <For each={byProject()}>
-                        {(g) => (
-                            <>
-                                <div class="shelf">
-                                    <span class="truncate">{g.name}</span>
-                                    <i />
-                                    <button class="shelf-btn" title={`New session in ${g.name}`} aria-label={`New session in ${g.name}`} onClick={() => newSession(g.cwd)}>
-                                        <Plus size={13} />
-                                    </button>
-                                </div>
-                                <Items list={g.sessions} />
-                            </>
-                        )}
-                    </For>
-                </Show>
-                <Show when={settledList().length}>
-                    <div class="side-grow" />
-                    <button class="shelf settled-head" aria-expanded={prefs.settledOpen} onClick={() => setPrefs("settledOpen", !prefs.settledOpen)}>
-                        <span>Settled</span>
-                        <i />
-                        <ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
-                    </button>
-                    <Show when={prefs.settledOpen}>
-                        <For each={settledList()}>{(s) => <SessionRow s={s} />}</For>
-                    </Show>
-                </Show>
-                <Show when={!showArchived() && !cards().length && !settledList().length}>
-                    <div class="side-empty">{app.conn === "open" ? "No sessions yet. Start one from the composer." : "Connecting…"}</div>
-                </Show>
-                <Show when={showArchived() && !app.archived.length}>
-                    <div class="side-empty">Nothing archived.</div>
+                    if (kind === "card" || kind === "row") {
+                        const s = () => sessions().get(key)!;
+                        return <div data-session-row={key}>
+                            <Show when={s()}>
+                                <Show when={entry().kind === "card"} fallback={<SessionRow s={s()} label={monograms().get(s().cwd)} hold={hold} />}>
+                                    <SessionCard s={s()} label={monograms().get(s().cwd)} hold={hold} />
+                                </Show>
+                            </Show>
+                        </div>;
+                    }
+                    if (kind === "project") {
+                        const group = () => entry() as Extract<SidebarEntry, { kind: "project" }>;
+                        return <div class="shelf"><span class="truncate" title={group().cwd}>{group().name}</span><i />
+                            <button class="shelf-btn" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(group().cwd)}><Plus size={13} /></button>
+                        </div>;
+                    }
+                    if (kind === "settled") return <button class="shelf settled-head" aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
+                        <span>Settled</span><i /><ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
+                    </button>;
+                    if (kind === "archived") return <div class="shelf"><span>Archived</span><i /><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
+                    const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
+                    return <button class="slim more" onClick={() => showMore(more().page)}><Plus size={14} /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
+                }}</For>
+                <Show when={!all().length || (showArchived() && !sidebarIds(layout()).length)}>
+                    <div class="side-empty">{showArchived() ? "Nothing archived." : app.conn === "open" ? "No sessions yet. Start one from the composer." : "Connecting…"}</div>
                 </Show>
             </nav>
 

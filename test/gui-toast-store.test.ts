@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { toast, toasts, pauseToast, dismissToast, runToastAction, runToastChoice, rpc } from "../gui/src/state/app";
-import { archive, archivedWithWorktree, deleteSession, send, setArchived } from "../gui/src/state/actions";
+import { archive, archivedWithWorktree, deleteSession, send, setArchived, settle } from "../gui/src/state/actions";
 import { archiveRequest, setArchiveRequest } from "../gui/src/state/ui";
 import { UNDO_DELETE_MS } from "../gui/src/lib/toasts";
 import { RpcError, type Credentials } from "../gui/src/lib/rpc";
@@ -49,6 +49,56 @@ function advance(ms: number) {
         }
     }
 }
+
+test("settle offers Undo only after success, and Undo restores the original session", async () => {
+    const pending = Promise.withResolvers<any>();
+    const call = spyOn(rpc, "call").mockImplementationOnce(() => pending.promise).mockResolvedValue(null);
+    try {
+        const settling = settle("settled-session", true);
+        expect(toasts).toHaveLength(0);
+        pending.resolve(null);
+        await settling;
+        expect(call).toHaveBeenCalledWith("session.settle", { id: "settled-session", settled: true });
+        const undo = toasts.find((t) => t.message === "Session settled")!;
+        expect(undo.action?.label).toBe("Undo");
+        await runToastAction(undo.id);
+        expect(call).toHaveBeenLastCalledWith("session.settle", { id: "settled-session", settled: false });
+        expect(toasts).toHaveLength(0);
+    } finally {
+        call.mockRestore();
+    }
+});
+
+test("failed Settle offers no Undo, and Back in play creates no new Undo", async () => {
+    const call = spyOn(rpc, "call").mockRejectedValueOnce(new Error("Settle failed")).mockResolvedValue(null);
+    try {
+        await settle("failed-session", true);
+        expect(toasts.map((t) => [t.level, t.message, t.action])).toEqual([["error", "Settle failed", undefined]]);
+        dismissToast(toasts[0]!.id);
+        await settle("returned-session", false);
+        expect(call).toHaveBeenLastCalledWith("session.settle", { id: "returned-session", settled: false });
+        expect(toasts).toHaveLength(0);
+    } finally {
+        call.mockRestore();
+    }
+});
+
+test("a failed Settle Undo remains available for an explicit retry", async () => {
+    const call = spyOn(rpc, "call").mockResolvedValueOnce(null).mockRejectedValueOnce(new Error("Disconnected")).mockResolvedValue(null);
+    try {
+        await settle("settled-session", true);
+        const undo = toasts[0]!;
+        await runToastAction(undo.id);
+        expect(toasts.find((t) => t.id === undo.id)).toMatchObject({ level: "error", message: "Session settled: Disconnected", action: { label: "Undo" } });
+        expect(call).toHaveBeenCalledTimes(2);
+        await runToastAction(undo.id);
+        expect(call).toHaveBeenLastCalledWith("session.settle", { id: "settled-session", settled: false });
+        expect(call).toHaveBeenCalledTimes(3);
+        expect(toasts).toHaveLength(0);
+    } finally {
+        call.mockRestore();
+    }
+});
 
 test("the real toast store evicts a notice before the older Undo", () => {
     const undo = { label: "Undo", run() {} };
