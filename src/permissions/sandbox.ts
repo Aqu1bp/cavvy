@@ -14,7 +14,7 @@
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, shellWord, SHELLS, withoutMessages } from "./bash-safety";
+import { ANALYSIS_LIMIT, commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, withoutMessages } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 import { accountProtectedPaths } from "../providers/accounts";
 
@@ -411,7 +411,8 @@ export interface AccessNeeded {
  */
 export function accessNeeded(cmd: string, cwd?: string): AccessNeeded {
     const out: AccessNeeded = {};
-    for (const { programs, dir, text } of commandsWithDirs(cmd, cwd)) for (const argv of programs) {
+    const commands = commandsWithDirs(cmd, cwd);
+    for (const { programs, dir, text } of commands) for (const argv of programs) {
         // By the name the program is found by: `NPM install` is npm install on macOS.
         const names = programNames(argv[0] ?? "");
         const prog = names.find((n) => NETWORK_PROGRAMS.has(n) || HOST_PROGRAMS.has(n) || Object.hasOwn(HOST_SUBCOMMANDS, n) || Object.hasOwn(NETWORK_SUBCOMMANDS, n) || /^python[\d.]*$/.test(n)) ?? names[0]!;
@@ -452,6 +453,7 @@ export function accessNeeded(cmd: string, cwd?: string): AccessNeeded {
         else if (sub && NETWORK_SUBCOMMANDS[prog]?.test(sub)) out.network ??= `${prog} ${sub}`;
         else if (/^python[\d.]*$/.test(prog) && args[0] === "-m" && /^(pip|ensurepip)$/.test(args[1] ?? "") && /\b(install|download)\b/.test(args.join(" "))) out.network ??= `${prog} -m ${args[1]}`;
     }
+    if (commands.exhausted) { out.host ??= ANALYSIS_LIMIT; out.network ??= ANALYSIS_LIMIT; }
     return out;
 }
 
@@ -495,110 +497,103 @@ const DELETE_WORD = new RegExp(`(^|[\\s;|&(\`'"/])(${DELETERS.join("|")})(?=\\s|
 const DELETE_CALL = /\b(rmtree|rmSync|rmdirSync|unlinkSync|os\.(remove|unlink|rmdir|removedirs)|fs\.(rm|unlink|rmdir)|fs\.promises\.(rm|unlink)|FileUtils\.(rm|rm_r|rm_rf|remove)|Remove-Item)\b/;
 
 /**
- * The commands find's -exec, -execdir, -ok and -okdir run, each up to its
- * `;` or `{} +`. Every such word counts, even one that's another primary's
- * operand (`-name -exec`) or inside another command: telling those apart
- * needs all of find's primaries, and taking too many only looks more.
- */
-function findCommands(args: string[]): string[][] {
-    const out: string[][] = [];
-    for (let i = 0; i < args.length; i++) {
-        if (!/^-(exec|execdir|ok|okdir)$/.test(args[i]!)) continue;
-        let j = i + 1;
-        while (j < args.length && args[j] !== ";" && !(args[j] === "+" && args[j - 1] === "{}")) j++;
-        out.push(args.slice(i + 1, j));
-    }
-    return out;
-}
-
-/**
  * Discards or deletes work by name. The reviewer sees these even when they'd
  * run in the sandbox, which contains everything except damage inside the
  * project itself. With cwd, `git checkout <name>` counts when the name is a
  * file there (it discards that file's changes) and not when it's a branch.
  */
-export function looksDestructive(cmd: string, cwd?: string, depth = 0): string | undefined {
+export function looksDestructive(cmd: string, cwd?: string): string | undefined {
+    return destructiveIn(cmd, cwd, false) ?? destructiveIn(cmd, cwd, true);
+}
+
+function destructiveIn(cmd: string, cwd: string | undefined, legacy: boolean): string | undefined {
     const text = withoutMessages(cmd);
     if (DELETE_WORD.test(text)) return text.match(DELETE_WORD)![2];
     if (DELETE_CALL.test(text)) return "deletes files";
-    for (const { programs, dir } of commandsWithDirs(cmd, cwd)) for (const argv of programs) {
-        const prog = argv[0];
-        const args = argv.slice(1);
-        const deleter = DELETERS.find((d) => runs(prog, d));
-        if (deleter) return deleter;
-        if (runs(prog, "find")) {
-            if (args.includes("-delete")) return "find -delete";
-            // What -exec runs, checked like a command of its own (`-exec sh -c 'RM "$1"' sh {} \;`).
-            for (const c of findCommands(args)) {
-                const r = depth < 4 ? looksDestructive(c.map(shellWord).join(" "), cwd, depth + 1) : undefined;
-                if (r) return r;
+    const commands = commandsWithDirs(cmd, cwd, legacy);
+    for (const { programs, dir, text: body } of commands) {
+        // Shell quote concatenation can reveal inline deletion only after decoding
+        // a child script. Keep the former recursive text checks in this traversal.
+        const decoded = withoutMessages(body);
+        const deletion = DELETE_WORD.exec(decoded);
+        if (deletion) return deletion[2];
+        if (DELETE_CALL.test(decoded)) return "deletes files";
+        for (const argv of programs) {
+            const prog = argv[0];
+            const args = argv.slice(1);
+            const deleter = DELETERS.find((d) => runs(prog, d));
+            if (deleter) return deleter;
+            if (runs(prog, "find")) {
+                if (args.includes("-delete")) return "find -delete";
             }
-        }
-        // `sh -c 'RM -rf src'`, `eval RM …`
-        if (depth < 4) {
-            const c = args.findIndex((a) => /^-[a-zA-Z]*c$/.test(a));
-            const inner = runs(prog, ...SHELLS) && c >= 0 ? args[c + 1] : runs(prog, "eval") ? args.join(" ") : undefined;
-            const r = inner ? looksDestructive(inner, cwd, depth + 1) : undefined;
-            if (r) return r;
-        }
-        for (const p of ["dd", "mkfs", "diskutil"]) if (runs(prog, p)) return p;
-        if (!runs(prog, "git")) continue;
-        const { index, dirs } = gitSubcommand(argv);
-        const sub = argv[index];
-        const rest = argv.slice(index + 1);
-        const has = (...flags: string[]) => rest.some((a) => flags.includes(a) || flags.some((f) => /^-[a-zA-Z]$/.test(f) && /^-[a-zA-Z]+$/.test(a) && a.includes(f[1]!)));
-        switch (sub) {
-            case "clean":
-                return "git clean";
-            case "checkout": {
-                if (rest.includes("--") || has("-f", "--force") || rest.some((a) => /^--(ours|theirs|pathspec-from-file)/.test(a))) return "git checkout (discards changes)";
-                // Making a branch keeps local changes.
-                if (has("-b", "-B", "--orphan")) break;
-                const operands = rest.filter((a) => !a.startsWith("-"));
-                // After a `cd` it can't follow, any name might be a file.
-                const isPath = (a: string) => a === "." || /[*?[]/.test(a) || dir === null || (dir !== undefined && existsSync(resolve(dir, ...dirs, a)));
-                // A commit and paths, or a single operand that names a file, restores files.
-                if (operands.length > 1 || operands.some(isPath)) return "git checkout (discards changes)";
-                break;
+            for (const p of ["dd", "mkfs", "diskutil"]) if (runs(prog, p)) return p;
+            if (!runs(prog, "git")) continue;
+            const { index, dirs } = gitSubcommand(argv);
+            const sub = argv[index];
+            const rest = argv.slice(index + 1);
+            const has = (...flags: string[]) => rest.some((a) => flags.includes(a) || flags.some((f) => /^-[a-zA-Z]$/.test(f) && /^-[a-zA-Z]+$/.test(a) && a.includes(f[1]!)));
+            switch (sub) {
+                case "clean":
+                    return "git clean";
+                case "checkout": {
+                    if (rest.includes("--") || has("-f", "--force") || rest.some((a) => /^--(ours|theirs|pathspec-from-file)/.test(a))) return "git checkout (discards changes)";
+                    // Making a branch keeps local changes.
+                    if (has("-b", "-B", "--orphan")) break;
+                    const operands = rest.filter((a) => !a.startsWith("-"));
+                    // After a `cd` it can't follow, any name might be a file.
+                    const isPath = (a: string) => a === "." || /[*?[]/.test(a) || dir === null || (dir !== undefined && existsSync(resolve(dir, ...dirs, a)));
+                    // A commit and paths, or a single operand that names a file, restores files.
+                    if (operands.length > 1 || operands.some(isPath)) return "git checkout (discards changes)";
+                    break;
+                }
+                case "switch":
+                    if (has("-f", "--force", "--discard-changes")) return "git switch (discards changes)";
+                    break;
+                case "restore":
+                    if (!rest.includes("--staged") || rest.includes("--worktree") || has("-W")) return "git restore";
+                    break;
+                case "reset":
+                    if (rest.includes("--hard") || rest.includes("--merge") || rest.includes("--keep")) return "git reset --hard";
+                    break;
+                case "stash":
+                    if (/^(drop|clear)$/.test(rest[0] ?? "")) return "git stash drop";
+                    break;
+                case "branch":
+                    if (has("-D") || (has("-d", "--delete") && has("-f", "--force"))) return "git branch -D";
+                    break;
+                case "reflog":
+                    if (/^(expire|delete)$/.test(rest[0] ?? "")) return "git reflog expire";
+                    break;
+                case "gc":
+                case "prune":
+                    if (sub === "prune" || rest.some((a) => a.startsWith("--prune"))) return "git prune";
+                    break;
+                case "update-ref":
+                    if (has("-d")) return "git update-ref -d";
+                    break;
+                case "worktree":
+                    if (rest[0] === "remove" || rest[0] === "prune") return "git worktree remove";
+                    break;
+                case "filter-branch":
+                case "filter-repo":
+                    return `git ${sub}`;
             }
-            case "switch":
-                if (has("-f", "--force", "--discard-changes")) return "git switch (discards changes)";
-                break;
-            case "restore":
-                if (!rest.includes("--staged") || rest.includes("--worktree") || has("-W")) return "git restore";
-                break;
-            case "reset":
-                if (rest.includes("--hard") || rest.includes("--merge") || rest.includes("--keep")) return "git reset --hard";
-                break;
-            case "stash":
-                if (/^(drop|clear)$/.test(rest[0] ?? "")) return "git stash drop";
-                break;
-            case "branch":
-                if (has("-D") || (has("-d", "--delete") && has("-f", "--force"))) return "git branch -D";
-                break;
-            case "reflog":
-                if (/^(expire|delete)$/.test(rest[0] ?? "")) return "git reflog expire";
-                break;
-            case "gc":
-            case "prune":
-                if (sub === "prune" || rest.some((a) => a.startsWith("--prune"))) return "git prune";
-                break;
-            case "update-ref":
-                if (has("-d")) return "git update-ref -d";
-                break;
-            case "worktree":
-                if (rest[0] === "remove" || rest[0] === "prune") return "git worktree remove";
-                break;
-            case "filter-branch":
-            case "filter-repo":
-                return `git ${sub}`;
         }
     }
-    return undefined;
+    return commands.exhausted ? ANALYSIS_LIMIT : undefined;
 }
 
 /** Output that suggests the sandbox got in the way. */
-export function blockedBySandbox(output: string): boolean {
+export function blockedBySandbox(output: string, strongOnly = false): boolean {
+    if (strongOnly) {
+        // Successful test output often contains error names. Require an actual
+        // diagnostic with a path/syscall or a DNS failure naming its host.
+        return output.split("\n").some((line) =>
+            /(?:\b(?:open|openat|mkdir|unlink|rename|chmod|openpty)\b[^\n:]*|(?:\/|\.\.?\/)[^\n:]*): (?:operation not permitted|read-only file system)/i.test(line)
+            || /(?:operation not permitted|read-only file system)(?:,\s*(?:open|openat|mkdir|unlink|rename|chmod)\s+['"]?\S+|:\s*['"]?(?:\/|\.\.?\/)\S+)/i.test(line)
+            || /\b(?:touch|mkdir|chmod|rm|mv|cp):\s+[^:\n]+:\s*(?:operation not permitted|read-only file system)/i.test(line)
+            || /could not resolve (?:host|proxy):\s*\S+|could not resolve hostname\s+[^ :]+:\s*(?:Name or service not known|Temporary failure in name resolution)|getaddrinfo\s+(?:ENOTFOUND|EAI_AGAIN)\s+[\w.-]+|(?:ENOTFOUND|EAI_AGAIN)\s+[\w-]+(?:\.[\w-]+)+/i.test(line));
+    }
     return /Operation not permitted|Read-only file system|EPERM|EROFS|Failed to open PTY|Could not resolve|nodename nor servname|Name or service not known|Temporary failure in name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|Network is unreachable|Failed to connect|fetch failed|Connection refused|sandbox-exec|bwrap:/i.test(output);
 }
 

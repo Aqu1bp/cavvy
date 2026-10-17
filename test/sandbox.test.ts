@@ -10,8 +10,8 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: HARNESS_HOME, cleanup } = isolate();
 const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, accessNeeded, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT, WORKTREE_HINT } = await import("../src/permissions/sandbox");
-const { pushesDefaultBranch } = await import("../src/permissions/bash-safety");
-const { BashTool, BashOutputTool, KillShellTool, killAllShells } = await import("../src/tools/bash");
+const { ANALYSIS_LIMIT, analyzeCommand, pushesDefaultBranch, commandsWithDirs, configTarget, isReadOnlyCommand, shellWord } = await import("../src/permissions/bash-safety");
+const { BashTool, BashOutputTool, KillShellTool, killAllShells, sandboxOutputHint } = await import("../src/tools/bash");
 import type { Sandbox } from "../src/permissions/sandbox";
 
 afterAll(cleanup);
@@ -217,6 +217,251 @@ describe("accessNeeded", () => {
     });
 });
 
+describe("programs inside shell bodies", () => {
+    const shapes = [
+        (c: string) => `mkdir -p /tmp/x && cd /tmp/x && for n in 29 48 50; do ${c}; done`,
+        (c: string) => `while read n; do ${c}; done < list.txt`,
+        (c: string) => `until false; do ${c}; done`,
+        (c: string) => `if true; then ${c}; fi`,
+        (c: string) => `if false; then true; elif true; then ${c}; else true; fi`,
+        (c: string) => `case "$n" in a|b) true ;; *) ${c} ;; esac`,
+        (c: string) => `f() { ${c}; }; f`,
+        (c: string) => `f-name() { ${c}; }; f-name`,
+        (c: string) => `case x\nin x) ${c};; esac`,
+        (c: string) => `case $(printf x) in x) ${c};; esac`,
+        (c: string) => `case $(printf in) in x) ${c};; esac`,
+        (c: string) => `case "a in b" in *) ${c};; esac`,
+        (c: string) => `case x in a) true ;& x) ${c};; esac`,
+        (c: string) => `case x in a) true ;;& x) ${c};; esac`,
+        (c: string) => `function f { ${c}; }; f`,
+        (c: string) => `{ ${c}; }`,
+        (c: string) => `( ${c} )`,
+        ...["sh", "bash", "zsh", "dash"].map((sh) => (c: string) => `${sh} -c ${shellWord(c)}`),
+        (c: string) => `bash -lc ${shellWord(`for n in 1; do ${c}; done`)}`,
+        ...["-exec", "-execdir", "-ok", "-okdir"].map((flag) => (c: string) => `find . -name '*.md' ${flag} ${c} {} \\;`),
+        (c: string) => `find . -exec ${c} {} +`,
+        (c: string) => `parallel ${c} ::: 29 48`,
+        (c: string) => `parallel ${shellWord(c)} ::: 29 48`,
+        (c: string) => `parallel --jobs 2 ${c} ::: 29 48`,
+        (c: string) => `xargs -n 1 ${c}`,
+    ];
+
+    test.each(shapes.map((shape) => [shape("gh issue view 29"), shape] as const))("detects programs in %s", (_, shape) => {
+        expect(accessNeeded(shape("gh issue view 29"))).toEqual({ host: "gh" });
+        expect(accessNeeded(shape("curl -s https://example.com"))).toEqual({ network: "curl" });
+        expect(accessNeeded(shape("echo gh"))).toEqual({});
+        expect(looksDestructive(shape("git reset --hard"))).toBe("git reset --hard");
+        expect(looksDestructive(shape("git status"))).toBeUndefined();
+        expect(pushesDefaultBranch(shape("git push origin main"))).toBe("git push to main");
+        expect(pushesDefaultBranch(shape("git push origin topic"))).toBeUndefined();
+        expect(configTarget(shape("git config core.hooksPath /tmp/hooks"))).toBeDefined();
+        expect(configTarget(shape("git status"))).toBeUndefined();
+        expect(isReadOnlyCommand(shape("rm scratch"))).toBe(false);
+    });
+
+    test("substitutions in loop headers do not hide the body", () => {
+        expect(accessNeeded("for n in $(seq 1 3); do curl -s https://example.com; done")).toEqual({ network: "curl" });
+        expect(accessNeeded("for n in 1; do for m in 2; do gh issue view 29; done; done")).toEqual({ host: "gh" });
+        expect(accessNeeded("case x in a) true;; b) case y in *) gh issue view 29;; esac;; esac")).toEqual({ host: "gh" });
+    });
+
+    test.each([
+        "echo 'for n in 1; do gh issue view 29; done'",
+        "printf '%s' 'bash -c gh'",
+        "find . -name gh",
+        "for n in gh curl; do echo $n; done",
+        "case gh in gh) echo gh;; esac",
+        "bash -c 'echo gh'",
+        "parallel echo gh ::: 29 48",
+        "'if' gh issue view 29",
+        "echo do gh issue view 29",
+    ])("does not execute data in %p", (cmd) => {
+        expect(accessNeeded(cmd)).toEqual({});
+    });
+
+    test("directory changes in loops and branches remain unknown afterwards", () => {
+        for (const cmd of [
+            "for n in 1 2; do cd sub; git status; done; git status",
+            "while true; do git status; cd sub; done; git status",
+            "if true; then cd sub; fi; git status",
+        ]) {
+            const commands = commandsWithDirs(cmd, "/project").filter((c) => c.argv[0] === "git");
+            expect(commands.length).toBeGreaterThan(0);
+            // The unchanged legacy view is retained; supplemental evidence adds
+            // the unknown directory rather than replacing any old command.
+            expect(commands.some((c) => c.dir === null)).toBe(true);
+        }
+        const commands = commandsWithDirs("bash -c 'cd sub; git status'; git status", "/project");
+        expect(commands.filter((c) => c.argv[0] === "git").map((c) => c.dir)).toEqual(["/project", "/project/sub", null]);
+        expect(commandsWithDirs("find . -execdir git status \\;", "/project").at(-1)?.dir).toBeNull();
+    });
+
+    test("compound bodies preserve known directories before them and protect uncertain pushes", () => {
+        const ws = real(tempDir());
+        mkdirSync(join(ws, ".git"));
+        writeFileSync(join(ws, ".git", "HEAD"), "ref: refs/heads/main\n");
+        expect(pushesDefaultBranch("git push; for n in 1; do cd sub; done", ws)).toBe("git push from main");
+        expect(pushesDefaultBranch("cd .; { git push; }", ws)).toBe("git push from main");
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push", ws)).toBeDefined();
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push origin HEAD", ws)).toBeDefined();
+        writeFileSync(join(ws, ".git", "HEAD"), "ref: refs/heads/topic\n");
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push", ws)).toBe("git push (branch unknown)");
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push origin HEAD", ws)).toBe("git push to HEAD (branch unknown)");
+        expect(pushesDefaultBranch("for n in 1; do cd sub; done; git push origin topic", ws)).toBeUndefined();
+    });
+
+    test("nested scripts have a bounded depth and leave outer commands visible", () => {
+        let cmd = "gh issue view 29";
+        for (let i = 0; i < 4; i++) cmd = `sh -c ${shellWord(cmd)}`;
+        expect(accessNeeded(cmd)).toEqual({ host: "gh" });
+        for (let i = 0; i < 8; i++) cmd = `sh -c ${shellWord(cmd)}`;
+        expect(commandsWithDirs(cmd, undefined).length).toBeLessThanOrEqual(5);
+        expect(accessNeeded(`${cmd}; curl https://example.com`)).toMatchObject({ host: ANALYSIS_LIMIT });
+        expect(accessNeeded(`echo ${"x".repeat(260_000)}; gh issue view 29`).host).toBe("gh");
+    });
+});
+
+describe("protective analysis regressions", () => {
+    // Recorded by running these exact inputs through HEAD^'s bash-safety,
+    // sandbox, rules and checker modules, with a Seatbelt checker.
+    const baseline = [
+        { suffix: "git restore tracked.txt", destructive: "git restore", access: {}, push: undefined, config: undefined, behavior: "ask", classifier: true },
+        { suffix: "git push origin main", destructive: undefined, access: { host: "git push" }, push: "git push to main", config: undefined, behavior: "ask", classifier: undefined },
+        { suffix: "curl https://example.com", destructive: undefined, access: { network: "curl" }, push: undefined, config: undefined, behavior: "deny", classifier: undefined },
+        { suffix: "git config core.hooksPath /tmp/hooks", destructive: undefined, access: {}, push: undefined, config: "git settings that run programs", behavior: "ask", classifier: undefined },
+    ];
+    test.each(["cat <<'EOF'\ncase x in\nEOF\n", "case x in case ) true;; esac; "])("retains HEAD^ protections after %p", async (prefix) => {
+        const { PermissionChecker } = await import("../src/permissions/checker");
+        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
+        for (const expected of baseline) {
+            const cmd = prefix + expected.suffix;
+            expect(looksDestructive(cmd)).toBe(expected.destructive);
+            expect(accessNeeded(cmd)).toEqual(expected.access);
+            expect(pushesDefaultBranch(cmd)).toBe(expected.push);
+            expect(configTarget(cmd)).toBe(expected.config);
+            const decision = checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME);
+            expect(decision.behavior).toBe(expected.behavior);
+            expect(decision.needsClassifier).toBe(expected.classifier);
+            for (const original of analyzeCommand(cmd).commands) {
+                expect(commandsWithDirs(cmd, undefined).some((c) => c.text === original.text && JSON.stringify(c.argv) === JSON.stringify(original.argv))).toBe(true);
+            }
+        }
+    });
+
+    test("heredoc data does not feed body discovery", () => {
+        const cmd = "cat <<'EOF'\ndo curl https://example.com\nif true; then gh issue list\nEOF\necho done";
+        expect(accessNeeded(cmd)).toEqual({});
+        expect(commandsWithDirs(cmd, undefined).map((c) => c.text)).toEqual(expect.arrayContaining(analyzeCommand(cmd).commands.map((c) => c.text)));
+    });
+
+    test("real scripts beside heredoc data are analyzed without exhausting the budget", async () => {
+        const { PermissionChecker } = await import("../src/permissions/checker");
+        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
+        for (const cmd of [
+            "cat <<EOF\nhello\nEOF\nsh -c 'git restore tracked.txt'",
+            "sh -c 'git restore tracked.txt'; cat <<EOF\nhello\nEOF",
+        ]) {
+            expect(commandsWithDirs(cmd, undefined).exhausted).toBe(false);
+            expect(looksDestructive(cmd)).toBe("git restore");
+            expect(checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        }
+        expect(accessNeeded("cat <<'EOF'\nsh -c 'curl https://example.com'\nEOF")).toEqual({});
+    });
+
+    test("find candidates that overlap operands retain legacy destructive evidence", async () => {
+        const cmd = "find . -name -exec -exec git restore tracked.txt \\;";
+        expect(looksDestructive(cmd)).toBe("git restore");
+        const { PermissionChecker } = await import("../src/permissions/checker");
+        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
+        expect(checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
+    });
+
+    const pathological = [
+        Array(20).fill("sh -c " + shellWord("parallel ".repeat(20) + "echo hi")).join("; "),
+        "parallel ".repeat(100) + "echo hi",
+        Array(1500).fill("echo hi").join("; "),
+        Array.from({ length: 8 }).reduce<string>((cmd) => "sh -c " + shellWord(cmd), "git restore tracked.txt"),
+        "eval ".repeat(40) + "git push origin main",
+        "time ".repeat(4000) + "echo hi",
+        "find . " + "-exec ".repeat(900) + "echo hi \\;",
+        "if ".repeat(40) + "git restore tracked.txt",
+    ];
+    test.each(pathological.map((cmd, i) => [i, cmd] as const))("bounds pathological analysis %i and fails closed", async (_, cmd) => {
+        const start = performance.now();
+        expect(looksDestructive(cmd)).toBeDefined();
+        expect(performance.now() - start).toBeLessThan(200);
+        expect(commandsWithDirs(cmd, undefined).exhausted).toBe(true);
+        expect(accessNeeded(cmd).host).toBeDefined();
+        expect(accessNeeded(cmd).network).toBeDefined();
+        expect(pushesDefaultBranch(cmd)).toBeDefined();
+        expect(configTarget(cmd)).toBeDefined();
+        const { PermissionChecker } = await import("../src/permissions/checker");
+        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
+        const decision = checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME);
+        expect(decision.behavior).toBe("ask");
+        expect(decision.needsClassifier).toBeUndefined();
+    });
+
+    test("decoded child scripts retain inline deletion checks", async () => {
+        const cmd = `sh -c 'python -c "os.'remove'(path)"'`;
+        expect(looksDestructive(cmd)).toBe("deletes files");
+        const { PermissionChecker } = await import("../src/permissions/checker");
+        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
+        expect(checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
+    });
+
+    test("deduplication distinguishes unknown from unspecified directories", () => {
+        const cmd = "sh -c 'git checkout tracked.txt'; find . -execdir git checkout tracked.txt \\;";
+        const commands = commandsWithDirs(cmd, undefined).filter((c) => c.argv[0] === "git");
+        expect(commands.map((c) => c.dir)).toEqual([undefined, null]);
+        expect(looksDestructive(cmd)).toBe("git checkout (discards changes)");
+    });
+
+    test("deduplicates identical scripts while retaining different directories", () => {
+        const script = "sh -c 'echo hi'";
+        const commands = commandsWithDirs(`${script}; ${script}; cd sub; ${script}`, "/project");
+        expect(commands.filter((c) => c.text === "echo hi").map((c) => c.dir)).toEqual(["/project", null]);
+        expect(commands.exhausted).toBe(false);
+    });
+});
+
+describe("sandbox output hints", () => {
+    const sandbox: Sandbox = { kind: "seatbelt", policy: { writable: [], readOnly: [], unreadable: [], gitDirs: [] } };
+    const blocked = "failed to read configuration: open /home/test/.config/gh/config.yml: operation not permitted";
+
+    test.each([blocked, "mkdir /protected: Read-only file system", "touch: file.txt: Operation not permitted", "EPERM: operation not permitted, open '/protected'", "Could not resolve host: example.com", "getaddrinfo ENOTFOUND example.com"])("exit zero still reports strong evidence: %p", (output) => {
+        const hint = sandboxOutputHint(sandbox, output, undefined, false);
+        expect(hint).toContain("may have been blocked");
+        expect(hint).toContain(SANDBOX_HINT);
+    });
+
+    test.each(["fetch failed", "Connection refused", "Failed to connect", "all tests passed", "PASS handles EPERM gracefully\n1 test passed", "PASS handles EROFS gracefully\n1 test passed", "Operation not permitted", "Read-only file system", "ENOTFOUND", "PASS handles ENOTFOUND gracefully", "Could not resolve host:"])("exit zero ignores weak evidence: %p", (output) => {
+        expect(sandboxOutputHint(sandbox, output, undefined, false)).toBeUndefined();
+    });
+
+    test("failures retain the existing broader hints", () => {
+        expect(sandboxOutputHint(sandbox, "fetch failed", undefined, true)).toContain(SANDBOX_HINT);
+        expect(sandboxOutputHint(sandbox, blocked, undefined, true)).not.toContain("may have been blocked");
+    });
+
+    test.each([0, 1, null])("BashOutput includes hints at status %p, even when filtered", async (exitCode) => {
+        const shell = { output: blocked, readOffset: 0, exitCode, sandboxed: true,
+            sandboxHint: () => sandboxOutputHint(sandbox, blocked, undefined, exitCode !== null && exitCode !== 0) };
+        const ctx = { state: { shells: new Map([["test", shell]]) } } as any;
+        expect((await BashOutputTool.run({ bash_id: "test", filter: "no-match" }, ctx)).content).toContain(SANDBOX_HINT);
+        shell.sandboxed = false;
+        expect((await BashOutputTool.run({ bash_id: "test" }, ctx)).content).not.toContain(SANDBOX_HINT);
+    });
+
+    test("unsandboxed foreground output does not get a sandbox hint", async () => {
+        const ws = real(tempDir());
+        const ctx = { state: { cwd: ws, projectRoot: ws, shells: new Map() }, settings: {}, signal: new AbortController().signal } as any;
+        const result = await BashTool.run({ command: `printf '%s' ${shellWord(blocked)}` }, ctx);
+        expect(result.isError).toBe(false);
+        expect(result.content).toBe(blocked);
+    });
+});
+
 describe("Bash allowedHosts validation", () => {
     const v = (allowedHosts: unknown) => BashTool.validate!({ command: "true", allowedHosts } as any, {} as any);
     test("host names, wildcards and ports pass", () => {
@@ -350,6 +595,22 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
     const bash = (command: string, sb: Sandbox | null = sandbox) => BashTool.run({ command }, ctx(sb));
 
     afterAll(() => killAllShells({ state }));
+
+    test("a blocked write followed by success carries a tentative hint", async () => {
+        const command = "touch .git/hooks/blocked; true";
+        const result = await bash(command);
+        expect(result.isError).toBe(false);
+        expect(result.content).toContain("may have been blocked");
+        expect(result.content).toContain(SANDBOX_HINT);
+        const started = await BashTool.run({ command, run_in_background: true }, ctx());
+        const id = started.content.match(/shell (\S+) \(pid/)![1]!;
+        const shell = state.shells.get(id);
+        for (let i = 0; i < 100 && shell.exitCode === null; i++) await Bun.sleep(20);
+        expect(shell.exitCode).toBe(0);
+        const output = await BashOutputTool.run({ bash_id: id }, ctx());
+        expect(output.content).toContain("may have been blocked");
+        expect(output.content).toContain(SANDBOX_HINT);
+    });
 
     test("works in the workspace and temp dirs", async () => {
         const r = await bash(`echo hi > out.txt && mkdir -p d && mv out.txt d/ && cat d/out.txt && echo t > "${join(tmpdir(), `sbx-test-${process.pid}`)}" && echo done`);

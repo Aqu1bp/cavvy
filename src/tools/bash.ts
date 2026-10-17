@@ -83,9 +83,10 @@ async function sandboxedEnv(env: Record<string, string>, sandbox: Sandbox, hosts
     return { env: { ...env, ...sandboxCacheEnv(rules.length > 0), ...proxyEnv(proxy.url) }, proxy };
 }
 
-/** What to tell the model after a sandboxed command failed, if the sandbox looks like the reason. */
-function failureHint(sandbox: Sandbox, output: string, proxy: CommandProxy | undefined): string | undefined {
-    const hints = [proxy && refusedHint(proxy.refused()), blockedBySandbox(output) ? sandboxHint(sandbox.kind, output) : undefined].filter(Boolean);
+/** Output can reveal a blocked command even when a later command exits successfully. */
+export function sandboxOutputHint(sandbox: Sandbox, output: string, proxy: CommandProxy | undefined, failed = true): string | undefined {
+    const hints = [proxy && refusedHint(proxy.refused()), blockedBySandbox(output, !failed) ? sandboxHint(sandbox.kind, output) : undefined].filter(Boolean);
+    if (!failed && hints.length) hints.unshift("[Part of this command may have been blocked by the sandbox, even though the shell did not report failure.]");
     return hints.length ? hints.join("\n") : undefined;
 }
 
@@ -340,7 +341,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         else if (res.exitCode !== 0 && res.exitCode !== null) out += `\n\nExit code: ${res.exitCode}`;
         else if (res.signal) out += `\n\nTerminated by signal ${res.signal}`;
         out += notes;
-        const hint = ctx.sandbox && failed && !res.aborted ? failureHint(ctx.sandbox, res.output, proxy) : undefined;
+        const hint = ctx.sandbox && !res.aborted ? sandboxOutputHint(ctx.sandbox, res.output, proxy, failed) : undefined;
         if (hint) out += `\n\n${hint}`;
         const lineCount = out.trim() ? out.trim().split("\n").length : 0;
         return {
@@ -410,7 +411,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         readOffset: 0,
         exitCode: null,
         sandboxed: sandbox !== undefined,
-        sandboxHint: sandbox ? () => failureHint(sandbox, shell.output, proxy) : undefined,
+        sandboxHint: sandbox ? () => sandboxOutputHint(sandbox, shell.output, proxy, shell.exitCode !== null && shell.exitCode !== 0) : undefined,
         kill: async (graceMs = KILL_GRACE_MS) => {
             const how = await stopGroup(child.pid, graceMs);
             proxy?.close();
@@ -478,8 +479,8 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
             }
         }
         const status = sh.exitCode === null ? "running" : `exited with code ${sh.exitCode}`;
-        const failedHint = sh.exitCode !== null && sh.exitCode !== 0 ? sh.sandboxHint?.() : undefined;
-        const hint = failedHint ? `\n${failedHint}` : "";
+        const outputHint = sh.sandboxed ? sh.sandboxHint?.() : undefined;
+        const hint = outputHint ? `\n${outputHint}` : "";
         return {
             content: `<status>${status}</status>\n<output>\n${truncateMiddle(fresh, MAX_OUTPUT) || "(no new output)"}\n</output>${hint}`,
             display: { summary: `${status}${fresh ? `, ${fresh.split("\n").length} new lines` : ""}`, body: fresh || undefined },
