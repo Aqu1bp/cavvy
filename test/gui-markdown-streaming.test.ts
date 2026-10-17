@@ -25,6 +25,8 @@ test("incremental Markdown agrees with a fresh parse at every streamed character
         "Before\r\n\r\n- item\r\n\r\nAfter",
         "Before\n\n---\n\nAfter with https://example.com and `inline`.",
         "Before\n\n1. ordered\n2. second\n\n    code\n\nAfter",
+        // Inline HTML carries state (e.g. an open <a>) across blank lines.
+        "prefix <a>\n\nhttps://example.com",
     ];
     for (const sample of cases) {
         const incremental = new MarkdownRenderer();
