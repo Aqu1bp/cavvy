@@ -3,7 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
-import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { planLimitKey, type AccountInfo } from "./protocol";
 import { mergeLimits } from "../backends/limits";
@@ -312,9 +312,12 @@ export class Engine {
     /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
     private cliCommandNames = new Map<string, Set<string>>();
 
+    private readonly unregisterAccountRoots: () => void;
+
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
         this.terminals = new Terminals({ graceMs: o.terminalGraceMs });
+        this.unregisterAccountRoots = registerAccountRoots(() => this.accountProjects());
     }
 
     log(msg: string) {
@@ -338,6 +341,7 @@ export class Engine {
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
         await terminalsStopped;
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
+        this.unregisterAccountRoots();
     }
 
     // -----------------------------------------------------------------------
@@ -1282,7 +1286,11 @@ export class Engine {
     private accountStatus = new Map<string, Partial<AccountInfo>>();
 
     private accountProjects(): string[] {
-        return [...this.workspaces.keys(), ...(this.o.startCwd ? [this.o.startCwd] : [])];
+        return [
+            ...this.workspaces.keys(), ...this.terminals.projectRoots(),
+            ...[...this.runtimes.values()].map((rt) => rt.toolState.cwd),
+            ...(this.o.startCwd ? [this.o.startCwd] : []),
+        ];
     }
 
     private async accountsList(provider: string, refresh = false): Promise<AccountInfo[]> {

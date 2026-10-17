@@ -22,10 +22,43 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
     const iso = isolate();
     process.env.HARNESS_HOME = join(home, ".harness");
     mkdirSync(join(home, ".git"));
-    const { addAccount, removeAccount } = await import("../src/providers/accounts");
+    const { addAccount, removeAccount, accountEnv } = await import("../src/providers/accounts");
     const { Engine } = await import("../src/server/engine");
     const client = { subs: new Set<string>(), send() {} };
     afterAll(() => iso.cleanup());
+
+    test("relative default selectors reserve home, launch cwd and every supplied project root", () => {
+        const roots = [home, join(home, "open-project")];
+        mkdirSync(roots[1]!, { recursive: true });
+        for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
+            const previous = process.env[key];
+            process.env[key] = "profile";
+            try {
+                for (const root of [process.cwd(), ...roots]) {
+                    expect(() => addAccount("claude-code", { id: "relative", name: "Relative", folder: join(root, "profile") }, roots)).toThrow(/default CLI folder/);
+                }
+                expect(accountEnv("claude-code")[key]).toBe(join(process.cwd(), "profile"));
+            } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
+        }
+    });
+
+    test("restart from another cwd cannot delete a managed folder reached by a relative selector", () => {
+        const a = addAccount("claude-code", { id: "work", name: "Work" });
+        const sentinel = join(a.folder, "sentinel"); writeFileSync(sentinel, "keep");
+        const cwd = process.cwd();
+        const elsewhere = join(home, "elsewhere"); mkdirSync(elsewhere);
+        try {
+            process.chdir(elsewhere);
+            for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
+                const previous = process.env[key];
+                process.env[key] = ".harness/accounts/claude-code/work";
+                try {
+                    expect(() => removeAccount("claude-code", a.id, a.folder)).toThrow(/default CLI folder/);
+                    expect(existsSync(sentinel)).toBe(true);
+                } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
+            }
+        } finally { process.chdir(cwd); removeAccount("claude-code", a.id, a.folder); }
+    });
 
     for (const provider of ["claude-code", "codex"]) test(`${provider}: broad home roots allow accounts but repositories and project roots remain protected`, () => {
         const previousHarness = process.env.HARNESS_HOME;

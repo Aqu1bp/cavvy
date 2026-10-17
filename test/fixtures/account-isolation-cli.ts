@@ -17,6 +17,6 @@ mkdirSync(folder, { recursive: true });
 writeFileSync(join(folder, "cli-canary"), `${provider}\n`);
 const phase = process.env.HARNESS_TEST_ISOLATION_PHASE ?? "";
 if (/^turn-.*-work$/.test(phase) || (/^login-.*-work$/.test(phase) && argv.includes("login"))) writeFileSync(join(folder, "named-account-canary"), `${provider}\n`);
-appendFileSync(process.env.HARNESS_TEST_ISOLATION_LOG!, JSON.stringify({ provider, argv, env, folder, phase: process.env.HARNESS_TEST_ISOLATION_PHASE }) + "\n");
+appendFileSync(process.env.HARNESS_TEST_ISOLATION_LOG!, JSON.stringify({ provider, argv, env, folder, intendedAccount: process.env.HARNESS_TEST_INTENDED_ACCOUNT, phase: process.env.HARNESS_TEST_ISOLATION_PHASE }) + "\n");
 process.argv = [process.execPath, import.meta.path, ...argv];
 await import(provider === "claude-code" ? "./fake-claude" : "./fake-codex");

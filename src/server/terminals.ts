@@ -168,7 +168,7 @@ export function terminalSize(cols: unknown, rows: unknown): { cols: number; rows
 }
 
 /** The environment of a shell the user runs: theirs, not the one the harness gives agent tools. */
-export function terminalEnv(): Record<string, string> {
+export function terminalEnv(inheritSelectors = true): Record<string, string> {
     const env = childEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" });
     for (const k of Object.keys(env)) if (OUTER_TERMINAL.test(k)) delete env[k];
     // Agent tools get these; a user's interactive shell keeps its own pagers and prompts.
@@ -176,6 +176,11 @@ export function terminalEnv(): Record<string, string> {
         const own = process.env[k];
         if (own === undefined) delete env[k];
         else env[k] = own;
+    }
+    if (inheritSelectors) {
+        for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
+            if (process.env[key] !== undefined) env[key] = process.env[key]!;
+        }
     }
     delete env.HARNESS;
     env.TERM_PROGRAM = "Harness";
@@ -260,8 +265,12 @@ const notOpen = () => new RpcError("That terminal is not open in this window", "
 const windowOf = (owner: Owner): string | Owner => owner.window ?? owner;
 
 export class Terminals {
+    /** Cwds of user shells, including disconnected windows, for account safety. */
+    projectRoots(): string[] { return [...this.shells.values(), ...this.stoppingShells].map((shell) => shell.cwd); }
+
     private shells = new Map<string, Shell>();
     private stopping = new Set<Promise<void>>();
+    private stoppingShells = new Set<Shell>();
 
     /** `graceMs`: how long a window's terminals wait for it to come back (tests shorten it). */
     constructor(private o: { graceMs?: number } = {}) {}
@@ -321,7 +330,7 @@ export class Terminals {
         } });
         let proc: ReturnType<typeof Bun.spawn>;
         try {
-            proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(), ...opts.command.env } : terminalEnv(), terminal, detached: true });
+            proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(false), ...opts.command.env } : terminalEnv(), terminal, detached: true });
         } catch (e) {
             terminal.close();
             throw e;
@@ -494,7 +503,11 @@ export class Terminals {
         if (s.expires) clearTimeout(s.expires);
         s.typist?.cancel();
         if (s.exitCode !== undefined) return;
-        const cleanup = this.terminate(s).finally(() => this.stopping.delete(cleanup));
+        this.stoppingShells.add(s);
+        const cleanup = this.terminate(s).finally(() => {
+            this.stopping.delete(cleanup);
+            this.stoppingShells.delete(s);
+        });
         this.stopping.add(cleanup);
     }
 

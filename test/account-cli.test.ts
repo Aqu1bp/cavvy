@@ -1,6 +1,6 @@
 // Fake CLIs only: account selection must never become the environment of tools or hooks.
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
@@ -11,7 +11,7 @@ const { claudePermissions } = await import("../src/backends/claude-code");
 const { childEnv } = await import("../src/util/env");
 const { runShell } = await import("../src/tools/bash");
 const { runHooks } = await import("../src/agent/hooks");
-const root = tempDir("account-cli-");
+const root = realpathSync(tempDir("account-cli-"));
 const log = join(root, "starts.jsonl");
 const originalClaude = process.env.CLAUDE_CONFIG_DIR;
 const originalCodex = process.env.CODEX_HOME;
@@ -210,4 +210,47 @@ test("Codex fails closed if it cannot apply account protections, even with deleg
     const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
     expect(received.filter((message) => message.method === "thread/start")).toHaveLength(1);
     expect(received.some((message) => message.method === "turn/start")).toBe(false);
+});
+
+
+test("invalid persisted named folders fail before login, status or model spawns", async () => {
+    const { accountEnv } = await import("../src/providers/accounts");
+    const { readAgentConfig } = await import("../src/providers/registry");
+    const { loginCommand } = await import("../src/backends/account-login");
+    for (const provider of ["claude-code", "codex"]) {
+        for (const invalid of ["", "relative", "..", `${root}/../escape`]) {
+            saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder: invalid, managed: false }], defaultAccount: "personal" });
+            try {
+                expect(() => readAgentConfig(provider)).toThrow(/Invalid account folder.*absolute/);
+                expect(() => accountEnv(provider, "personal")).toThrow(/Invalid account folder/);
+                expect(() => loginCommand(provider, "personal")).toThrow(/Invalid account folder/);
+                await expect(checkAgentCli(provider, undefined, "personal")).rejects.toThrow(/Invalid account folder/);
+                await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/Invalid account folder/);
+                expect(existsSync(log)).toBe(false);
+            } finally { saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder, managed: false }], defaultAccount: "default" }); }
+        }
+    }
+});
+
+test("persisted aliases are checked against Default and launch with the canonical validated path", async () => {
+    const { accountEnv } = await import("../src/providers/accounts");
+    const alias = join(root, "alias");
+    mkdirSync(folder, { recursive: true });
+    for (const provider of ["claude-code", "codex"]) {
+        const defaultFolder = provider === "codex" ? originalCodex! : originalClaude!;
+        for (const target of [defaultFolder, folder]) {
+            symlinkSync(target, alias);
+            saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder: alias, managed: false }] });
+            try {
+                if (target === defaultFolder) {
+                    expect(() => accountEnv(provider, "personal")).toThrow(/default CLI folder/);
+                    await expect(checkAgentCli(provider, undefined, "personal")).rejects.toThrow(/default CLI folder/);
+                    expect(existsSync(log)).toBe(false);
+                } else {
+                    const env = accountEnv(provider, "personal");
+                    expect(Object.values(env).every((v) => v === realpathSync(folder))).toBe(true);
+                }
+            } finally { rmSync(alias); saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder, managed: false }] }); }
+        }
+    }
 });

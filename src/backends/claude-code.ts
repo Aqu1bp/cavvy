@@ -671,7 +671,7 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId) });
+        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
             this.reason = "error";
