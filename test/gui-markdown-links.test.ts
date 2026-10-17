@@ -214,36 +214,40 @@ describe("re-rendering as answers arrive", () => {
 });
 
 describe("images", () => {
-    const IMAGES = new Set(["mock.png", "/Users/me/proj/shot.png"]);
-    const withImages = (p: string) => (IMAGES.has(p) ? (p.startsWith("/") ? p : `${ROOT}/${p}`) : lookup(p));
-
-    test("a known file in the session is an image with no src: the caller fills it in", () => {
-        const { html } = render("![the mockup](mock.png)", withImages);
-        expect(html).toContain(`<img class="md-img" data-image-file="${ROOT}/mock.png" alt="the mockup"`);
+    test("a local path, anywhere, is an image with no src: the caller fills it in from the server", () => {
+        const { html, pending } = render("![the mockup](/tmp/mp-preview/preview.png)");
+        expect(html).toContain(`<img class="md-img" data-image-file="/tmp/mp-preview/preview.png" alt="the mockup"`);
         expect(html).not.toContain("src=");
-        expect(render("![](file:///Users/me/proj/shot.png)", withImages).html).toContain(`data-image-file="/Users/me/proj/shot.png"`);
+        // No lookup first: the server resolves it (a relative path against the session's folder) and checks it's an image.
+        expect(pending).toEqual([]);
+        expect(render("![](mock.png)").html).toContain(`data-image-file="mock.png"`);
+        expect(render("![](~/Pictures/shot.png)").html).toContain(`data-image-file="~/Pictures/shot.png"`);
+        expect(render("![](file:///Users/me/proj/shot.png)").html).toContain(`data-image-file="/Users/me/proj/shot.png"`);
     });
 
-    test("an unknown path is a label until it's known, and is asked about", () => {
-        const r = render("![preview](other.png)", withImages);
-        expect(r.html).toContain(`<span class="md-image">preview</span>`);
-        expect(r.pending).toEqual(["other.png"]);
-        expect(render("![preview](missing/x.png)", withImages).html).toContain(`<span class="md-image">preview</span>`);
-    });
-
-    test("remote images are never loaded, and nothing is shown without a session", () => {
-        const remote = render("![x](https://example.com/a.png)", withImages).html;
+    test("remote and data: images are never loaded, and nothing is shown without a session", () => {
+        const remote = render("![x](https://example.com/a.png)").html;
         expect(remote).not.toContain("<img");
         expect(remote).toContain(`class="md-image" href="https://example.com/a.png" data-external="1"`);
+        expect(render("![x](//example.com/a.png)").html).not.toContain("<img");
+        expect(render("![x](data:image/png;base64,AAAA)").html).not.toContain("<img");
+        expect(render("![x](file://evil.example/a.png)").html).not.toContain("<img");
         expect(render("![x](mock.png)", null).html).not.toContain("<img");
     });
 
     test("an image inside a link stays a label (no links inside links)", () => {
-        expect(render("[![x](mock.png)](https://example.com)", withImages).html).not.toContain("<img");
+        expect(render("[![x](mock.png)](https://example.com)").html).not.toContain("<img");
     });
 
     test("alt text and paths are escaped", () => {
-        const html = render(`![a"><script>](mock.png)`, withImages).html;
+        const html = render(`![a"><script>](</tmp/a"onerror="x.png>)`).html;
+        expect(html).toContain(`<img class="md-img" data-image-file="/tmp/a&quot;onerror=&quot;x.png" alt="a&quot;&gt;&lt;script&gt;"`);
         expect(html).not.toContain("<script>");
+        expect(html).not.toMatch(/ onerror=/);
+    });
+
+    test("~ and :line suffixes: the path goes to the server as written, the position dropped", () => {
+        expect(render("![](~/shots/a.png)").html).toContain(`data-image-file="~/shots/a.png"`);
+        expect(render("![](shots/a.png:12)").html).toContain(`data-image-file="shots/a.png"`);
     });
 });

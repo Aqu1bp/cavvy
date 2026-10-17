@@ -1289,7 +1289,7 @@ export interface Methods {
     "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
-    /** A PNG, JPEG, GIF or WebP file inside the session's folders (judged by its bytes), for showing an image the model's reply names. */
+    /** A PNG, JPEG, GIF or WebP file anywhere on this machine (judged by its bytes; a relative path is the session's), for showing an image the model's reply names. */
     "fs.image": { params: { sessionId?: string; cwd?: string; path: string }; result: { mediaType: string; data: string } };
     /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
     "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };

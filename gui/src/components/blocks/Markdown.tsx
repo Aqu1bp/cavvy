@@ -25,8 +25,8 @@ export function onLinkClick(e: MouseEvent) {
 }
 
 /**
- * Fills in the images lib/markdown.ts left without a src: files in the
- * session's folders, read by the server. One the server refused becomes its
+ * Fills in the images lib/markdown.ts left without a src: local files, read
+ * and checked by the server. One the server refused becomes its
  * label; one cut off by a disconnect is asked again once it's back.
  */
 function loadImages(root: HTMLElement, load: (path: string) => Promise<string>) {

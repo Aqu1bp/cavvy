@@ -4,9 +4,10 @@
 //   raw HTML is shown as text, links only open http(s)/mailto (and only through
 //   the app, never navigating the window), and remote images are never
 //   loaded: an image URL is a way to send data out the moment it's displayed.
-//   An image that's a file in the session's folders is shown: the element
-//   carries no src, only data-image-file, and the caller fills it in with the
-//   file's bytes from the server (which checks they're an image).
+//   A local image file is shown (wherever it is: mockups often live in /tmp):
+//   the element carries no src, only data-image-file with the path as
+//   written, and the caller fills it in with the file's bytes from the server
+//   (which resolves it against the session's folder and checks it's an image).
 //
 // Speed: while a reply streams, it's split into top-level blocks and each
 //   finished block's HTML is cached by its source, so only the block still
@@ -183,9 +184,9 @@ md.use({
             const url = safeHref(href);
             const label = escapeHtml(text || "image");
             if (url) return `<a class="md-image" href="${escapeHtml(url)}" data-external="1" title="Images aren't loaded automatically. Open ${escapeHtml(url)}">${label}</a>`;
-            const ref = hrefPath(href);
-            const abs = ref && knownFile(ref);
-            return abs ? `<img class="md-img" data-image-file="${escapeHtml(abs)}" alt="${label}" title="${escapeHtml(abs)}">` : `<span class="md-image">${label}</span>`;
+            // Only with a session to read it from, and never inside a link (no links inside links).
+            const ref = ctx && !ctx.inLink ? hrefPath(href) : undefined;
+            return ref ? `<img class="md-img" data-image-file="${escapeHtml(ref.path)}" alt="${label}" title="${escapeHtml(ref.path)}">` : `<span class="md-image">${label}</span>`;
         },
         code({ text, lang }: Tokens.Code) {
             return `<pre class="md-pre"><code${lang ? ` data-lang="${escapeHtml(lang)}"` : ""}>${escapeHtml(text)}</code></pre>`;
