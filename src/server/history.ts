@@ -96,7 +96,7 @@ export interface UiState {
 export type AgentHead = { [K in keyof Omit<AgentRun, "blocks">]?: AgentRun[K] | null };
 
 export type UiRecord =
-    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; at?: number }
+    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
     /** A turn's start (no `end`) begins its record afresh; its end adds to it, and so does its prompt's promptKey once that's in the history. */
     | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus; prompt?: string }
     | { t: "pending-turn"; text: string; at: number }
@@ -631,7 +631,7 @@ function restoredBlock(b: Block, o: ReplayInput): Block {
 
 /** A call that was still open when the log last saw it: nothing runs after a reopen. */
 function ended<B extends Block>(b: B): B {
-    return b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "awaiting") ? { ...b, status: "error" } : b;
+    return b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "queued" || b.status === "awaiting") ? { ...b, status: "error" } : b;
 }
 
 function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
@@ -644,6 +644,7 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (rec?.approval) b.approval = rec.approval;
     if (rec?.sandboxed !== undefined) b.sandboxed = rec.sandboxed;
     if (p.images?.length || rec?.images) b.images = p.images?.length ?? rec?.images;
+    if (rec?.job) b.job = rec.job;
 }
 
 /** A one-line summary for a result the GUI didn't see happen (sessions from the terminal). */

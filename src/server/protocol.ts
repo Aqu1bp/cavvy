@@ -94,7 +94,8 @@ export interface FileDiff {
 // Timeline: a session as the GUI draws it. Built live from agent events and
 // rebuilt from the saved transcript on open, in the same shape.
 
-export type ToolStatus = "streaming" | "running" | "awaiting" | "ok" | "error" | "denied";
+/** "queued": the call has fully arrived and waits for another call in its response to finish before it runs. */
+export type ToolStatus = "streaming" | "queued" | "running" | "awaiting" | "ok" | "error" | "denied";
 
 export interface TextBlock {
     t: "text";
@@ -136,6 +137,8 @@ export interface ToolBlock {
     progress?: string;
     /** Characters of input received while the model writes the call. */
     receiving?: number;
+    /** The background shell a BashOutput or KillShell call is about: what it runs, and since when. */
+    job?: { label: string; startedAt: number };
     startedAt?: number;
     durationMs?: number;
     /** Who approved it without asking: "sandboxed", "hook", or the auto-mode reviewer's reason. */

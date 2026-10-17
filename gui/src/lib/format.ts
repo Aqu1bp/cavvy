@@ -14,6 +14,15 @@ export function clock(ms: number): string {
 
 export { duration, turnDuration } from "../../../src/server/duration";
 
+/** A command that only waits (`sleep 240`, `sleep 4m; echo done`): how long, in seconds. */
+export function sleepSeconds(command: unknown): number | undefined {
+    if (typeof command !== "string") return undefined;
+    const m = /^\s*sleep\s+(\d+(?:\.\d+)?)([smh]?)\s*(?:(?:;|&&)\s*echo(?:\s+[\w .,:!-]*)?)?\s*;?\s*$/.exec(command);
+    if (!m) return undefined;
+    const s = Number(m[1]) * (m[2] === "h" ? 3600 : m[2] === "m" ? 60 : 1);
+    return s > 0 ? s : undefined;
+}
+
 export function tokens(n: number): string {
     if (n < 1000) return String(n);
     if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;

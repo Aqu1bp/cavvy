@@ -16,6 +16,7 @@
 //   "emptyreply"     a response with no text and no tool calls
 //   "untitled"       the request for the session's title is refused (HTTP 400)
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
+//   "waitcheck"      starts a background command, then waits and checks it in one response
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -182,6 +183,13 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         const todos = (done: number) => ["Read the auth module", "Add the SSO strategy", "Run the tests"].map((content, i) => ({ content, status: i < done ? "completed" : i === done ? "in_progress" : "pending", activeForm: content.replace(/^(\w+)/, (w) => `${w}ing`.replace("eing", "ing")) }));
         if (toolRounds < 3) return { text: toolRounds === 0 ? "I'll track this as a short list." : undefined, calls: [{ name: "TodoWrite", args: { todos: todos(toolRounds) } }] };
         return { text: "All three steps are done." };
+    }
+    // Starts a background command, then waits a moment and checks it in one response (the check queues behind the wait).
+    if (/\bwaitcheck\b/.test(p)) {
+        if (toolRounds === 0) return { text: "Starting it.", calls: [{ name: "Bash", args: { command: "sleep 2", description: "Run the slow suite", run_in_background: true } }] };
+        const shell = /bash_\d+/.exec(lastResult)?.[0];
+        if (toolRounds === 1 && shell) return { calls: [{ name: "Bash", args: { command: "sleep 1; echo done", description: "Wait for it" } }, { name: "BashOutput", args: { bash_id: shell } }] };
+        return { text: "Done." };
     }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };

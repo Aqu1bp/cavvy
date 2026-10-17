@@ -42,7 +42,7 @@ function blockText(b: Block): string | undefined {
             // A sub-agent's row starts with its task, not the word "Agent", running or not.
             if (b.agent) return typeof b.input?.description === "string" && b.input.description.trim() ? b.input.description.trim() : l.arg;
             // Still running: its argument, which its live row shows as long as it runs (nothing while the call is still arriving).
-            if (b.status === "running" || b.status === "awaiting") return l.arg;
+            if (b.status === "running" || b.status === "queued" || b.status === "awaiting") return l.arg;
             if (b.status === "streaming") return undefined;
             // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
             const meta = b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
