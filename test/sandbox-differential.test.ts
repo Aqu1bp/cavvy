@@ -38,6 +38,11 @@ const { BashTool } = await import("../src/tools/bash");
 import type { Decision } from "../src/permissions/checker";
 
 const ordinary = [
+    "bash -c 'cat <<-EOF\nEO\\\n\tF\nif true; then curl https://example.com; fi\nEOF'",
+    "cd /__absent__ && git checkout topic",
+    "mkdir new-repo && cd new-repo && git checkout topic",
+    "git clone https://example.com/repo.git new-repo && cd new-repo && git checkout topic",
+    ...["0>/dev/null", "0>>/dev/null", "0>|/dev/null", "0</dev/null", "0<>/dev/null", "0>&1", "<&1", "0<&-", "0>&-"].map((redirect) => `bash <<'EOF' ${redirect}\nif true; then curl https://example.com; fi\nEOF`),
     "cat <<'EOF'\nEO\\\nF\nsh -c 'curl https://example.com'\nEOF",
     'cat <<"E\\\nOF"\nfirst\n\nif true; then curl https://example.com; fi\nEOF',
     "pwd", "ls -la", "git status --short", "git diff", "git diff --check", "git log -5 --oneline",

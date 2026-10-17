@@ -32,6 +32,9 @@ describe("failed directory changes", () => {
         "while false; do cd /__missing_dir__; done; eval 'git checkout README.md'",
         "cd README.md; sh -c 'git checkout README.md'",
         "cd /__missing_dir__; cd sub; sh -c 'git checkout README.md'",
+        "cd /__missing_dir__ && true; sh -c 'git checkout README.md'",
+        "cd /__missing_dir__ && cd sub; sh -c 'git checkout README.md'",
+        "cd /__missing_dir__ || sh -c 'git checkout README.md'",
     ])("retains destructive protection: %s", (cmd) => {
         expect(commandsWithDirs(cmd, ws).some((c) => c.argv[0] === "git" && c.dir === null)).toBe(true);
         expect(looksDestructive(cmd, ws)).toBe("git checkout (discards changes)");
@@ -47,6 +50,11 @@ describe("failed directory changes", () => {
         expect(pushesDefaultBranch("cd /__missing_dir__; sh -c 'git push'", ws)).toBeDefined();
         expect(accessNeeded("cd /__missing_dir__; sh -c 'npx jest'", ws).network).toBe("npx");
     });
+    test.each([
+        "cd /__absent__ && git checkout topic",
+        "mkdir new-repo && cd new-repo && git checkout topic",
+        "cd new-repo && cd sub && git checkout topic",
+    ])("success-guarded cd retains its target: %s", ordinary);
 });
 
 describe("heredoc executable view", () => {
@@ -100,6 +108,23 @@ describe("heredoc executable view", () => {
     test("unquoted data joins escaped newlines before matching the delimiter", () => {
         expect(accessNeeded('cat <<EOF\nEO\\\nF\nsh -c "curl https://example.com"', ws)).toEqual({ network: "curl" });
         ordinary("cat <<'EOF'\nEO\\\nF\nsh -c 'curl https://example.com'\nEOF");
+    });
+    test.each(["EOF", "'EOF'", '"EOF"'])("joins before stripping tabs only for an unquoted delimiter: %s", (delimiter) => {
+        const cmd = `cat <<-${delimiter}\n\tEO\\\n\tF\nif true; then curl https://example.com; fi\nEOF`;
+        const data = (delimiter === "EOF" ? "EO\tF\n" : "EO\\\nF\n") + "if true; then curl https://example.com; fi\n";
+        expect(analyzeCommand(cmd, true).commands[0]?.stdinScripts).toEqual([data]);
+        ordinary("bash -c " + shellWord(cmd));
+    });
+    test("joined unquoted delimiter still ends a tab-stripped heredoc", () => {
+        expect(accessNeeded("cat <<-EOF\n\tEO\\\nF\nif true; then curl https://example.com; fi", ws)).toEqual({ network: "curl" });
+    });
+    test.each(["0>/dev/null", "0>>/dev/null", "0>|/dev/null", "0</dev/null", "0<>/dev/null", "0>&1", "<&1", "0<&-", "0>&-"])("stdin redirections apply left to right: %s", (redirect) => {
+        const data = "\nif true; then curl https://example.com; fi\nEOF";
+        ordinary(`bash <<'EOF' ${redirect}` + data);
+        expect(accessNeeded(`bash ${redirect} <<'EOF'` + data, ws)).toEqual({ network: "curl" });
+    });
+    test.each([">/dev/null", "2>/dev/null", "3>/dev/null", "0>&0", "0<&0", "0>&'0'", '0>&"0"', "0>&\\0", "0>&$FD", "3<&0 0>/dev/null 0<&3", '3<&0 0>/dev/null 0<&"3"'])("redirections retain live heredoc input: %s", (redirect) => {
+        expect(accessNeeded(`bash <<'EOF' ${redirect}\nif true; then curl https://example.com; fi\nEOF`, ws)).toEqual({ network: "curl" });
     });
     test("quoted delimiter continuations preserve data boundaries", () => {
         const prefix = 'cat <<"E\\\nOF"\nfirst\n';

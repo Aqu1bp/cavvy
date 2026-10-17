@@ -107,6 +107,7 @@ function plainBraceParam(cmd: string, i: number): boolean {
 export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis {
     const pending: { delimiter: string; tabs: boolean; quoted: boolean; scripts: string[] }[] = [];
     let stdinScripts: string[] = [];
+    const fdScripts = new Map<number, string[]>();
     const consumeHeredocs = (start: number): number => {
         let pos = start;
         for (const doc of pending) {
@@ -121,12 +122,12 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
                     const line = cmd.slice(pos, end < 0 ? cmd.length : end);
                     pos = end < 0 ? cmd.length : end + 1;
                     newline = end >= 0;
-                    const part = doc.tabs ? line.replace(/^\t+/, "") : line;
-                    const slashes = part.match(/\\+$/)?.[0].length ?? 0;
-                    if (!doc.quoted && newline && slashes % 2) { value += part.slice(0, -1); continue; }
-                    value += part;
+                    const slashes = line.match(/\\+$/)?.[0].length ?? 0;
+                    if (!doc.quoted && newline && slashes % 2) { value += line.slice(0, -1); continue; }
+                    value += line;
                     break;
                 }
+                if (doc.tabs) value = value.replace(/^\t+/, "");
                 if (value === doc.delimiter) break;
                 data += value + (newline ? "\n" : "");
             }
@@ -203,6 +204,7 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
         globbed = [];
         argv = [];
         stdinScripts = [];
+        fdScripts.clear();
         spans = [];
         text = "";
         redirectMayFail = false;
@@ -320,10 +322,9 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             continue;
         }
         if (c === ">" || c === "<") {
-            const inputFd = /^\d+$/.test(word) && !wordQuoted ? word : "0";
+            const redirectFd = /^\d+$/.test(word) && !wordQuoted ? Number(word) : c === "<" ? 0 : 1;
             // Only the last redirection of stdin supplies the interpreter's input.
             // Other descriptors and superseded heredocs still have data to skip.
-            if (discovery && c === "<" && inputFd === "0") stdinScripts = [];
             // `2>`, `2>>`, `0<`: an unquoted digit right before the operator is the fd, not an argument.
             // Only one digit: zsh passes `10>x`'s 10 to the command (bash takes it as fd 10).
             if (/^\d$/.test(word) && !wordQuoted) {
@@ -337,6 +338,31 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
                 redirectMayFail = true;
                 if (n === "<" && cmd[i - 1] !== "<" && cmd[i + 2] !== "<") heredoc = true;
             }
+            if (discovery) {
+                let j = i + 1;
+                if (n === ">" || n === "|" || n === "&") j++;
+                while (cmd[j] === " " || cmd[j] === "\t") j++;
+                const raw = cmd.slice(j).match(/^(?:"[^"\\]*(?:\\[\s\S][^"\\]*)*"|'[^']*'|\\[\s\S]|[^ \t\n;|&<>"'\\])+/)?.[0] ?? "";
+                const target = n === "&" ? analyzeCommand(raw) : undefined;
+                const unknown = target && (target.hasSubstitution || target.unsafeExpansion || target.commands[0]?.expands?.length);
+                const operand = target?.commands[0]?.argv[0];
+                const copy = !unknown && operand ? /^(\d+)(-?)$/.exec(operand) : null;
+                // Descriptor copies retain the same pending heredoc, including
+                // self-copies and input saved on another fd and restored later.
+                // An expanded descriptor may be a self-copy; don't discard its
+                // existing script when we cannot settle the source descriptor.
+                const scripts = copy ? fdScripts.get(Number(copy[1])) ?? [] : unknown ? fdScripts.get(redirectFd) ?? [] : [];
+                fdScripts.set(redirectFd, scripts);
+                if (copy?.[2]) fdScripts.delete(Number(copy[1]));
+                stdinScripts = fdScripts.get(0) ?? [];
+                if ((c === "<" && n !== "<") || (n === "&" && (copy || unknown || operand === "-"))) {
+                    // Input operands are redirection targets, not shell script
+                    // arguments. Consume them before considering a later heredoc.
+                    text += cmd.slice(i, j + raw.length);
+                    i = j + raw.length - 1;
+                    continue;
+                }
+            }
             if (discovery && c === "<" && n === "<") {
                 const hereString = cmd[i + 2] === "<";
                 const tabs = !hereString && cmd[i + 2] === "-";
@@ -344,7 +370,7 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
                 while (cmd[j] === " " || cmd[j] === "\t" || (cmd[j] === "\\" && cmd[j + 1] === "\n")) j += cmd[j] === "\\" ? 2 : 1;
                 const raw = cmd.slice(j).match(/^(?:"[^"\\]*(?:\\[\s\S][^"\\]*)*"|'[^']*'|\\[\s\S]|[^ \t\n;|&<>"'\\])+/)?.[0] ?? "";
                 const value = analyzeCommand(raw).commands[0]?.argv[0] ?? "";
-                const scripts = inputFd === "0" ? stdinScripts : [];
+                const scripts = fdScripts.get(redirectFd)!;
                 if (hereString) scripts.push(value + "\n");
                 else pending.push({ delimiter: value, tabs, quoted: /['"\\]/.test(raw.replace(/\\\n/g, "")), scripts });
                 text += cmd.slice(i, j + raw.length);
@@ -2102,7 +2128,12 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined, legacyDes
         const children: [string, string | null | undefined, number][] = [];
         const collect = (commands: SimpleCommand[], supplemental: boolean) => {
             let dir = initial;
+            let guardedDir = false;
             for (const [index, c] of commands.entries()) {
+                // Within an && chain, reaching the next command proves cd
+                // succeeded (an earlier mkdir/clone may create its target).
+                // Outside that chain it may have failed, leaving the old cwd.
+                if (guardedDir && c.after !== "&&") { dir = null; guardedDir = false; }
                 if (supplemental && uncertain && index === body.compoundAt) dir = null;
                 if (supplemental && !legacyDestructive && --budget.commands < 0) { budget.exhausted = true; return; }
                 const argv = effectiveArgv(c.argv);
@@ -2112,8 +2143,8 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined, legacyDes
                     if (dir !== undefined) {
                         dir = dir === null || to === undefined ? null : resolve(dir, to);
                         if (supplemental && !legacyDestructive && dir !== null) {
-                            try { if (!statSync(dir).isDirectory()) dir = null; }
-                            catch { dir = null; }
+                            try { if (!statSync(dir).isDirectory()) guardedDir = true; }
+                            catch { guardedDir = true; }
                         }
                     }
                     continue;
