@@ -1,4 +1,5 @@
 import { open, opendir, realpath, stat } from "fs/promises";
+import { createHash } from "crypto";
 import { join, resolve } from "path";
 import { paths } from "../config/paths";
 import { listAccounts } from "../providers/accounts";
@@ -9,12 +10,13 @@ export const usageBounds = { maxFiles: 5000, maxBytes: 512 * 1024 * 1024, maxMs:
 export type Source = "claude-code" | "codex" | "api";
 export interface UsageRecord {
     at: number; approx: boolean; model: string; usage: Usage; cost: number; unknown: boolean;
-    session: string; dedupe?: string;
+    session: string; dedupe?: string; serviceTier?: string;
 }
 interface File { file: string; source: Source; account: string; size: number; mtimeMs: number; ino: number; dev: number }
-interface State { model: string; session: string; total?: number[]; signature?: string; undated: number[]; sawMeta?: boolean; forkAnchor?: number; fast?: boolean }
-interface Cached { file: File; offset: number; guard: Buffer; state: State; records: UsageRecord[] }
+interface State { model: string; session: string; total?: number[]; signature?: string; undated: number[]; sawMeta?: boolean; forkAnchor?: number; serviceTier?: string; unmodeled?: UsageRecord[] }
+interface Cached { file: File; offset: number; guard: { digest: string; length: number }; state: State; records: UsageRecord[] }
 const cache = new Map<string, Cached>();
+const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const n = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 const str = (v: unknown) => typeof v === "string" ? v.slice(0, 300) : "";
 function timestamp(v: unknown): number { return typeof v === "number" ? n(v) : typeof v === "string" ? n(Date.parse(v)) : 0; }
@@ -51,10 +53,16 @@ function parse(l: any, f: File, s: State): UsageRecord | undefined {
             }
             return;
         }
-        if (l.type === "turn_context") { s.model = str(p.model); return; }
-        if (p.type === "thread_settings_applied") { s.fast = ["fast", "priority"].includes(p.thread_settings?.service_tier); return; }
+        if (l.type === "turn_context" || p.type === "token_count") {
+            s.model = str(p.model) || s.model;
+            if (s.model && s.unmodeled) {
+                for (const r of s.unmodeled) r.model = `codex:${s.model}`;
+                s.unmodeled = undefined;
+            }
+        }
+        if (l.type === "turn_context") return;
+        if (p.type === "thread_settings_applied") { s.serviceTier = str(p.thread_settings?.service_tier); return; }
         if (p.type !== "token_count" || !p.info) return;
-        s.model = str(p.model) || s.model;
         const info = p.info;
         const counts = (v: any) => [n(v.input_tokens), n(v.cached_input_tokens ?? v.cache_read_input_tokens), n(v.cache_write_input_tokens), n(v.output_tokens)];
         let delta: number[];
@@ -84,10 +92,58 @@ function parse(l: any, f: File, s: State): UsageRecord | undefined {
         }
         if (!delta.some(v => v > 0)) return;
         const [input = 0, read = 0, write = 0, output = 0] = delta;
-        usage = { inputTokens: Math.max(0, input - read - write), cacheReadTokens: read, cacheWriteTokens: write, outputTokens: output, fastMode: s.fast, billing: "plan" };
+        usage = { inputTokens: Math.max(0, input - read - write), cacheReadTokens: read, cacheWriteTokens: write, outputTokens: output, fastMode: ["fast", "priority"].includes(s.serviceTier ?? ""), billing: "plan" };
         model = `codex:${s.model || "unknown"}`;
+        unknown = s.serviceTier === "ultrafast";
     }
-    return { at: at || f.mtimeMs, approx: !at, model, usage, cost, unknown, session: s.session || f.file, dedupe };
+    const record = { at: at || f.mtimeMs, approx: !at, model, usage, cost, unknown, session: s.session || f.file, dedupe,
+        ...(f.source === "codex" ? { serviceTier: s.serviceTier } : {}) };
+    // Keep unknown usage visible, and resolve it even if context arrives on a later append.
+    if (f.source === "codex" && !s.model) (s.unmodeled ??= []).push(record);
+    return record;
+}
+
+type Root = { root: string; source: Source; account: string };
+type DiscoveryItem = File | string | undefined;
+let discovery: { key: string; since: number; walker: AsyncGenerator<DiscoveryItem>; files: Map<string, File>; missing: Set<string>; done: boolean } | undefined;
+async function* discover(roots: Root[]): AsyncGenerator<DiscoveryItem> {
+    const seenRoots = new Set<string>();
+    const seenFiles = new Set<string>();
+    async function* walk(dir: string, source: Source, account: string, depth = 0): AsyncGenerator<DiscoveryItem> {
+        if (depth > 32) { yield "Some transcript folders exceeded the scan depth limit."; return; }
+        try {
+            const entries = await opendir(dir);
+            for await (const e of entries) {
+                const file = join(dir, e.name);
+                if (e.isDirectory()) { yield undefined; yield* walk(file, source, account, depth + 1); }
+                else if (e.isFile() && e.name.endsWith(".jsonl") && (source !== "codex" || e.name.startsWith("rollout-"))) {
+                    if (seenFiles.has(file)) { yield undefined; continue; }
+                    seenFiles.add(file);
+                    const st = await stat(file);
+                    yield { file, source, account, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, dev: st.dev };
+                } else yield undefined;
+            }
+        } catch (e: any) { if (e.code !== "ENOENT") yield "Some transcript files or folders could not be read."; }
+    }
+    const walkers: AsyncGenerator<DiscoveryItem>[] = [];
+    try {
+        for (const r of roots) {
+            try {
+                const root = await realpath(resolve(r.root));
+                if (!seenRoots.has(root)) { seenRoots.add(root); walkers.push(walk(root, r.source, r.account)); }
+            } catch (e: any) { if (e.code !== "ENOENT") yield "Some transcript folders could not be read."; }
+            yield undefined;
+        }
+        // Interleave roots, including skipped entries, so each CLI gets a turn.
+        while (walkers.length) {
+            for (let i = 0; i < walkers.length;) {
+                const next = await walkers[i]!.next();
+                if (next.done) { walkers.splice(i, 1); continue; }
+                i++;
+                yield next.value;
+            }
+        }
+    } finally { for (const walker of walkers) await walker.return(undefined); }
 }
 
 /** Scans are serialized: two refreshes cannot mutate one file's reducer at once. */
@@ -104,62 +160,44 @@ async function scan(since: number) {
         if (Date.now() - start > usageBounds.maxMs) return truncated ??= "Reading the sessions took too long; earlier ones are left out.";
         if (bytes >= usageBounds.maxBytes) return truncated ??= "There was too much to read; earlier sessions are left out.";
     };
-    const files: File[] = [];
     const roots = [{ root: paths.projectsDir(), source: "api" as Source, account: "default" }, ...(["claude-code", "codex"] as const).flatMap(source => listAccounts(source).flatMap(a => (source === "codex" ? ["sessions", "archived_sessions"] : ["projects"]).map(sub => ({ root: join(a.folder, sub), source, account: a.id }))))];
-    const seenRoots = new Set<string>();
-    const seenFiles = new Set<string>();
-    async function* walk(dir: string, source: Source, account: string, depth = 0): AsyncGenerator<File | undefined> {
-        if (spent()) return;
-        if (depth > 32) { truncated ??= "Some transcript folders exceeded the scan depth limit."; return; }
-        try {
-            const entries = await opendir(dir);
-            for await (const e of entries) {
-                if (spent()) break;
-                const file = join(dir, e.name);
-                if (e.isDirectory()) { yield undefined; yield* walk(file, source, account, depth + 1); }
-                else if (e.isFile() && e.name.endsWith(".jsonl") && (source !== "codex" || e.name.startsWith("rollout-"))) {
-                    if (seenFiles.has(file)) { yield undefined; continue; }
-                    seenFiles.add(file);
-                    const st = await stat(file);
-                    // No record can normally be newer than its file's write.
-                    // Old history must not consume the current range's file budget.
-                    yield st.mtimeMs >= since ? { file, source, account, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, dev: st.dev } : undefined;
-                } else yield undefined;
-            }
-        } catch (e: any) { if (e.code !== "ENOENT") truncated ??= "Some transcript files or folders could not be read."; }
+    const key = JSON.stringify(roots);
+    if (!discovery || discovery.key !== key || since < discovery.since) {
+        if (discovery) await discovery.walker.return(undefined);
+        discovery = { key, since, walker: discover(roots), files: new Map(), missing: new Set(cache.keys()), done: false };
     }
-    const walkers: AsyncGenerator<File | undefined>[] = [];
-    for (const r of roots) {
-        if (spent()) break;
-        let root: string;
-        try { root = await realpath(resolve(r.root)); } catch (e: any) {
-            if (e.code !== "ENOENT") truncated ??= "Some transcript folders could not be read.";
-            continue;
+    const fresh = new Set<string>();
+    // Reserve half the time for reading. A paused iterator resumes next refresh.
+    while (!discovery.done && Date.now() - start <= usageBounds.maxMs / 2) {
+        const next = await discovery.walker.next();
+        if (next.done) { discovery.done = true; break; }
+        const f = next.value;
+        if (typeof f === "string") truncated ??= f;
+        else if (f) {
+            discovery.missing.delete(f.file);
+            fresh.add(f.file);
+            // Old history must not consume the current range's file budget.
+            if (f.mtimeMs >= since) discovery.files.set(f.file, f);
         }
-        if (seenRoots.has(root)) continue;
-        seenRoots.add(root);
-        walkers.push(walk(root, r.source, r.account));
+        if (discovery.files.size > usageBounds.maxFiles) { truncated ??= `Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`; break; }
     }
-    // Interleave roots, including on skipped entries. A large Harness archive
-    // cannot use the whole discovery budget before either CLI gets a turn.
-    try {
-        while (walkers.length && !spent()) {
-            for (let i = 0; i < walkers.length && !spent();) {
-                const next = await walkers[i]!.next();
-                if (next.done) { walkers.splice(i, 1); continue; }
-                i++;
-                if (next.value) files.push(next.value);
-                if (files.length > usageBounds.maxFiles) break;
-            }
-            if (files.length > usageBounds.maxFiles) { truncated ??= `Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`; break; }
-        }
-    } finally { for (const walker of walkers) await walker.return(undefined); }
-    files.sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
-    const result: { source: Source; account: string; records: UsageRecord[] }[] = [];
-    for (const f of files.slice(0, Math.max(0, usageBounds.maxFiles))) {
+    if (!discovery.done) truncated ??= "Reading the sessions took too long; earlier ones are left out.";
+    else for (const file of discovery.missing) cache.delete(file);
+    // Read pending discoveries first, using metadata already obtained this
+    // refresh. Then rotate through cached files in LRU order. Stat and read each
+    // file together so a slow metadata pass cannot starve all transcript reads.
+    const files = [...discovery.files.values()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
+    for (const [path, entry] of cache) if (entry.file.mtimeMs >= since && !discovery.files.has(path)) files.push(entry.file);
+    for (let f of files.slice(0, Math.max(0, usageBounds.maxFiles))) {
         if (spent()) break;
         let entry = cache.get(f.file);
+        if (entry) { cache.delete(f.file); cache.set(f.file, entry); }
         try {
+            if (!fresh.has(f.file)) {
+                const st = await stat(f.file);
+                f = { ...f, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, dev: st.dev };
+            }
+            if (f.mtimeMs < since) { cache.delete(f.file); discovery.files.delete(f.file); continue; }
             if (!entry || entry.file.size !== f.size || entry.file.mtimeMs !== f.mtimeMs || entry.file.ino !== f.ino || entry.file.dev !== f.dev) {
                 const fh = await open(f.file, "r");
                 try {
@@ -167,16 +205,15 @@ async function scan(since: number) {
                     if (resume && entry!.guard.length) {
                         if (usageBounds.maxBytes - bytes < entry!.guard.length) {
                             truncated ??= "There was too much to read; earlier sessions are left out.";
-                            result.push({ source: f.source, account: f.account, records: entry!.records });
                             break;
                         }
                         const guard = Buffer.alloc(entry!.guard.length);
                         const len = Math.min(guard.length, Math.max(0, usageBounds.maxBytes - bytes));
                         const read = await fh.read(guard, 0, len, entry!.offset - guard.length);
                         bytes += read.bytesRead;
-                        resume = read.bytesRead === guard.length && guard.equals(entry!.guard);
+                        resume = read.bytesRead === guard.length && digest(guard) === entry!.guard.digest;
                     }
-                    if (!resume) entry = { file: f, offset: 0, guard: Buffer.alloc(0), records: [], state: { model: "", session: "", undated: [] } };
+                    if (!resume) entry = { file: f, offset: 0, guard: { digest: "", length: 0 }, records: [], state: { model: "", session: "", undated: [] } };
                     entry = entry!;
                     // Do not mark partially read files complete; another request resumes them.
                     let pos = entry.offset, parser = new UsageJson();
@@ -205,7 +242,8 @@ async function scan(since: number) {
                             parser = new UsageJson();
                             const end = nl + 1;
                             entry.offset = pos + end;
-                            entry.guard = end >= 64 ? Buffer.from(chunk.subarray(end - 64, end)) : Buffer.concat([tail, chunk.subarray(0, end)]).subarray(-64);
+                            const guard = end >= 64 ? chunk.subarray(end - 64, end) : Buffer.concat([tail, chunk.subarray(0, end)]).subarray(-64);
+                            entry.guard = { digest: digest(guard), length: guard.length };
                             from = end;
                         }
                         parser.feed(chunk.subarray(from));
@@ -218,9 +256,20 @@ async function scan(since: number) {
             }
             cache.delete(f.file); cache.set(f.file, entry!);
             while (cache.size > Math.max(0, usageBounds.maxFiles)) cache.delete(cache.keys().next().value!);
-            result.push({ source: f.source, account: f.account, records: entry!.records });
-        } catch { truncated ??= "Some transcript files or folders could not be read."; }
+            discovery.files.delete(f.file);
+        } catch (e: any) {
+            if (e.code === "ENOENT") { cache.delete(f.file); discovery.files.delete(f.file); }
+            else truncated ??= "Some transcript files or folders could not be read.";
+        }
     }
+    // Unprocessed cached entries remain useful even after either budget expires.
+    while (discovery.files.size > Math.max(0, usageBounds.maxFiles)) discovery.files.delete(discovery.files.keys().next().value!);
+    if (discovery.done && !discovery.files.size) discovery = undefined;
+    const result = [...cache.values()].filter(e => e.file.mtimeMs >= since).map(e => ({ source: e.file.source, account: e.file.account, records: e.records }));
     return { files: result, truncated, bytesRead: bytes };
 }
-export function clearUsageCache() { cache.clear(); }
+export function clearUsageCache() {
+    cache.clear();
+    if (discovery) void discovery.walker.return(undefined);
+    discovery = undefined;
+}

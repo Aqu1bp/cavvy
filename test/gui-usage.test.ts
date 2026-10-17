@@ -114,7 +114,13 @@ test("empty state differs from partial/unknown usage; limits displays windows an
     } finally { f.dispose(); }
     const unknown = summary(); unknown.totals.unknown = true; unknown.totals.cost = 0;
     const g = mount(async () => unknown);
-    try { await tick(); expect(g.text()).toContain("unknown"); expect(g.text()).toContain("Unpriced usage is excluded"); }
+    try {
+        await tick(); expect(g.text()).toContain("unknown");
+        expect(g.text()).toContain("Unpriced usage is excluded from cost, cost shares, and cost charts. The Tokens view includes it.");
+        g.segment("Usage view").onChange("tokens"); await tick();
+        expect(g.text()).toContain("The Tokens view includes it.");
+        expect(g.text()).toContain("Processed tokens across all sources");
+    }
     finally { g.dispose(); }
 });
 

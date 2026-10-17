@@ -77,7 +77,8 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
     outer: for (const f of scan.files) {
         const source = sources.find(s => s.source === f.source)!;
         for (const r of f.records) {
-            if (++aggregated % 1000 === 0 && Date.now() - aggregationStart > 4000) { scan.truncated ??= "Aggregating the sessions took too long; some usage is left out."; break outer; }
+            if (aggregated && aggregated % 2000 === 0) await new Promise<void>(resolve => setImmediate(resolve));
+            if (aggregated++ % 1000 === 0 && Date.now() - aggregationStart > 4000) { scan.truncated ??= "Aggregating the sessions took too long; some usage is left out."; break outer; }
             if (r.at < since || r.at > now) continue;
             const session = JSON.stringify([f.source, f.account, r.session]);
             if (r.dedupe) {

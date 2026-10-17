@@ -93,7 +93,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: "cost" | "tokens
         <h3 class="sgroup">Cost by type</h3>
         <div class="usage-cost-bar" aria-hidden="true"><For each={typeParts()}>{c => <span class={`usage-type-${c.key}`} style={{ width: `${share(c.value, p.data.totals.cost)}%` }} />}</For></div>
         <ul class="usage-cost-legend"><For each={typeParts()}>{c => <li><i class={`usage-type-${c.key}`} aria-hidden="true" />{c.label} <strong>{usd(c.value)}</strong></li>}</For></ul>
-        <Show when={p.data.totals.unknown}><p class="set-note">Unpriced usage is excluded from cost, shares, and the chart. Known amounts are partial; unknown does not mean free.</p></Show>
+        <Show when={p.data.totals.unknown}><p class="set-note">Unpriced usage is excluded from cost, cost shares, and cost charts. The Tokens view includes it. Known amounts are partial; unknown does not mean free.</p></Show>
         <div class="sgroup usage-bar"><h3>Breakdown</h3><span class="spacer" /><Segmented label="Usage breakdown" size="sm" value={breakdown()} onChange={setBreakdown} options={[{ value: "model", label: "Model" }, { value: "time", label: p.data.interval === "hour" ? "Hour" : "Day" }]} /></div>
         <div class="usage-table-wrap" tabindex="0" role="region" aria-label="Usage breakdown table">
             <table class="usage-table"><caption class="sr-only">{breakdown() === "model" ? "Models" : "UTC periods"}: sessions, processed tokens and combined estimates</caption>
