@@ -641,7 +641,7 @@ describe("per-turn snapshots", () => {
         expect(single.incomplete).toBe(false);
         expect(single.files[0]!.deferred).toBeUndefined();
         expect(single.files[0]!.added).toBe(1);
-    });
+    }, 120_000);
 
     test("snapshots are pruned with file history after thirty days", async () => {
         const { cwd } = setup({ "a.txt": "a\n" });

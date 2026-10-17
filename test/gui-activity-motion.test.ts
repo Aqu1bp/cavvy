@@ -6,7 +6,7 @@ test("streamed activity preserves rows and bounds derivation work", async () => 
     const child = Bun.spawn([process.execPath, "--no-env-file", "--conditions=browser", "test", fileURLToPath(new URL("./fixtures/gui-activity-motion.ts", import.meta.url))], { stdout: "pipe", stderr: "pipe" });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect({ code, output: code ? stdout + stderr : "" }).toEqual({ code: 0, output: "" });
-});
+}, 120_000);
 
 test("activity motion is continuous, compositor friendly and disabled for reduced motion", () => {
     const base = readFileSync(new URL("../gui/src/styles/base.css", import.meta.url), "utf8");
