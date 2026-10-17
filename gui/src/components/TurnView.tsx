@@ -25,7 +25,11 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
         (k) => promptImages(k.id, k.pos, k.key).then((urls) => ({ key: k.key, urls }), () => ({ key: k.key, urls: [] as string[] })),
     );
     // Only the images the prompt has now: the last ones fetched stay while offline, never another prompt's.
-    const urls = () => (fetched()?.key === key() ? fetched()!.urls : undefined);
+    const urls = () => {
+        const f = fetched();
+        const k = key();
+        return f && k && f.key === k ? f.urls : undefined;
+    };
     const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
     return (
         <Show when={urls()?.length} fallback={<span class="chip tiny">{label()}</span>}>
