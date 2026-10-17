@@ -133,8 +133,14 @@ test.skipIf(!chrome)("find reveals live arguments and linked paths without count
             ...sandboxArgs(process.getuid?.()),
             "--disable-background-networking", `--user-data-dir=${profile}`, "--remote-debugging-port=0",
         ], { stdout: "ignore", stderr: Bun.file(join(scratch, "chrome.log")) });
-        const result = await chromeFixture(browser, profile, `http://127.0.0.1:${server.port}/test/live-find.html`, AbortSignal.timeout(30_000));
-        expect(result.status, result.message).toBe("passed");
+        try {
+            const result = await chromeFixture(browser, profile, `http://127.0.0.1:${server.port}/test/live-find.html`, AbortSignal.timeout(30_000));
+            expect(result.status, result.message).toBe("passed");
+        } catch (e) {
+            // Why Chrome didn't connect is in its own log, which cleanup deletes.
+            const log = await Bun.file(join(scratch, "chrome.log")).text().catch(() => "");
+            throw new Error(`${(e as Error).message}\nChrome's log:\n${log || "(empty)"}`, { cause: e });
+        }
     } finally {
         await cleanup(browser, server, scratch);
     }
