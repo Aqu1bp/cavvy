@@ -23,13 +23,15 @@ function fixture(count = 60) {
         id: String(i), cwd: `/p/${i % 3}`, projectName: `project-${i % 3}`, title: `Session ${i}`, createdAt: 1,
         updatedAt: 100 - i, status: "idle", messages: 2, pinned: false, settled: false, archived: false, live: true,
     })));
+    const [sessionsLoaded, setSessionsLoaded] = solid.createSignal(true);
+    const [conn, setConn] = solid.createSignal("open");
     const [archived, setArchived] = solid.createSignal<SessionSummary[]>([]);
     const [activeId, setActiveId] = solid.createSignal<string>();
     const [groupBy, setGroupBy] = solid.createSignal("date");
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [motion, setMotion] = solid.createSignal("instant");
     let reduced = false;
-    const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], conn: "open" };
+    const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); } };
     const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
     const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
@@ -81,7 +83,7 @@ function fixture(count = 60) {
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -309,3 +311,27 @@ for (const layout of ["card", "settled", "archived"] as const) {
         });
     }
 }
+
+
+test("sidebar waits for the first list and retains loaded state across reconnects", () => {
+    const f = fixture(0);
+    const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty").content;
+    try {
+        f.setSessionsLoaded(false);
+        f.setConn("connecting");
+        expect(empty()).toBe("Connecting…");
+        f.setConn("open");
+        expect(empty()).toBe("Loading sessions…");
+        f.nodes.find((n) => n.props.title === "View options").props.onClick();
+        f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
+        expect(empty()).toBe("Loading sessions…");
+        f.setSessionsLoaded(true);
+        expect(empty()).toBe("Nothing archived.");
+        f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        expect(empty()).toBe("No sessions yet. Start one from the composer.");
+        for (const conn of ["connecting", "open"]) {
+            f.setConn(conn);
+            expect(empty()).toBe("No sessions yet. Start one from the composer.");
+        }
+    } finally { f.dispose(); }
+});

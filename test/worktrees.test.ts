@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "fs";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -190,16 +190,17 @@ describe("creating a worktree", () => {
         expect(logged[0]).toContain("couldn't exclude managed worktrees");
     });
 
-    test.each(["exclude", "info"])("doesn't follow a linked %s into tracked files", async (linked) => {
+    test.each(["exclude", "info", "hard link"])("doesn't follow a linked %s into tracked files", async (linked) => {
         const main = repo(`exclude symlink ${linked}`);
         const ignore = join(main, ".gitignore");
         writeFileSync(ignore, "original\n");
         git(main, "add", ".gitignore");
         git(main, "commit", "-m", "ignore fixture");
         const info = join(main, ".git", "info");
-        if (linked === "exclude") {
+        if (linked !== "info") {
             rmSync(join(info, "exclude"));
-            symlinkSync(ignore, join(info, "exclude"));
+            if (linked === "hard link") linkSync(ignore, join(info, "exclude"));
+            else symlinkSync(ignore, join(info, "exclude"));
         } else {
             const target = join(main, "local-info");
             mkdirSync(target);
@@ -213,7 +214,7 @@ describe("creating a worktree", () => {
         expect(readFileSync(ignore, "utf8")).toBe("original\n");
         expect(git(main, "diff", "--", ".gitignore")).toBe("");
         expect(logged).toHaveLength(1);
-        expect(logged[0]).toContain("symbolic link");
+        expect(logged[0]).toContain(linked === "hard link" ? "hard links" : "symbolic link");
     });
 
     test("a chosen location is excluded only when inside the managed directory", async () => {

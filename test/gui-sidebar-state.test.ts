@@ -14,8 +14,8 @@ for (const spy of [onEvent, onState, onSlow, connect]) spy.mockRestore();
 if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
 else Reflect.deleteProperty(globalThis, "document");
 
-const original = { sessions: [...app.sessions], archived: [...app.archived], activeId: app.activeId, seen: { ...app.seen } };
-afterEach(() => setApp({ sessions: [], archived: [], activeId: undefined, seen: {} }));
+const original = { sessionsLoaded: app.sessionsLoaded, sessions: [...app.sessions], archived: [...app.archived], activeId: app.activeId, seen: { ...app.seen } };
+afterEach(() => setApp({ sessionsLoaded: false, sessions: [], archived: [], activeId: undefined, seen: {} }));
 afterAll(() => setApp(original));
 const s = (id: string, patch: Partial<SessionSummary> = {}): SessionSummary => ({ id, cwd: "/project", projectName: "project", title: id,
     createdAt: 1, updatedAt: 1, messages: 2, status: "idle", pinned: false, settled: false, archived: false, live: true, ...patch });
@@ -44,5 +44,30 @@ test("refresh retains an open summary outside the server window but respects del
         event({ type: "sessions.remove", id: "open" });
         await refreshSessions();
         expect(app.sessions.map((s) => s.id)).toEqual(["new"]);
+    } finally { call.mockRestore(); }
+});
+
+test("sessions become loaded only after both lists apply and stay loaded while refreshing", async () => {
+    setApp("sessionsLoaded", false);
+    const pending: Array<(rows: SessionSummary[]) => void> = [];
+    const call = spyOn(rpc, "call").mockImplementation(() => new Promise((resolve) => pending.push(resolve)) as any);
+    try {
+        const first = refreshSessions();
+        expect(app.sessionsLoaded).toBe(false);
+        pending[0]!([s("existing")]);
+        await Promise.resolve();
+        expect(app.sessionsLoaded).toBe(false);
+        pending[1]!([]);
+        await first;
+        expect(app.sessionsLoaded).toBe(true);
+        expect(app.sessions.map((s) => s.id)).toEqual(["existing"]);
+        const reconnect = refreshSessions();
+        expect(app.sessionsLoaded).toBe(true);
+        expect(app.sessions.map((s) => s.id)).toEqual(["existing"]);
+        pending[2]!([]);
+        pending[3]!([]);
+        await reconnect;
+        expect(app.sessionsLoaded).toBe(true);
+        expect(app.sessions).toEqual([]);
     } finally { call.mockRestore(); }
 });

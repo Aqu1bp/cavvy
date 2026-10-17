@@ -440,7 +440,7 @@ export function Sidebar() {
                     return <button class="slim more" onClick={() => showMore(more().page)}><Plus size={14} /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
                 <Show when={!all().length || (showArchived() && !sidebarIds(layout()).length)}>
-                    <div class="side-empty">{showArchived() ? "Nothing archived." : app.conn === "open" ? "No sessions yet. Start one from the composer." : "Connecting…"}</div>
+                    <div class="side-empty">{!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived." : "No sessions yet. Start one from the composer."}</div>
                 </Show>
             </nav>
 

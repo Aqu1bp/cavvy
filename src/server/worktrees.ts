@@ -418,6 +418,7 @@ function excludeManagedWorktrees(main: string, log?: Log) {
         for (const path of [dirname(file), file]) {
             if (lexists(path) && lstatSync(path).isSymbolicLink()) throw new Error("Git's info/exclude is a symbolic link.");
         }
+        if (lexists(file) && lstatSync(file).nlink > 1) throw new Error("Git's info/exclude has multiple hard links.");
         let content = "";
         try { content = readFileSync(file, "utf8"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
         if (content.split(/\r?\n/).some((line) => /^\/?\.claude\/worktrees\/?$/.test(line))) return;

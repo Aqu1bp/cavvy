@@ -1737,10 +1737,9 @@ function climbs(text: string): boolean {
             const c = chunk[i]!;
             if (c === "`") return true;
             if (c === "$") {
-                // These expand to digits (or nothing); consume the pair so $$? isn't scanned as $? again.
-                if (chunk[i - 1] === "\\" || !/[?#!$]/.test(chunk[i + 1] ?? "")) return true;
-                // With no background job, $! is empty: .$!. can still become .. .
-                if (chunk[i + 1] !== "!") firstDot = boundary = false;
+                // These expand to digits; consume the pair so $$? isn't scanned as $? again.
+                if (chunk[i - 1] === "\\" || !/[?#$]/.test(chunk[i + 1] ?? "")) return true;
+                firstDot = boundary = false;
                 i++;
                 continue;
             }

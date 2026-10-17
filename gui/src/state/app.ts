@@ -149,6 +149,7 @@ export interface AppState {
     hello?: HelloResult;
     sessions: SessionSummary[];
     archived: SessionSummary[];
+    sessionsLoaded: boolean;
     models: ProviderModels[];
     modelsLoading: boolean;
     /** Models have been listed at least once (so "none" means none). */
@@ -197,6 +198,7 @@ export const [app, setApp] = createStore<AppState>({
     slowRequest: false,
     sessions: [],
     archived: [],
+    sessionsLoaded: false,
     models: [],
     modelsLoading: false,
     modelsLoaded: false,
@@ -497,6 +499,7 @@ export async function refreshSessions() {
     batch(() => {
         setApp("sessions", reconcile(orderSessions(list), { key: "id" }));
         setApp("archived", reconcile(orderSessions(archived), { key: "id" }));
+        setApp("sessionsLoaded", true);
     });
 }
 
