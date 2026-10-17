@@ -1288,7 +1288,7 @@ export class Engine {
     private accountProjects(): string[] {
         return [
             ...this.workspaces.keys(), ...this.terminals.projectRoots(),
-            ...[...this.runtimes.values()].map((rt) => rt.toolState.cwd),
+            ...[...this.runtimes.values()].flatMap((rt) => rt.toolState?.cwd ?? []),
             ...(this.o.startCwd ? [this.o.startCwd] : []),
         ];
     }
