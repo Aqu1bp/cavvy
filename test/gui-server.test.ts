@@ -1167,6 +1167,7 @@ describe("sessions", () => {
         await c.until(id, done);
         const turn = lastTurn(c.view(id));
         expect(turn.prompt?.images).toBe(1);
+        expect(turn.prompt?.imagesKey).toBeString();
         expect(turn.pos).toBeDefined();
         expect(await c.call("session.promptImages", { id, ...turn.pos })).toEqual({ images: [{ mediaType: "image/png", data: png }] });
         await expect(c.call("session.promptImages", { id, seg: turn.pos!.seg, index: 999 })).rejects.toThrow(/no longer in the conversation/);
@@ -1177,6 +1178,12 @@ describe("sessions", () => {
         await c.until(id, (v) => v.turns.some((t) => t.blocks.some((b) => b.t === "compact")));
         expect(c.view(id).turns.find((t) => t.blocks.some((b) => b.t === "compact"))!.pos).toEqual({ seg: turn.pos!.seg + 1, index: -1 });
         expect(await c.call("session.promptImages", { id, ...turn.pos })).toEqual({ images: [{ mediaType: "image/png", data: png }] });
+        // Opened again, turn ids start over, but the images keep their key.
+        await c.call("session.close", { id });
+        const lock = `${findSessionAnywhere(id)}.lock`;
+        for (let i = 0; i < 50 && existsSync(lock); i++) await Bun.sleep(100);
+        const snap = await c.call("session.open", { id });
+        expect(snap.turns.find((t: Turn) => t.prompt?.text === "look at this")!.prompt!.imagesKey).toBe(turn.prompt!.imagesKey);
         c.close();
     }, 30_000);
 

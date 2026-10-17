@@ -10,15 +10,19 @@ import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
 import { promptImages } from "../state/images";
+import { app } from "../state/app";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 
-/** A prompt's images as thumbnails; the count alone when they can't be had. */
+/** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
 function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
     const [urls] = createResource(
-        () => (p.sessionId && p.turn.pos ? { id: p.sessionId, turn: { id: p.turn.id, pos: p.turn.pos } } : undefined),
-        (k) => promptImages(k.id, k.turn).catch(() => [] as string[]),
+        () => {
+            const key = p.turn.prompt?.imagesKey;
+            return p.sessionId && p.turn.pos && key && app.conn === "open" ? { id: p.sessionId, pos: p.turn.pos, key } : undefined;
+        },
+        (k) => promptImages(k.id, k.pos, k.key).catch(() => [] as string[]),
     );
     const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
     return (

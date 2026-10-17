@@ -37,18 +37,12 @@ describe("ImageCache", () => {
 });
 
 describe("what makes an image the same image", () => {
-    test("a prompt rewound and sent again at the same position is another turn, so it's asked for again", async () => {
+    test("prompts are kept by the server's hash of their images, not by turn or position", async () => {
+        // A rewind reuses positions and a reopen reuses turn ids; the hash changes only with the images.
         const c = new ImageCache(4);
-        const pos = { seg: 0, index: 3 };
-        expect(promptKey("s", { id: "t1", pos })).not.toBe(promptKey("s", { id: "t9", pos }));
-        expect(await c.get(promptKey("s", { id: "t1", pos }), () => Promise.resolve(["A"]))).toEqual(["A"]);
-        expect(await c.get(promptKey("s", { id: "t9", pos }), () => Promise.resolve(["B"]))).toEqual(["B"]);
-        expect(await c.get(promptKey("s", { id: "t1", pos }), () => Promise.resolve(["X"]))).toEqual(["A"]);
-    });
-
-    test("the same turn in another session, or at another position, is another key", () => {
-        const pos = { seg: 0, index: 3 };
-        expect(promptKey("s1", { id: "t", pos })).not.toBe(promptKey("s2", { id: "t", pos }));
-        expect(promptKey("s", { id: "t", pos })).not.toBe(promptKey("s", { id: "t", pos: { seg: 1, index: 3 } }));
+        expect(await c.get(promptKey("s", "hashA"), () => Promise.resolve(["A"]))).toEqual(["A"]);
+        expect(await c.get(promptKey("s", "hashB"), () => Promise.resolve(["B"]))).toEqual(["B"]);
+        expect(await c.get(promptKey("s", "hashA"), () => Promise.resolve(["X"]))).toEqual(["A"]);
+        expect(promptKey("s1", "h")).not.toBe(promptKey("s2", "h"));
     });
 });

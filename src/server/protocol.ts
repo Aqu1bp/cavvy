@@ -228,6 +228,8 @@ export type TurnStatus = "running" | "done" | "aborted" | "error" | "denied" | "
 export interface TurnPrompt {
     text: string;
     images?: number;
+    /** A hash of the images (session.promptImages has them): the same key, the same images. Turn ids aren't kept across a reopen. */
+    imagesKey?: string;
     files?: FileChip[];
     /** Started by a slash command (/init, /review, custom commands). */
     command?: boolean;

@@ -1,12 +1,13 @@
 // Images the transcript shows, as data: URLs: each asked for once while it's
 // kept, the most recently used kept, and a failed request never kept (so it's
 // asked again next time). Keys say what makes an image the same image: a
-// prompt's turn, not only its position (a rewind reuses positions); a file's
-// reply, not only its path (the model may rewrite the file between replies).
+// prompt's images by the hash of their bytes the server sends (positions are
+// reused by a rewind, turn ids by a reopen); a file by its reply, not only its
+// path (the model may rewrite the file between replies).
 
-/** A prompt's images: its turn and where its message is. */
-export function promptKey(sessionId: string, turn: { id: string; pos: { seg: number; index: number } }): string {
-    return `${sessionId}\0${turn.id}\0${turn.pos.seg}\0${turn.pos.index}`;
+/** A prompt's images: the same key only for the same images (TurnPrompt.imagesKey). */
+export function promptKey(sessionId: string, imagesKey: string): string {
+    return `${sessionId}\0${imagesKey}`;
 }
 
 export class ImageCache {
