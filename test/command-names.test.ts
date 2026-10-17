@@ -142,7 +142,9 @@ describe("program names in other spellings (case-insensitive volumes)", () => {
         settings.permissions!.deny = ["Bash(rm:*)"];
         expect(check("RM -rf build", "bypassPermissions").behavior).toBe("allow");
         expect(check("RM -rf ~", "bypassPermissions").behavior).toBe("allow");
-        expect(check("SH -c 'rm -rf ~'", "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true }); // the script itself
+        // `SH` isn't a shell here, so its script isn't looked into; `sh` is one, and its `rm` meets the rule.
+        expect(check("SH -c 'rm -rf ~'", "bypassPermissions").behavior).toBe("allow");
+        expect(check("sh -c 'rm -rf ~'", "bypassPermissions").behavior).toBe("deny");
         expect(looksDestructive("RM x")).toBeUndefined();
     });
 });

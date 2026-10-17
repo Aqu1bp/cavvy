@@ -61,7 +61,7 @@ const byteName = Buffer.from([0x61, 0xff]);
 const supportsByteNames = (() => {
     try {
         writeFileSync(Buffer.concat([Buffer.from(`${iso.home}/`), byteName]), "probe\n");
-        return readdirSync(iso.home, { encoding: "buffer" }).some((name) => name.equals(byteName));
+        return readdirSync(iso.home, { encoding: "buffer" }).some((name) => Buffer.from(name).equals(byteName));
     } catch (e) {
         if (["EILSEQ", "EINVAL", "EPERM"].includes((e as NodeJS.ErrnoException).code ?? "")) return false;
         throw e;
