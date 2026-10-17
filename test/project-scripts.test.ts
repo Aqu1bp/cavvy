@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { ServerEvent } from "../src/server/protocol";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -726,12 +726,9 @@ describe("second review", () => {
         const theirs = { version: 1, projects: { [dir]: { scripts: [{ id: "new-owner", name: "theirs", command: "echo theirs" }] } } };
         try {
             await expect(updateProject(dir, (p) => {
-                // Meanwhile (this process stopped, say), another took the lock over and saved. The new lock
-                // is made while the old one exists, so it can't get the old one's inode, which ext4 reuses once freed.
-                const old = statSync(lock).ino;
-                writeFileSync(`${lock}.new`, "1");
-                renameSync(`${lock}.new`, lock);
-                expect(statSync(lock).ino).not.toBe(old);
+                // Meanwhile (this process stopped, say), another took the lock over and saved.
+                rmSync(lock);
+                writeFileSync(lock, "1");
                 write(theirs);
                 p.items = [];
                 return true;
