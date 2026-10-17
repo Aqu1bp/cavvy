@@ -31,7 +31,7 @@ export function PlanMeter(p: { provider?: string; sessionId?: string }) {
         const key = refreshKey();
         setAccounts([]);
         setChecking(false);
-        if (!key || !providerInfo()?.agentCli?.accounts?.length) return;
+        if (!key || !providerInfo()?.agentCli?.accounts?.some((a) => a.id !== accountId())) return;
         let active = true;
         setChecking(true);
         void rpc.call("accounts.list", { provider: provider()!, refresh: true }).then((items) => {

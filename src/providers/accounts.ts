@@ -2,9 +2,10 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync } from "fs";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import { homedir } from "os";
+import { createHash } from "crypto";
 import { paths } from "../config/paths";
 import { canonical } from "../util/files";
-import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount } from "./registry";
+import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount, validAccountFolder } from "./registry";
 import { RpcError } from "../server/rpc-error";
 
 export const ACCOUNT_PROVIDERS = ["claude-code", "codex"] as const;
@@ -31,28 +32,54 @@ function normalFolder(provider: string): string {
     return join(homedir(), provider === "codex" ? ".codex" : ".claude");
 }
 function selector(provider: string): string { return provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"; }
-function defaultFolder(provider: string): string { return process.env[selector(provider)] || normalFolder(provider); }
+// Capture the launch cwd independently of child cwds: Default uses the directory
+// as a CLI invoked from the shell that launched Harness.
+const launchCwd = process.cwd();
+function defaultFolder(provider: string): string { return resolve(launchCwd, process.env[selector(provider)] || normalFolder(provider)); }
 export function listAccounts(provider: string): CliAccount[] {
     accountProvider(provider);
     return [{ id: "default", name: "Default", folder: defaultFolder(provider), managed: false }, ...(readAgentConfig(provider)?.accounts ?? [])];
 }
-export function account(provider: string, id = "default"): CliAccount {
+function findAccount(provider: string, id: string): CliAccount {
     accountProvider(provider);
     if (!validAccountId(id)) throw new RpcError("Invalid account id", "invalid");
     const found = listAccounts(provider).find((a) => a.id === id);
     if (!found) throw new RpcError("Account no longer exists; choose another account", "not_found");
     return found;
 }
+export function account(provider: string, id = "default"): CliAccount {
+    const found = findAccount(provider, id);
+    if (found.invalid) throw new RpcError("Invalid account folder: use a non-empty absolute path with no '..'", "invalid");
+    return found;
+}
 export function defaultAccount(provider: string): string {
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";
 }
-/** Only the matching CLI gets an inherited selector. Generic children never get either. */
-export function accountEnv(provider: string, id = "default"): Record<string, string> {
+/** Default preserves the launching shell selectors exactly; relative paths are unsafe. */
+export function accountEnv(provider: string, id = "default", cwd = homedir()): Record<string, string> {
     const a = account(provider, id);
-    const key = selector(provider);
-    const value = id === "default" ? process.env[key] : a.folder;
-    return value ? { [key]: value } : {};
+    if (id === "default") {
+        const env: Record<string, string> = {};
+        for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
+            const value = process.env[key];
+            if (value && !isAbsolute(value)) throw new RpcError(`Default cannot use relative ${key}; set it to an absolute path`, "invalid");
+            if (value !== undefined) env[key] = value;
+        }
+        return env;
+    }
+    // Recheck persisted accounts too: the user's default selectors (or symlinks)
+    // may have changed since this account was added.
+    if (!validAccountFolder(a.folder)) throw new RpcError("Invalid account folder: use a non-empty absolute path with no '..'", "invalid");
+    const folder = accountRealPath(resolve(a.folder));
+    separateFromDefault(folder, [cwd]);
+    validateIdentityFiles(provider, folder);
+    if (provider === "claude-code") separateKeychain(folder, id);
+    // Secure storage can independently override Claude's config directory, even
+    // with an empty value (which selects the user's default keychain entry).
+    return provider === "claude-code"
+        ? { CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder }
+        : { CODEX_HOME: folder };
 }
 export function hasNamedAccounts(): boolean {
     return ACCOUNT_PROVIDERS.some((p) => readAgentConfig(p)?.accounts?.length);
@@ -60,7 +87,7 @@ export function hasNamedAccounts(): boolean {
 /** Read afresh: accounts added during a session must immediately be protected. */
 export function accountFolders(): string[] {
     if (!hasNamedAccounts()) return [];
-    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
+    return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).filter((a) => !a.invalid).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
 }
 /** Default homes stay usable; their sign-in files are protected only alongside named accounts. */
 export function accountCredentialFiles(): string[] {
@@ -71,34 +98,103 @@ export function accountCredentialFiles(): string[] {
 export function accountProtectedPaths(): string[] {
     return [...new Set([...accountFolders(), ...accountCredentialFiles()])];
 }
-function projectFolder(folder: string, roots: string[]): boolean {
+function projectFolder(folder: string, roots: string[], managed: boolean): boolean {
+    const home = accountRealPath(homedir());
+    const harness = accountRealPath(paths.home());
     if (roots.some((root) => {
         const real = accountRealPath(resolve(root));
+        // Desktop starts in home, and sessions may also use a broad parent folder.
+        if (real === home || (managed && inside(harness, real))) return false;
+        // Harness owns this dedicated folder, even when its home is in a project.
+        // Still protect projects opened at or below it before recursive removal.
+        if (managed && real !== folder && inside(folder, real)) return false;
         return inside(folder, real) || inside(real, folder);
     })) return true;
     for (let d = folder; ; d = dirname(d)) {
+        if (d === home) return false;
         if (existsSync(join(d, ".git"))) return true;
-        if (dirname(d) === d) return false;
+        if (managed || dirname(d) === d) return false;
     }
 }
-function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }): string {
+// Engines can open more workspaces/terminals after an account was persisted.
+// Keep these live so pre-spawn checks reserve the same roots as add/removal.
+const rootSources = new Set<() => string[]>();
+export function registerAccountRoots(source: () => string[]): () => void {
+    rootSources.add(source);
+    return () => { rootSources.delete(source); };
+}
+function separateFromDefault(folder: string, roots: string[] = []): void {
+    roots = [...roots, ...[...rootSources].flatMap((source) => source())];
+    for (const p of ACCOUNT_PROVIDERS) {
+        // Claude can keep its default keychain identity under a separate selector.
+        // Reusing that directory would make a named account share the user's login.
+        const secureStorage = p === "claude-code" ? process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR : undefined;
+        for (const base of [normalFolder(p), process.env[selector(p)] || normalFolder(p), ...(secureStorage ? [secureStorage] : [])]) {
+            // Ordinary user terminals retain raw selectors. Also reserve legacy
+            // status/session resolutions when adding or deleting account folders.
+            const candidates = isAbsolute(base) ? [base] : [launchCwd, process.cwd(), homedir(), ...roots].map((cwd) => resolve(cwd, base));
+            for (const candidate of candidates) {
+                const reserved = accountRealPath(candidate);
+                if (inside(folder, reserved) || inside(reserved, folder)) throw new RpcError("The default CLI folder cannot be an account folder", "invalid");
+            }
+        }
+    }
+}
+function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }, managed = false): string {
     if (typeof folder !== "string" || folder.length > 1024 || !isAbsolute(folder) || !/^[a-zA-Z0-9 /_.-]+$/.test(folder) || folder.split(/[\\/]/).includes("..")) throw new RpcError("Use an absolute account folder with plain characters and no '..'", "invalid");
     const real = accountRealPath(resolve(folder));
     if (real === sep || real === accountRealPath(homedir())) throw new RpcError("Choose a dedicated account folder", "invalid");
+    separateFromDefault(real, roots);
     for (const p of ACCOUNT_PROVIDERS) {
-        for (const base of [normalFolder(p), defaultFolder(p)]) {
-            const reserved = accountRealPath(resolve(base));
-            if (inside(real, reserved) || inside(reserved, real)) throw new RpcError("The default CLI folder cannot be an account folder", "invalid");
-        }
         for (const a of readAgentConfig(p)?.accounts ?? []) {
-            if (p === exclude?.provider && a.id === exclude.id) continue;
+            if (a.invalid || (p === exclude?.provider && a.id === exclude.id)) continue;
             const other = accountRealPath(a.folder);
             if (inside(real, other) || inside(other, real)) throw new RpcError("Accounts must have separate, non-overlapping folders", "invalid");
         }
     }
-    if (projectFolder(real, roots)) throw new RpcError("Account folders must be outside projects", "invalid");
+    if (projectFolder(real, roots, managed)) throw new RpcError("Account folders must be outside projects", "invalid");
     if (existsSync(real) && !statSync(real).isDirectory()) throw new RpcError("Account folder is not a directory", "invalid");
     return real;
+}
+/** Only metadata is inspected; credential and configuration contents belong to the CLI. */
+function validateIdentityFiles(provider: string, folder: string): void {
+    const names = provider === "claude-code" ? [".claude.json", ".credentials.json"] : ["auth.json", "config.toml"];
+    for (const name of names) {
+        const file = join(folder, name);
+        try {
+            let stat = lstatSync(file);
+            if (stat.isSymbolicLink()) {
+                let target: string;
+                try { target = realpathSync(file); }
+                catch { throw new RpcError(`Cannot resolve account ${name} symlink; use a private file inside the account folder`, "invalid"); }
+                if (!inside(target, folder)) throw new RpcError(`Account ${name} links outside its folder`, "invalid");
+                // The CLI opens the target, so its link count is the one that matters.
+                stat = statSync(target);
+            }
+            // A hard link has no target path. Its other names cannot be proven
+            // private from lstat, so shared identity files must be copied first.
+            if (stat.nlink > 1 && !stat.isDirectory()) throw new RpcError(`Account ${name} has hard links; use a private copy inside the account folder`, "invalid");
+        } catch (e: any) {
+            if (e.code === "ENOENT") continue;
+            if (e instanceof RpcError) throw e;
+            throw new RpcError(`Cannot check account ${name}`, "invalid");
+        }
+    }
+}
+function keychainService(raw: string): string {
+    return "Claude Code-credentials" + (raw ? "-" + createHash("sha256").update(raw.normalize("NFC")).digest("hex").slice(0, 8) : "");
+}
+function separateKeychain(folder: string, excludeId?: string): void {
+    const secure = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+    const config = process.env.CLAUDE_CONFIG_DIR;
+    // The config-only helper is unverified: reserve both raw and absolute hashes.
+    const defaults = secure !== undefined ? [secure] : config ? [config, resolve(launchCwd, config)] : [""];
+    const service = keychainService(folder);
+    if (defaults.some((raw) => keychainService(raw) === service)) throw new RpcError("Account keychain service collides with Default", "invalid");
+    for (const a of readAgentConfig("claude-code")?.accounts ?? []) {
+        if (a.invalid || a.id === excludeId) continue;
+        if (keychainService(accountRealPath(resolve(a.folder))) === service) throw new RpcError("Accounts must have separate keychain services", "invalid");
+    }
 }
 export function addAccount(provider: string, input: { id: string; name: string; folder?: string }, projectRoots: string[] = []): CliAccount {
     accountProvider(provider);
@@ -112,7 +208,9 @@ export function addAccount(provider: string, input: { id: string; name: string; 
     const managed = input.folder === undefined;
     const expected = join(accountRealPath(paths.home()), "accounts", provider, input.id);
     const requested = input.folder ?? expected;
-    const folder = validateFolder(requested, projectRoots);
+    const folder = validateFolder(requested, projectRoots, undefined, managed);
+    validateIdentityFiles(provider, folder);
+    if (provider === "claude-code") separateKeychain(folder);
     // Ownership is never adopted for a pre-existing directory, even at our expected path.
     if (managed && (existsSync(expected) || folder !== resolve(expected))) throw new RpcError("Managed account folder already exists or crosses a symlink", "invalid");
     try { mkdirSync(folder, { recursive: true, mode: 0o700 }); }
@@ -136,11 +234,11 @@ export function setDefaultAccount(provider: string, id: string): void {
     writeProvidersFile(pf);
 }
 export function removeAccount(provider: string, id: string, confirmedFolder: string, projectRoots: string[] = []): void {
-    const a = account(provider, id);
+    const a = findAccount(provider, id);
     if (id === "default") throw new RpcError("The Default account cannot be removed", "invalid");
     if (confirmedFolder !== a.folder) throw new RpcError("Confirm the exact account folder before removing it", "invalid");
     const pf = readProvidersFileForUpdate();
-    if (a.managed) {
+    if (a.managed && !a.invalid) {
         const expected = join(accountRealPath(paths.home()), "accounts", provider, id);
         // Every component below our home must remain in place; rm never follows child symlinks.
         const home = accountRealPath(paths.home());
@@ -149,7 +247,7 @@ export function removeAccount(provider: string, id: string, confirmedFolder: str
         for (const d of [join(paths.home(), "accounts"), dirname(expected), expected]) {
             if (existsSync(d) && lstatSync(d).isSymbolicLink()) throw new RpcError("Refusing to delete a symlinked account folder", "invalid");
         }
-        validateFolder(expected, projectRoots, { provider, id });
+        validateFolder(expected, projectRoots, { provider, id }, true);
         rmSync(expected, { recursive: true, force: true });
     }
     const cfg = pf.agents![provider]!;

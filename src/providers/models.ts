@@ -145,19 +145,20 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
     let dirty = false;
     const results = await Promise.all(
         allProviders().map(async (def): Promise<ProviderListing | undefined> => {
-            const cred = await credentialFingerprint(def);
-            if (!cred) {
-                return opts.includeUnconfigured ? { provider: def, models: [], status: "no-key" } : undefined;
-            }
-            const fp = cred.fp;
             const cached = cache.providers[def.id];
-            if (opts.cachedOnly) return cached && cached.fp === fp && !def.local ? { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt } : undefined;
-            if (!def.local && !opts.refresh && cached && cached.fp === fp && Date.now() - cached.fetchedAt < TTL_MS) {
-                const l: ProviderListing = { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt };
-                opts.onProvider?.(l);
-                return l;
-            }
+            let fp: string | undefined;
             try {
+                const cred = await credentialFingerprint(def);
+                if (!cred) {
+                    return opts.includeUnconfigured ? { provider: def, models: [], status: "no-key" } : undefined;
+                }
+                fp = cred.fp;
+                if (opts.cachedOnly) return cached && cached.fp === fp && !def.local ? { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt } : undefined;
+                if (!def.local && !opts.refresh && cached && cached.fp === fp && Date.now() - cached.fetchedAt < TTL_MS) {
+                    const l: ProviderListing = { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt };
+                    opts.onProvider?.(l);
+                    return l;
+                }
                 const client = await clientFor(def.id);
                 const signal = combine(opts.signal, def.local ? 1500 : 20_000);
                 const listed = await client.listModels(signal);
@@ -176,7 +177,7 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
                 }
                 const msg = (e as Error).message;
                 // Serve stale cache rather than nothing.
-                if (cached && cached.fp === fp) {
+                if (fp !== undefined && cached && cached.fp === fp) {
                     const l: ProviderListing = { provider: def, models: cached.models, status: "cached", error: msg, fetchedAt: cached.fetchedAt };
                     opts.onProvider?.(l);
                     return l;

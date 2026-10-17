@@ -39,10 +39,10 @@ describe("embedded terminals", () => {
         for (const [cols, rows] of [[0, 24], [80, 0], [501, 24], [80, 301], [1.5, 24], [NaN, 24], [80, Infinity], ["80", 24]]) expect(() => terminalSize(cols, rows)).toThrow();
         expect(terminalSize(80, 24)).toEqual({ cols: 80, rows: 24 });
     });
-    test("setup shells strip inherited account selectors while login commands keep their selected one", async () => {
+    test("user shells preserve inherited account selectors while login commands keep only their selected one", async () => {
         const shells = new Terminals();
         const command = 'printf "__selectors__%s|%s__end__\\n" "${CLAUDE_CONFIG_DIR-unset}" "${CODEX_HOME-unset}"';
-        // isolate() supplies both inherited selectors; neither belongs in a setup shell.
+        // isolate() supplies inherited selectors for the user-operated shell.
         expect(process.env.CLAUDE_CONFIG_DIR).toBeTruthy();
         expect(process.env.CODEX_HOME).toBeTruthy();
         try {
@@ -50,7 +50,7 @@ describe("embedded terminals", () => {
             shells.open(setup, "setup-env", iso.home, 80, 24, { input: `${command}\nexit\n` });
             shells.arm(setup, "setup-env");
             await until(() => setup.events.some((e) => e.type === "terminal.exit"));
-            expect(setup.output()).toContain("__selectors__unset|unset__end__");
+            expect(setup.output()).toContain(`__selectors__${process.env.CLAUDE_CONFIG_DIR}|${process.env.CODEX_HOME}__end__`);
             for (const selector of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {
                 const login = client();
                 shells.open(login, `login-${selector.replaceAll("_", "-")}`, iso.home, 80, 24, {
@@ -62,6 +62,35 @@ describe("embedded terminals", () => {
                     : `__selectors__unset|${iso.home}__end__`);
             }
         } finally { shells.stop(); }
+    });
+    test("terminal selectors preserve unset, empty, relative and absolute values exactly", async () => {
+        const keys = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"];
+        const old = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+        const { childEnv } = await import("../src/util/env");
+        try {
+            for (const value of [undefined, "", "relative/profile", iso.home]) {
+                for (const key of keys) {
+                    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+                }
+                for (const key of keys) {
+                    expect(terminalEnv()[key]).toBe(value);
+                    expect(Object.hasOwn(terminalEnv(), key)).toBe(value !== undefined);
+                    expect(terminalEnv(false)[key]).toBeUndefined();
+                    expect(childEnv({ [key]: "cannot-reintroduce" })[key]).toBeUndefined();
+                }
+            }
+        } finally { for (const [k, v] of Object.entries(old)) if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    });
+    test("closing terminals keep their cwd reserved until process cleanup finishes", async () => {
+        const shells = new Terminals(); const owner = client();
+        try {
+            shells.open(owner, "reserved-root", iso.home, 80, 24);
+            expect(shells.projectRoots()).toContain(iso.home);
+            shells.close(owner, "reserved-root");
+            expect(shells.projectRoots()).toContain(iso.home);
+            await shells.stop();
+            expect(shells.projectRoots()).toEqual([]);
+        } finally { await shells.stop(); }
     });
     test("a real PTY has the selected cwd, interactive input, resize, Ctrl-C and exit status", async () => {
         const shells = new Terminals(); const owner = client();

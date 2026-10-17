@@ -108,7 +108,7 @@ export function untrustedArgs(cwd: string): string[] {
 function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
     const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : [])];
-    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId) }), onNotification, onRequest);
+    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
 async function handshake(rpc: Rpc, accountPermissions = false) {

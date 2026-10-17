@@ -1,6 +1,7 @@
 // Built-in provider catalog. Adding an OpenAI-compatible provider is one entry.
 
 import { readJson, readJsonForUpdate, writeJson } from "../config/settings";
+import { isAbsolute } from "path";
 import { paths } from "../config/paths";
 
 /** anthropic = Messages API; openai = Chat Completions; responses = OpenAI Responses API. */
@@ -310,6 +311,8 @@ export interface CliAccount {
     name: string;
     folder: string;
     managed: boolean;
+    /** Invalid saved metadata stays visible and removable, but cannot be used. */
+    invalid?: boolean;
 }
 
 interface ProvidersFile {
@@ -364,6 +367,11 @@ export function removeVertexConfig(): boolean {
     return true;
 }
 
+/** Persisted folders must never fall back to a CLI's default identity. */
+export function validAccountFolder(folder: unknown): folder is string {
+    return typeof folder === "string" && folder.length > 0 && isAbsolute(folder) && !folder.includes("\0") && !folder.split(/[\\/]/).includes("..");
+}
+
 /** The saved setup of an agent CLI (claude-code, codex), if it was turned on. */
 export function readAgentConfig(id: string): AgentCliConfig | undefined {
     const a = readProvidersFile().agents?.[id];
@@ -371,7 +379,13 @@ export function readAgentConfig(id: string): AgentCliConfig | undefined {
     const out: AgentCliConfig = {};
     if (typeof a.path === "string" && a.path.trim()) out.path = a.path.trim();
     if (Array.isArray(a.args)) out.args = a.args.filter((x): x is string => typeof x === "string");
-    if (Array.isArray(a.accounts)) out.accounts = a.accounts.filter((x) => x && typeof x.id === "string" && typeof x.name === "string" && typeof x.folder === "string");
+    if (Array.isArray(a.accounts)) {
+        out.accounts = a.accounts.filter((x) => x && typeof x.id === "string" && typeof x.name === "string").map((x) => ({
+            ...x,
+            folder: typeof x.folder === "string" ? x.folder : "",
+            ...(!validAccountFolder(x.folder) ? { invalid: true } : {}),
+        }));
+    }
     if (typeof a.defaultAccount === "string") out.defaultAccount = a.defaultAccount;
     return out;
 }

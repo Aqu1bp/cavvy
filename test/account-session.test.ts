@@ -30,7 +30,7 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
     test("new home never receives the old resume id; conversation and controls survive", async () => {
         const binary = join(root, provider);
         const fixture = join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts");
-        writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" "${fixture}" "$@"\n`);
+        writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" --no-env-file "${fixture}" "$@"\n`);
         chmodSync(binary, 0o755);
         saveAgentConfig(provider, { path: binary });
         const selected = addAccount(provider, { id: "personal", name: "Personal" }, [root]);

@@ -1,7 +1,7 @@
 // Engine/account regressions without a listening server or real CLI credentials.
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { join, relative } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentBackendClient, BackendTurn } from "../src/backends/types";
 
@@ -11,7 +11,7 @@ const { Engine } = await import("../src/server/engine");
 const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
-const { addAccount } = await import("../src/providers/accounts");
+const { addAccount, accountEnv } = await import("../src/providers/accounts");
 const { saveAgentConfig, getProvider } = await import("../src/providers/registry");
 const { loadSettings } = await import("../src/config/settings");
 const client = { subs: new Set<string>(), send() {} };
@@ -40,7 +40,7 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: account chan
     });
     const engine = new Engine({ listModels: async () => [] });
     // The parent turn has ended; only its delegated child is still running.
-    engine.runtimes.set(session.meta.id, { busy: false, session, agent, ws: { cwd } } as any);
+    engine.runtimes.set(session.meta.id, { busy: false, session, agent, ws: { cwd }, toolState: { cwd } } as any);
     const task = (agent as any).tasks().start({ description: "Wait", prompt: "Wait", agent: "general-purpose", model: `${provider}:default`, writes: false });
     try {
         expect((await entered.promise).accountId).toBe(selected.id);
@@ -79,4 +79,33 @@ test("account catalog refresh keeps the configured model for new sessions", asyn
         expect(snapshot.state.model?.provider).toBe("mock");
         expect(loadSettings(cwd).model).toBe("mock:test");
     } finally { await engine.stop(); }
+});
+
+
+test("new workspace, terminal and session roots protect persisted accounts before every launch and removal", async () => {
+    const selected = addAccount("claude-code", { id: "live-roots", name: "Live roots" });
+    const project = join(cwd, "late-project"); mkdirSync(project);
+    const engine = new Engine({ listModels: async () => [] });
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = relative(realpathSync(project), selected.folder);
+    try {
+        // Neither launch cwd nor HOME resolves this selector to the account.
+        expect(accountEnv("claude-code", selected.id).CLAUDE_CONFIG_DIR).toBe(selected.folder);
+        for (const kind of ["workspace", "terminal", "runtime"]) {
+            if (kind === "workspace") engine.workspaces.set(project, { cwd: project } as any);
+            if (kind === "runtime") engine.runtimes.set("stub", { busy: false, session: { accountId: () => "default" }, toolState: { cwd: project } } as any);
+            if (kind === "terminal") (engine as any).terminals.open(client, "root-terminal", project, 80, 24, { command: { argv: ["/bin/sh", "-c", "read ignored"], env: {} } });
+            try {
+                expect(() => accountEnv("claude-code", selected.id)).toThrow(/default CLI folder/);
+                await expect(engine.handle(client, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder })).rejects.toThrow(/default CLI folder/);
+                expect(existsSync(selected.folder)).toBe(true);
+            } finally {
+                engine.workspaces.clear(); engine.runtimes.clear();
+                if (kind === "terminal") (engine as any).terminals.close(client, "root-terminal");
+            }
+        }
+    } finally {
+        if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previous;
+        await engine.stop();
+    }
 });
