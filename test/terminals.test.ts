@@ -231,9 +231,9 @@ describe("embedded terminals", () => {
             shells.write(owner, "flood", `yes | head -c 3000000; touch '${done}'; printf '__%s__\\n' end\n`);
             await until(() => existsSync(done));
             await Bun.sleep(200);
-            // Nothing was acked: what was sent stops near the limit.
+            // Nothing was acked: what was sent stops at the limit, however much one PTY read brought.
             expect(sent()).toBeGreaterThan(900_000);
-            expect(sent()).toBeLessThan(1_100_000);
+            expect(sent()).toBeLessThanOrEqual(1_000_000);
             expect(owner.output()).not.toContain("__end__");
             // Another window's ack counts for nothing.
             const other = client();
@@ -252,6 +252,48 @@ describe("embedded terminals", () => {
             // Acks for one that has gone are ignored.
             shells.close(owner, "flood");
             shells.ack(owner, "flood", 10);
+        } finally { shells.stop(); }
+    }, 20_000);
+    test("what one read brings past the limit is cut there, at a clean place, and the rest follows the window's acks", async () => {
+        const shells = new Terminals(); const owner = client();
+        try {
+            shells.open(owner, "limit", iso.home, 80, 24);
+            await until(() => owner.output().length > 0);
+            await Bun.sleep(300);
+            // Fed whole, as a PTY read can be on Linux (the amount depends on the kernel).
+            const s = (shells as any).shells.get("limit");
+            const feed = (text: string) => { (shells as any).record(s, text); (shells as any).sendRest("limit", s); };
+            const before = owner.output().length;
+            const line = "\u{1F600}\x1b[38;5;196mxy\x1b[0m\r\n";
+            const text = line.repeat(Math.ceil(1_200_000 / line.length));
+            let fed = "";
+            // Flush-sized pieces until one no longer fits the window.
+            for (const size of [200_000, 200_000, 200_000, 200_000, 200_000, 200_000]) {
+                const piece = text.slice(fed.length, fed.length + size - (size % line.length));
+                fed += piece;
+                feed(piece);
+            }
+            const data = () => owner.events.filter((e) => e.type === "terminal.data");
+            expect(owner.output().length).toBeLessThanOrEqual(1_000_000);
+            expect(owner.output().length).toBeGreaterThan(990_000);
+            expect(s.holding).toBe(true);
+            // Every send ends where an escape or a surrogate pair is whole.
+            for (const e of data()) {
+                expect(e.data.isWellFormed()).toBe(true);
+                expect(/\x1b(\[[0-9;]*)?$/.test(e.data)).toBe(false);
+            }
+            // The position the window gives back on attaching is where its output ends.
+            expect(owner.pos()).toBe(s.sent);
+            expect(s.sent).toBeLessThan(s.total);
+            // Held output isn't sent, and doesn't pass the limit when more comes.
+            feed(text.slice(fed.length, fed.length + 10 * line.length));
+            expect(owner.output().length).toBeLessThanOrEqual(1_000_000);
+            // The acks release the rest, in order, none of it lost.
+            shells.ack(owner, "limit", owner.output().length);
+            expect(s.holding).toBe(false);
+            expect(s.sent).toBe(s.total);
+            expect(owner.output().slice(before)).toBe(text.slice(0, fed.length + 10 * line.length));
+            expect(owner.events.some((e) => e.type === "terminal.data" && e.reset)).toBe(false);
         } finally { shells.stop(); }
     }, 20_000);
     test("a shell gets the user's environment, not the agent tools' or the outer terminal's", () => {
@@ -374,7 +416,7 @@ describe("terminals that outlive their window's connection", () => {
             await Bun.sleep(200);
             const sent = () => back.output().length;
             expect(sent()).toBeGreaterThan(900_000);
-            expect(sent()).toBeLessThan(1_100_000);
+            expect(sent()).toBeLessThanOrEqual(1_000_000);
             expect(back.output()).not.toContain("__end__");
             // The connection it was taken from has no say.
             shells.ack(first, "reflood", sent());
