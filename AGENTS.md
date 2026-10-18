@@ -30,5 +30,3 @@ The whole suite takes about 20 minutes on a Mac. When several agents run it at o
   ```
 
 - **ci:** passes only when every job above passed. Branch protection requires this check.
-
-**For now:** two tests fail now and then on Linux: a terminal flow-control test (#149) and the Chrome find test (#150). If `ci` fails on one of them only, rerun the failed jobs with `gh run rerun <run-id> --failed`. Any other failure is yours to look at.
