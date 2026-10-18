@@ -59,6 +59,9 @@ interface Shell {
     expires?: ReturnType<typeof setTimeout>;
     /** Input given at open, until it's typed or cancelled. */
     typist?: Typist;
+    /** What the window typed before the shell's first output, held until then (see HOLD_MS); undefined once passed on. */
+    held?: string;
+    heldTimer?: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -79,6 +82,14 @@ const KEEP = 250_000;
 const SCROLLBACK = 1_000_000;
 /** How long a window that went away has to come back before its terminals are stopped. */
 const GRACE_MS = 10 * 60_000;
+/**
+ * Input typed before the shell's first output waits for it (for at most HOLD_MS): a Ctrl+C
+ * reaching a shell that hasn't yet set up its signals stops it, and the window sends what
+ * was typed while the terminal opened as soon as it has.
+ */
+const HOLD_MS = 500;
+/** How long a shell's last output has, once it exits, to arrive before its exit is reported without the rest. */
+const DRAIN_MS = 1000;
 /** Entering or leaving the alternate screen (vim, htop, less). */
 const ALT_SCREEN = /\x1b\[\?(?:1049|1047|47)([hl])/g;
 
@@ -311,7 +322,11 @@ export class Terminals {
             if (entry.unacked >= MAX_UNACKED) entry.holding = true;
             if (!entry.holding) this.sendRest(id, entry);
         };
-        const terminal = new Bun.Terminal({ ...size, name: "xterm-256color", data: (_t, bytes) => {
+        // The end of the PTY's output: every process holding it has gone, and all it wrote has been read.
+        let ended!: () => void;
+        const end = new Promise<void>((done) => { ended = done; });
+        const ptyOptions: Bun.TerminalOptions = { ...size, name: "xterm-256color", exit: () => ended(), data: (_t, bytes) => {
+            if (entry?.held !== undefined) this.release(id, entry);
             const text = decoder.decode(bytes, { stream: true });
             // Login URLs, codes and echoed input must never enter replay/flow-control history.
             // Slow or absent viewers lose output; attaching never reruns the login command.
@@ -327,22 +342,27 @@ export class Terminals {
             typist?.output(text);
             if (pending.length >= 32_768) flush();
             else if (entry && !entry.timer) entry.timer = setTimeout(flush, 16);
-        } });
-        let proc: ReturnType<typeof Bun.spawn>;
-        try {
-            proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(false), ...opts.command.env } : terminalEnv(), terminal, detached: true });
-        } catch (e) {
-            terminal.close();
-            throw e;
-        }
+        } };
+        // Bun creates the PTY here, rather than taking a Bun.Terminal made beforehand, so that it
+        // makes it the shell's controlling terminal (setsid, then TIOCSCTTY): it does that only for
+        // a PTY it creates in spawn. Without one, Ctrl+C (SIGINT) and resizes (SIGWINCH) reach no
+        // process, and shells that need one for job control (dash, zsh) go without.
+        // (On a failed spawn, Bun closes the PTY it made.)
+        const proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(false), ...opts.command.env } : terminalEnv(), terminal: ptyOptions, detached: true });
+        const terminal = proc.terminal!;
         let guard: ReturnType<typeof parentGuard>;
         try { guard = parentGuard(proc.pid); }
         catch (e) { terminal.close(); proc.kill("SIGKILL"); throw e; }
         const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, login: opts.login ? { ...opts.login } : undefined, forgetOutput: opts.command ? () => { decoder = new TextDecoder(); } : undefined, process: proc, terminal, guard, size, out: "", outState: "ground", discard: false, total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
         entry = shellEntry;
         this.shells.set(id, shellEntry);
-        void proc.exited.then((exitCode) => {
+        shellEntry.held = "";
+        shellEntry.heldTimer = setTimeout(() => this.release(id, shellEntry), HOLD_MS);
+        void proc.exited.then(async (exitCode) => {
             opts.onExit?.();
+            // What it wrote just before exiting can still be on its way from the PTY: wait for the
+            // end of the output, but only briefly, as a background job it left can keep the PTY open.
+            await Promise.race([end, Bun.sleep(DRAIN_MS)]);
             if (this.shells.get(id) !== shellEntry) return;
             if (!opts.command) pending += decoder.decode();
             flush();
@@ -411,7 +431,18 @@ export class Terminals {
         // Ctrl+C, a key, a paste, before the shell is ready: the user has taken over, so the command isn't typed.
         // (Not on the terminal's own replies to the shell's queries.)
         if (s.typist?.pending && !isTerminalReply(data)) s.typist.cancel();
-        s.terminal.write(data);
+        if (s.held === undefined) s.terminal.write(data);
+        else if (s.held.length + data.length > 1_000_000) throw new RpcError("Terminal input is too large", "invalid");
+        else s.held += data;
+    }
+
+    /** The shell has started (or had HOLD_MS to): what was typed before then goes to it now. */
+    private release(id: string, s: Shell) {
+        if (s.held === undefined) return;
+        clearTimeout(s.heldTimer);
+        const text = s.held;
+        s.held = undefined;
+        if (text && this.shells.get(id) === s && s.exitCode === undefined) s.terminal.write(text);
     }
 
     /** The window has sent what was typed while the shell opened: input given at open may now be typed. */
@@ -501,6 +532,8 @@ export class Terminals {
         s.sink = undefined;
         if (s.timer) clearTimeout(s.timer);
         if (s.expires) clearTimeout(s.expires);
+        clearTimeout(s.heldTimer);
+        s.held = undefined;
         s.typist?.cancel();
         if (s.exitCode !== undefined) return;
         this.stoppingShells.add(s);

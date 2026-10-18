@@ -7,9 +7,17 @@ const iso = isolate();
 const { Terminals, terminalEnv, terminalSize } = await import("../src/server/terminals");
 import type { ServerEvent } from "../src/server/protocol";
 
-// A plain shell with an empty home: none of the user's own startup files run.
+// A plain shell with an empty home: none of the user's own startup files run. Named, not /bin/sh
+// (bash on macOS, dash on Ubuntu): dash has job control, and so Ctrl-C and resizes reach the
+// foreground job, only when the PTY is its controlling terminal, where bash would hide its absence.
+const SHELL = "/bin/dash";
 const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
-beforeAll(() => { process.env.SHELL = "/bin/sh"; process.env.HOME = tempDir("terminal-home-"); });
+beforeAll(() => {
+    process.env.SHELL = SHELL;
+    process.env.HOME = tempDir("terminal-home-");
+    // zsh, in the test below, offers to set itself up where it finds no startup files.
+    writeFileSync(join(process.env.HOME, ".zshrc"), "");
+});
 afterAll(() => {
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
     iso.cleanup();
@@ -101,8 +109,8 @@ describe("embedded terminals", () => {
             shells.resize(owner, "terminal-1", 104, 31);
             shells.write(owner, "terminal-1", "stty size\n");
             await until(() => owner.output().includes("31 104\r\n"));
-            shells.write(owner, "terminal-1", "sleep 30\n");
-            await Bun.sleep(100);
+            shells.write(owner, "terminal-1", "printf '__%s__\\n' sleeping; sleep 30\n");
+            await until(() => owner.output().includes("__sleeping__\r\n"));
             shells.write(owner, "terminal-1", "\x03");
             shells.write(owner, "terminal-1", "printf '__after_interrupt__\\n'\n");
             await until(() => owner.output().includes("__after_interrupt__\r\n"));
@@ -111,6 +119,69 @@ describe("embedded terminals", () => {
             expect(() => shells.write(owner, "terminal-1", "x")).toThrow("not open");
         } finally { shells.stop(); }
     });
+    test("the PTY is the controlling terminal of each shell, and of a login command, so Ctrl-C reaches the foreground job", async () => {
+        const shells = new Terminals();
+        try {
+            // macOS has all three; Ubuntu has dash and bash.
+            for (const shell of ["/bin/dash", "/bin/bash", "/bin/zsh"].filter((path) => existsSync(path))) {
+                process.env.SHELL = shell;
+                const owner = client(); const id = `ctty-${shell.split("/").at(-1)}`;
+                shells.open(owner, id, iso.home, 80, 24);
+                shells.write(owner, id, "(exec 3</dev/tty) && printf '__%s__\\n' ctty; printf '__%s__\\n' sleeping; sleep 30\n");
+                await until(() => owner.output().includes("__sleeping__\r\n"));
+                expect(owner.output()).toContain("__ctty__\r\n");
+                shells.write(owner, id, "\x03");
+                shells.write(owner, id, "printf '__%s__\\n' interrupted\n");
+                await until(() => owner.output().includes("__interrupted__\r\n"));
+                shells.close(owner, id);
+            }
+            const login = client();
+            shells.open(login, "ctty-login", iso.home, 80, 24, { command: { argv: ["/bin/sh", "-c", "(exec 3</dev/tty) && printf '__%s__\\n' ctty"], env: {} } });
+            await until(() => login.events.some((e) => e.type === "terminal.exit"));
+            expect(login.output()).toContain("__ctty__\r\n");
+        } finally {
+            process.env.SHELL = SHELL;
+            await shells.stop();
+        }
+    }, 20_000);
+    test("a Ctrl-C the window sends as the terminal opens, before the shell has started, doesn't stop the shell", async () => {
+        const shells = new Terminals(); const owner = client();
+        try {
+            shells.open(owner, "early-ctrl-c", iso.home, 80, 24);
+            shells.write(owner, "early-ctrl-c", "\x03");
+            // dash's prompt. Then a pause before typing: in CI on Linux, a line sent in the same write as the Ctrl-C never ran.
+            await until(() => owner.output().endsWith("$ "));
+            await Bun.sleep(300);
+            expect(owner.events.some((e) => e.type === "terminal.exit")).toBe(false);
+            shells.write(owner, "early-ctrl-c", "printf '__%s__\\n' alive\n");
+            await until(() => owner.output().includes("__alive__\r\n"));
+        } finally { await shells.stop(); }
+    });
+    test("a command typed as the terminal opens, before the shell has started, still runs", async () => {
+        const shells = new Terminals(); const owner = client();
+        try {
+            shells.open(owner, "typed-early", iso.home, 80, 24);
+            shells.write(owner, "typed-early", "printf '__%s__\\n' typed-early\n");
+            await until(() => owner.output().includes("__typed-early__\r\n"));
+        } finally { await shells.stop(); }
+    });
+    test("a command's last output, written just before it exits, arrives before its exit", async () => {
+        // On Linux the PTY can still hold it when the process has exited: in CI, 5 of 300 such
+        // commands had lost it when its exit was reported, before the terminal waited for the PTY's end.
+        const shells = new Terminals();
+        try {
+            for (let i = 0; i < 100; i++) {
+                const owner = client();
+                shells.open(owner, `fast-${i}`, iso.home, 80, 24, { command: { argv: ["/bin/sh", "-c", "printf '__%s__' fast"], env: {} } });
+                await until(() => owner.events.some((e) => e.type === "terminal.exit"));
+                // Only what came before the exit counts: output arriving after it would be too late for the window.
+                const exit = owner.events.findIndex((e) => e.type === "terminal.exit");
+                const before = owner.events.slice(0, exit).filter((e) => e.type === "terminal.data").map((e) => e.data).join("");
+                expect(before).toContain("__fast__");
+                shells.close(owner, `fast-${i}`);
+            }
+        } finally { await shells.stop(); }
+    }, 30_000);
     test("another window cannot write, resize or close; a connection without a window key closes its own shells only as it goes", async () => {
         const shells = new Terminals(); const owner = client(); const other = client();
         try {
