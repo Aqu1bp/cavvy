@@ -233,6 +233,16 @@ function cleanCut(text: string, from: number, state: EscapeState = "ground") {
     return { at: text.length, state };
 }
 
+/** The last place in `text` at or before `limit` where `cleanCut` could cut (`state`: the parser's at the start of `text`), or -1. */
+function cleanCutBefore(text: string, limit: number, state: EscapeState = "ground") {
+    let last = -1;
+    for (let at = 0; at <= limit && at <= text.length; at++) {
+        if (state === "ground" && !(at < text.length && /[\uDC00-\uDFFF]/.test(text[at]!))) last = at;
+        if (at < text.length) state = advanceEscape(state, text[at]!);
+    }
+    return last;
+}
+
 /** Descendants, deepest first, from ps's numeric-only process table. */
 export function terminalDescendants(table: string, root: number): number[] {
     const rows = table.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
@@ -319,7 +329,6 @@ export class Terminals {
             if (!pending) return;
             this.record(entry, pending);
             pending = "";
-            if (entry.unacked >= MAX_UNACKED) entry.holding = true;
             if (!entry.holding) this.sendRest(id, entry);
         };
         // The end of the PTY's output: every process holding it has gone, and all it wrote has been read.
@@ -371,8 +380,9 @@ export class Terminals {
             shellEntry.exitCode = exitCode;
             const cleanup = disarmGuard(guard).finally(() => this.stopping.delete(cleanup));
             this.stopping.add(cleanup);
-            // Nothing follows: what was held back goes now. With no window attached, it waits for one.
-            this.sendRest(id, shellEntry);
+            // Nothing follows: what was held back goes now (at most KEEP of it), past the limit if need be.
+            // With no window attached, it waits for one.
+            this.sendRest(id, shellEntry, true);
             shellEntry.sink?.send({ type: "terminal.exit", id, exitCode });
         });
         return { id, cwd };
@@ -395,27 +405,46 @@ export class Terminals {
         }
     }
 
-    /** What the window hasn't been sent yet: its latest part only (KEEP), if it's fallen far behind. */
-    private sendRest(id: string, s: Shell) {
+    /**
+     * What the window hasn't been sent yet: its latest part only (KEEP), if it's fallen far behind.
+     * Never past MAX_UNACKED undrawn, unless `final`: what doesn't fit waits (`holding`) for the window's
+     * acks. A skip is sent whole or not at all; the rest of a plain send is cut where the limit falls.
+     */
+    private sendRest(id: string, s: Shell, final = false) {
         if (!s.sink || s.sent === s.total) return;
         const start = s.total - s.out.length;
         let from = s.sent;
         let note = "";
+        let discard = s.discard;
         const skipped = s.total - from > KEEP || (from < start && !s.discard);
         if (skipped || s.discard) {
             const cut = cleanCut(s.out, Math.max(0, (skipped ? s.out.length - KEEP : from - start)), s.outState);
             from = start + cut.at;
-            s.discard = cut.state !== "ground";
+            discard = cut.state !== "ground";
             if (skipped) note = `\r\n\x1b[0m[${(from - s.sent).toLocaleString("en-US")} characters of output skipped while the terminal caught up]\r\n`;
         }
-        this.send(id, s, note + s.out.slice(from - start), skipped);
+        let end = s.total;
+        const room = MAX_UNACKED - s.unacked;
+        if (!final && note.length + end - from > room) {
+            // Cut at a clean place, as a replay is: not inside an escape or a surrogate pair.
+            const at = skipped ? -1 : cleanCutBefore(s.out, from - start + room, s.outState);
+            if (at <= from - start) {
+                s.holding = true;
+                return;
+            }
+            end = start + at;
+        }
+        s.discard = discard;
+        this.send(id, s, note + s.out.slice(from - start, end - start), skipped, end);
+        // The window's acks send the rest.
+        if (end < s.total) s.holding = true;
     }
 
-    /** `pos`: where in the output the window now is, which it gives back when it attaches again. */
-    private send(id: string, s: Shell, data: string, reset = false) {
-        s.sent = s.total;
+    /** `end`: where in the output the window now is, which it gives back when it attaches again. */
+    private send(id: string, s: Shell, data: string, reset = false, end = s.total) {
+        s.sent = end;
         s.unacked += data.length;
-        s.sink!.send({ type: "terminal.data", id, data, pos: s.total, ...(reset ? { reset: true } : {}) });
+        s.sink!.send({ type: "terminal.data", id, data, pos: end, ...(reset ? { reset: true } : {}) });
     }
 
     /** Attached to this connection, and running. */
