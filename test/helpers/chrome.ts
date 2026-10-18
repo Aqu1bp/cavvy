@@ -11,7 +11,7 @@
 export type ChromeLimits = { startupMs: number; fixtureMs: number };
 export type ChromeTimings = Record<string, number>;
 
-export async function chromeFixture(browser: { exitCode: number | null }, profile: string, url: string, limits: ChromeLimits, timings: ChromeTimings = {}): Promise<{ status: string; message: string }> {
+export async function chromeFixture(browser: { exitCode: number | null; signalCode?: string | null }, profile: string, url: string, limits: ChromeLimits, timings: ChromeTimings = {}): Promise<{ status: string; message: string }> {
     const started = performance.now();
     const mark = (name: string) => { timings[name] = Math.round(performance.now() - started); };
     const stop = new AbortController();
@@ -28,7 +28,8 @@ export async function chromeFixture(browser: { exitCode: number | null }, profil
         let endpoint: RegExpMatchArray | null = null;
         while (!endpoint) {
             signal.throwIfAborted();
-            if (browser.exitCode !== null) throw new Error(`Chrome exited before connecting (${browser.exitCode})`);
+            // A Chrome killed by a signal has no exit code, only its signal.
+            if (browser.exitCode !== null || browser.signalCode) throw new Error(`Chrome exited before connecting (${browser.exitCode ?? browser.signalCode})`);
             const portFile = await Bun.file(`${profile}/DevToolsActivePort`).text().catch(() => "");
             endpoint = portFile.match(/^(\d+)\n(\/devtools\/browser\/[^\s]+)/);
             if (!endpoint) await Bun.sleep(25);
@@ -37,7 +38,7 @@ export async function chromeFixture(browser: { exitCode: number | null }, profil
         const address = `127.0.0.1:${endpoint[1]}`;
         const expected = `ws://${address}${endpoint[2]}`;
         const version = await fetch(`http://${address}/json/version`, { signal }).then((r) => r.json()) as { webSocketDebuggerUrl?: string };
-        if (version.webSocketDebuggerUrl !== expected || browser.exitCode !== null) throw new Error("DevTools endpoint is not this test's Chrome");
+        if (version.webSocketDebuggerUrl !== expected || browser.exitCode !== null || browser.signalCode) throw new Error("DevTools endpoint is not this test's Chrome");
         mark("jsonVersion");
 
         const ws = socket = new WebSocket(expected);
