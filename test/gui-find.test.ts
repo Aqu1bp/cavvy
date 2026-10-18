@@ -4,13 +4,21 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { chromeFixture } from "./helpers/chrome";
+import { chromeFixture, type ChromeTimings } from "./helpers/chrome";
 
 const chrome = [process.env.HARNESS_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((p) => p && existsSync(p));
 
 // As root Chrome refuses its sandbox. On GitHub's runners it can't make one either: Ubuntu's AppArmor blocks the
 // user namespaces it needs ("No usable sandbox!"), and the runner is a throwaway machine.
 const sandboxArgs = (uid: number | undefined, ci = false) => uid === 0 || ci ? ["--no-sandbox"] : [];
+
+// Chrome's startup and the page get separate limits (see test/helpers/chrome.ts). Measured on GitHub's 2-core Linux runners
+// (#150): Chrome's install is 667 MB, and the first launch on a fresh runner reads it from a cold disk, taking 6-20 s to open
+// DevTools (reading the install beforehand takes 12-19 s; it is not D-Bus). Later launches take 0.25 s. The page takes 7-9 s
+// from load to result, about 6 s of which are the fixture's own waits, and the same cold or warm. Each limit is several times the
+// slowest measurement, so a slow runner passes and a stuck Chrome or page still fails.
+const chromeLimits = { startupMs: 90_000, fixtureMs: 30_000 };
+const buildLimitMs = 30_000;
 type Browser = Pick<ReturnType<typeof Bun.spawn>, "exitCode" | "exited" | "kill">;
 
 async function waitForExit(browser: Browser, ms: number): Promise<boolean> {
@@ -103,6 +111,7 @@ test("Chrome cleanup releases resources even when termination or server stop fai
     }
 });
 
+// The test's own limit is the sum of the build's, Chrome's startup and the page's, plus 20 s for cleanup.
 test.skipIf(!chrome)("find reveals live arguments and linked paths without counting editor controls", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-"));
     const profile = join(scratch, "chrome");
@@ -120,10 +129,12 @@ test.skipIf(!chrome)("find reveals live arguments and linked paths without count
         // Vite's custom Error initialization fails in Bun after the full suite
         // has run, though it works in a fresh process. Keep compilation isolated.
         const vite = resolve(import.meta.dir, "../gui/node_modules/vite/dist/node/index.js");
+        const buildStart = performance.now();
         const built = Bun.spawnSync([process.execPath, "--no-env-file", "-e",
             `import { build } from ${JSON.stringify(vite)}; await build(${JSON.stringify(config)});`,
-        ], { timeout: 30_000, stdout: "pipe", stderr: "pipe" });
+        ], { timeout: buildLimitMs, stdout: "pipe", stderr: "pipe" });
         if (built.exitCode !== 0) throw new Error(`Find fixture build failed (${built.exitCode}): ${built.stderr.toString()}${built.stdout.toString()}`);
+        const buildMs = Math.round(performance.now() - buildStart);
         server = Bun.serve({
             hostname: "127.0.0.1", port: 0,
             async fetch(request) {
@@ -136,8 +147,10 @@ test.skipIf(!chrome)("find reveals live arguments and linked paths without count
             ...sandboxArgs(process.getuid?.(), !!process.env.CI),
             "--disable-background-networking", `--user-data-dir=${profile}`, "--remote-debugging-port=0",
         ], { stdout: "ignore", stderr: Bun.file(join(scratch, "chrome.log")) });
+        const timings: ChromeTimings = {};
         try {
-            const result = await chromeFixture(browser, profile, `http://127.0.0.1:${server.port}/test/live-find.html`, AbortSignal.timeout(30_000));
+            const result = await chromeFixture(browser, profile, `http://127.0.0.1:${server.port}/test/live-find.html`, chromeLimits, timings);
+            console.log(`find fixture timings (ms): build ${buildMs}, ${JSON.stringify(timings)}`);
             expect(result.status, result.message).toBe("passed");
         } catch (e) {
             // Why Chrome didn't connect is in its own log, which cleanup deletes.
@@ -147,4 +160,4 @@ test.skipIf(!chrome)("find reveals live arguments and linked paths without count
     } finally {
         await cleanup(browser, server, scratch);
     }
-}, 60_000);
+}, buildLimitMs + chromeLimits.startupMs + chromeLimits.fixtureMs + 20_000);
