@@ -149,6 +149,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         reason = await agent.run(parts, { signal: ac.signal, display: o.prompt });
     } catch (e) {
         reason = "error";
+        tally.errors.push((e as Error).message);
         stderr(`error: ${(e as Error).message}`);
     } finally {
         process.off("SIGINT", onSig);

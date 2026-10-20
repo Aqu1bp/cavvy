@@ -8,9 +8,8 @@ import type { Agent, AgentEvent, PermissionRequest, PermissionResponse, TurnEndR
 import { findSession, listSessions } from "../agent/session";
 import { loadHarnessEnv, preloadKeys } from "../auth/credentials";
 import { harnessHome } from "../config/paths";
-import { loadScope } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustForSession } from "../config/trust";
-import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { PERMISSION_MODES, startMode, type PermissionMode } from "../permissions/modes";
 import { BUILTIN_TOOLS } from "../tools/index";
 import type { Tool } from "../tools/types";
 import { isAgentBackend } from "../backends/types";
@@ -40,15 +39,18 @@ export interface RunControl {
 /** Session files open in a query of this process: a second one would write over the first. */
 const openSessions = new Set<string>();
 
-let envLoaded: Promise<string | undefined> | undefined;
+/** The .env notes have been reported (by the first query). */
+let noted = false;
 
-/** The harness's own .env files and stored keys, once a process, as the CLI loads them. Returns the legacy .env model. */
-function loadEnv(): Promise<string | undefined> {
+let envLoaded: Promise<{ legacyModel?: string; notes: string[] }> | undefined;
+
+/** The harness's own .env files and stored keys, once a process, as the CLI loads them: the legacy .env model, and notes about them for the first query. */
+function loadEnv(): Promise<{ legacyModel?: string; notes: string[] }> {
     return (envLoaded ??= (async () => {
         const installDir = resolve(dirname(import.meta.dir), "..");
         const env = loadHarnessEnv([resolve(harnessHome(), ".env"), resolve(installDir, ".env")]);
         await preloadKeys();
-        return env.legacyModel;
+        return env;
     })());
 }
 
@@ -136,6 +138,46 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
     else userAbort?.addEventListener("abort", onUserAbort, { once: true });
     closed.signal.addEventListener("abort", () => turn?.abort(), { once: true });
 
+    // ---- input: a string is one turn; an iterable is read from the start, alongside the turns.
+    let inputDone = false;
+    let inputError: unknown;
+    let reading = false;
+    function readInput() {
+        if (reading) return;
+        reading = true;
+        if (typeof params.prompt === "string") {
+            pending.unshift(params.prompt);
+            inputDone = true;
+            return;
+        }
+        const it = params.prompt[Symbol.asyncIterator]();
+        // Closing doesn't wait for a message that may never come.
+        const stop = () => void Promise.resolve()
+            .then(() => it.return?.())
+            .catch(() => {});
+        closed.signal.addEventListener("abort", stop, { once: true });
+        void (async () => {
+            try {
+                while (!closed.signal.aborted) {
+                    const r = await it.next();
+                    if (r.done || closed.signal.aborted) break;
+                    pending.push(textOfInput(r.value));
+                    poke();
+                }
+            } catch (e) {
+                if (!closed.signal.aborted) {
+                    inputError = e;
+                    closed.abort();
+                }
+            } finally {
+                inputDone = true;
+                closed.signal.removeEventListener("abort", stop);
+                poke();
+            }
+        })();
+    }
+    closed.signal.addEventListener("abort", poke, { once: true });
+
     const done = run().then(
         () => ((accepting = false), sink.end()),
         (e) => ((accepting = false), sink.end(e)),
@@ -147,21 +189,25 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
         let started: Promise<unknown> | undefined;
         let held: string | undefined;
         let tally: TurnTally | undefined;
-        const warn = (message: string) => sink.push({ type: "system", subtype: "notice", level: "warn", message });
+        // Warnings from before the init message wait for it: init comes first.
+        let early: string[] | undefined = [];
+        const warn = (message: string) => (early ? early.push(message) : sink.push({ type: "system", subtype: "notice", level: "warn", message }));
         try {
             checkOptions(o);
             const cwd = resolve(o.cwd ?? process.cwd());
-            const fallbackModel = await loadEnv();
+            readInput();
+            const env = await loadEnv();
+            if (!noted) for (const n of env.notes) warn(n);
+            noted = true;
 
-            // Trust, as `harness -p`: a folder with nothing to protect is trusted for the session.
+            // Trust, as `harness -p`, but a folder trusted for having nothing to protect is trusted for
+            // this query only: one that has project configuration by the next query is judged again.
             let trusted = o.trusted;
-            if (trusted === undefined) {
-                trusted = isTrusted(cwd);
+            if (trusted) trustForSession(cwd);
+            else if (trusted === undefined) {
                 const found = projectConfigSummary(cwd);
-                if (!trusted && !found.length) {
-                    trustForSession(cwd);
-                    trusted = true;
-                } else if (!trusted) warn(`This folder isn't trusted, so ${found.join(", ")} and its memory files are ignored (except deny/ask rules). Pass trusted: true, or run harness there once to trust it.`);
+                trusted = isTrusted(cwd) || !found.length;
+                if (!trusted) warn(`This folder isn't trusted, so ${found.join(", ")} and its memory files are ignored (except deny/ask rules). Pass trusted: true, or run harness there once to trust it.`);
             }
 
             let resumeFile: string | undefined;
@@ -177,7 +223,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                     cwd,
                     trusted,
                     modelRef: o.model,
-                    fallbackModel,
+                    fallbackModel: env.legacyModel,
                     resumeFile,
                     allowedTools: o.allowedTools ?? [],
                     disallowedTools: o.disallowedTools ?? [],
@@ -202,11 +248,9 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             resolveId(s.session.meta.id);
 
             // ---- permission mode: options > settings (bypass from settings only from the user's own, or from options.settings)
-            let mode: PermissionMode = pendingMode ?? o.permissionMode ?? s.settings.permissions?.defaultMode ?? "default";
-            if (!pendingMode && !o.permissionMode && mode === "bypassPermissions" && o.settings?.permissions?.defaultMode !== "bypassPermissions" && loadScope("user", cwd).permissions?.defaultMode !== "bypassPermissions") {
-                warn("Ignored defaultMode bypassPermissions from project settings; only your user settings or the permissionMode option can enable it.");
-                mode = "default";
-            }
+            const start = startMode(pendingMode ?? o.permissionMode, s.settings, cwd, o.settings?.permissions?.defaultMode === "bypassPermissions");
+            let mode = start.mode;
+            if (start.ignoredBypass) warn("Ignored defaultMode bypassPermissions from project settings; only your user settings or the permissionMode option can enable it.");
             setMode = (m) => (mode = m);
 
             const custom = (o.tools ?? []).map(toAgentTool);
@@ -248,35 +292,10 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 ...(backend ? { agent_backend: s.provider.name } : {}),
                 mcp_servers: [...s.mcp.servers.values()].map((m) => ({ name: m.name, status: m.status })),
             });
+            const notes = early;
+            early = undefined;
+            for (const message of notes) warn(message);
             started = startRun(s, warn);
-
-            // ---- input: a string is one turn; an iterable is read alongside the turns, for steering.
-            let inputDone = false;
-            let inputError: unknown;
-            closed.signal.addEventListener("abort", poke, { once: true });
-            if (typeof params.prompt === "string") {
-                pending.push(params.prompt);
-                inputDone = true;
-            } else {
-                const it = params.prompt[Symbol.asyncIterator]();
-                void (async () => {
-                    try {
-                        while (!closed.signal.aborted) {
-                            const r = await it.next();
-                            if (r.done) break;
-                            pending.push(textOfInput(r.value));
-                            poke();
-                        }
-                    } catch (e) {
-                        inputError = e;
-                        closed.abort();
-                    } finally {
-                        inputDone = true;
-                        poke();
-                        if (closed.signal.aborted) void Promise.resolve(it.return?.()).catch(() => {});
-                    }
-                })();
-            }
 
             while (!closed.signal.aborted) {
                 if (!pending.length) {
@@ -305,9 +324,14 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             accepting = false;
             if (inputError) throw inputError;
         } catch (e) {
+            // What was said before it failed (an MCP server that didn't start, say) still helps.
+            for (const message of early ?? []) sink.push({ type: "system", subtype: "notice", level: "warn", message });
+            early = undefined;
             rejectId(e);
             throw e;
         } finally {
+            // The input stops with the query (its generator's finally runs once it next yields or returns).
+            closed.abort();
             userAbort?.removeEventListener("abort", onUserAbort);
             if (setup) {
                 await endRun(setup, agent, started, warn).catch(() => {});

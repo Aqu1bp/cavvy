@@ -17,7 +17,7 @@ import { loadHarnessEnv, preloadKeys, getKey, setKey, removeKey, storageDescript
 import { detectKeyProvider, validateKey } from "./auth/detect";
 import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
-import { MODE_INFO, parseMode, type PermissionMode } from "./permissions/modes";
+import { MODE_INFO, parseMode, startMode, type PermissionMode } from "./permissions/modes";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
 import { checkVertex, gcloudAccounts } from "./auth/gcloud";
@@ -748,11 +748,8 @@ async function main() {
     // Permission mode: flags > settings. Bypass from settings only counts from the user's own file.
     const settings = loadSettings(cwd, { trusted });
     const notes = [...env.notes];
-    let mode: PermissionMode = f.mode ?? settings.permissions?.defaultMode ?? "default";
-    if (!f.mode && mode === "bypassPermissions" && loadScope("user", cwd).permissions?.defaultMode !== "bypassPermissions") {
-        notes.push("Ignored defaultMode bypassPermissions from project settings; only your user settings or --dangerously-skip-permissions can enable it.");
-        mode = "default";
-    }
+    let { mode, ignoredBypass } = startMode(f.mode, settings, cwd);
+    if (ignoredBypass) notes.push("Ignored defaultMode bypassPermissions from project settings; only your user settings or --dangerously-skip-permissions can enable it.");
     if (f.skipPermissions) mode = "bypassPermissions";
     const allowBypass = f.skipPermissions || f.mode === "bypassPermissions" || Boolean(loadScope("user", cwd).permissions?.allowBypass) || mode === "bypassPermissions";
 

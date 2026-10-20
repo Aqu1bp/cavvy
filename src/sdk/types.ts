@@ -84,7 +84,10 @@ export interface Options {
 }
 
 export interface QueryParams {
-    /** One turn, or a conversation: each message is a turn, and those sent while a turn runs join it. */
+    /**
+     * One turn, or a conversation: each message is a turn, taken in order once
+     * the turn before it ends. To add to the running turn, use Query.steer().
+     */
     prompt: string | AsyncIterable<SDKUserMessage>;
     options?: Options;
 }

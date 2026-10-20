@@ -6,6 +6,10 @@ import type { SDKMessage } from "./messages";
 import type { PermissionMode } from "../permissions/modes";
 import type { QueryParams } from "./types";
 import type { RunControl } from "./runner";
+import { HarnessSdkError } from "./errors";
+
+// As in permissions/modes.ts, which this light module doesn't load.
+const MODES: readonly PermissionMode[] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
 
 export interface Query extends AsyncGenerator<SDKMessage, void, undefined> {
     /** Stop the running turn. Its result has subtype "error_aborted"; a streaming query goes on to the next message. */
@@ -31,7 +35,8 @@ export interface Query extends AsyncGenerator<SDKMessage, void, undefined> {
 
 class QueryImpl implements Query {
     private queue: SDKMessage[] = [];
-    private waiting: (() => void) | undefined;
+    /** next() calls waiting for a message, in order. */
+    private waiting: (() => void)[] = [];
     private ended = false;
     private failure: { error: unknown } | undefined;
     private control: RunControl | undefined;
@@ -63,6 +68,7 @@ class QueryImpl implements Query {
                 },
             });
             c.sessionId.then(this.idResolve, this.idReject);
+            // Checked when it was set.
             if (this.mode) c.setPermissionMode(this.mode);
             for (const m of this.early.splice(0)) c.steer(m);
             this.control = c;
@@ -72,12 +78,19 @@ class QueryImpl implements Query {
     }
 
     private wake() {
-        const w = this.waiting;
-        this.waiting = undefined;
-        w?.();
+        for (const w of this.waiting.splice(0)) w();
     }
 
-    async next(): Promise<IteratorResult<SDKMessage, void>> {
+    /** next() calls answer in the order they were made, as a generator's do. */
+    private chain: Promise<unknown> = Promise.resolve();
+
+    next(): Promise<IteratorResult<SDKMessage, void>> {
+        const r = this.chain.then(() => this.take());
+        this.chain = r.catch(() => {});
+        return r;
+    }
+
+    private async take(): Promise<IteratorResult<SDKMessage, void>> {
         if (!this.closed && !this.starting) await this.start();
         for (;;) {
             if (this.queue.length) return { done: false, value: this.queue.shift()! };
@@ -89,7 +102,7 @@ class QueryImpl implements Query {
                 }
                 return { done: true, value: undefined };
             }
-            await new Promise<void>((r) => (this.waiting = r));
+            await new Promise<void>((r) => this.waiting.push(r));
         }
     }
 
@@ -126,6 +139,7 @@ class QueryImpl implements Query {
     }
 
     async setPermissionMode(mode: PermissionMode) {
+        if (!MODES.includes(mode)) throw new HarnessSdkError(`Unknown permission mode "${mode}". Use one of: ${MODES.join(", ")}.`);
         if (this.control) this.control.setPermissionMode(mode);
         else this.mode = mode;
     }

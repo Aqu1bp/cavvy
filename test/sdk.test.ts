@@ -4,7 +4,7 @@
 // permissions, custom tools, resume, and concurrent queries.
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -607,6 +607,78 @@ describe("concurrent queries", () => {
         await expect(collect(query({ prompt: "x", options: { cwd, model: MODEL, resume: id } }))).rejects.toThrow(/open in another query/);
         input.end();
         await reading;
+    });
+});
+
+describe("found in review", () => {
+    test("steer() before iterating runs after the prompt, not before it", async () => {
+        const cwd = project();
+        script = (req) => ({ text: `re: ${lastSentOf(req).includes("B") ? "B" : "A"}` });
+        const q = query({ prompt: "A", options: { cwd, model: MODEL, persistSession: false } });
+        expect(await q.steer("B")).toBe(true);
+        expect(results(await collect(q)).map((r) => r.result)).toEqual(["re: A", "re: B"]);
+    });
+
+    test("setPermissionMode checks the mode before the query starts; every mode is accepted", async () => {
+        const { PERMISSION_MODES } = await import("../src/permissions/modes");
+        const q = query({ prompt: "x", options: { cwd: project(), model: MODEL, persistSession: false } });
+        await expect(q.setPermissionMode("bogus" as any)).rejects.toThrow(HarnessSdkError);
+        for (const m of PERMISSION_MODES) await q.setPermissionMode(m);
+        const ms = await collect(q);
+        expect(ms[0]).toMatchObject({ subtype: "init", permission_mode: "bypassPermissions" });
+    });
+
+    test("init comes first, even with warnings; a folder trusted for being empty is judged again by the next query", async () => {
+        const cwd = project();
+        await collect(query({ prompt: "x", options: { cwd, model: MODEL, persistSession: false } }));
+        // Project settings appear after the first query.
+        mkdirSync(join(cwd, ".harness"), { recursive: true });
+        writeFileSync(join(cwd, ".harness", "settings.json"), JSON.stringify({ env: { FROM_PROJECT: "yes" } }));
+        script = (_req, n) => (n === 1 ? { calls: [{ id: "c1", name: "Bash", args: { command: "echo [$FROM_PROJECT]" } }] } : { text: "ok" });
+        requests.length = 0;
+        const ms = await collect(query({ prompt: "x", options: { cwd, model: MODEL, persistSession: false, permissionMode: "bypassPermissions" } }));
+        expect(ms[0]).toMatchObject({ type: "system", subtype: "init" });
+        expect(ms[1]).toMatchObject({ type: "system", subtype: "notice", level: "warn" });
+        expect((ms[1] as any).message).toContain("isn't trusted");
+        expect(of(ms, "tool_result")[0]!.content).toContain("[]");
+
+        // Asked for, the project's settings load.
+        requests.length = 0;
+        const trusted = await collect(query({ prompt: "x", options: { cwd, model: MODEL, persistSession: false, permissionMode: "bypassPermissions", trusted: true } }));
+        expect(of(trusted, "tool_result")[0]!.content).toContain("[yes]");
+    });
+
+    test("persistSession: false with resume leaves the session file as it was", async () => {
+        const cwd = project();
+        const first = query({ prompt: "keep me", options: { cwd, model: MODEL } });
+        await collect(first);
+        const id = await first.sessionId;
+        const { findSession } = await import("../src/agent/session");
+        const file = findSession(cwd, id)!;
+        const before = readFileSync(file, "utf-8");
+        const again = await collect(query({ prompt: "don't save me", options: { cwd, model: MODEL, resume: id, persistSession: false } }));
+        expect(results(again)[0]!.subtype).toBe("success");
+        expect(lastSent()).toContain("keep me");
+        expect(readFileSync(file, "utf-8")).toBe(before);
+    });
+
+    test("next() calls in flight together each get a message", async () => {
+        const q = query({ prompt: "x", options: { cwd: project(), model: MODEL, persistSession: false } });
+        const [a, b, c] = await Promise.all([q.next(), q.next(), q.next()]);
+        expect([a, b, c].map((r) => (r.done ? "done" : r.value.type))).toEqual(["system", "assistant", "result"]);
+        expect((await q.next()).done).toBe(true);
+    });
+
+    test("close() doesn't wait for an input that never comes", async () => {
+        async function* input() {
+            yield "first";
+            await new Promise(() => {});
+        }
+        const q = query({ prompt: input(), options: { cwd: project(), model: MODEL, persistSession: false } });
+        for await (const m of q) if (m.type === "result") break;
+        const t = Date.now();
+        await q.close();
+        expect(Date.now() - t).toBeLessThan(2000);
     });
 });
 

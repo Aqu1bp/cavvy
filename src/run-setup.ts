@@ -163,7 +163,12 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     const mainModel = model;
 
     // ---- session and tools
-    const session: Session = resumed ?? Session.create(o.cwd, { persist: o.persist ?? true });
+    // Not saved: a resumed session goes on in a copy, and the file stays as it was.
+    let session: Session;
+    if (resumed && o.persist === false) {
+        session = resumed.fork({ persist: false });
+        resumed.release();
+    } else session = resumed ?? Session.create(o.cwd, { persist: o.persist ?? true });
     if (o.fastMode !== undefined) session.setFastMode(o.fastMode);
     const toolState: ToolState = { cwd: o.cwd, projectRoot: o.cwd, fileState: new Map(), todos: [], shells: new Map() };
     const checker = new PermissionChecker(() => settings, o.cwd);
