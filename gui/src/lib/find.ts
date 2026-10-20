@@ -6,6 +6,7 @@ import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { toolLabel } from "../components/blocks/Activity";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
+import { splitComments } from "./review-comments";
 
 /** More than this and the count says "N+". */
 export const MAX_MATCHES = 5000;
@@ -61,7 +62,11 @@ function blockText(b: Block): string | undefined {
 
 export function findParts(turn: Turn): { part: string; text: string }[] {
     const out: { part: string; text: string }[] = [];
-    if (turn.prompt?.text) out.push({ part: "prompt", text: turn.prompt.text });
+    if (turn.prompt?.text) {
+        // As drawn: the typed text, then each review comment's text (their markup isn't shown).
+        const { text, comments } = splitComments(turn.prompt.text);
+        out.push({ part: "prompt", text: [text, ...comments.map((c) => c.text)].filter(Boolean).join("\n") });
+    }
     for (const b of turn.blocks) {
         const text = blockText(b);
         if (text) out.push({ part: b.id, text });

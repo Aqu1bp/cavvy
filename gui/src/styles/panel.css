@@ -493,6 +493,16 @@ a.prow:hover,
     color: var(--fg-subtle);
 }
 
+.rf-comments {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+    font-size: 0.75rem;
+    color: var(--accent-text);
+    font-variant-numeric: tabular-nums;
+}
+
 .rf-text {
     display: flex;
     flex-direction: column;

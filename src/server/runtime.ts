@@ -136,6 +136,14 @@ export function cleanTitle(title: string): string {
 /** A first message that's only a greeting, a thanks, a yes or a test: nothing to name a session after. */
 const SMALL_TALK = /^(h(i+|ello|ey+|iya|owdy)|yo|sup|hola|greetings|good (morning|afternoon|evening|day)|thanks?( you)?( so much| a lot)?|thx|ty|ok(ay)?|k|cool|nice|great|yes|no|yep|nope|sure|test(ing)?|ping|hm+|\?+)(\s+(there|all|everyone|again|claude|harness|buddy|friend|mate))?[\s!.?,:)(]*$/i;
 
+/**
+ * A prompt with the GUI's review comments (<review_comment> blocks, see gui/src/lib/review-comments.ts)
+ * said in words: each comment's text, without its markup and the lines it quotes. For titles.
+ */
+export function reviewGist(prompt: string): string {
+    return prompt.includes("<review_comment ") ? prompt.replace(/<review_comment [^>]*>\n([\s\S]*?)\n\n`{3,}diff\n[\s\S]*?<\/review_comment>/g, "$1") : prompt;
+}
+
 /** Whether a prompt says enough to name the session after (a later one is tried if not). */
 export function titleWorthy(prompt: string): boolean {
     const t = prompt.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
@@ -409,7 +417,8 @@ export class Runtime {
 
     /** The first prompt, for sessions without a title. */
     firstPrompt(): string | undefined {
-        return this.view.turns.find((t) => t.prompt)?.prompt?.text;
+        const text = this.view.turns.find((t) => t.prompt)?.prompt?.text;
+        return text === undefined ? undefined : reviewGist(text);
     }
 
     private newId(): string {
@@ -2242,7 +2251,7 @@ export class Runtime {
         this.engine.sessionChanged(this);
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
         // A goal's turns are about its condition, not the instructions around it.
-        const about = opts.about ?? (opts.goal ? (this.goal.condition ?? display) : opts.kind === "command" ? text : display);
+        const about = opts.about ?? (opts.goal ? (this.goal.condition ?? display) : reviewGist(opts.kind === "command" ? text : display));
         if (opts.kind !== "wake" && !this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;

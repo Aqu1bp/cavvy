@@ -1,8 +1,10 @@
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { CirclePause, CornerDownRight, GripVertical, ListEnd, Paperclip, Pencil, X } from "lucide-solid";
 import type { SessionState } from "@shared/protocol";
 import { reportError, rpc, toast } from "../state/app";
 import { dropTarget, queueRow, stepTarget } from "../lib/queue";
+import { splitComments } from "../lib/review-comments";
+import { plural } from "../lib/format";
 
 const DRAG_TYPE = "application/x-harness-queued";
 
@@ -115,7 +117,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                             <span class="queue-icon" title={info().detail} aria-hidden="true">
                                 {mode() === "held" ? <CirclePause size={14} /> : mode() === "steer" || mode() === undefined ? <CornerDownRight size={14} /> : <ListEnd size={14} />}
                             </span>
-                            <span class="queue-text truncate">{q || (p.state.queuedAttached?.[i()] ? "" : "(empty)")}</span>
+                            <QueuedText text={q} empty={p.state.queuedAttached?.[i()] ? "" : "(empty)"} />
                             <Show when={p.state.queuedAttached?.[i()]}>
                                 {(label) => (
                                     <span class="queue-attached truncate" title={label()}>
@@ -148,5 +150,18 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                 <div class="queue-drop-end" aria-hidden="true" />
             </Show>
         </div>
+    );
+}
+
+/** A queued message as typed, its review comments counted rather than spelled out. */
+function QueuedText(p: { text: string; empty: string }) {
+    const parts = createMemo(() => splitComments(p.text));
+    return (
+        <span class="queue-text truncate">
+            {parts().text || (parts().comments.length ? "" : p.empty)}
+            <Show when={parts().comments.length}>
+                <span class="queue-attached"> {parts().text ? "· " : ""}{plural(parts().comments.length, "review comment")}</span>
+            </Show>
+        </span>
     );
 }

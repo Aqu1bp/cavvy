@@ -1,4 +1,5 @@
 import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { promptPreview } from "../lib/review-comments";
 import { AlertTriangle, FileMinus2, FilePen, History } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast } from "../state/app";
@@ -120,7 +121,7 @@ export function RewindDialog() {
                                 {(t) => (
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
                                         <History size={14} />
-                                        <span class="truncate">{t.text || "(empty prompt)"}</span>
+                                        <span class="truncate">{promptPreview(t.text) || "(empty prompt)"}</span>
                                         <span class="muted small">{changedLabel(t)}</span>
                                     </button>
                                 )}

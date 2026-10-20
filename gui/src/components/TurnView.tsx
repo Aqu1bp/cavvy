@@ -5,6 +5,7 @@ import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, No
 import { duration, turnDuration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { formatSize } from "../lib/attachments";
+import { linesLabel, linesPhrase, splitComments } from "../lib/review-comments";
 import { prefs } from "../state/prefs";
 import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
@@ -46,7 +47,10 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
 
 export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (index: number) => void }) {
     const [expanded, setExpanded] = createSignal(false);
-    const text = () => p.turn.prompt?.text ?? "";
+    const raw = () => p.turn.prompt?.text ?? "";
+    /** What was typed, and the review comments sent with it (drawn as cards, not markup). */
+    const parts = createMemo(() => splitComments(raw()));
+    const text = () => parts().text;
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
     createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
@@ -62,7 +66,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     return (
         <div class="user-row">
             <div class="user-actions">
-                <CopyButton text={text} label="Copy prompt" />
+                <CopyButton text={raw} label="Copy prompt" />
                 <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
                     <button class="icon-btn" title="Rewind to before this prompt" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
                         <RotateCcw size={14} />
@@ -81,6 +85,21 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                     <span class="user-text mono">
                         <SquareTerminal size={13} /> {text().slice(1)}
                     </span>
+                </Show>
+                <Show when={parts().comments.length}>
+                    <div class="prompt-comments">
+                        <For each={parts().comments}>
+                            {(c) => (
+                                <div class="prompt-comment">
+                                    <button class="prompt-comment-where mono" data-find-skip title={`Show ${c.path} in the review`} aria-label={`Comment on ${c.path}, ${linesPhrase(c)}. Show the file in the review`} onClick={() => openReview(c.path)}>
+                                        <MessageSquareText size={12} aria-hidden="true" />
+                                        <span class="truncate">{c.path}:{linesLabel(c)}</span>
+                                    </button>
+                                    <span class="prompt-comment-text">{c.text}</span>
+                                </div>
+                            )}
+                        </For>
+                    </div>
                 </Show>
                 <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
                     <span class="prompt-attachments" data-find-skip>
