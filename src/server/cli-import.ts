@@ -6,8 +6,8 @@
 // already synced up to those messages: the next turn resumes it natively
 // (--resume, thread/resume) and nothing imported is sent again.
 
-import { lstatSync, readdirSync, realpathSync } from "fs";
-import { join, resolve } from "path";
+import { lstatSync, readdirSync, realpathSync, rmSync } from "fs";
+import { dirname, join, resolve } from "path";
 import { projectStateDir } from "../config/paths";
 import { cliLinks, Session, type CliLink } from "../agent/session";
 import { defaultModelFrom, type ProviderListing } from "../providers/models";
@@ -135,8 +135,12 @@ export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; t
         session.setBackendSession(entry.source, entry.id, session.messages.length, accountRealPath(account(entry.source).folder));
         // Dedup must only see the import once all messages and the resume id are saved.
         session.setImported({ source: entry.source, id: entry.id, startedAt: entry.startedAt, importedAt: Date.now(), messages, omitted: transcript.omitted });
-    } finally {
+    } catch (e) {
+        // Half an import would list as a normal session, and a retry would import it again beside it.
         session.release();
+        for (const f of [session.path, join(dirname(session.path), "ui", `${session.meta.id}.jsonl`)]) rmSync(f, { force: true });
+        throw e;
     }
+    session.release();
     return session.meta.id;
 }
