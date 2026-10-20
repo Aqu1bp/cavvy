@@ -69,6 +69,8 @@ import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
+import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS } from "../keybindings/core";
+import { ensureKeybindingsFile } from "../keybindings/file";
 
 export interface Command {
     name: string;
@@ -1622,6 +1624,63 @@ function skillsCommand(app: App, args: string) {
     });
 }
 
+/** The keys and what they do now, after the keybindings file. */
+function keyHelp(app: App, cols: number): string[] {
+    const items: string[] = [];
+    for (const a of ACTIONS) {
+        const keys = app.keys.all(a.id);
+        if (!a.defaults.tui) continue;
+        const shown = keys.length ? keys.map((k) => (k === "escape" ? "esc" : k)).join("/") : theme.subtle("unbound");
+        items.push(`${bold(shown)} ${a.description.toLowerCase()}${app.keys.keymap.customized.has(a.id) ? theme.accent(" *") : ""}`);
+    }
+    items.push(`${bold("ctrl+c ×2")} exit`);
+    const lines: string[] = [];
+    let line = " ";
+    for (const it of items) {
+        if (width(line) + width(it) + 4 > cols - 1 && line.trim()) {
+            lines.push(line);
+            line = " ";
+        }
+        line += `   ${it}`;
+    }
+    if (line.trim()) lines.push(line);
+    lines.push(theme.subtle(`  Change them in ${displayPath(app.keys.path, app.cwd)} (/keybindings)${app.keys.keymap.customized.size ? "; * is a custom key" : ""}.`));
+    return lines;
+}
+
+async function keybindingsCommand(app: App, args: string) {
+    const path = app.keys.path;
+    const created = ensureKeybindingsFile(path);
+    if (args.trim() === "edit") {
+        const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+        await app.screen.suspend(() => {
+            spawnSync(["sh", "-c", `${editor} "$1"`, "sh", path], { stdio: ["inherit", "inherit", "inherit"], env: childEnv() });
+        });
+        app.renderLive();
+        return;
+    }
+    const km = app.keys.keymap;
+    const lines = ["", heading("Keybindings")];
+    lines.push(theme.muted(`  ${created ? "Created" : "File:"} ${displayPath(path, app.cwd)} · changes apply when you save · /keybindings edit opens it in $EDITOR`));
+    lines.push(theme.muted(`  Format (same as Claude Code's): { "bindings": [{ "context": "Chat", "bindings": { "ctrl+e": "chat:externalEditor", "ctrl+g": null } }] }`));
+    for (const ctx of CONTEXTS) {
+        const actions = ACTIONS.filter((a) => a.context === ctx && a.defaults.tui);
+        if (!actions.length) continue;
+        lines.push("", `  ${bold(ctx)}`);
+        for (const a of actions) {
+            const keys = app.keys.all(a.id);
+            const shown = keys.length ? keys.join(", ") : theme.subtle("not bound");
+            lines.push(truncate(`    ${padEnd(km.customized.has(a.id) ? theme.accent(shown) : shown, 26)}${padEnd(theme.muted(a.id), 26)}${theme.subtle(a.description)}`, termCols() - 1));
+        }
+    }
+    if (km.issues.length) {
+        lines.push("", `  ${bold("Problems")}`);
+        for (const i of km.issues) lines.push(`    ${i.level === "error" ? theme.error("✘") : theme.warning("!")} ${i.message}`);
+    }
+    lines.push("", theme.subtle(`  Modifiers: ctrl, alt (opt, meta), shift, mod (ctrl in the terminal). Chords: "ctrl+x ctrl+e". Docs: ${KEYBINDINGS_DOCS}`));
+    app.print(lines);
+}
+
 function hooksCommand(app: App) {
     const h = app.settings.hooks ?? {};
     const lines = ["", heading("Hooks")];
@@ -1840,6 +1899,7 @@ const BUILTIN: Command[] = [
     { name: "mcp", description: "MCP servers: status, approval, tools, reconnect", run: mcpCommand },
     { name: "agents", description: "List sub-agents", whileBusy: true, run: (app) => agentsCommand(app) },
     { name: "skills", description: "List skills (and pick up new ones)", args: "[filter]", whileBusy: true, run: skillsCommand },
+    { name: "keybindings", description: "Customize keyboard shortcuts (keybindings.json)", args: "[edit]", whileBusy: true, run: keybindingsCommand },
     { name: "hooks", description: "List configured hooks", whileBusy: true, run: (app) => hooksCommand(app) },
     { name: "todos", description: "Show the current todo list", whileBusy: true, run: (app) => {
             const todos = app.toolState.todos.map((t) => ({ ...t }));
@@ -1984,8 +2044,7 @@ function helpLines(app: App, cmds: ReturnType<typeof commandList>, custom: numbe
         `  ${theme.bashMode("!")} run a shell command    ${theme.memoryMode("#")} save a memory    ${bold("@")} attach a file    ${bold("$")} skills    ${bold("/")} commands    ${bold("\\⏎")} or ${bold("shift+⏎")} newline`,
         "",
         heading("Keys"),
-        `  ${bold("shift+tab")} cycle permission modes    ${bold("esc")} interrupt    ${bold("esc esc")} clear or rewind    ${bold("ctrl+c ×2")} exit`,
-        `  ${bold("ctrl+o")} verbose output    ${bold("ctrl+t")} todos    ${bold("ctrl+g")} edit in $EDITOR    ${bold("ctrl+l")} clear screen    ${bold("↑/↓")} history`,
+        ...keyHelp(app, cols),
         "",
         heading("Permission modes"),
         ...PERMISSION_MODES.map((m) => `  ${padEnd(MODE_INFO[m].color(MODE_INFO[m].label), 22)}${theme.muted(truncate(MODE_INFO[m].description, cols - 26))}`),

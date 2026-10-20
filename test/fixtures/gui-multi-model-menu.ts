@@ -81,7 +81,7 @@ function picker(available = true) {
         app: { models: [{ provider: "mock", providerName: "Mock", models }], providers: [] },
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), toast: (msg: string) => warnings.push(msg),
-        isMod: (e: any) => e.ctrlKey, mod: "Ctrl", ProviderIcon: () => node("icon"),
+        isMod: (e: any) => e.ctrlKey, mod: "Ctrl", withShortcut: (label: string) => label, ProviderIcon: () => node("icon"),
         ...Object.fromEntries(["Brain", "Check", "ChevronDown", "Layers", "RefreshCw", "Search", "Settings2", "Star", "Zap", "Spinner"].map((name) => [name, () => node("icon")])),
     });
     cleanups.push(renderer.render(() => ModelPicker({ get open() { return open(); }, setOpen, currentRef: models[0]!.ref, compare: { available, why: "Requires a Git project" } }), root));

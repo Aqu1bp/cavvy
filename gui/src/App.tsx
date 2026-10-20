@@ -5,7 +5,8 @@ import { activate, app, attentionCount, dismissToast, handleFor, pauseToast, res
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
-import { copyText, isMod, isTauri, isTerminalToggle, os } from "./lib/platform";
+import { copyText, isTauri, os } from "./lib/platform";
+import { actionOf, setEnterSends } from "./state/keybindings";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -206,36 +207,54 @@ export function App() {
         ),
     );
 
+    // Enter-sends decides what Enter and Mod+Enter are bound to.
+    createEffect(() => setEnterSends(prefs.enterSends));
+
     // Global shortcuts.
     onMount(() => {
+        // Bound keys (the keybindings file over the defaults); Esc's ways out stay on Esc.
+        const run: Record<string, (e: KeyboardEvent) => boolean | void> = {
+            "app:commandPalette": () => void setPaletteOpen(!paletteOpen()),
+            "app:settings": () => void setSettingsTab(settingsTab() ? undefined : "general"),
+            "app:newSession": () => void (setSettingsTab(undefined), newSession(app.homeCwd)),
+            "app:toggleSidebar": () => void toggleSidebar(),
+            "app:togglePanel": () => void togglePanel(),
+            "chat:modelPicker": () => void setModelPickerOpen(true),
+            "chat:focusInput": () => void requestComposerFocus(),
+            // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
+            "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
+            "app:previousSession": () => void cycleSession(-1),
+            "app:nextSession": () => void cycleSession(1),
+        };
+        /** Those that work with a dialog open (nothing behind one changes otherwise: it may be about the session in view). */
+        const overDialogs = new Set(["app:commandPalette", "app:settings"]);
         const onKey = (e: KeyboardEvent) => {
-            if (isTerminalToggle(e) && !document.querySelector(".dialog-backdrop")) return e.preventDefault(), setTerminalOpen(!terminalOpen());
-            if (isMod(e) && !e.altKey) {
-                const k = e.key.toLowerCase();
-                if ((e.target as HTMLElement)?.closest(".terminal-emulator")) return;
-                if (k === "k") return e.preventDefault(), setPaletteOpen(!paletteOpen());
-                if (k === ",") return e.preventDefault(), setSettingsTab(settingsTab() ? undefined : "general");
-                // Nothing behind an open dialog changes (it may be about the session in view).
-                if (document.querySelector(".dialog-backdrop")) return;
-                if (k === "n" && !e.shiftKey) return e.preventDefault(), setSettingsTab(undefined), newSession(app.homeCwd);
-                if (k === "b") return e.preventDefault(), toggleSidebar();
-                if (k === ".") return e.preventDefault(), togglePanel();
-                if (k === "/") return e.preventDefault(), setModelPickerOpen(true);
-                if (k === "l") return e.preventDefault(), requestComposerFocus();
-                // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
-                if (k === "f" && !e.shiftKey && active() && !agent() && !settingsTab()) return e.preventDefault(), openFind();
-                if (k === "[" || (e.altKey && k === "arrowup")) return e.preventDefault(), cycleSession(-1);
-                if (k === "]" || (e.altKey && k === "arrowdown")) return e.preventDefault(), cycleSession(1);
+            const action = actionOf(e, ["Global"]);
+            const dialog = document.querySelector(".dialog-backdrop");
+            if (action === "app:toggleTerminal") {
+                if (!dialog) e.preventDefault(), setTerminalOpen(!terminalOpen());
+                return;
             }
-            if ((e.target as HTMLElement)?.closest(".terminal-emulator")) return;
-            if (e.key !== "Escape" || e.defaultPrevented || blocked()) return;
+            // The terminal keeps its keys.
+            if ((e.target as HTMLElement)?.closest?.(".terminal-emulator")) return;
+            if (action && run[action] && (!dialog || overDialogs.has(action)) && !e.defaultPrevented) {
+                if (run[action]!(e) !== false) e.preventDefault();
+                return;
+            }
+            if (e.defaultPrevented || blocked()) return;
             const typing = (document.activeElement as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable]");
-            // Esc leaves Settings, a sub-agent's view and the review, and otherwise interrupts a working session.
-            if (settingsTab()) return typing ? undefined : (e.preventDefault(), setSettingsTab(undefined));
-            // A sub-agent's own goes back to the one it's under.
-            if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(agent()!.parentId));
-            if (review()) return e.preventDefault(), setReview(undefined);
-            if (active()?.view.state.busy && !active()?.view.state.interactions.length) interrupt();
+            if (e.key === "Escape" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                // Esc leaves Settings, a sub-agent's view and the review.
+                if (settingsTab()) return typing ? undefined : (e.preventDefault(), setSettingsTab(undefined));
+                // A sub-agent's own goes back to the one it's under.
+                if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(agent()!.parentId));
+                if (review()) return e.preventDefault(), setReview(undefined);
+            }
+            // And otherwise interrupts a working session.
+            if (action === "app:interrupt" && active()?.view.state.busy && !active()?.view.state.interactions.length) {
+                e.preventDefault();
+                interrupt();
+            }
         };
         window.addEventListener("keydown", onKey);
         onCleanup(() => window.removeEventListener("keydown", onKey));

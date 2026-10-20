@@ -1,4 +1,4 @@
-import { isMod } from "./platform";
+import { actionOf } from "../state/keybindings";
 
 /** Shared navigation for action menus and searchable picker panels. */
 export function menuIndex(length: number, current: number, key: string): number {
@@ -70,7 +70,7 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
         }
         // The palette is the one global shortcut allowed through. Close first so
         // its focus restoration cannot later land in a stale menu.
-        if (isMod(e) && !e.altKey && e.key.toLowerCase() === "k") {
+        if (actionOf(e, ["Global"]) === "app:commandPalette") {
             behavior.close();
             return;
         }

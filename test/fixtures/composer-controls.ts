@@ -11,6 +11,8 @@ import { matchSkills, skillToken } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
 import { firstSendable, followUpFor, otherFollowUp } from "../../gui/src/lib/queue";
 import type { RunResult } from "../../src/server/protocol";
+import { keymap, matchKey, withShortcut } from "../../gui/src/state/keybindings";
+import { eventStrokes } from "../../gui/src/lib/keystrokes";
 
 const saved = new Map<string, string>();
 const localStorage = { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value); }, removeItem: (key: string) => { saved.delete(key); } };
@@ -58,7 +60,7 @@ const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: 
 const sent: { text: string; followUp?: string }[] = [];
 const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp,
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, keymap, matchKey, withShortcut, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,

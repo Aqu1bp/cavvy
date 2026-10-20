@@ -8,12 +8,13 @@ import { app, reportError, rpc, toast } from "../state/app";
 import { archive, editorName, exportSession, newSession, openInEditor, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest } from "../state/ui";
-import { copyText, isTauri, mod, os, terminalShortcut } from "../lib/platform";
+import { copyText, isTauri, os } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { Monogram } from "./Sidebar";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
+import { shortcutHint, withShortcut } from "../state/keybindings";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
 
@@ -33,7 +34,7 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     return (
         <header class={`header ${!prefs.sidebar && isTauri && os === "macos" ? "traffic" : ""}`} data-tauri-drag-region>
             <Show when={!prefs.sidebar}>
-                <button class="hb" title={`Show sidebar (${mod}+B)`} aria-label="Show sidebar" onClick={toggleSidebar}>
+                <button class="hb" title={withShortcut("Show sidebar", "app:toggleSidebar")} aria-label="Show sidebar" onClick={toggleSidebar}>
                     <PanelLeft size={16} />
                 </button>
             </Show>
@@ -79,9 +80,9 @@ export function Header(p: { handle?: SessionHandle }) {
                 <>
                     <Show when={st()}>{(s) => <RunSwitcher id={s().id} />}</Show>
                     <Show when={st()?.cwd}>{(cwd) => <ProjectScripts cwd={cwd()} />}</Show>
-                    <button class={`hb ${terminalOpen() ? "on" : ""}`} title={`Toggle terminal (${terminalShortcut})`} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}><SquareTerminal size={16} /></button>
+                    <button class={`hb ${terminalOpen() ? "on" : ""}`} title={withShortcut("Toggle terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}><SquareTerminal size={16} /></button>
                     <Show when={st()}>
-                        <button class={`hb ${prefs.panel ? "on" : ""}`} title={`Toggle panel (${mod}+.)`} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
+                        <button class={`hb ${prefs.panel ? "on" : ""}`} title={withShortcut("Toggle panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
                             <PanelRight size={16} />
                         </button>
                     </Show>

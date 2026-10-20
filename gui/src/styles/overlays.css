@@ -883,3 +883,77 @@
     box-shadow: var(--shadow-lg);
     cursor: zoom-out;
 }
+
+/* ---- Shortcuts (Settings) ---- */
+
+.sc-keys {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+}
+
+.sc-seq {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.sc-then,
+.sc-none {
+    font-size: 0.786rem;
+    color: var(--fg-subtle);
+}
+
+.sc-custom {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--accent-text);
+    background: var(--accent-soft);
+}
+
+.sc-action {
+    font-size: 0.786rem;
+    color: var(--fg-subtle);
+    user-select: all;
+}
+
+.sc-file-actions {
+    display: inline-flex;
+    gap: 6px;
+}
+
+.sc-issues {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+    background: var(--warning-soft);
+    font-size: 0.857rem;
+    line-height: 1.5;
+}
+
+.sc-issues-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+}
+
+.sc-issues ul {
+    margin: 6px 0 0;
+    padding-left: 20px;
+}
+
+.sc-issues li {
+    overflow-wrap: anywhere;
+}
+
+.sc-level {
+    font-weight: 600;
+}
+
+.sc-issues li.error .sc-level {
+    color: var(--danger);
+}

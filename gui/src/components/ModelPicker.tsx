@@ -10,6 +10,7 @@ import { menuIndex, menuTypeahead } from "../lib/menu";
 import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { shortcutHint, withShortcut } from "../state/keybindings";
 
 const EFFORTS: { id: EffortLevel; label: string; desc: string }[] = [
     { id: "low", label: "Low", desc: "Fastest replies, for simple tasks." },
@@ -191,7 +192,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`ctl model ${multi() ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : `${chipName()} (${mod}+/)`}>
+            <button ref={anchor} class={`ctl model ${multi() ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(chipName(), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
                         <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>

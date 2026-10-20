@@ -5,7 +5,9 @@ import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/ap
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
-import { isMod, mod } from "../lib/platform";
+import { keymap, matchKey, withShortcut } from "../state/keybindings";
+import { eventStrokes } from "../lib/keystrokes";
+import type { MatchResult } from "../../../src/keybindings/core";
 import { EffortMenu, FastModeToggle, ModelPicker, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
@@ -267,65 +269,83 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         finish(ok);
     };
 
+    /** Adds a line where the caret is, keeping the box's own undo. */
+    const newline = () => {
+        if (!ta) return;
+        if (!document.execCommand?.("insertText", false, "\n")) ta.setRangeText("\n", ta.selectionStart, ta.selectionEnd, "end");
+        setText(ta.value);
+        requestAnimationFrame(resize);
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
         if (composingKey(e)) return;
-        if (e.key === "Escape" && menuOpen()) {
-            e.preventDefault();
-            e.stopPropagation();
-            setMenuDismissedFor(text());
-            dismissMenu();
-            return;
-        }
-        const history = composerStorage.history(draftKey());
         const items = menu();
-        if (items.length) {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                e.preventDefault();
-                setMenuSel((s) => (s + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
-                return;
-            }
-            if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-                e.preventDefault();
-                apply(items[menuSel()] ?? items[0]!, e.key === "Enter");
-                return;
-            }
-        }
-        if (e.key === "Tab" && e.shiftKey) {
-            e.preventDefault();
-            void setMode(nextMode(mode(), bypassAllowed()));
-            return;
-        }
-        // The other of steer and queue, for one message; with nothing typed, the first queued message goes now.
-        if (e.key === "Enter" && isMod(e) && e.shiftKey && !e.altKey && busy()) {
+        // A menu with nothing to pick (a status line) only takes the key that closes it.
+        const closesStatus = !items.length && menuOpen() && eventStrokes(e).some((id) => keymap().table.get("Autocomplete")?.get(id) === "autocomplete:dismiss");
+        const r: MatchResult = closesStatus ? { kind: "action", action: "autocomplete:dismiss", context: "Autocomplete", abandoned: 0 } : matchKey(e, items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
+        // Keep the mid-turn shortcut when no custom binding or chord claims it.
+        if (r.kind === "none" && !r.unbound && !items.length && e.key === "Enter" && isMod(e) && e.shiftKey && !e.altKey && busy()) {
             e.preventDefault();
             if (hasContent()) void submit(true);
             else sendFirstQueued();
             return;
         }
-        if (e.key === "Enter") {
-            const sendKey = prefs.enterSends ? !e.shiftKey && !e.altKey : isMod(e);
-            if (sendKey || (isMod(e) && !e.shiftKey)) {
+        if (r.kind !== "action") return;
+        const history = composerStorage.history(draftKey());
+        switch (r.action) {
+            case "autocomplete:dismiss":
+                if (!menuOpen()) return;
                 e.preventDefault();
+                // Not also a way out of the view behind.
+                e.stopPropagation();
+                setMenuDismissedFor(text());
+                dismissMenu();
+                return;
+            case "autocomplete:previous":
+            case "autocomplete:next":
+                if (!items.length) return;
+                e.preventDefault();
+                setMenuSel((s) => (s + (r.action === "autocomplete:next" ? 1 : -1) + items.length) % items.length);
+                return;
+            case "autocomplete:accept":
+                if (!items.length) return;
+                e.preventDefault();
+                apply(items[menuSel()] ?? items[0]!, false);
+                return;
+            case "chat:cycleMode":
+                e.preventDefault();
+                void setMode(nextMode(mode(), bypassAllowed()));
+                return;
+            case "chat:submit":
+                e.preventDefault();
+                // Sending with the menu open takes the suggestion (and runs a command).
+                if (items.length) return apply(items[menuSel()] ?? items[0]!, true);
                 void submit();
                 return;
-            }
-        }
-        if (e.key === "Escape" && busy()) {
-            e.preventDefault();
-            interrupt(p.sessionId);
-            return;
-        }
-        if (e.key === "ArrowUp" && (!text() || (histIdx >= 0 && (ta?.selectionStart ?? 0) === 0)) && history.length) {
-            e.preventDefault();
-            if (histIdx < 0) historyDraft = text();
-            histIdx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
-            setText(history[histIdx]!);
-            requestAnimationFrame(resize);
-        } else if (e.key === "ArrowDown" && histIdx >= 0 && (ta?.selectionStart ?? 0) === text().length) {
-            e.preventDefault();
-            histIdx = histIdx + 1 >= history.length ? -1 : histIdx + 1;
-            setText(histIdx < 0 ? historyDraft : history[histIdx]!);
-            requestAnimationFrame(resize);
+            case "chat:newline":
+                e.preventDefault();
+                newline();
+                return;
+            case "app:interrupt":
+                if (!busy()) return;
+                e.preventDefault();
+                interrupt(p.sessionId);
+                return;
+            case "history:previous":
+                if ((text() && !(histIdx >= 0 && (ta?.selectionStart ?? 0) === 0)) || !history.length) return;
+                e.preventDefault();
+                if (histIdx < 0) historyDraft = text();
+                histIdx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
+                setText(history[histIdx]!);
+                requestAnimationFrame(resize);
+                return;
+            case "history:next":
+                if (histIdx < 0 || (ta?.selectionStart ?? 0) !== text().length) return;
+                e.preventDefault();
+                histIdx = histIdx + 1 >= history.length ? -1 : histIdx + 1;
+                setText(histIdx < 0 ? historyDraft : history[histIdx]!);
+                requestAnimationFrame(resize);
+                return;
         }
     };
 
@@ -561,7 +581,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
                                 disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
-                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? sendTitle() : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
+                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? sendTitle() : withShortcut("Send", "chat:submit")}
                                 aria-description={app.conn !== "open" ? "Not connected" : undefined}
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >

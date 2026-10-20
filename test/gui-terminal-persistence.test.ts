@@ -167,11 +167,11 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs() {},
-        basename: (v: string) => v, tildify: (v: string) => v, terminalShortcut: "Ctrl+`", toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
+        basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, actionOf: () => undefined, toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
         Play: noop, Plus: noop, RotateCw: noop, SquareTerminal: noop, X: noop, Terminal: Emulator, FitAddon: class { fit() {} },
         ResizeObserver: class { observe() {} disconnect() {} }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
-        requestAnimationFrame: () => 0, cancelAnimationFrame() {}, isTerminalToggle: () => false, isMod: () => false, copyText() {},
+        requestAnimationFrame: () => 0, cancelAnimationFrame() {}, isMod: () => false, copyText() {},
     };
     const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
     let dispose!: () => void;
