@@ -8,7 +8,7 @@ import { tmpdir } from "os";
 import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
 import type { Key } from "./keys";
-import { bold, dim, italic, strike, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
+import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
 import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
@@ -2047,5 +2047,6 @@ function shortcutHelp(cols: number): string[] {
  * beside the ✻. Links aren't terminal hyperlinks: thinking is cut to its last lines, which could drop a link's end.
  */
 function thinkingLines(text: string, cols: number): string[] {
-    return text.split("\n").flatMap((l) => wrapLine(inline(l, false), cols - 4));
+    // Escape codes in the model's own text (a raw hyperlink, a color) are taken out first, for the same reason.
+    return text.split("\n").flatMap((l) => wrapLine(inline(stripAnsi(l), false), cols - 4));
 }

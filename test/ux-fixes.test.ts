@@ -812,6 +812,12 @@ describe("live region layout", () => {
         expect(printed.join("\n")).not.toContain("\x1b]8;");
         expect(printed.map(stripAnsi).join(" ")).toContain("(https://example.com/docs)");
         expect(inline("[docs](https://example.com/docs)", true)).toContain("\x1b]8;;https://example.com/docs");
+        // Nor one the model's text holds itself.
+        printed.length = 0;
+        a.thinking = `\x1b]8;;https://example.com\x1b\\${"word ".repeat(2000)}\x1b]8;;\x1b\\ \x1b[31mred`;
+        a.flushThinking();
+        expect(printed.join("\n")).not.toContain("\x1b]8;");
+        expect(printed.join("\n")).not.toContain("\x1b[31m");
     });
 
     test("when idle, only the prompt is shown", () => {
