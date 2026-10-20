@@ -6,7 +6,7 @@
 import { homedir } from "os";
 import { relative, sep } from "path";
 import { APP_NAME } from "../config/paths";
-import { trustFolder } from "../config/trust";
+import { forgetTrustInside, projectConfigSummary, trustFolder } from "../config/trust";
 import { askOnce } from "./ask";
 import type { CleanupMode, SessionWorktree, WorktreeMarker, WorktreeWork } from "../server/worktrees";
 import { enterSessionWorktree, isPristine, readMarker, removeSessionWorktree, worktreeWork, type BaseRef } from "../server/worktrees";
@@ -58,7 +58,13 @@ export async function startWorktree(o: { cwd: string; name?: string; branchPrefi
         if (!o.interactive) throw new Error(`${e.message} Run ${APP_NAME} --worktree interactively once to trust it.`);
         const v = await askOnce<"yes" | "no">({
             title: "Trust this repository's Git configuration?",
-            header: [bold(e.folder), "", e.message, theme.muted("Git runs those settings while it checks files out into the new worktree.")],
+            header: [
+                bold(e.folder),
+                "",
+                e.message,
+                theme.muted("Git runs those settings while it checks files out into the new worktree."),
+                ...trustAlso(e.folder),
+            ],
             items: [
                 { label: "Yes, trust this folder and create the worktree", value: "yes" },
                 { label: "No, exit", value: "no" },
@@ -69,6 +75,12 @@ export async function startWorktree(o: { cwd: string; name?: string; branchPrefi
         trustFolder(e.folder);
         return await enter();
     }
+}
+
+/** What else trusting a folder turns on, when it has project configuration. */
+function trustAlso(folder: string): string[] {
+    const found = projectConfigSummary(folder);
+    return found.length ? [theme.muted(`Trusting it also turns on its project configuration (${found.join(", ")}), which can run hooks and MCP servers.`)] : [];
 }
 
 export type Ending =
@@ -112,6 +124,13 @@ export async function decideWorktree(wt: SessionWorktree, o: { cleanup: CleanupM
     const remove = async (): Promise<Ending> => {
         try {
             const r = await removeSessionWorktree({ plan, marker, work });
+            if (r.removed) {
+                try {
+                    forgetTrustInside(wt.path);
+                } catch {
+                    // A trust list that can't be read now is left alone.
+                }
+            }
             return r.removed ? { kind: "removed", branchDeleted: r.branchDeleted } : { kind: "kept", why: "its ignored files changed meanwhile" };
         } catch (e) {
             return { kind: "kept", why: clean(e) };
@@ -129,14 +148,15 @@ export async function decideWorktree(wt: SessionWorktree, o: { cleanup: CleanupM
         const more = work.ignoredTotal - work.ignored.length;
         header.push(theme.muted(`Removing it deletes ${work.ignored.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`));
     }
-    const keepsBranch = work.commits > 0 || !work.atBase;
+    // Commits of its own, a moved HEAD, or a branch it came back to: the branch stays.
+    const keepsBranch = work.commits > 0 || !work.atBase || marker.ownBranch === false;
     const v = await o.ask({
         title: "Keep this worktree?",
         header,
         items: [
             { label: "Keep it", value: "keep", description: "nothing is deleted" },
             keepsBranch
-                ? { label: `Remove the worktree, keep branch ${marker.branch}`, value: "remove", description: "its commits stay on the branch" }
+                ? { label: `Remove the worktree, keep branch ${marker.branch}`, value: "remove", description: work.commits ? "its commits stay on the branch" : undefined }
                 : { label: `Remove the worktree and branch ${marker.branch}`, value: "remove" },
         ],
     });

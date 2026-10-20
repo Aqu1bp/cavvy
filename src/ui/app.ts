@@ -89,7 +89,7 @@ export interface AppInit {
      * --worktree: its line in the welcome box, and what happens to it on exit: decided first (asking
      * with `ask`, when given), done once the session's shells are gone, returning the lines to print.
      */
-    worktree?: { line: string; resume: string; decide: (ask?: WorktreeAsk) => Promise<() => Promise<string[]>> };
+    worktree?: { line: string; resume: string; decide: (ask?: WorktreeAsk) => Promise<() => Promise<string[]>>; kept: () => string[] };
 }
 
 interface ActiveTool {
@@ -315,10 +315,17 @@ export class App {
         if (this.exiting || (this.leaving && !o.signal)) return;
         // The worktree's fate is asked about while the prompt is still up; nothing is removed yet.
         let finishWorktree: (() => Promise<string[]>) | undefined;
+        // Cut short (a signal, or Ctrl+C while it was being checked): kept, and said so.
+        if (this.init.worktree && this.leaving) finishWorktree = async () => this.init.worktree!.kept();
         if (this.init.worktree && !this.leaving) {
             this.leaving = true;
             this.abort?.abort();
-            const ask: WorktreeAsk | undefined = o.signal || !this.screen.interactive ? undefined : async (q) => (await this.showDialog(new SelectDialog({ ...q, numbers: true }))) as "keep" | "remove" | undefined;
+            this.flash = { text: "Checking the worktree… Ctrl+C keeps it and exits now", until: Infinity };
+            this.renderLive();
+            const ask: WorktreeAsk | undefined = o.signal || !this.screen.interactive ? undefined : async (q) => {
+                this.flash = undefined;
+                return (await this.showDialog(new SelectDialog({ ...q, numbers: true }))) as "keep" | "remove" | undefined;
+            };
             try {
                 finishWorktree = await this.init.worktree.decide(ask);
             } catch (e) {
@@ -1296,7 +1303,10 @@ export class App {
     private onKey(k: Key) {
         const top = this.dialogs[this.dialogs.length - 1];
         // Exiting: only the worktree question takes keys; nothing new may start in the worktree being checked.
-        if (this.leaving && !top) return;
+        if (this.leaving && !top) {
+            if (k.ctrl && k.name === "c") void this.exit(0, { signal: true });
+            return;
+        }
         if (top) {
             if (k.ctrl && k.name === "c" && this.busy) {
                 // cancel the prompt and the turn

@@ -643,6 +643,7 @@ async function worktreeHooks(wt: import("./server/worktrees").SessionWorktree, c
     return {
         line: worktreeLine(wt),
         resume: resumeCommand(wt.name),
+        kept: () => endingLines(wt, { kind: "kept" }),
         decide: async (ask?: import("./ui/worktree").Ask) => {
             const finish = await decideWorktree(wt, { cleanup, ask });
             return async () => endingLines(wt, await finish());
@@ -706,16 +707,19 @@ async function main() {
     // so trust is decided (and asked about) there, once; here only the user's own word counts.
     let trusted = f.worktree ? isTrusted(cwd) : await decideTrust(cwd);
     let worktree: import("./server/worktrees").SessionWorktree | undefined;
+    // From where it was started (local settings aren't in the new checkout), for both ends of its life.
+    let cleanup: import("./server/worktrees").CleanupMode = "auto";
     if (f.worktree) {
         const { startWorktree, worktreeLine } = await import("./ui/worktree");
         const ws = worktreeSettings(loadSettings(cwd, { trusted }));
+        cleanup = ws.cleanup;
         try {
             worktree = await startWorktree({ cwd, name: f.worktree === true ? undefined : f.worktree, branchPrefix: ws.branchPrefix, baseRef: ws.baseRef, interactive });
         } catch (e) {
             die(redact((e as Error).message));
         }
-        // A new checkout of the very commit the user trusted carries that trust; one from origin/HEAD,
-        // or a reopened one (whatever was done in it since), is judged on its own.
+        // Trusting the main checkout covers its worktrees (they're inside it, as in the GUI). A trusted
+        // subfolder carries over only to a new checkout of its own HEAD: the same files.
         if (trustedByUser(cwd) && worktree.created && !worktree.fromBranch && ws.baseRef === "head") trustForSession(worktree.cwd);
         cwd = worktree.cwd;
         process.chdir(cwd);
@@ -773,7 +777,6 @@ async function main() {
             // Nobody to ask: one nothing was done in goes, anything else stays (and says where).
             const { decideWorktree, endingLines } = await import("./ui/worktree");
             const { stripAnsi } = await import("./ui/ansi");
-            const cleanup = worktreeSettings(loadSettings(cwd, { trusted })).cleanup;
             const end = await (await decideWorktree(worktree, { cleanup: cleanup === "ask" ? "keep" : cleanup }))();
             for (const line of endingLines(worktree, end)) process.stderr.write(`${APP_NAME}: ${stripAnsi(line)}\n`);
         }
@@ -800,7 +803,7 @@ async function main() {
         effort: f.effort,
         fastMode: f.fastMode,
         fallbackModel: env.legacyModel,
-        worktree: worktree && (await worktreeHooks(worktree, worktreeSettings(loadSettings(cwd, { trusted })).cleanup)),
+        worktree: worktree && (await worktreeHooks(worktree, cleanup)),
     });
     process.on("uncaughtException", (e) => {
         app.screen.stop();

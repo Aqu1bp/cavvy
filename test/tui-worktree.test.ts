@@ -161,6 +161,10 @@ describe("making the worktree", () => {
         expect(again).toMatchObject({ created: true, fromBranch: true, branch: "harness/kept", base: tip });
         expect(git(again.path, "rev-parse", "HEAD")).toBe(tip);
         expect(stripAnsi(worktreeLine(again))).toBe("worktree: kept · branch harness/kept (back on its kept branch)");
+        // Asked about, it offers to remove only the worktree: that branch was there before it.
+        const offered: string[] = [];
+        expect(await (await decideWorktree(again, { cleanup: "ask", ask: async (q) => (offered.push(...q.items.map((i) => i.label)), "keep") }))()).toEqual({ kind: "kept", why: undefined });
+        expect(offered).toEqual(["Keep it", "Remove the worktree, keep branch harness/kept"]);
         // Nothing done this time: the worktree goes, but the branch it came back for stays, though main has its commit.
         git(main, "merge", "--ff-only", "harness/kept");
         expect(await (await decideWorktree(again, { cleanup: "auto" }))()).toEqual({ kind: "removed", branchDeleted: false });
@@ -319,6 +323,20 @@ describe("on exit", () => {
         expect(worktreePaths(main)).toContain(wt.path);
     });
 
+    test("removing a worktree forgets trust saved for it, and only for it", async () => {
+        const { trustFolder, trustedByUser } = await import("../src/config/trust");
+        const { main, wt } = await fresh();
+        trustFolder(wt.path);
+        trustFolder(join(wt.path, "src"));
+        const other = repo();
+        trustFolder(other);
+        expect(await (await decideWorktree(wt, { cleanup: "auto" }))()).toEqual({ kind: "removed", branchDeleted: true });
+        expect(trustedByUser(wt.path)).toBe(false);
+        expect(trustedByUser(join(wt.path, "src"))).toBe(false);
+        expect(trustedByUser(other)).toBe(true);
+        expect(trustedByUser(main)).toBe(false);
+    });
+
     test("cleanup ask asks even when nothing was done; keep never removes", async () => {
         const a = await fresh();
         asked.length = 0;
@@ -427,6 +445,7 @@ describe("App exit", () => {
             worktree: {
                 line: "worktree: x",
                 resume: "harness -w x",
+                kept: () => ["kept"],
                 decide: async (ask) => {
                     order.push(`decide:${(await ask?.({ title: "Keep this worktree?", header: [], items: [{ label: "Remove", value: "remove" }] })) ?? "no-ask"}`);
                     return async () => (order.push("finish"), ["Removed worktree x."]);
@@ -460,10 +479,11 @@ describe("App exit", () => {
             mode: "default",
             allowBypass: false,
             startupNotes: [],
-            worktree: { line: "", resume: "", decide: async (ask) => (await ask?.({ title: "", header: [], items: [] }), async () => ((finished = true), [])) },
+            worktree: { line: "", resume: "", kept: () => ["Worktree w kept"], decide: async (ask) => (await ask?.({ title: "", header: [], items: [] }), async () => ((finished = true), [])) },
         });
         const stops: number[] = [];
-        (app as any).screen = { interactive: true, print() {}, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop: () => stops.push(1), clearScreen() {} };
+        const printed: string[] = [];
+        (app as any).screen = { interactive: true, print: (l: string) => printed.push(l), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop: () => stops.push(1), clearScreen() {} };
         (app as any).renderLive = () => {};
         (app as any).showDialog = () => new Promise((r) => (release = r));
         app.session = Session.create(cwd, { persist: false });
@@ -484,12 +504,46 @@ describe("App exit", () => {
         // The question's late answer changes nothing: the exit that ran didn't remove it.
         expect(finished).toBe(false);
         expect(stops).toEqual([1]);
+        // It says it's kept, and where.
+        expect(printed).toContain("Worktree w kept");
+    });
+
+    test("Ctrl+C while the worktree is being checked keeps it and exits at once", async () => {
+        const cwd = realpathSync(iso.home);
+        let finished = false;
+        const app = new App({
+            cwd,
+            trusted: true,
+            mode: "default",
+            allowBypass: false,
+            startupNotes: [],
+            // A slow check: never answers on its own.
+            worktree: { line: "", resume: "", kept: () => ["Worktree w kept"], decide: () => new Promise(() => {}).then(() => async () => ((finished = true), [])) },
+        });
+        const printed: string[] = [];
+        (app as any).screen = { interactive: true, print: (l: string) => printed.push(l), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {} };
+        (app as any).renderLive = () => {};
+        app.session = Session.create(cwd, { persist: false });
+        const codes: number[] = [];
+        const exit = spyOn(process, "exit").mockImplementation(((c: number) => void codes.push(c)) as never);
+        try {
+            void app.exit(0);
+            await Bun.sleep(10);
+            expect((app as any).flash.text).toContain("Checking the worktree");
+            (app as any).onKey({ name: "c", sequence: "\x03", ctrl: true, meta: false, shift: false });
+            for (let i = 0; i < 50 && !codes.length; i++) await Bun.sleep(10);
+        } finally {
+            exit.mockRestore();
+        }
+        expect(codes).toEqual([0]);
+        expect(finished).toBe(false);
+        expect(printed).toContain("Worktree w kept");
     });
 
     test("after a signal nothing is asked", async () => {
         const cwd = realpathSync(iso.home);
         let asked: unknown = "unset";
-        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [], worktree: { line: "", resume: "", decide: async (ask) => ((asked = ask), async () => []) } });
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [], worktree: { line: "", resume: "", kept: () => [], decide: async (ask) => ((asked = ask), async () => []) } });
         (app as any).screen = { interactive: true, print() {}, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {} };
         (app as any).renderLive = () => {};
         app.session = Session.create(cwd, { persist: false });
@@ -580,6 +634,22 @@ describe("harness -p --worktree", () => {
         expect(r.stderr.match(/isn't trusted/g)).toHaveLength(1);
         // Its settings don't count: the user's default prefix.
         expect(r.stderr).toContain("branch harness/untrusted");
+    });
+
+    test("cleanup comes from where it was started: local settings there count, though the worktree hasn't them", async () => {
+        const main = repo();
+        mkdirSync(join(main, ".harness"));
+        writeFileSync(join(main, ".harness", "settings.local.json"), JSON.stringify({ worktree: { cleanup: "keep" } }));
+        writeFileSync(join(iso.home, "trusted.json"), JSON.stringify({ dirs: [main] }));
+        let r;
+        try {
+            r = await harness(["-w", "local", "say ok"], main);
+        } finally {
+            rmSync(join(iso.home, "trusted.json"));
+        }
+        expect(r.code).toBe(0);
+        expect(r.stderr).toContain("harness: Worktree local kept, on branch harness/local");
+        expect(worktreePaths(main)).toHaveLength(2);
     });
 
     test("outside a Git repository it says so and exits 1", async () => {

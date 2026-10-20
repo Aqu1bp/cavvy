@@ -773,7 +773,7 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
         made = await createWorktree({ path: cwd, branch, folder: defaultFolder(name), base: base.ref }, log, { existingBranch: kept });
     } catch (e) {
         if (e instanceof RpcError && e.code === "branch_in_use") throw new RpcError(`${branch} is checked out in another worktree. Pick another name, or work there.`, "branch_in_use");
-        if (e instanceof RpcError && e.code === "bad_base" && !base.ref) throw new RpcError("This repository has no commits yet, so there's nothing to check out. Make a first commit, then try again.", "bad_base");
+        if (e instanceof RpcError && e.code === "bad_base" && !base.ref && !kept) throw new RpcError("This repository has no commits yet, so there's nothing to check out. Make a first commit, then try again.", "bad_base");
         throw e;
     }
     try {

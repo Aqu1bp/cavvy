@@ -62,6 +62,19 @@ export function trustFolder(dir: string) {
     writeJson(file(), { dirs: [...dirs].sort() }, 0o600);
 }
 
+/**
+ * Forget saved trust for `dir` and folders inside it (a removed worktree: a
+ * new checkout at the same path may hold anything). Trust saved for a folder
+ * containing it is untouched.
+ */
+export function forgetTrustInside(dir: string) {
+    const d = resolve(dir);
+    for (const t of [...userTrusted]) if (isInside(t, d)) userTrusted.delete(t);
+    const cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
+    const dirs = (cur.dirs ?? []).filter((t) => !isInside(resolve(t), d));
+    if (dirs.length !== (cur.dirs ?? []).length) writeJson(file(), { dirs }, 0o600);
+}
+
 /** Trust this folder (not the ones inside it) for this session because there's nothing to protect yet (not the user's say-so). */
 export function trustForSession(dir: string) {
     emptyTrusted.add(resolve(dir));
