@@ -4,7 +4,7 @@
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
 import { ArrowLeft, ArrowUp, ChartColumn, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
-import { MODE_LABELS, type EffortLevel, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
+import { MODE_LABELS, type EffortLevel, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
@@ -188,6 +188,12 @@ function General() {
             </Row>
             <Row title="Compact automatically" desc="Summarize the conversation when the context window is nearly full.">
                 <Toggle label="Compact automatically" checked={s().autoCompact !== false} onChange={(v) => void update({ autoCompact: v })} />
+            </Row>
+            <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. ${mod}+Shift+Enter does the other for one message.`}>
+                <select class="select" aria-label="Messages sent while working" value={s().followUpBehavior ?? "steer"} onChange={(e) => void update({ followUpBehavior: e.currentTarget.value as FollowUpMode })}>
+                    <option value="steer">Steer the current turn</option>
+                    <option value="queue">Queue for after it</option>
+                </select>
             </Row>
             <Row title="Web search">
                 <select class="select" aria-label="Web search" value={s().webSearch ?? "auto"} onChange={(e) => void update({ webSearch: e.currentTarget.value })}>
@@ -584,6 +590,7 @@ const SHORTCUTS: [string, string][] = [
     ["Esc", "Interrupt (while working) · deny a permission · close"],
     ["1  2  3", "Answer the request on the composer"],
     ["Enter  Shift+Enter", "Send · new line"],
+    [`${mod}+Shift+Enter`, "While working: steer instead of queue, or the other way round (empty input: send the first queued message now)"],
     ["↑", "Previous prompt (empty input)"],
     ["@", "Mention a file"],
     ["/", "Commands"],

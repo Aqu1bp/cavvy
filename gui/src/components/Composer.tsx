@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, Sparkles, SquareTerminal, X } from "lucide-solid";
-import type { CommandInfo, PermissionModeId } from "@shared/protocol";
+import { ArrowUp, CornerDownRight, FileText, Folder, ListEnd, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
+import type { CommandInfo, FollowUpMode, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
@@ -19,6 +19,8 @@ import { createComposerDraft } from "../lib/composer-draft";
 import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
 import { matchSkills, skillToken } from "../lib/commands";
+import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
+import { QueueTab } from "./QueueTab";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
 type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string };
@@ -222,7 +224,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     // ---- sending
-    const submit = async () => {
+    /** What a message sent now does while a turn runs: the setting, or with `opposite` (mod+shift+enter, mod-click) the other. */
+    const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite);
+    const submit = async (opposite = false) => {
         if (app.conn !== "open") return toast("Not sent: not connected");
         const t = text();
         if (!canSend() || sending()) return;
@@ -244,7 +248,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             dismissMenu();
             requestAnimationFrame(resize);
         });
-        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { sent, accepted: (id) => {
+        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
             if (!wasDeleted(id)) composerStorage.remember(id, t);
         } });
         if (ok) {
@@ -286,6 +290,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (e.key === "Tab" && e.shiftKey) {
             e.preventDefault();
             void setMode(nextMode(mode(), bypassAllowed()));
+            return;
+        }
+        // The other of steer and queue, for one message; with nothing typed, the first queued message goes now.
+        if (e.key === "Enter" && isMod(e) && e.shiftKey && !e.altKey && busy()) {
+            e.preventDefault();
+            if (hasContent()) void submit(true);
+            else sendFirstQueued();
             return;
         }
         if (e.key === "Enter") {
@@ -369,12 +380,26 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
     };
 
+    const sendFirstQueued = () => {
+        const s = st();
+        const i = s && p.sessionId ? firstSendable(s.queuedModes ?? s.queued.map(() => "steer" as const), busy()) : -1;
+        const queueId = i >= 0 ? s!.queueIds[i] : undefined;
+        if (queueId === undefined) return;
+        void rpc.call("session.sendQueuedNow", { id: p.sessionId!, queueId }).catch(reportError);
+    };
+
     const placeholder = () => {
         if (shell()) return "Run a shell command";
-        if (busy()) return "Queue a message for the next step…";
+        if (busy()) return followUp() === "steer" ? "Steer: add to the current turn at its next step…" : "Queue a message for after this turn…";
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
     };
     const hasContent = () => Boolean(text().trim() || attachments().length);
+    const sendTitle = () => {
+        const key = prefs.enterSends ? "Enter" : `${mod}+Enter`;
+        const other = otherFollowUp(followUp());
+        const now = followUp() === "steer" ? `Steer: joins the current turn at its next step (${key})` : `Queue: runs after this turn (${key})`;
+        return `${now}. ${mod}-click or ${mod}+Shift+Enter to ${other} instead.`;
+    };
     const canSend = createMemo(() => hasContent() && !blocked());
     /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
     let root: HTMLDivElement | undefined;
@@ -400,33 +425,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}
         >
-            <Show when={st()?.queued.length}>
-                <div class="tab queue-tab">
-                    <For each={st()!.queued}>
-                        {(q, i) => (
-                            <div class="queue-row">
-                                <ListEnd size={14} class="queue-icon" />
-                                <span class="queue-text truncate">{q}</span>
-                                <Show when={st()!.queuedAttached?.[i()]}>
-                                    {(label) => (
-                                        <span class="queue-attached truncate" title={label()}>
-                                            <Paperclip size={12} /> {label()}
-                                        </span>
-                                    )}
-                                </Show>
-                                <Show when={i() === 0}>
-                                    <span class="queue-hint">Sends after this step</span>
-                                </Show>
-                                <button class="hb sm" title="Edit" aria-label="Edit queued message" onClick={() => void dequeue(i(), true)}>
-                                    <Pencil size={13} />
-                                </button>
-                                <button class="hb sm" title="Remove from the queue" aria-label="Remove from the queue" onClick={() => void dequeue(i(), false)}>
-                                    <X size={14} />
-                                </button>
-                            </div>
-                        )}
-                    </For>
-                </div>
+            <Show when={p.sessionId && st()?.queued.length}>
+                <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
             <Show when={p.sessionId && interactions().length}>
                 <InteractionTab sessionId={p.sessionId!} items={interactions()} />
@@ -550,15 +550,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         when={busy() && !hasContent()}
                         fallback={
                             <button
-                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""}`}
+                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${followUp()}` : ""}`}
                                 disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
-                                onClick={() => void submit()}
-                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
+                                onClick={(e) => void submit(busy() && isMod(e))}
+                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? sendTitle() : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
                                 aria-description={app.conn !== "open" ? "Not connected" : undefined}
-                                aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : "Send"}
+                                aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (followUp() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>
-                                <ArrowUp size={17} stroke-width={2.4} />
+                                <Show when={busy()} fallback={<ArrowUp size={17} stroke-width={2.4} />}>
+                                    {followUp() === "steer" ? <CornerDownRight size={16} stroke-width={2.4} /> : <ListEnd size={16} stroke-width={2.4} />}
+                                </Show>
                             </button>
                         }
                     >

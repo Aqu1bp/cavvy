@@ -369,6 +369,71 @@
     white-space: nowrap;
 }
 
+.queue-icon {
+    display: inline-grid;
+}
+
+/* Steering: it joins the turn, so it takes the accent; held after a restart: it waits on you. */
+.queue-row.m-steer .queue-icon,
+.queue-row.m-steer .queue-hint {
+    color: var(--accent);
+}
+
+.queue-row.m-held .queue-icon,
+.queue-row.m-held .queue-hint {
+    color: var(--warning);
+}
+
+.queue-grip {
+    cursor: grab;
+    margin-left: -6px;
+    margin-right: -6px;
+    color: var(--fg-subtle);
+}
+
+.queue-grip:active {
+    cursor: grabbing;
+}
+
+.queue-row.dragging {
+    opacity: 0.5;
+}
+
+/* Where a dragged message lands: a line above the row (or below the last). */
+.queue-row.drop-before {
+    box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.queue-drop-end {
+    height: 2px;
+    margin-top: -2px;
+    background: var(--accent);
+    border-radius: 1px;
+}
+
+.queue-send {
+    flex: none;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 0.786rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    white-space: nowrap;
+    transition: background var(--dur-fast);
+}
+
+.queue-send:hover {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.queue-send:focus-visible,
+.queue-grip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
 .itab {
     padding: 14px 14px 26px;
     max-height: min(56vh, 520px);
