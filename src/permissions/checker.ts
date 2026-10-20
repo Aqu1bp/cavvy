@@ -703,14 +703,15 @@ function plainReads(cmd: string, a: CommandAnalysis, cwd: string, folderCovered:
             // in front of it is followed (`link/../.env` isn't ./.env); spaces around a name are part of it.
             if (c.globbed?.includes(i) || c.expands?.includes(i) || /^~(?!\/|$)/.test(w) || /(^|\/)\.\.(\/|$)/.test(w) || w !== w.trim()) return false;
             const special = /[$`*?[{]/.test(w);
+            const raw = cmd.slice(...c.spans[i]!);
             if (pattern) {
                 pattern = false;
                 // A regex in one quoted string is literal to the shell; an unquoted one mustn't be able to expand.
-                const raw = cmd.slice(...c.spans[i]!);
                 return !special || /^'[^']*'$/.test(raw) || /^"[^"$`\\]*"$/.test(raw);
             }
-            // Even quoted: the grant check reads `$X` in a name as the variable.
-            if (special) return false;
+            // Even quoted: the grant check reads `$X` in a name as the variable, and `~` as home, which
+            // a quoted or escaped `~` isn't (`'~/.env'` is a folder named ~).
+            if (special || (w.startsWith("~") && raw !== "~" && !raw.startsWith("~/"))) return false;
             const abs = expandPath(w, cwd);
             try {
                 return !statSync(abs).isDirectory() || folderCovered(abs);

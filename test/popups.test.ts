@@ -2,7 +2,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 import type { Tool } from "../src/tools/types";
@@ -401,6 +401,15 @@ describe("session approvals", () => {
         ]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
             expect([command, auto(s, { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true }]);
+        }
+    });
+
+    test("a grant for ~/.env covers ~/.env written out, not a quoted or escaped ~, which is a folder named ~", () => {
+        const s = checker();
+        s.applyGrant({ paths: [join(homedir(), ".env")] });
+        expect(s.check(Bash, { command: "cat ~/.env" }, "default", W).sensitive).toBeUndefined();
+        for (const command of ["cat '~/.env'", 'cat "~/.env"', "cat \\~/.env", 'cat ~"/.env"', "cat '~'/.env"]) {
+            expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
         }
     });
 
