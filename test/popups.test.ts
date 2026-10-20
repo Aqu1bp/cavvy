@@ -371,7 +371,7 @@ describe("session approvals", () => {
         expect(sd.grant?.paths).toEqual([env]);
         s.applyGrant(sd.grant!);
         expect(s.check(Bash, { command: "cat .env", dangerouslyDisableSandbox: false }, "default", W).sensitive).toBeUndefined();
-        for (const command of ["cat -n .env", "grep -n KEY .env", "head -5 .env", "wc -l .env", "grep -v KEY -- .env"]) {
+        for (const command of ["cat -n .env", "grep -n KEY .env", "grep -n . .env", "head -5 .env", "wc -l .env", "grep -v KEY -- .env"]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, undefined]);
         }
         // The grant covers .env itself, not a longer name it's the start of, alone or beside it.
@@ -379,6 +379,10 @@ describe("session approvals", () => {
         mkdirSync(join(W, "other"), { recursive: true });
         writeFileSync(join(W, "other", ".env"), "C=3\n");
         writeFileSync(join(W, "other .env file"), "D=4\n");
+        mkdirSync(join(W, "-n"), { recursive: true });
+        writeFileSync(join(W, "-n", ".env"), "E=5\n");
+        mkdirSync(join(W, "other", "sub"), { recursive: true });
+        symlinkSync(join(W, "other", "sub"), join(W, "link"));
         for (const command of [
             "cat .env.prod", "cat .env .env.prod", `cat ${env} ${env}.prod`, "cat .env.prod .env", "cat .env < .env.prod",
             // The same word after a cd can be another file; a quoted name holding the word is another file.
@@ -389,6 +393,8 @@ describe("session approvals", () => {
             "diff .env other", "diff -r .env other", "grep KEY .env other", "grep -r --include .env KEY", "grep -r --include .env KEY . other",
             "grep -R KEY .env", "grep --directories=recurse KEY .env", "ls -R .env other", "sort --files0-from=list .env", "wc --files0-from=list .env",
             "md5sum -c sums .env", "diff --to-file=other .env", "cat .env other/*", "cat .env $D", "cat .env ~root/x", "cat .env ~", "cat .env ..",
+            // After `--` a dash word is a file or folder; `..` comes off before a symlink in front of it is followed.
+            "diff .env -- -n", "cat -- -n .env", "cat link/../.env", "grep -n other .env other",
         ]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
             expect([command, auto(s, { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true }]);

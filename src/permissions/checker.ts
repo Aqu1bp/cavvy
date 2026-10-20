@@ -687,9 +687,21 @@ function plainReads(a: CommandAnalysis, cwd: string, folderCovered: (abs: string
     if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return false;
     return a.commands.every((c) => {
         if (c.argv[0] !== effectiveArgv(c.argv)[0] || !PLAIN_READERS.has(c.argv[0] ?? "")) return false;
+        // grep's first operand is its pattern, not a file (no option here gives it another way).
+        let pattern = /^[ef]?grep$/.test(c.argv[0]!);
+        let options = true;
         return c.argv.slice(1).every((w) => {
-            if (w.startsWith("-")) return /^-(\d+|[nivlhHsa]+|-)$/.test(w);
-            if (/[$`*?[{]/.test(w) || /^~(?!\/|$)/.test(w)) return false;
+            if (options && w === "--") {
+                options = false;
+                return true;
+            }
+            if (options && w.startsWith("-")) return /^-(\d+|[nivlhHsa]+)$/.test(w);
+            // `..` is taken away before a symlink in front of it is followed: `link/../.env` isn't ./.env.
+            if (/[$`*?[{]/.test(w) || /^~(?!\/|$)/.test(w) || /(^|\/)\.\.(\/|$)/.test(w)) return false;
+            if (pattern) {
+                pattern = false;
+                return true;
+            }
             const abs = expandPath(w, cwd);
             try {
                 return !statSync(abs).isDirectory() || folderCovered(abs);
