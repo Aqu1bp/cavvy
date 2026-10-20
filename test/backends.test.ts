@@ -108,6 +108,7 @@ async function makeAgent(o: Opts) {
     const queued = [...(o.queued ?? [])];
     const client = await clientFor(o.provider);
     const session = o.session ?? Session.create(cwd, { persist: false });
+    const checker = new PermissionChecker(() => settings, cwd);
     const agent = new Agent({
         session,
         model: { provider: o.provider, id: "default", ...o.model },
@@ -115,7 +116,7 @@ async function makeAgent(o: Opts) {
         settings: () => settings,
         approvedMcpServers: o.approvedMcpServers,
         readOnly: o.readOnly,
-        checker: new PermissionChecker(() => settings, cwd),
+        checker,
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
@@ -138,7 +139,7 @@ async function makeAgent(o: Opts) {
         mode = m;
         agent.noteModeChange(from, m);
     };
-    return { agent, events, asked, session, run, mode: () => mode, setMode: (m: PermissionMode) => (mode = m), switchMode };
+    return { agent, events, asked, session, checker, run, mode: () => mode, setMode: (m: PermissionMode) => (mode = m), switchMode };
 }
 
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
@@ -962,9 +963,11 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         test(`a sub-agent of an earlier turn, set going again${v2 ? " (multi_agent_v2)" : ""}, shows under that call by the name it had`, async () => {
             process.env.FAKE_SCENARIO = "subagent";
             if (v2) process.env.FAKE_SUBAGENT_V2 = "1";
-            const { run, events, session, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
+            const { run, events, session, asked, checker } = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
             expect(await run("go")).toBe("done");
             const label = v2 ? "count files" : "Count the files";
+            // The same command approved in the first turn would go through without asking.
+            checker.resetSession();
             process.env.FAKE_RESUME_AGENT = "1";
             events.length = 0;
             asked.length = 0;
