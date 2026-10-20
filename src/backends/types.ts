@@ -10,6 +10,8 @@ import type { PermissionMode } from "../permissions/modes";
 import type { Effort } from "../config/settings";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { ToolDisplay } from "../tools/types";
+import type { HookConfig } from "../config/settings";
+import type { HookEvent, HookOutcome, HookResult } from "../agent/hooks";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
@@ -43,6 +45,10 @@ export interface BackendPermission {
     agentLabel?: string;
     /** The call it asks about, as its tool_start names it: its row waits while it asks. */
     callId?: string;
+    /** What PreToolUse hooks said of it (the backend ran them before asking): allow approves it unless a rule denies it. */
+    hookDecision?: "allow" | "ask";
+    /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
+    hooksOnly?: boolean;
 }
 
 export type PermissionAnswer =
@@ -84,6 +90,10 @@ export interface BackendHost {
     /** Messages the user typed while the backend was working. If any are drained,
      * consume and record preceding output before recording the queued prompt. */
     drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
+    /** Run the harness's hooks for something the backend did (Codex's items). */
+    hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
+    /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
+    hookHandler?(event: HookEvent, h: HookConfig, input: Record<string, unknown>, signal: AbortSignal): Promise<HookResult>;
 }
 
 export interface BackendTurn {
@@ -108,6 +118,8 @@ export interface BackendTurn {
     approvedMcpServers?: ApprovedMcpServers;
     /** The harness's deny and ask rules, and the root their paths are relative to. */
     rules: { deny: string[]; ask: string[]; root: string };
+    /** The harness's hooks the backend runs itself, at its own lifecycle points (Claude Code). */
+    hooks?: Partial<Record<HookEvent, HookConfig[]>>;
     /** Stop after this many model turns (Claude Code). */
     maxTurns?: number;
     /** Continue this backend session (from an earlier turn). */

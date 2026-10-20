@@ -10,6 +10,7 @@ import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
+import { sessionStartHooks } from "../agent/session-hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
@@ -279,7 +280,7 @@ export class Runtime {
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
         this.ready = this.track(this.initModel());
-        void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
+        void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, (msg) => this.notice(msg, "warn"));
     }
 
     get id(): string {
@@ -2019,7 +2020,11 @@ export class Runtime {
             });
             const out = redact(res.output.replace(/\s+$/, ""));
             this.op({ op: "block.patch", turnId: turn.id, blockId, patch: { output: out.slice(-24_000) || "(no output)", exitCode: res.exitCode, running: false } });
-            if (res.newCwd) this.toolState.cwd = res.newCwd;
+            if (res.newCwd && res.newCwd !== this.toolState.cwd) {
+                const from = this.toolState.cwd;
+                this.toolState.cwd = res.newCwd;
+                void this.agent?.cwdChanged(from);
+            }
             if (res.aborted) status = "aborted";
             const text = `<bash-input>${command}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;
             this.agent?.addReminder(`The user ran a shell command themselves (output shown to them):\n${text}`);
@@ -2400,8 +2405,8 @@ export class Runtime {
 
     // -----------------------------------------------------------------------
 
-    private hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        return fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
+    private async hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+        await fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */

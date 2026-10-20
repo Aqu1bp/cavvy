@@ -18,6 +18,7 @@ import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedI
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
+import { sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { appendPromptHistory, loadPromptHistory } from "../agent/session";
@@ -240,7 +241,7 @@ export class App {
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
-        void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
+        void sessionStartHooks(this.settings, this.session, this.init.resumeFile ? "resume" : "startup", this.toolState.cwd, (msg) => this.notice(msg, "warn"));
 
         await this.trackSwitch(this.initModel());
         if (this.init.fastMode && !this.model?.supportsFastMode) {
@@ -641,12 +642,13 @@ export class App {
     /** /clear or /resume: SessionEnd for the old session, then SessionStart for the new one. */
     private sessionSwitched(prev: Session, how: "clear" | "resume") {
         const id = this.session.meta.id;
-        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => this.sessionHook("SessionStart", { session_id: id, source: how }));
+        const session = this.session;
+        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => (this.session === session ? sessionStartHooks(this.settings, session, how, this.toolState.cwd, (msg) => this.notice(msg, "warn")) : undefined));
     }
 
     /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
-    private sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        return fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
+    private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+        await fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
     }
 
     private replayTranscript() {
@@ -1779,7 +1781,11 @@ export class App {
         const note = res.aborted ? "\n(interrupted)" : res.timedOut ? "\n(stopped after 2 minutes)" : "";
         const maxLines = this.verbose ? 200 : 20;
         this.screen.print((cols) => resultLines((out || "(no output)") + note, cols, maxLines, (s) => s));
-        if (res.newCwd) this.toolState.cwd = res.newCwd;
+        if (res.newCwd && res.newCwd !== this.toolState.cwd) {
+            const from = this.toolState.cwd;
+            this.toolState.cwd = res.newCwd;
+            void this.agent?.cwdChanged(from);
+        }
         // Let the model see it next turn.
         const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;
         this.agent?.addReminder(`The user ran a shell command themselves (output shown to them):\n${text}`);

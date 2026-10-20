@@ -25,6 +25,8 @@
 // through those credentials. The harness's own provider keys are removed from
 // the CLI's environment (childEnv), so it can't be pointed at one of those.
 
+import type { HookConfig } from "../config/settings";
+import { claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
 import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
 import { ProviderError } from "../providers/types";
@@ -350,6 +352,8 @@ class ClaudeTurn {
     private finishing = false;
     /** The user was told the background sub-agents were stopped. */
     private toldStopped = false;
+    /** The harness's hooks registered with Claude Code, by the callback id it sends back. */
+    private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
 
     constructor(
         private def: ProviderDef,
@@ -687,7 +691,7 @@ class ClaudeTurn {
             killTimer = setTimeout(() => void this.proc.kill(), stopTiming.interruptMs);
         };
         signal.addEventListener("abort", onAbort, { once: true });
-        this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
+        this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize", ...this.hookRegistration() } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
         void this.attach().then(() => this.aborted || this.sendUser(content));
         try {
@@ -1197,9 +1201,41 @@ class ClaudeTurn {
         } else this.reason = "done";
     }
 
+    /**
+     * The harness's hooks for the events Claude Code runs itself, one matcher
+     * group per handler: Claude Code matches, runs them at once and merges
+     * their answers, calling back (hook_callback) for each.
+     */
+    private hookRegistration(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
+        if (!this.t.hooks || !this.host.hookHandler) return {};
+        const hooks: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> = {};
+        let n = 0;
+        for (const [event, list] of Object.entries(this.t.hooks) as [HookEvent, HookConfig[]][]) {
+            hooks[event] = list.map((hook) => {
+                const id = `harness_${n++}`;
+                this.hookCallbacks.set(id, { event, hook });
+                return { ...(hook.matcher ? { matcher: hook.matcher } : {}), hookCallbackIds: [id], timeout: hook.timeout ?? (hook.type === "prompt" ? 30 : 60) };
+            });
+        }
+        return n ? { hooks } : {};
+    }
+
+    private async hookCallback(req: Record<string, any>): Promise<Record<string, unknown>> {
+        const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
+        if (!cb || !this.host.hookHandler) return {};
+        const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+        const r = await this.host.hookHandler(cb.event, cb.hook, input, this.t.signal);
+        return claudeCodeHookOutput(cb.event, r);
+    }
+
     private async onControlRequest(m: Record<string, any>) {
         const req = m.request ?? {};
         const reply = (response: Record<string, unknown>) => this.proc.send({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
+        if (req.subtype === "hook_callback") {
+            // A hook that fails says nothing (the harness has shown why): Claude Code goes on as if it weren't there.
+            reply(await this.hookCallback(req).catch(() => ({})));
+            return;
+        }
         if (req.subtype !== "can_use_tool") {
             this.proc.send({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: `${String(req.subtype)} isn't supported by this host` } });
             return;

@@ -377,7 +377,7 @@ export class Engine {
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Harness: ${body}`;
-        void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message, kind }, rt.ws.cwd, () => {});
+        void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message, kind, notification_type: kind }, rt.ws.cwd, () => {});
     }
 
     sessionChanged(rt: Runtime) {

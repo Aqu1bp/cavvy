@@ -54,7 +54,8 @@ const record = (v: unknown): Record<string, unknown> | undefined => (v && typeof
 function handler(raw: Record<string, unknown>, matcher: string | undefined, extra: Partial<HookConfig>): HookConfig | string {
     const type = raw.type === undefined ? "command" : raw.type;
     if (typeof type !== "string" || !(HOOK_TYPES as readonly string[]).includes(type)) return `hook type ${JSON.stringify(type)} isn't supported (use ${HOOK_TYPES.join(", ")})`;
-    const h: HookConfig = { ...extra, type: type as HookType };
+    // Left as written: no type means a command.
+    const h: HookConfig = { ...extra, ...(raw.type !== undefined ? { type: type as HookType } : {}) };
     if (matcher !== undefined) h.matcher = matcher;
     if (typeof raw.timeout === "number" && raw.timeout > 0) h.timeout = raw.timeout;
     if (str(raw.if)) h.if = raw.if as string;

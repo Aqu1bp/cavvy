@@ -28,7 +28,8 @@ import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle,
 import { codexMcpOverrides } from "./codex-mcp";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
+import type { HookEvent } from "../agent/hooks";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
@@ -182,7 +183,7 @@ interface Policy {
 }
 
 /** The harness's permission mode as Codex's approval policy and sandbox. */
-export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false): Policy {
+export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false): Policy {
     // A read-only agent in auto: reads run in the read-only sandbox without asking; anything more asks the harness, which refuses it.
     if (mode === "auto" && readOnly) return { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" };
     const workspaceWrite = { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
@@ -194,6 +195,8 @@ export function codexPolicy(mode: PermissionMode, additionalDirectories: string[
             // Edits and commands inside the workspace run in Codex's sandbox; going beyond it, Codex's own reviewer decides.
             return { approvalPolicy: "on-request", sandbox: "workspace-write", sandboxPolicy: workspaceWrite, approvalsReviewer: "auto_review" };
         case "bypassPermissions":
+            // With PreToolUse hooks, Codex asks about every command so they can see it (and the mode approves what it allows).
+            if (preToolUse) return { approvalPolicy: "untrusted", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
             return { approvalPolicy: "never", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
         default:
             // Manual and plan: commands other than known read-only ones, and every edit, ask.
@@ -382,6 +385,8 @@ const SHOWN_FROM_SUBAGENTS = new Set(["turn/started", "turn/completed", "item/st
 
 class CodexTurn {
     private rpc!: Rpc;
+    /** Running the compaction the harness asked for. */
+    private compacting = false;
     private threadId?: string;
     private turnId?: string;
     private items = new Map<string, OpenItem>();
@@ -478,7 +483,7 @@ class CodexTurn {
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).
             if (this.billedToPlan) void this.readLimits();
-            const policy = codexPolicy(this.host.mode(), t.additionalDirectories, Boolean(t.readOnly));
+            const policy = codexPolicy(this.host.mode(), t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse"));
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
             const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), o?.name);
@@ -534,6 +539,7 @@ class CodexTurn {
             }
             this.host.sessionId(this.threadId!);
             if (opts.compact) {
+                this.compacting = true;
                 await this.waitFor(() => this.rpc.request("thread/compact/start", { threadId: this.threadId }));
             } else {
                 let text = t.prompt;
@@ -541,7 +547,7 @@ class CodexTurn {
                 while (true) {
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.host.mode();
-                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly));
+                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse"));
                     const note = modeNote(mode, Boolean(t.readOnly));
                     const input = this.input(note ? `${note}\n\n${text}` : text, images);
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
@@ -705,6 +711,8 @@ class CodexTurn {
                 break;
             case "thread/compacted":
                 this.host.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
+                // One the harness asked for (compact) runs the hooks itself.
+                if (!this.compacting && this.hooked("PostCompact")) void this.host.hooks!("PostCompact", { trigger: "auto", compact_summary: "" });
                 this.status ??= "completed";
                 this.turnDone?.();
                 break;
@@ -906,6 +914,10 @@ class CodexTurn {
         const said = turnId !== undefined && sub.answer.turn === turnId ? answerOf(sub.answer) : "";
         sub.turnId = undefined;
         if (sub.nested) return;
+        if (reason === "done" && this.hooked("SubagentStop")) {
+            const thread = [...this.subs].find(([, s]) => s === sub)?.[0];
+            void this.host.hooks!("SubagentStop", { agent_id: thread, agent_type: "codex", description: sub.label, stop_hook_active: false, last_assistant_message: said });
+        }
         if (said.trim()) this.subEmit(sub, { type: "text", text: said });
         this.subEmit(sub, { type: "turn_end", reason });
     }
@@ -1024,21 +1036,21 @@ class CodexTurn {
                 const out = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "";
                 const code = typeof item.exitCode === "number" ? item.exitCode : undefined;
                 const content = item.status === "declined" ? this.takeRefusal(id, "The command was declined.") : `${out}${code !== undefined && code !== 0 ? `${out ? "\n" : ""}Exit code ${code}` : ""}` || "(no output)";
-                this.endItem(id, open, content, failed || (code !== undefined && code !== 0));
+                this.endItem(id, open, content, failed || (code !== undefined && code !== 0), undefined, false, item.status !== "declined");
                 break;
             }
             case "fileChange": {
                 const changes = open.changes ?? fileChanges(item);
                 const content = item.status === "declined" ? this.takeRefusal(id, "The change was declined.") : failed ? "The change was not applied." : `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}: ${changes.map((c) => c.path).join(", ")}`;
                 const body = changes.map((c) => `${c.kind} ${c.path}\n${c.diff}`).join("\n").slice(0, 20_000);
-                this.endItem(id, open, content, failed, failed ? undefined : { summary: `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}`, body });
+                this.endItem(id, open, content, failed, failed ? undefined : { summary: `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}`, body }, false, item.status !== "declined");
                 break;
             }
             case "mcpToolCall": {
                 const refused = this.refusals.has(id) && (failed || Boolean(item.error));
                 const content = refused ? this.takeRefusal(id, "") : item.error?.message ? String(item.error.message) : mcpText(item.result);
                 this.refusals.delete(id);
-                this.endItem(id, open, content, Boolean(item.error) || failed);
+                this.endItem(id, open, content, Boolean(item.error) || failed, undefined, false, !refused);
                 break;
             }
             case "webSearch": {
@@ -1053,7 +1065,10 @@ class CodexTurn {
                 if (item.tool === "spawnAgent") {
                     // The call ends first: what its sub-agent did before Codex said whose it was (even all of it) comes after.
                     this.endItem(id, open, failed ? "Codex couldn't start the sub-agent." : "The sub-agent started; what it does shows under it.", failed);
-                    if (!failed) this.claimThreads(threads, id, String(open.input.description ?? "sub-agent"), sub);
+                    if (!failed) {
+                        this.claimThreads(threads, id, String(open.input.description ?? "sub-agent"), sub);
+                        if (!sub && this.hooked("SubagentStart")) for (const thread of Array.isArray(threads) ? threads : []) void this.host.hooks!("SubagentStart", { agent_id: String(thread), agent_type: "codex", description: String(open.input.description ?? "") });
+                    }
                     break;
                 }
                 // What the sub-agents it waited on (or messaged) last said.
@@ -1099,12 +1114,47 @@ class CodexTurn {
     }
 
     /** An item is over. One whose input was only known at its end (a web search's query) says its title again. */
-    private endItem(id: string, open: OpenItem, content: string, isError: boolean, display?: { summary?: string; body?: string }, retitled = false) {
+    private endItem(id: string, open: OpenItem, content: string, isError: boolean, display?: { summary?: string; body?: string }, retitled = false, ran = true) {
         this.items.delete(id);
         const e: AgentEvent = { type: "tool_end", call: { type: "tool_call", id, name: open.name, input: open.input }, result: { content, isError, display }, durationMs: Date.now() - open.started, ...(retitled ? { title: open.title } : {}) };
         if (open.sub) return this.subEmit(open.sub, e);
         this.actions.push(open.title);
         this.host.emit(e);
+        if (ran) void this.postToolUse(id, open, content, isError, e.durationMs);
+    }
+
+    /** The harness has hooks for this event (Codex runs none of them itself). */
+    private hooked(event: HookEvent): boolean {
+        return Boolean(this.t.hooks?.[event]?.length && this.host.hooks);
+    }
+
+    /**
+     * A command or patch Codex asks about: PreToolUse hooks first. A deny
+     * answers it; what they said otherwise goes with the ask. In bypass
+     * mode Codex asks only so they see it, and the mode decides as before.
+     */
+    private async ask(req: BackendPermission): Promise<PermissionAnswer> {
+        if (!this.hooked("PreToolUse")) return this.host.permission(req);
+        const h = await this.host.hooks!("PreToolUse", { tool_name: req.toolName, tool_input: req.input, ...(req.callId ? { tool_use_id: req.callId } : {}) });
+        if (h?.blocked) return { allow: false, message: `Blocked by PreToolUse hook: ${h.blocked}`, stop: false };
+        if (h?.decision === "deny") return { allow: false, message: `Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`, stop: false };
+        if (h?.stop) return { allow: false, message: `Stopped by PreToolUse hook: ${h.stop}`, stop: true };
+        const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
+        return this.host.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.host.mode()) === "bypassPermissions" });
+    }
+
+    /** PostToolUse or PostToolUseFailure for a main-thread item that ran; what they say reaches Codex while it works. */
+    private async postToolUse(id: string, open: OpenItem, content: string, isError: boolean, durationMs: number) {
+        const event: HookEvent = isError ? "PostToolUseFailure" : "PostToolUse";
+        if (!this.hooked(event) || this.aborted) return;
+        const base = { tool_name: open.name, tool_input: open.input, tool_use_id: id, duration_ms: durationMs, ...(open.mcp ? { mcp_server: open.mcp.server } : {}) };
+        const h = await this.host.hooks!(event, isError ? { ...base, error: content.slice(0, 20_000), is_interrupt: false } : { ...base, tool_response: { content: content.slice(0, 20_000), is_error: false } });
+        const notes = [h?.blocked ? `${event} hook feedback on ${open.title}:\n${h.blocked}` : "", h?.additionalContext ? `Context from a ${event} hook (${open.name}):\n${h.additionalContext}` : ""].filter(Boolean);
+        if (notes.length) this.steer(`<system-reminder>\n${notes.join("\n\n")}\n</system-reminder>`);
+        if (h?.stop) {
+            this.host.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
+            this.interrupt();
+        }
     }
 
     /** Build MCP overrides for every turn from CLI config/provenance, or return an error if unsafe to start. */
@@ -1139,7 +1189,7 @@ class CodexTurn {
                 // network says something. One in another folder is checked as `cd <folder> && …`, where it runs,
                 // and only inside the workspace: a search there (`rg --hidden .`) reads what the checker can't see.
                 const asksAlways = !net && insideWorkspace(dir, this.t.cwd, this.t.additionalDirectories) && codexPolicy(this.turnMode ?? this.host.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
-                const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, callId: typeof p.itemId === "string" ? p.itemId : undefined });
+                const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }
             case "item/fileChange/requestApproval": {
@@ -1160,9 +1210,10 @@ class CodexTurn {
                 const name = changes.length && changes.every((c) => c.kind === "add") ? "Write" : "Edit";
                 // Each file it writes, a rename's destination included, is checked against the rules.
                 const others = writtenPaths(changes).slice(1);
-                const a = await this.host.permission({
+                const a = await this.ask({
                     toolName: name,
                     input: { file_path: first?.path ?? "" },
+                    callId: typeof p.itemId === "string" ? p.itemId : undefined,
                     title: open?.title,
                     reason: [typeof p.reason === "string" ? p.reason : "", others.length ? `This change also writes ${others.join(", ")}.` : ""].filter(Boolean).join(" ") || undefined,
                     preview: first ? changePreview(first, this.t.cwd) : undefined,

@@ -4,6 +4,7 @@
 
 import { Agent, type AgentEvent } from "./agent/agent";
 import { fireHooks } from "./agent/hooks";
+import { sessionStartHooks } from "./agent/session-hooks";
 import { Session } from "./agent/session";
 import { buildSystemPrompt } from "./agent/system-prompt";
 import { loadSettings, type Effort, type Settings } from "./config/settings";
@@ -273,13 +274,15 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     }
 
     const hookWarning = (m: string) => stderr(`warning: ${m}`);
-    const sessionStarted = fireHooks(settings, "SessionStart", { session_id: session.meta.id, source: resumed ? "resume" : "startup" }, o.cwd, hookWarning);
+    const sessionStarted = sessionStartHooks(settings, session, resumed ? "resume" : "startup", o.cwd, hookWarning);
     const ac = new AbortController();
     const onSig = () => ac.abort();
     process.on("SIGINT", onSig);
     process.on("SIGTERM", onSig);
     let reason: string;
     try {
+        // What SessionStart hooks add goes with this one prompt, so it waits for them.
+        if (settings.hooks?.SessionStart?.length) await sessionStarted;
         const { parts, notices } = await expandMentions(o.prompt, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])], checker);
         for (const n of notices) stderr(`warning: ${n}`);
         reason = await agent.run(parts, { signal: ac.signal, display: o.prompt });

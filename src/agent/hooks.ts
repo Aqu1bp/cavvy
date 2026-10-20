@@ -456,3 +456,26 @@ export async function fireHooks(settings: Settings, event: HookEvent, payload: R
     for (const m of h.messages) warn(m);
     return h;
 }
+
+/** Fields Claude Code reads from hookSpecificOutput (our flat format has them at the top level). */
+const SPECIFIC = ["permissionDecision", "permissionDecisionReason", "updatedInput", "additionalContext", "updatedToolOutput", "worktreePath", "watchPaths", "retry"];
+
+/** A handler's result as Claude Code's hook_callback answer: its JSON output schema. */
+export function claudeCodeHookOutput(event: HookEvent, r: HookResult): Record<string, unknown> {
+    if (r.kind === "none" || r.kind === "error") return {};
+    if (r.kind === "block") {
+        if (event === "PreToolUse") return { hookSpecificOutput: { hookEventName: event, permissionDecision: "deny", permissionDecisionReason: r.reason } };
+        return { decision: "block", reason: r.reason };
+    }
+    const j = r.json;
+    if (!j) return {};
+    const out: Record<string, unknown> = {};
+    for (const k of ["continue", "stopReason", "systemMessage", "reason"]) if (j[k] !== undefined) out[k] = j[k];
+    if (j.decision === "block" || j.decision === "approve") out.decision = j.decision;
+    const specific: Record<string, unknown> = {};
+    for (const k of SPECIFIC) if (j[k] !== undefined) specific[k] = j[k];
+    if (j.hookSpecificOutput && typeof j.hookSpecificOutput === "object") Object.assign(specific, j.hookSpecificOutput);
+    delete specific.hookEventName;
+    if (Object.keys(specific).length) out.hookSpecificOutput = { hookEventName: event, ...specific };
+    return out;
+}

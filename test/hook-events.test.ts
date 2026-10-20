@@ -60,13 +60,13 @@ describe("which events can block", () => {
     test("exit 2 from an informational hook is reported, doesn't block, and later hooks still run", async () => {
         const proj = tempDir();
         const out = join(proj, "second.jsonl");
-        for (const event of ["SessionStart", "SessionEnd", "PreCompact", "Notification"] as const) {
+        for (const event of ["SessionStart", "SessionEnd", "PostCompact", "Notification"] as const) {
             const settings = { hooks: { [event]: [{ command: "echo refused >&2; exit 2" }, record(out)] } } as any;
             const o = await runHooks(settings, event, { session_id: "s" }, proj);
             expect(o.blocked).toBeUndefined();
             expect(o.errors).toEqual([`${event} hook "echo refused >&2; exit 2" exited with 2: refused`]);
         }
-        expect(lines(out).map((l) => l.hook_event_name)).toEqual(["SessionStart", "SessionEnd", "PreCompact", "Notification"]);
+        expect(lines(out).map((l) => l.hook_event_name)).toEqual(["SessionStart", "SessionEnd", "PostCompact", "Notification"]);
     });
     test("Stop and SubagentStop can", async () => {
         for (const event of ["Stop", "SubagentStop"] as const) {
@@ -105,7 +105,7 @@ describe("a hook that exits without reading its input", () => {
     test("its decision is honored", async () => {
         const settings = { hooks: { PreToolUse: [{ command: `echo '{"permissionDecision":"deny","permissionDecisionReason":"not reading that"}'` }] } } as any;
         const o = await runHooks(settings, "PreToolUse", big, tempDir());
-        expect(o).toEqual({ errors: [], decision: "deny", reason: "not reading that" });
+        expect(o).toEqual({ errors: [], messages: [], decision: "deny", reason: "not reading that" });
     });
     test("its exit code and stderr are too", async () => {
         const o = await runHooks({ hooks: { PreToolUse: [{ command: "echo too big >&2; exit 2" }] } } as any, "PreToolUse", big, tempDir());
@@ -159,8 +159,8 @@ describe("PreCompact", () => {
         await run(agent, "more");
         expect(await agent.compact({ auto: true, signal: new AbortController().signal })).toBe(true);
         expect(lines(out)).toEqual([
-            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, trigger: "manual", custom_instructions: "keep the API notes" },
-            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, trigger: "auto", custom_instructions: "" },
+            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", trigger: "manual", custom_instructions: "keep the API notes" },
+            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", trigger: "auto", custom_instructions: null },
         ]);
     });
 });
@@ -189,14 +189,14 @@ describe("SubagentStop", () => {
             [TaskTool],
         );
         expect(await run(agent, "delegate")).toBe("done");
-        const base = { hook_event_name: "SubagentStop", cwd: proj, session_id: session.meta.id, agent_type: "general-purpose", description: "Greet" };
+        const base = { hook_event_name: "SubagentStop", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", agent_id: expect.any(String), agent_type: "general-purpose", description: "Greet" };
         expect(lines(subOut)).toEqual([
-            { ...base, last_message: "child report one" },
-            { ...base, last_message: "child report two" },
+            { ...base, stop_hook_active: false, last_assistant_message: "child report one", last_message: "child report one" },
+            { ...base, stop_hook_active: true, last_assistant_message: "child report two", last_message: "child report two" },
         ]);
         const childSecond = requests.filter((r) => r.system !== "PARENT")[1]!;
         expect(JSON.stringify(childSecond.messages.at(-1).content)).toContain("A SubagentStop hook asked you to keep going:\\ncheck the tests too");
-        expect(lines(stopOut)).toEqual([{ hook_event_name: "Stop", cwd: proj, session_id: session.meta.id, last_message: "parent done" }]);
+        expect(lines(stopOut)).toEqual([{ hook_event_name: "Stop", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", stop_hook_active: false, last_assistant_message: "parent done", last_message: "parent done" }]);
         // The parent got the report the sub-agent finished with.
         expect(JSON.stringify(requests.at(-1)!.messages.at(-1).content)).toContain("child report two");
     });
