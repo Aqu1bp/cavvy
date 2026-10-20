@@ -301,12 +301,17 @@ export function buildKeymap(user: UserBinding[], app: KeyApp, platform: KeyPlatf
             const parts = seq.split(" ");
             for (let i = 1; i < parts.length; i++) set.add(parts.slice(0, i).join(" "));
         }
-        for (const p of set) {
-            const shadowed = m.get(p);
-            if (shadowed) all.push({ level: "warning", message: `${ctx}: "${p}" starts a chord, so it no longer runs ${shadowed} on its own.` });
-        }
         prefixes.set(ctx, set);
     }
+    // A chord's first key waits in its own context and in every one it's more specific than.
+    CONTEXTS.forEach((ctx, i) => {
+        const below = CONTEXTS.slice(0, i + 1).reverse(); // Global < Chat < Autocomplete
+        for (const p of prefixes.get(ctx)!)
+            for (const other of below) {
+                const shadowed = table.get(other)!.get(p);
+                if (shadowed) all.push({ level: "warning", message: `${ctx}: "${p}" starts a chord, so it no longer runs ${shadowed}${other === ctx ? "" : ` (${other})`} on its own${other === ctx ? "" : ` where ${ctx} applies`}.` });
+            }
+    });
     // What each action is bound to now, after unbinding and rebinding.
     const keysOf = new Map<string, string[]>();
     const customized = new Set<string>();
@@ -429,10 +434,10 @@ export function formatKeys(seq: string, app: KeyApp, platform: KeyPlatform): str
 }
 
 /** The keys for an action, formatted, or undefined when it has none. */
-export function keyLabel(keymap: Keymap, action: string, all = false): string | undefined {
+export function keyLabel(keymap: Keymap, action: string, all = false, separator = " · "): string | undefined {
     const keys = keymap.keysOf.get(action);
     if (!keys?.length) return undefined;
-    return (all ? keys : keys.slice(0, 1)).map((k) => formatKeys(k, keymap.app, keymap.platform)).join(" · ");
+    return (all ? keys : keys.slice(0, 1)).map((k) => formatKeys(k, keymap.app, keymap.platform)).join(separator);
 }
 
 export const KEYBINDINGS_TEMPLATE = `{

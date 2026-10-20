@@ -156,6 +156,34 @@ describe("a keybindings file", () => {
         expect(app.editor.text).toBe("a");
     });
 
+    test("a null meant for the GUI doesn't take away a terminal editing key", () => {
+        write([{ context: "Global", bindings: { "mod+f": null, "mod+k": null } }]);
+        const { app, press } = testApp();
+        press("abc", "\x01", "\x06", "\x0b");
+        // ctrl+f moved right, ctrl+k killed the rest.
+        expect(app.editor.text).toBe("a");
+    });
+
+    test("Enter on the menu takes the suggestion even when Enter is bound to a new line", () => {
+        write([{ context: "Chat", bindings: { enter: "chat:newline" } }]);
+        const { app, a, press } = testApp();
+        let ran = 0;
+        a.applyCompletion = () => void ran++;
+        press("/hel", "\r");
+        expect(ran).toBe(1);
+        expect(app.editor.text).toBe("/hel");
+    });
+
+    test("a chord timing out under a dialog isn't typed into the prompt", async () => {
+        write([{ context: "Chat", bindings: { "ctrl+x b c": "app:toggleTodos" } }]);
+        const { app, a, press } = testApp();
+        press("\x18", "b");
+        a.dialogs.push({ onKey() {}, cancel() {} });
+        await Bun.sleep(CHORD_TIMEOUT_MS + 80);
+        expect(app.editor.text).toBe("");
+        expect(a.chordHeld).toEqual([]);
+    });
+
     test("autocomplete keys can be rebound", () => {
         write([{ context: "Autocomplete", bindings: { tab: null, "ctrl+y": "autocomplete:accept" } }]);
         const { app, press } = testApp();
@@ -209,12 +237,20 @@ describe("what the app shows", () => {
         expect(out).toContain("Did you mean \"ctrl+x\"?");
     });
 
-    test("/keybindings creates the file from the template", async () => {
+    test("/keybindings only looks; /keybindings edit creates the file from the template", async () => {
         const { app, text } = testApp();
-        expect(existsSync(FILE)).toBe(false);
         await runCommand(app, "/keybindings");
+        expect(existsSync(FILE)).toBe(false);
+        expect(text()).toContain("not created yet");
+        const editor = process.env.EDITOR;
+        process.env.EDITOR = "true";
+        delete process.env.VISUAL;
+        try {
+            await runCommand(app, "/keybindings edit");
+        } finally {
+            process.env.EDITOR = editor;
+        }
         expect(existsSync(FILE)).toBe(true);
-        expect(text()).toContain("Created");
     });
 
     test("startup reports a broken file", async () => {

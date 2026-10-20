@@ -80,6 +80,11 @@ describe("terminal key events as strokes", () => {
         expect(id("\x1b[107;6u")).toBe("ctrl+shift+k");
         expect(id("\x1b[106;5u")).toBe("ctrl+enter"); // ctrl+j stays LF's meaning
     });
+    test("alt+space from ESC-prefixed terminals, and F5–F12", () => {
+        expect(id("\x1b ")).toBe("alt+space");
+        expect(id("\x1b[15~")).toBe("f5");
+        expect(id("\x1b[24;5~")).toBe("ctrl+f12");
+    });
     test("text: one character is a stroke, a typed run or paste isn't", () => {
         expect(id("x")).toBe("x");
         expect(id("X")).toBe("shift+x");
@@ -218,6 +223,11 @@ describe("the file", () => {
         const km = loadKeymap(file([{ context: "Global", bindings: { "ctrl+x": "app:toggleTodos", "ctrl+x ctrl+t": "app:redraw" } }]), "tui", "linux");
         expect(warnings(km)).toEqual([expect.stringContaining('"ctrl+x" starts a chord')]);
         expect(km.keysOf.get("app:toggleTodos")).toEqual(["ctrl+t"]);
+    });
+
+    test("a chord in a more specific context hiding a Global key warns too", () => {
+        const km = loadKeymap(file([{ context: "Chat", bindings: { "ctrl+x ctrl+e": "chat:externalEditor" } }, { context: "Global", bindings: { "ctrl+x": "app:redraw" } }]), "tui", "linux");
+        expect(warnings(km)).toEqual([expect.stringContaining('Chat: "ctrl+x" starts a chord, so it no longer runs app:redraw (Global) on its own where Chat applies')]);
     });
 
     test("chord keys after the first may be plain", () => {

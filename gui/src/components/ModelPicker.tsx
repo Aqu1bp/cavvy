@@ -10,7 +10,7 @@ import { menuIndex, menuTypeahead } from "../lib/menu";
 import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { shortcutHint, withShortcut } from "../state/keybindings";
+import { withShortcut } from "../state/keybindings";
 
 const EFFORTS: { id: EffortLevel; label: string; desc: string }[] = [
     { id: "low", label: "Low", desc: "Fastest replies, for simple tasks." },

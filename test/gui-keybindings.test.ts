@@ -31,8 +31,10 @@ describe("browser key events", () => {
         expect(eventStrokes(ev(" ", "Space", { ctrlKey: true }))).toEqual(["ctrl+space"]);
         // Option+B on a Mac types ∫; Shift+/ types ?.
         expect(eventStrokes(ev("∫", "KeyB", { altKey: true }))).toEqual(["alt+∫", "alt+b"]);
-        expect(eventStrokes(ev("?", "Slash", { shiftKey: true }))).toEqual(["shift+?", "shift+/"]);
+        expect(eventStrokes(ev("?", "Slash", { shiftKey: true }))).toEqual(["shift+?", "?", "shift+/"]);
         expect(eventStrokes(ev("`", "Backquote", { ctrlKey: true }))).toEqual(["ctrl+`"]);
+        // German layout: / is Shift+7, so Ctrl+Shift+7 is Ctrl+/ too.
+        expect(eventStrokes(ev("/", "Digit7", { ctrlKey: true, shiftKey: true }))).toEqual(["ctrl+shift+/", "ctrl+/", "ctrl+shift+7"]);
         expect(eventStrokes(ev("F5", "F5"))).toEqual(["f5"]);
         // A modifier on its own, or a dead key on an unknown code, is nothing.
         expect(eventStrokes(ev("Shift", "ShiftLeft", { shiftKey: true }))).toEqual([]);

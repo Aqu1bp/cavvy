@@ -20,7 +20,8 @@ export function tuiStroke(k: Key): Stroke | undefined {
         const lower = t.toLowerCase();
         return { key: t === " " ? "space" : lower, shift: t !== lower || undefined };
     }
-    return { key: k.name, ctrl: k.ctrl, alt: k.meta, shift: k.shift };
+    // Alt+Space arrives from ESC-prefixed terminals as a meta " ".
+    return { key: k.name === " " ? "space" : k.name, ctrl: k.ctrl, alt: k.meta, shift: k.shift };
 }
 
 /** The terminal's keymap, its matcher, and the watch that keeps them current. */

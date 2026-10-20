@@ -3,7 +3,7 @@
 
 import { createSignal } from "solid-js";
 import type { KeybindingsFile } from "@shared/protocol";
-import { KeyMatcher, formatKeys, loadKeymap, parseKeybindingsText, type Context, type KeyIssue, type Keymap, type MatchResult } from "../../../src/keybindings/core";
+import { KeyMatcher, keyLabel, loadKeymap, parseKeybindingsText, type Context, type KeyIssue, type Keymap, type MatchResult } from "../../../src/keybindings/core";
 import { eventStrokes } from "../lib/keystrokes";
 import { os } from "../lib/platform";
 
@@ -70,10 +70,7 @@ export const actionOf = (e: KeyboardEvent, contexts: readonly Context[]): string
 
 /** The keys bound to an action, for people: "⌘+K" (each part one key cap). `all`: every key, joined by "  ". */
 export function shortcut(action: string, all = false): string | undefined {
-    const km = keymap();
-    const keys = km.keysOf.get(action);
-    if (!keys?.length) return undefined;
-    return (all ? keys : keys.slice(0, 1)).map((k) => formatKeys(k, "gui", os)).join("  ");
+    return keyLabel(keymap(), action, all, "  ");
 }
 
 /** The first key for an action spaced out for a hint ("⌘ K"), or "" when it has none. */

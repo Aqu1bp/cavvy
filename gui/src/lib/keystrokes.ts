@@ -60,6 +60,8 @@ export function eventStrokes(e: KeyLike): string[] {
     const out: string[] = [];
     const k = fromKey(e.key);
     if (k) out.push(strokeId({ key: k, ...mods }));
+    // A symbol Shift had to make on this layout ("/" is Shift+7 on a German keyboard) matches without Shift too.
+    if (k && e.shiftKey && k.length === 1 && k.toLowerCase() === k.toUpperCase() && !/\d/.test(k)) out.push(strokeId({ key: k, ...mods, shift: false }));
     const c = fromCode(e.code);
     if (c && c !== k) out.push(strokeId({ key: c, ...mods }));
     return out;

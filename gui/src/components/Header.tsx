@@ -14,7 +14,7 @@ import { Monogram } from "./Sidebar";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
-import { shortcutHint, withShortcut } from "../state/keybindings";
+import { withShortcut } from "../state/keybindings";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
 

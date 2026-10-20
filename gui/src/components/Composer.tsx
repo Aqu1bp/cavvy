@@ -280,6 +280,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const onKeyDown = (e: KeyboardEvent) => {
         if (composingKey(e)) return;
         const items = menu();
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
+        if (items.length && e.key === "Enter" && !e.shiftKey && !e.altKey) {
+            e.preventDefault();
+            apply(items[menuSel()] ?? items[0]!, true);
+            return;
+        }
         // A menu with nothing to pick (a status line) only takes the key that closes it.
         const closesStatus = !items.length && menuOpen() && eventStrokes(e).some((id) => keymap().table.get("Autocomplete")?.get(id) === "autocomplete:dismiss");
         const r: MatchResult = closesStatus ? { kind: "action", action: "autocomplete:dismiss", context: "Autocomplete", abandoned: 0 } : matchKey(e, items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);

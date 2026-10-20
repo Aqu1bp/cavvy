@@ -1650,8 +1650,8 @@ function keyHelp(app: App, cols: number): string[] {
 
 async function keybindingsCommand(app: App, args: string) {
     const path = app.keys.path;
-    const created = ensureKeybindingsFile(path);
     if (args.trim() === "edit") {
+        ensureKeybindingsFile(path);
         const editor = process.env.VISUAL || process.env.EDITOR || "vi";
         await app.screen.suspend(() => {
             spawnSync(["sh", "-c", `${editor} "$1"`, "sh", path], { stdio: ["inherit", "inherit", "inherit"], env: childEnv() });
@@ -1661,7 +1661,7 @@ async function keybindingsCommand(app: App, args: string) {
     }
     const km = app.keys.keymap;
     const lines = ["", heading("Keybindings")];
-    lines.push(theme.muted(`  ${created ? "Created" : "File:"} ${displayPath(path, app.cwd)}`));
+    lines.push(theme.muted(`  File: ${displayPath(path, app.cwd)}${existsSync(path) ? "" : " (not created yet: /keybindings edit creates it)"}`));
     lines.push(theme.muted("  Changes apply when you save. /keybindings edit opens it in $EDITOR. Same format as Claude Code's."));
     lines.push(theme.subtle(`  e.g. { "bindings": [{ "context": "Chat", "bindings": { "ctrl+e": "chat:externalEditor", "ctrl+g": null } }] }`));
     const keyW = Math.min(36, Math.max(16, ...ACTIONS.filter((a) => a.defaults.tui).map((a) => width(app.keys.all(a.id).join(", ")) + 2)));

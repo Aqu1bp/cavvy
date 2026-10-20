@@ -11,7 +11,7 @@ import { Dialog } from "./ui/Dialog";
 import { askDelete } from "./Header";
 import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
-import { shortcutHint, withShortcut } from "../state/keybindings";
+import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
     id: string;

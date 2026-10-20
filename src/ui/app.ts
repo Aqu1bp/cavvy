@@ -1275,6 +1275,8 @@ export class App {
             return e.del();
         }
         const menu = this.completions();
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
+        if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl && !this.chordHeld.length) return this.applyCompletion(menu, true);
         const stroke = tuiStroke(k);
         if (!stroke) {
             this.flushChord(menu);
@@ -1290,6 +1292,8 @@ export class App {
             // A chord left unfinished: its keys do what they'd do on their own.
             setTimeout(() => {
                 if (token !== this.chordToken || this.keys.matcher.waiting) return;
+                // A dialog opened meanwhile: its keys aren't typed into the prompt behind it.
+                if (this.dialogs.length) return this.dropChord();
                 this.flushChord(this.completions());
                 this.renderLive();
             }, CHORD_TIMEOUT_MS + 20);
@@ -1299,8 +1303,8 @@ export class App {
         if (held.length) this.flash = undefined;
         if (r.abandoned) for (const h of held) this.fixedKey(h, menu);
         if (r.kind === "action") return this.runKeyAction(r.action, k, this.completions());
-        if (r.unbound) return;
-        return this.fixedKey(k, held.length ? this.completions() : menu);
+        // Unbinding takes away an action, not the key's editing meaning (a GUI-only null can't break the prompt).
+        return this.fixedKey(k, held.length ? this.completions() : menu, r.kind === "none" && r.unbound);
     }
 
     /** The keys of an unfinished chord, as they'd be on their own. */
@@ -1400,15 +1404,14 @@ export class App {
     }
 
     /** Keys that aren't bindings: typing and moving around the input box. */
-    private fixedKey(k: Key, menu: ReturnType<App["completions"]>) {
+    private fixedKey(k: Key, menu: ReturnType<App["completions"]>, unbound = false) {
         const e = this.editor;
         const n = k.name;
-        // Unbound Tab keeps the mid-turn shortcut; configured actions and chords take precedence.
-        if (n === "tab" && !k.shift && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
-        // Enter on an open menu with a modifier nobody bound still takes the suggestion, as before.
+        // Tab keeps the mid-turn shortcut unless a binding, chord, or explicit unbinding claims it.
+        if (!unbound && n === "tab" && !k.shift && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
         if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
-        // Any other modified Enter adds a line, in terminals that tell them apart.
-        if (n === "enter" && (k.shift || k.meta || k.ctrl)) return e.insert("\n");
+        // Any other modified Enter nobody unbound adds a line, in terminals that tell them apart.
+        if (n === "enter" && (k.shift || k.meta || k.ctrl)) return unbound ? undefined : e.insert("\n");
         if (n === "paste" && k.paste !== undefined) return this.pasteInto(k.paste);
         if (n === "text" && k.text) {
             if (e.isEmpty && this.inputMode === "prompt") {
