@@ -1520,7 +1520,7 @@ export class App {
         const e = this.editor;
         const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
         const draft = e.text ? prefix + e.text : "";
-        if (draft && (last.startsWith("/") || draft.startsWith("/"))) {
+        if (draft && (isCommand(last) || isCommand(draft))) {
             this.takeBackBlockedAt = Date.now();
             this.flash = { text: "Clear the prompt to take back the queued command · Esc again to interrupt", until: this.takeBackBlockedAt + 3000 };
             return this.renderLive();
@@ -1548,9 +1548,9 @@ export class App {
         this.inputMode = "prompt";
         if (all.length === 1) this.editor.set(all[0]!);
         else {
-            const commands = all.filter((t) => t.startsWith("/"));
+            const commands = all.filter(isCommand);
             for (const c of commands) this.editor.pushHistory(c);
-            this.editor.set(all.filter((t) => !t.startsWith("/")).join("\n"));
+            this.editor.set(all.filter((t) => !isCommand(t)).join("\n"));
             if (commands.length) this.notice(`Not run: ${commands.join(", ")}. ↑ brings ${commands.length === 1 ? "it" : "them"} back.`, "warn");
         }
         this.renderLive();
@@ -1834,6 +1834,11 @@ export function renderTodos(todos: TodoItem[], cols: number): string[] {
         if (t.status === "in_progress") return theme.muted(prefix) + theme.accent("◼ ") + bold(truncate(t.activeForm ?? t.content, cols - 10));
         return theme.muted(prefix) + "☐ " + truncate(t.content, cols - 10);
     });
+}
+
+/** A slash command, as submitting reads it (`//` is plain text). */
+function isCommand(text: string): boolean {
+    return text.startsWith("/") && !text.startsWith("//");
 }
 
 function shortcutHelp(cols: number): string[] {

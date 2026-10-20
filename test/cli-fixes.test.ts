@@ -279,6 +279,18 @@ describe("keys in the kitty keyboard protocol's encoding", () => {
             expect(a.editor.text).toBe("/review");
         });
 
+        test("// is plain text, as when it's submitted: it comes back with the rest", () => {
+            const { a, press } = busyApp();
+            a.queued = ["// explain this", "also this"];
+            a.returnQueued();
+            expect(a.editor.text).toBe("// explain this\nalso this");
+            a.editor.set("");
+            a.queued = ["// note"];
+            press("draft", "\x1b[27u");
+            expect(a.queued).toEqual([]);
+            expect(a.editor.text).toBe("// note\ndraft");
+        });
+
         test("after an interrupt, a lone queued slash command comes back to the prompt", () => {
             const { a } = busyApp();
             a.queued = ["/review"];
