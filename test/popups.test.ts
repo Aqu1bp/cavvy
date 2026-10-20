@@ -413,11 +413,13 @@ describe("session approvals", () => {
         }
     });
 
-    test("a grant doesn't cover a file whose name only ends in the granted path (X=other/.env)", () => {
+    test("a grant doesn't cover another file whose name looks like the granted path (X=other/.env, ｏther/.env)", () => {
         const s = checker();
         s.applyGrant({ paths: [join(W, "other", ".env")] });
         expect(s.check(Bash, { command: "cat other/.env" }, "default", W).sensitive).toBeUndefined();
-        for (const command of ["cat X=other/.env", "cat --x=other/.env", "head -5 A=other/.env"]) {
+        mkdirSync(join(W, "ｏther"), { recursive: true });
+        writeFileSync(join(W, "ｏther", ".env"), "G=7\n");
+        for (const command of ["cat X=other/.env", "cat --x=other/.env", "head -5 A=other/.env", "cat ｏther/.env"]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
         }
     });

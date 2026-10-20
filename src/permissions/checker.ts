@@ -283,7 +283,8 @@ export class PermissionChecker {
         // plain file readers: anything that may read from another folder (`cd`, `git -C`, `env -C`,
         // `make -C`, `find -execdir`, `xargs`, a script) could make the same word another file.
         const a = analyzeCommand(cmd);
-        const grantCovers = (abs: string) => pathForms(abs).some((f) => granted.some((r) => isInside(f, r)));
+        // An exemption needs every spelling inside a grant: `ａ/.env` folds to `a/.env` but is another file.
+        const grantCovers = (abs: string) => pathForms(abs).every((f) => granted.some((r) => isInside(f, r)));
         if (!plainReads(cmd, a, cwd, (dir) => (policy && blocks(policy, dir, true)) || grantCovers(dir))) return found;
         const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || grantCovers(w.abs));
         if (!covered.length) return found;
