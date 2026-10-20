@@ -1815,7 +1815,7 @@ function allCommands(app: App): Command[] {
     const names = new Set(BUILTIN.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
     const custom = app.customCommands.filter((c) => !names.has(c.name));
     for (const c of custom) names.add(c.name);
-    const skills = app.skills.filter((s) => s.userInvocable && !names.has(s.name));
+    const skills = (app.skills ?? []).filter((s) => s.userInvocable && !names.has(s.name));
     return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand)];
 }
 
@@ -1852,7 +1852,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     let cmd = findCommand(app, name);
     if (!cmd && !name.includes("/") && !name.includes(".")) {
         // A skill added since startup.
-        app.skills = sameSkills(app.skills, loadSkills(app.cwd, app.init.trusted));
+        app.skills = sameSkills(app.skills ?? [], loadSkills(app.cwd, app.init?.trusted ?? false));
         cmd = findCommand(app, name);
     }
     if (!cmd) {
@@ -1862,7 +1862,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         // Until it has listed them (before the first turn), let Claude Code resolve the name.
         const cli = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
         if (cli?.has(name) || (!cli && app.model?.provider === "claude-code")) return false;
-        app.notice(`Unknown command /${name}. Type /help to see the commands${app.skills.length ? " and /skills for skills" : ""}.`, "error");
+        app.notice(`Unknown command /${name}. Type /help to see the commands${app.skills?.length ? " and /skills for skills" : ""}.`, "error");
         if (draft?.attachments.size) app.editor.restore([draft]);
         return true;
     }
@@ -1890,7 +1890,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
 
 function helpCommand(app: App) {
     const cmds = commandList(app);
-    const custom = app.customCommands.length + app.skills.length;
+    const custom = app.customCommands.length + (app.skills?.length ?? 0);
     app.print((cols) => helpLines(app, cmds, custom, cols));
 }
 
