@@ -176,7 +176,7 @@ describe("a keybindings file", () => {
             expect(calls).toEqual(["editor"]);
             writeFileSync(FILE, "{ oops");
             for (let i = 0; i < 100 && !text().includes("not reloaded"); i++) await Bun.sleep(20);
-            expect(text()).toContain("Keybindings not reloaded (the last good ones stay)");
+            expect(text()).toContain("Keybindings not reloaded, the last good ones stay");
             expect(text()).toContain("isn't valid JSON");
             press("\x05");
             expect(calls).toEqual(["editor", "editor"]);
@@ -221,6 +221,6 @@ describe("what the app shows", () => {
         writeFileSync(FILE, "not json");
         const { a, text } = testApp();
         a.reportKeybindings(a.keys.keymap, "start");
-        expect(text()).toContain("keybindings.json: 1 error");
+        expect(text()).toContain("Problems in your keybindings (1 error)");
     });
 });

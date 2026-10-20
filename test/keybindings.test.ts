@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { ACTIONS, CHORD_TIMEOUT_MS, KEYBINDINGS_TEMPLATE, KeyMatcher, formatKeys, keyLabel, loadKeymap, parseKeybindingsText, parseStroke, strokeId, stripJsonComments } from "../src/keybindings/core";
 import { ensureKeybindingsFile, readKeybindings, watchKeybindings } from "../src/keybindings/file";
-import { TuiKeybindings, describeIssues, hostPlatform, tuiStroke } from "../src/keybindings/tui";
+import { TuiKeybindings, hostPlatform, tuiStroke } from "../src/keybindings/tui";
 import { KeyParser } from "../src/ui/keys";
 
 const file = (blocks: unknown) => JSON.stringify({ bindings: blocks });
@@ -299,9 +299,6 @@ describe("display", () => {
         expect(keyLabel(km, "chat:externalEditor")).toBe("ctrl+e");
         const none = loadKeymap(file([{ context: "Chat", bindings: { "ctrl+g": null } }]), "tui", "linux");
         expect(keyLabel(none, "chat:externalEditor")).toBeUndefined();
-    });
-    test("issues read as a list under the path", () => {
-        expect(describeIssues([{ level: "error", message: "a" }, { level: "warning", message: "b" }], "/k.json")).toBe("/k.json: 1 error, 1 warning\n  ✘ a\n  ! b");
     });
     test("host platform", () => {
         expect(hostPlatform("darwin")).toBe("macos");

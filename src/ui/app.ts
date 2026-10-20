@@ -10,7 +10,7 @@ import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor"
 import { followUpDefault, loadQueue, saveQueue, type FollowUp, type StoredQueued } from "../agent/queue-store";
 import type { Key } from "./keys";
 import { CHORD_TIMEOUT_MS, type Keymap } from "../keybindings/core";
-import { TuiKeybindings, describeIssues, tuiStroke } from "../keybindings/tui";
+import { TuiKeybindings, tuiStroke } from "../keybindings/tui";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
@@ -1440,9 +1440,15 @@ export class App {
     /** Keybindings problems, shown when the file loads or changes. */
     private reportKeybindings(km: Keymap, status: "start" | "applied" | "kept") {
         if (km.issues.length) {
-            const errors = km.issues.some((i) => i.level === "error");
-            const lead = status === "kept" ? "Keybindings not reloaded (the last good ones stay):\n" : status === "applied" ? "Keybindings reloaded with problems:\n" : "";
-            this.notice(lead + describeIssues(km.issues), errors ? "error" : "warn");
+            const errors = km.issues.filter((i) => i.level === "error").length;
+            const warnings = km.issues.length - errors;
+            const counts = [errors && `${errors} error${errors === 1 ? "" : "s"}`, warnings && `${warnings} warning${warnings === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+            const head = `${status === "kept" ? "Keybindings not reloaded, the last good ones stay" : status === "applied" ? "Keybindings reloaded with problems" : "Problems in your keybindings"} (${counts}): ${displayPath(this.keys.path, this.cwd)}`;
+            const color = errors ? theme.error : theme.warning;
+            this.screen.print((cols) => [
+                ...wrapLine(head, cols - 6).map((l, i) => (i === 0 ? "  ⎿  " : "     ") + color(l)),
+                ...km.issues.flatMap((issue) => wrapLine(issue.message, cols - 9).map((l, i) => (i === 0 ? `     ${issue.level === "error" ? theme.error("✘") : theme.warning("!")} ` : "       ") + l)),
+            ]);
         } else if (status === "applied") this.notice(`Keybindings reloaded${km.customized.size ? ` (${km.customized.size} customized)` : ""}`);
         this.renderLive();
     }

@@ -1661,8 +1661,10 @@ async function keybindingsCommand(app: App, args: string) {
     }
     const km = app.keys.keymap;
     const lines = ["", heading("Keybindings")];
-    lines.push(theme.muted(`  ${created ? "Created" : "File:"} ${displayPath(path, app.cwd)} · changes apply when you save · /keybindings edit opens it in $EDITOR`));
-    lines.push(theme.muted(`  Format (same as Claude Code's): { "bindings": [{ "context": "Chat", "bindings": { "ctrl+e": "chat:externalEditor", "ctrl+g": null } }] }`));
+    lines.push(theme.muted(`  ${created ? "Created" : "File:"} ${displayPath(path, app.cwd)}`));
+    lines.push(theme.muted("  Changes apply when you save. /keybindings edit opens it in $EDITOR. Same format as Claude Code's."));
+    lines.push(theme.subtle(`  e.g. { "bindings": [{ "context": "Chat", "bindings": { "ctrl+e": "chat:externalEditor", "ctrl+g": null } }] }`));
+    const keyW = Math.min(36, Math.max(16, ...ACTIONS.filter((a) => a.defaults.tui).map((a) => width(app.keys.all(a.id).join(", ")) + 2)));
     for (const ctx of CONTEXTS) {
         const actions = ACTIONS.filter((a) => a.context === ctx && a.defaults.tui);
         if (!actions.length) continue;
@@ -1670,14 +1672,14 @@ async function keybindingsCommand(app: App, args: string) {
         for (const a of actions) {
             const keys = app.keys.all(a.id);
             const shown = keys.length ? keys.join(", ") : theme.subtle("not bound");
-            lines.push(truncate(`    ${padEnd(km.customized.has(a.id) ? theme.accent(shown) : shown, 26)}${padEnd(theme.muted(a.id), 26)}${theme.subtle(a.description)}`, termCols() - 1));
+            lines.push(truncate(`    ${padEnd(km.customized.has(a.id) ? theme.accent(shown) : shown, keyW)}${padEnd(theme.muted(a.id), 24)}${theme.subtle(a.description)}`, termCols() - 1));
         }
     }
     if (km.issues.length) {
         lines.push("", `  ${bold("Problems")}`);
         for (const i of km.issues) lines.push(`    ${i.level === "error" ? theme.error("✘") : theme.warning("!")} ${i.message}`);
     }
-    lines.push("", theme.subtle(`  Modifiers: ctrl, alt (opt, meta), shift, mod (ctrl in the terminal). Chords: "ctrl+x ctrl+e". Docs: ${KEYBINDINGS_DOCS}`));
+    lines.push("", theme.subtle(`  Modifiers: ctrl, alt (opt, meta), shift, mod (ctrl in the terminal). Chords: "ctrl+x ctrl+e".`), theme.subtle(`  Docs: ${KEYBINDINGS_DOCS}`));
     app.print(lines);
 }
 

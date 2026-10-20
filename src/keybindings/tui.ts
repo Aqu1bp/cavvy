@@ -2,7 +2,7 @@
 // keymap kept up to date with the file.
 
 import type { Key } from "../ui/keys";
-import { KeyMatcher, formatKeys, keyLabel, loadKeymap, type Keymap, type KeyIssue, type KeyPlatform, type Stroke } from "./core";
+import { KeyMatcher, formatKeys, keyLabel, loadKeymap, type Keymap, type KeyPlatform, type Stroke } from "./core";
 import { keybindingsPath, readKeybindings, watchKeybindings } from "./file";
 
 export function hostPlatform(p: string = process.platform): KeyPlatform {
@@ -21,13 +21,6 @@ export function tuiStroke(k: Key): Stroke | undefined {
         return { key: t === " " ? "space" : lower, shift: t !== lower || undefined };
     }
     return { key: k.name, ctrl: k.ctrl, alt: k.meta, shift: k.shift };
-}
-
-/** Problems as notice lines, with the file's path once. */
-export function describeIssues(issues: KeyIssue[], path = keybindingsPath()): string {
-    const errors = issues.filter((i) => i.level === "error").length;
-    const head = `${path}: ${errors ? `${errors} error${errors === 1 ? "" : "s"}` : ""}${errors && errors < issues.length ? ", " : ""}${issues.length - errors ? `${issues.length - errors} warning${issues.length - errors === 1 ? "" : "s"}` : ""}`;
-    return [head, ...issues.map((i) => `  ${i.level === "error" ? "✘" : "!"} ${i.message}`)].join("\n");
 }
 
 /** The terminal's keymap, its matcher, and the watch that keeps them current. */

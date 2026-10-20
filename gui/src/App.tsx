@@ -230,14 +230,16 @@ export function App() {
         const overDialogs = new Set(["app:commandPalette", "app:settings"]);
         const onKey = (e: KeyboardEvent) => {
             const action = actionOf(e, ["Global"]);
-            const dialog = document.querySelector(".dialog-backdrop");
+            // Most keys are typing: nothing below looks at the page for them.
+            if (!action && e.key !== "Escape") return;
+            const dialog = () => document.querySelector(".dialog-backdrop");
             if (action === "app:toggleTerminal") {
-                if (!dialog) e.preventDefault(), setTerminalOpen(!terminalOpen());
+                if (!dialog()) e.preventDefault(), setTerminalOpen(!terminalOpen());
                 return;
             }
             // The terminal keeps its keys.
             if ((e.target as HTMLElement)?.closest?.(".terminal-emulator")) return;
-            if (action && run[action] && (!dialog || overDialogs.has(action)) && !e.defaultPrevented) {
+            if (action && run[action] && !e.defaultPrevented && (overDialogs.has(action) || !dialog())) {
                 if (run[action]!(e) !== false) e.preventDefault();
                 return;
             }
