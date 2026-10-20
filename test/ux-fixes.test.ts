@@ -820,7 +820,7 @@ describe("live region layout", () => {
         expect(printed.join("\n")).not.toContain("\x1b[31m");
     });
 
-    test("when a turn ends, the screen is asked to bring the output back down to the prompt, once", () => {
+    test("back at the plain prompt (a turn ended, then a dialog closed), the screen is asked to bring the output back down, once each", () => {
         const { app } = testApp();
         const a = app as any;
         let settled = 0;
@@ -830,7 +830,12 @@ describe("live region layout", () => {
         App.prototype.renderLive.call(app);
         App.prototype.renderLive.call(app);
         expect(settled).toBe(0);
+        // The turn ends with a dialog still open: not yet.
+        a.dialogs.push({ render: () => ["dialog", "", "", ""] });
         a.busy = false;
+        App.prototype.renderLive.call(app);
+        expect(settled).toBe(0);
+        a.dialogs.pop();
         App.prototype.renderLive.call(app);
         App.prototype.renderLive.call(app);
         expect(settled).toBe(1);

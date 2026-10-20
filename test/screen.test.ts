@@ -121,6 +121,19 @@ describe("full-window renderer", () => {
         expect(vt.screen().slice(-LIVE.length - 2, -LIVE.length)).toEqual(["done", "next"]);
     });
 
+    test("settling with no live region (stopping) leaves the output where it is", () => {
+        const { vt, screen } = harness(12, 40);
+        for (let i = 0; i < 20; i++) screen.print(`line ${i}`);
+        screen.setLive([...Array.from({ length: 6 }, (_, i) => `busy ${i}`), ...LIVE]);
+        screen.flushNow();
+        const before = vt.scrollback.length;
+        screen.setLive([]);
+        screen.settle();
+        screen.flushNow();
+        expect(vt.scrollback.length).toBe(before);
+        expect((screen as any).top).toBeLessThan(12);
+    });
+
     test("with nothing out of sight above, settling leaves the prompt right under the output", () => {
         const { vt, screen } = harness(12, 40);
         screen.print(["first", "second"]);

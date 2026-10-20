@@ -239,6 +239,8 @@ export class Screen {
      * screen, so nothing extra goes to the scrollback; the rows brought back are already in it.
      */
     private fill(cols: number, rows: number): string | undefined {
+        // Nothing to sit on the bottom rows (it's stopping): the output just ends where it is.
+        if (!this.live.length) return undefined;
         const pendingRows = this.pending.reduce((n, e) => n + this.layout(e, cols).length, 0);
         const end = Math.min(this.top + pendingRows, rows - 1);
         const room = rows - Math.min(this.live.length, rows - 1);
