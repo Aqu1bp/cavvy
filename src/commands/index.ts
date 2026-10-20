@@ -1516,7 +1516,7 @@ function agentsCommand(app: App) {
         lines.push(theme.muted(`    ${truncate(a.description, termCols() - 8)}`));
         const more = [
             a.tools?.length ? `tools: ${a.tools.join(", ")}` : "",
-            a.disallowedTools?.length ? `not: ${a.disallowedTools.join(", ")}` : "",
+            a.disallowedTools?.length ? `disallowed tools: ${a.disallowedTools.join(", ")}` : "",
             a.maxTurns ? `max turns: ${a.maxTurns}` : "",
             a.skills?.length ? `skills: ${a.skills.join(", ")}` : "",
             a.mcpServers?.length ? `MCP: ${a.mcpServers.map((s) => s.name + (s.config ? " (own)" : "")).join(", ")}` : "",

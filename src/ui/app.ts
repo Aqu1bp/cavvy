@@ -923,11 +923,13 @@ export class App {
         let a = this.active.get(parentId) ?? this.detached.get(parentId);
         // One working after its call returned (Codex's spawn does at once): shown on its own while it works.
         if (!a && (e.type === "request_start" || e.type === "tool_start")) {
-            a = { call: { type: "tool_call", id: parentId, name: "Task", input: { description: label } }, title: `Task(${label})`, startedAt: Date.now(), progress: "" };
+            // A background task's time counts from its start, not from when its call returned.
+            const startedAt = this.agent?.delegatedTasks.find((t) => t.callId === parentId)?.startedAt ?? Date.now();
+            a = { call: { type: "tool_call", id: parentId, name: "Task", input: { description: label } }, title: `Task(${label})`, startedAt, progress: "" };
             this.detached.set(parentId, a);
         }
         if (!a) return;
-        a.sub ??= { label, tools: [], count: 0, tokens: 0, startedAt: Date.now() };
+        a.sub ??= { label, tools: [], count: 0, tokens: 0, startedAt: a.startedAt };
         if (e.type === "tool_start") {
             a.sub.count++;
             a.sub.tools.push(e.title);
