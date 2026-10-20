@@ -121,6 +121,39 @@ describe("full-window renderer", () => {
         expect(vt.screen().slice(-LIVE.length - 2, -LIVE.length)).toEqual(["done", "next"]);
     });
 
+    test("rows brought back by settling don't go to the scrollback twice: not when a dialog opens and closes, not over turns", () => {
+        const { vt, screen } = harness(12, 40);
+        for (let i = 0; i < 20; i++) screen.print(`line ${i}`);
+        screen.setLive(LIVE);
+        screen.flushNow();
+        const dialog = [...Array.from({ length: 6 }, (_, i) => `option ${i}`), ...LIVE];
+        const busy = ["", "spinner", ...LIVE];
+        for (let round = 0; round < 3; round++) {
+            screen.setLive(dialog);
+            screen.flushNow();
+            screen.setLive(LIVE);
+            screen.settle();
+            screen.flushNow();
+            screen.setLive(busy);
+            screen.flushNow();
+            screen.print(`reply ${round}`);
+            screen.setLive(LIVE);
+            screen.settle();
+            screen.flushNow();
+        }
+        const rows = [...Array.from({ length: 20 }, (_, i) => `line ${i}`), "reply 0", "reply 1", "reply 2"];
+        const ours = (ls: string[]) => ls.filter((l) => /^(line|reply) /.test(l));
+        // The scrollback has each row once, in order; the screen shows the newest rows right above the prompt,
+        // so only its top rows (brought back by the last settle) are also the scrollback's last ones.
+        const back = ours(vt.scrollback);
+        expect(back).toEqual(rows.slice(0, back.length));
+        const shown = ours(vt.screen());
+        expect(shown).toEqual(rows.slice(-shown.length));
+        expect(shown.length).toBe(12 - LIVE.length);
+        expect(back.length + shown.length - rows.length).toBe((screen as any).restored);
+        expect(vt.screen().slice(-LIVE.length)).toEqual(LIVE);
+    });
+
     test("settling with no live region (stopping) leaves the output where it is", () => {
         const { vt, screen } = harness(12, 40);
         for (let i = 0; i < 20; i++) screen.print(`line ${i}`);

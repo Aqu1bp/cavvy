@@ -47,6 +47,11 @@ export class Screen {
     private liveRows = 0;
     /** Paint the screen again on the next draw if the region left empty rows (see settle). */
     private settlePending = false;
+    /**
+     * Output rows at the top of the screen that are also the last rows of the scrollback: brought
+     * back by a fill. They're dropped in place rather than scrolled into the scrollback again.
+     */
+    private restored = 0;
     private log: Entry[] = [];
     /** Printed but not drawn yet. */
     private pending: Entry[] = [];
@@ -86,6 +91,7 @@ export class Screen {
         process.stdout.write(KEYS_ON + cursor.hide + CLEAR_ALL);
         this.top = 0;
         this.liveRows = 0;
+        this.restored = 0;
         this.setFocusReporting(true);
     }
 
@@ -250,8 +256,33 @@ export class Screen {
         const shown = tail.slice(-room);
         if (shown.length <= end) return undefined;
         this.pending = [];
+        this.restored = Math.min(shown.length, this.restored + shown.length - end);
         const output = shown.map((l) => cursor.clearLine + l + RESET).join("\n") + "\n";
         return SYNC_START + "\x1b[H" + output + cursor.clearDown + this.drawLive(shown.length, cols, rows) + SYNC_END;
+    }
+
+    /**
+     * Before a draw that would scroll rows brought back by a fill into the scrollback again: paint
+     * the screen in place without as many of them as would scroll, so only new rows scroll.
+     * Leaves the cursor where the live region starts, with the region erased.
+     */
+    private dropRestored(cols: number, rows: number): string {
+        if (!this.restored || !this.live.length) return "";
+        const pendingRows = this.pending.reduce((n, e) => n + this.layout(e, cols).length, 0);
+        const scroll = Math.max(0, this.top + pendingRows + Math.min(this.live.length, rows - 1) - rows);
+        const drop = Math.min(scroll, this.restored, this.top);
+        if (!drop) return "";
+        // What's on screen above the live region: the newest output rows printed so far (pending ones are last in the log).
+        const pending = new Set(this.pending);
+        const visible: string[] = [];
+        for (let i = this.log.length - 1; i >= 0 && visible.length < this.top; i--) {
+            if (!pending.has(this.log[i]!)) visible.unshift(...this.layout(this.log[i]!, cols));
+        }
+        const kept = visible.slice(-this.top).slice(drop);
+        this.top -= drop;
+        this.restored -= drop;
+        this.liveRows = 0;
+        return "\x1b[H" + kept.map((l) => cursor.clearLine + l + RESET + "\n").join("") + cursor.clearDown;
     }
 
     /** Clear the screen, the scrollback and everything printed so far. */
@@ -309,7 +340,7 @@ export class Screen {
             const filled = this.fill(cols, rows);
             if (filled) return void process.stdout.write(filled);
         }
-        let out = SYNC_START;
+        let out = SYNC_START + this.dropRestored(cols, rows);
         if (this.liveRows > 0) out += "\r" + cursor.up(this.liveRows - 1) + cursor.clearDown;
         else out += "\r";
         let row = this.top;
@@ -344,6 +375,8 @@ export class Screen {
             printed = ["\x1b[2m… earlier output isn't shown again after a resize (/export saves the whole conversation)\x1b[22m", ...printed.slice(-MAX_REDRAW_ROWS)];
         }
         this.pending = [];
+        // The scrollback is cleared too: nothing on screen is in it.
+        this.restored = 0;
         let out = SYNC_START + CLEAR_ALL;
         if (printed.length) out += printed.map((l) => l + RESET).join("\n") + "\n";
         out += this.drawLive(Math.min(printed.length, rows - 1), cols, rows);
