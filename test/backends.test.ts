@@ -818,6 +818,19 @@ describe("Codex backend", () => {
             expect(linked.asked.map((a) => a.input.command)).toEqual([`cd '${realpathSync(ssh)}' && ${command}`]);
             expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
         }
+        // Outside the workspace, even a read-only command asks: a search there reads what the checker can't see.
+        const outside = tempDir();
+        writeFileSync(join(outside, ".env"), "FAKE=1\n");
+        symlinkSync(outside, join(cwd, "env-link"));
+        for (const folder of [outside, join(cwd, "env-link")]) {
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = "rg --hidden .";
+            process.env.FAKE_COMMAND_CWD = folder;
+            const search = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+            await search.run("look");
+            expect(search.asked.map((a) => a.input.command)).toEqual([`cd '${realpathSync(outside)}' && rg --hidden .`]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        }
     });
 
     test("the command comes out of Codex's quoted shell wrapper as a shell would read it", async () => {
