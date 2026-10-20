@@ -6,7 +6,8 @@
 //   bun run gui:demo --port 4600 --token <16+ characters>    a link that stays the same: http://127.0.0.1:4600/#token=<token>
 //
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
-// and running tests; "question", "plan" and "todo" show those flows.
+// and running tests; "question", "plan" and "todo" show those flows; the
+// demo skills show in the / and $ menus.
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -29,6 +30,16 @@ createDemoProject(project);
 const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14) });
 writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false }] }, null, 2));
 writeFileSync(join(home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }, null, 2));
+// A few skills for the / and $ menus ("use the release-notes skill" has the model load one).
+const demoSkills: Record<string, string> = {
+    "release-notes": "---\ndescription: Write release notes from the commits since the last tag\n---\nRead `git log` since the last tag and group the changes into Added, Changed and Fixed.",
+    explain: "---\ndescription: Explain a file or module to a newcomer\nargument-hint: <path>\n---\nExplain $ARGUMENTS: what it's for, how it fits in, and where to start reading.",
+    "security-review": "---\ndescription: Check the current changes for security problems\ndisable-model-invocation: true\n---\nReview the diff for injection, auth and secrets issues.",
+};
+for (const [name, text] of Object.entries(demoSkills)) {
+    mkdirSync(join(home, "skills", name), { recursive: true });
+    writeFileSync(join(home, "skills", name, "SKILL.md"), text);
+}
 
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";

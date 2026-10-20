@@ -158,7 +158,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             const q = t.slice(1).toLowerCase();
             const items = commands
                 .filter((c) => c.name.startsWith(q) || (q.length > 1 && c.name.includes(q)))
-                .slice(0, 8)
+                // The menu scrolls: skills and custom commands after the built-ins stay reachable.
+                .slice(0, 100)
                 .map((cmd) => ({ kind: "command" as const, cmd }));
             setMenu(items.length === 1 && `/${items[0]!.cmd.name}` === t ? [] : items);
             setMenuSel(0);
@@ -461,7 +462,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                             <span class="cm-name mono">
                                                 {c().mention ? "$" : ""}
                                                 {c().cmd.name}
-                                                <Show when={c().cmd.args}>
+                                                <Show when={c().cmd.args && !c().mention}>
                                                     <span class="cm-args"> {c().cmd.args}</span>
                                                 </Show>
                                             </span>

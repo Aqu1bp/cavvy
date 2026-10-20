@@ -1803,13 +1803,14 @@ export class Runtime {
             if (skill && !this.engine.cliCommands(this.agent?.model.provider, this.ws.cwd)?.has(cmd)) {
                 const body = formatSkill(skill, args.trim());
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
-                return this.startTurn(body, { display: trimmed, kind: "command", attachments });
+                return this.startTurn(body, { display: trimmed, kind: "command", attachments, about: `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}` });
             }
         }
         return this.startTurn(text, { attachments });
     }
 
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[] } = {}) {
+    /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[]; about?: string } = {}) {
         if (!this.agent) {
             await this.ready.catch(() => undefined);
             if (this.closed) return;
@@ -1852,7 +1853,7 @@ export class Runtime {
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
-        const about = opts.kind === "command" ? text : display;
+        const about = opts.about ?? (opts.kind === "command" ? text : display);
         if (!this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;

@@ -1525,12 +1525,14 @@ function skillsCommand(app: App, args: string) {
     const q = args.trim().toLowerCase();
     const skills = app.skills.filter((s) => !q || s.name.includes(q) || s.description.toLowerCase().includes(q));
     app.print((cols) => {
-        const lines = ["", heading("Skills"), theme.muted(`  Run one with /name or mention it with $name in a prompt; the model loads the others when they fit (Skill tool).`)];
+        const lines = ["", heading("Skills"), theme.muted(`  /name runs one, $name adds one to a prompt, and the model loads them when they fit.`)];
         for (const s of skills) {
             const who = !s.userInvocable ? "model only" : !s.modelInvocable ? "you only" : undefined;
             lines.push(`  ${bold(s.name)}${s.argumentHint ? " " + theme.subtle(s.argumentHint) : ""} ${theme.muted(`(${[s.source, who].filter(Boolean).join(", ")})`)}`);
             lines.push(theme.muted(`    ${truncate(s.description, cols - 8)}`));
-            lines.push(theme.subtle(`    ${truncate(displayPath(s.file, app.cwd), cols - 8)}`));
+            // The end of a long path says which skill it is.
+            const path = displayPath(s.file, app.cwd);
+            lines.push(theme.subtle(`    ${path.length > cols - 8 ? "…" + path.slice(path.length - (cols - 9)) : path}`));
         }
         if (!skills.length) lines.push(theme.muted(q ? `  No skill matches "${q}".` : "  None yet."));
         if (!app.skills.length) {

@@ -143,6 +143,7 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     if (t.job && (t.name === "BashOutput" || t.name === "KillShell")) a = t.job.label;
     if (t.name === "Task") a = String(input.description ?? arg ?? "");
     if (t.name === "AskUserQuestion") a = String(input.question ?? arg ?? "");
+    if (t.name === "Skill") a = String(input.skill ?? input.name ?? arg ?? "");
     if (t.name === "TodoWrite" || t.name === "ExitPlanMode") a = undefined;
     return { verb: VERBS[t.name] ?? t.name, arg: a || undefined };
 }
@@ -181,6 +182,7 @@ function summarize(tools: ToolBlock[]): string {
     let mcp = 0;
     const misc: string[] = [];
     let todos = false;
+    const skills = new Set<string>();
     /** Changes that didn't happen: declined, or failed. */
     let declined = 0;
     const unchanged = new Set<string>();
@@ -228,6 +230,9 @@ function summarize(tools: ToolBlock[]): string {
             case "Task":
                 agents++;
                 break;
+            case "Skill":
+                skills.add(String(i.skill ?? i.name ?? "").replace(/^[/$]/, ""));
+                break;
             case "TodoWrite":
                 if (!todos) misc.push("updated todos");
                 todos = true;
@@ -254,6 +259,7 @@ function summarize(tools: ToolBlock[]): string {
     if (fetched) parts.push(`fetched ${plural(fetched, "page")}`);
     if (agents) parts.push(agents === 1 ? "ran an agent" : `ran ${agents} agents`);
     if (mcp) parts.push(`used ${plural(mcp, "MCP tool")}`);
+    if (skills.size) parts.push(skills.size === 1 ? `loaded the ${[...skills][0] || "a"} skill` : `loaded ${plural(skills.size, "skill")}`);
     parts.push(...misc);
     if (unchanged.size) parts.push(unchanged.size === 1 ? `couldn't change ${short([...unchanged][0]!)}` : `couldn't change ${plural(unchanged.size, "file")}`);
     if (declined && !parts.length) parts.push(`${plural(declined, "call")} declined`);

@@ -162,6 +162,10 @@ describe("skills in the GUI", () => {
         expect(c.view(id).turns[0]!.prompt).toMatchObject({ text: "/explain src/auth", command: true });
         expect(lastPrompt()).toContain('<skill name="explain">');
         expect(lastPrompt()).toContain("Explain src/auth to a newcomer.");
+        // The session is named after the command and what the skill is for, not its instructions.
+        const title = mock.requests.find((r) => r.kind === "title");
+        expect(title?.prompt).toContain("Explain code simply: src/auth");
+        expect(title?.prompt).not.toContain("Base directory");
         // The model-only one isn't a command.
         await expect(c.call("session.send", { id, text: "/background" })).rejects.toMatchObject({ code: "unknown_command" });
         c.close();

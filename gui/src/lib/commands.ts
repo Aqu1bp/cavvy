@@ -49,7 +49,7 @@ export function skillToken(upto: string): { query: string; start: number } | und
 }
 
 /** The skills a $query offers, names that start with it first. */
-export function matchSkills<T extends { name: string; skill?: boolean }>(commands: readonly T[], query: string, limit = 8): T[] {
+export function matchSkills<T extends { name: string; skill?: boolean }>(commands: readonly T[], query: string, limit = 50): T[] {
     const q = query.toLowerCase();
     return commands
         .filter((c) => c.skill && (c.name.startsWith(q) || (q.length > 1 && c.name.includes(q))))
