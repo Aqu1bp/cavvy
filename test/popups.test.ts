@@ -223,6 +223,7 @@ describe("package managers' registries open by themselves", () => {
         ["yarn add react", ["registry.npmjs.org", "registry.yarnpkg.com"]],
         ["pip install -r requirements.txt", ["pypi.org", "files.pythonhosted.org"]],
         ["uv pip install requests", ["pypi.org", "files.pythonhosted.org"]],
+        ["yarn", ["registry.npmjs.org", "registry.yarnpkg.com"]],
     ])("%p runs sandboxed with %p, no deny round-trip", (cmd, hosts) => {
         expect(registryHosts(cmd)).toEqual(expect.arrayContaining(hosts));
         const d = auto(checker(), { command: cmd });
@@ -250,6 +251,7 @@ describe("package managers' registries open by themselves", () => {
         "PATH=./bin:/usr/bin:/bin npm install", "PATH=./bin; npm install", "env npm install", "command npm install", "nice npm install", "time npm install", "exec npm install",
         // An option before the subcommand may take the next word as its value; cds only into folders written out.
         "npm --prefix install run probe", "npm --registry x install", "pip --target install x", "cd $TARGET && npm install", "cd - && npm install", "cd ~/x && npm i", "cd w* && npm i",
+        "uv pip --directory install uninstall --python ./python x", "uv pip --python ./python install x",
     ])("%p doesn't open the registry by itself", (cmd) => {
         expect(installsOnly(cmd, W)).toBe(false);
         const d = auto(checker(), { command: cmd });
@@ -369,6 +371,12 @@ describe("session approvals", () => {
         expect(sd.grant?.paths).toEqual([env]);
         s.applyGrant(sd.grant!);
         expect(s.check(Bash, { command: "cat .env", dangerouslyDisableSandbox: false }, "default", W).sensitive).toBeUndefined();
+        // The grant covers .env itself, not a longer name it's the start of, alone or beside it.
+        writeFileSync(join(W, ".env.prod"), "B=2\n");
+        for (const command of ["cat .env.prod", "cat .env .env.prod", `cat ${env} ${env}.prod`, "cat .env.prod .env", "cat .env < .env.prod"]) {
+            expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
+            expect([command, auto(s, { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true }]);
+        }
     });
 
     test("a dangerous command, or a change to the harness's config, gets no scoped grant", () => {

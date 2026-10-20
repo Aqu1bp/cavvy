@@ -281,8 +281,17 @@ export class PermissionChecker {
         // The sandbox blocks what a path leads to, so that's what must be covered; a grant is by the path the user saw.
         const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || pathForms(w.abs).some((f) => granted.some((r) => isInside(f, r))));
         if (!covered.length) return found;
+        // Blank only the covered words themselves, by where they stand: a covered `.env` must not
+        // also erase the `.env` inside an uncovered `.env.prod` next to it.
+        const words = new Set(covered.map((w) => w.word));
+        const spans = analyzeCommand(cmd).commands.flatMap((c) => c.argv.flatMap((w, i) => (words.has(w) ? [c.spans[i]!] : [])));
         let rest = cmd;
-        for (const { word } of covered) rest = rest.split(word).join(" ");
+        for (const [from, to] of spans.sort((x, y) => y[0] - x[0])) rest = rest.slice(0, from) + " ".repeat(to - from) + rest.slice(to);
+        // Redirect targets have no span: whole words only.
+        for (const w of words) {
+            const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            rest = rest.replace(new RegExp(`(^|[\\s<>])${esc}(?=$|[\\s;|&)])`, "g"), "$1 ");
+        }
         return sensitiveTarget(rest, opts);
     }
 
@@ -426,7 +435,7 @@ export class PermissionChecker {
                     const sandbox = kind !== undefined && !access.host && (kind === "seatbelt" || (!access.network && !listed.length));
                     // Hosts nothing needs the model to list: the user's own (settings), and a package manager's
                     // registry when all the line does besides installing needs no network.
-                    const auto = sandbox && kind === "seatbelt" ? [...sandboxAllowedHosts(s), ...(access.network && installsOnly(cmd, cwd) ? registryHosts(cmd) : [])] : [];
+                    const auto = sandbox && kind === "seatbelt" ? [...sandboxAllowedHosts(s), ...(installsOnly(cmd, cwd) ? registryHosts(cmd) : [])] : [];
                     const needReview = listed.filter((h) => !auto.includes(h) && !this.grants(cwd).hosts.includes(h));
                     const hosts = [...new Set([...auto, ...listed])];
                     const opensHosts = sandbox && needReview.length > 0;
@@ -685,9 +694,9 @@ function installsPackages(argv: string[]): boolean {
     // (`npm --prefix install run x` runs a script), which can't be told apart here.
     if (rest[0]?.startsWith("-")) return false;
     const words = rest.filter((w) => !w.startsWith("-"));
-    // Plain `yarn` installs; `uv pip install` too.
+    // Plain `yarn` installs; `uv pip install` too, written out with nothing between (`uv pip --directory install uninstall`).
     if (prog === "yarn" && words.length === 0) return true;
-    if (prog === "uv" && words[0] === "pip") return words[1] === "install";
+    if (prog === "uv" && rest[0] === "pip") return rest[1] === "install";
     return INSTALLS[prog]!.test(words[0] ?? "");
 }
 
