@@ -396,6 +396,8 @@ describe("session approvals", () => {
             "md5sum -c sums .env", "diff --to-file=other .env", "cat .env other/*", "cat .env $D", "cat .env ~root/x", "cat .env ~", "cat .env ..",
             // After `--` a dash word is a file or folder; `..` comes off before a symlink in front of it is followed.
             "diff .env -- -n", "cat -- -n .env", "cat link/../.env", "grep -n other .env other", 'cat " .env"', "grep -n a* .env", "md5sum -c .env",
+            // Braces and dollars, quoted or not, can name another file.
+            'cat .env .e{nv.prod,"x y"}', "cat .env '$D/.env'", 'grep -n .e{nv.prod,"x y"} .env', "grep -n 'a' .e*",
         ]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
             expect([command, auto(s, { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true }]);

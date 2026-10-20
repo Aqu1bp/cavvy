@@ -284,7 +284,7 @@ export class PermissionChecker {
         // `make -C`, `find -execdir`, `xargs`, a script) could make the same word another file.
         const a = analyzeCommand(cmd);
         const grantCovers = (abs: string) => pathForms(abs).some((f) => granted.some((r) => isInside(f, r)));
-        if (!plainReads(a, cwd, (dir) => (policy && blocks(policy, dir, true)) || grantCovers(dir))) return found;
+        if (!plainReads(cmd, a, cwd, (dir) => (policy && blocks(policy, dir, true)) || grantCovers(dir))) return found;
         const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || grantCovers(w.abs));
         if (!covered.length) return found;
         // Blank only the covered words themselves, by where they stand: a covered `.env` must not
@@ -683,7 +683,7 @@ const PLAIN_READERS = new Set(["cat", "head", "tail", "wc", "grep", "egrep", "fg
  * `grep -r`), and an option's value may be a filter or a list of files (`--include .env`,
  * `--files0-from=list`, `md5sum -c sums`) rather than the file it looks like.
  */
-function plainReads(a: CommandAnalysis, cwd: string, folderCovered: (abs: string) => boolean): boolean {
+function plainReads(cmd: string, a: CommandAnalysis, cwd: string, folderCovered: (abs: string) => boolean): boolean {
     if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return false;
     return a.commands.every((c) => {
         const prog = c.argv[0] ?? "";
@@ -699,13 +699,18 @@ function plainReads(a: CommandAnalysis, cwd: string, folderCovered: (abs: string
                 return true;
             }
             if (options && w.startsWith("-")) return letters.test(w);
-            // Shell globs and variables can become other words; `..` is taken away before a symlink in
-            // front of it is followed (`link/../.env` isn't ./.env); spaces around a name are part of it.
+            // Shell globs, braces and variables can become other words; `..` is taken away before a symlink
+            // in front of it is followed (`link/../.env` isn't ./.env); spaces around a name are part of it.
             if (c.globbed?.includes(i) || c.expands?.includes(i) || /^~(?!\/|$)/.test(w) || /(^|\/)\.\.(\/|$)/.test(w) || w !== w.trim()) return false;
+            const special = /[$`*?[{]/.test(w);
             if (pattern) {
                 pattern = false;
-                return true;
+                // A regex in one quoted string is literal to the shell; an unquoted one mustn't be able to expand.
+                const raw = cmd.slice(...c.spans[i]!);
+                return !special || /^'[^']*'$/.test(raw) || /^"[^"$`\\]*"$/.test(raw);
             }
+            // Even quoted: the grant check reads `$X` in a name as the variable.
+            if (special) return false;
             const abs = expandPath(w, cwd);
             try {
                 return !statSync(abs).isDirectory() || folderCovered(abs);
