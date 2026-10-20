@@ -615,10 +615,8 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
 // Trust prompt (only when the folder has project config that could run code).
 
 async function askTrust(cwd: string, found: string[]): Promise<boolean> {
-    const { Screen } = await import("./ui/screen");
-    const { SelectDialog } = await import("./ui/dialogs");
-    const screen = new Screen();
-    const d = new SelectDialog<"yes" | "no">({
+    const { askOnce } = await import("./ui/ask");
+    const v = await askOnce<"yes" | "no">({
         title: "Do you trust the files in this folder?",
         header: [
             bold(cwd),
@@ -634,23 +632,8 @@ async function askTrust(cwd: string, found: string[]): Promise<boolean> {
             { label: "Yes, trust this folder", value: "yes" },
             { label: "No, ignore its configuration", value: "no" },
         ],
-        numbers: true,
         color: theme.warning,
     });
-    const render = () => screen.setLive(["", ...d.render(Math.min(process.stdout.columns || 100, 100), process.stdout.rows || 40)]);
-    screen.start(
-        (k) => {
-            if (k.ctrl && k.name === "c") d.cancel();
-            else d.onKey(k);
-            render();
-        },
-        render,
-    );
-    render();
-    const v = await d.done;
-    screen.setLive([]);
-    screen.flushNow();
-    screen.stop();
     return v === "yes";
 }
 
@@ -719,9 +702,9 @@ async function main() {
         }
         return true;
     };
-    let trusted = await decideTrust(cwd);
-
-    // --worktree: the session moves into it before anything reads the folder's settings or sessions.
+    // --worktree: the session moves into it before anything reads the folder's settings or sessions,
+    // so trust is decided (and asked about) there, once; here only the user's own word counts.
+    let trusted = f.worktree ? isTrusted(cwd) : await decideTrust(cwd);
     let worktree: import("./server/worktrees").SessionWorktree | undefined;
     if (f.worktree) {
         const { startWorktree, worktreeLine } = await import("./ui/worktree");
@@ -731,8 +714,9 @@ async function main() {
         } catch (e) {
             die(redact((e as Error).message));
         }
-        // The same repository: a folder trusted there is trusted here (a project config it doesn't have is asked about).
-        if (trustedByUser(cwd)) trustForSession(worktree.cwd);
+        // A new checkout of the very commit the user trusted carries that trust; one from origin/HEAD,
+        // or a reopened one (whatever was done in it since), is judged on its own.
+        if (trustedByUser(cwd) && worktree.created && !worktree.fromBranch && ws.baseRef === "head") trustForSession(worktree.cwd);
         cwd = worktree.cwd;
         process.chdir(cwd);
         trusted = await decideTrust(cwd);

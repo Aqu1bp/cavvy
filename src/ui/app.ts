@@ -311,10 +311,11 @@ export class App {
 
     /** `signal`: nobody may be at the keyboard, so nothing on the way out asks. */
     async exit(code = 0, o: { signal?: boolean } = {}) {
-        if (this.exiting || this.leaving) return;
+        // A signal while the worktree question is up still ends it (the worktree is kept).
+        if (this.exiting || (this.leaving && !o.signal)) return;
         // The worktree's fate is asked about while the prompt is still up; nothing is removed yet.
         let finishWorktree: (() => Promise<string[]>) | undefined;
-        if (this.init.worktree) {
+        if (this.init.worktree && !this.leaving) {
             this.leaving = true;
             this.abort?.abort();
             const ask: WorktreeAsk | undefined = o.signal || !this.screen.interactive ? undefined : async (q) => (await this.showDialog(new SelectDialog({ ...q, numbers: true }))) as "keep" | "remove" | undefined;
@@ -323,6 +324,8 @@ export class App {
             } catch (e) {
                 finishWorktree = async () => [theme.error(`Couldn't check the worktree, so it's kept: ${redact((e as Error).message)}`)];
             }
+            // A signal finished the exit meanwhile.
+            if (this.exiting) return;
         }
         this.exiting = true;
         this.schedules.dispose();
@@ -1292,6 +1295,8 @@ export class App {
 
     private onKey(k: Key) {
         const top = this.dialogs[this.dialogs.length - 1];
+        // Exiting: only the worktree question takes keys; nothing new may start in the worktree being checked.
+        if (this.leaving && !top) return;
         if (top) {
             if (k.ctrl && k.name === "c" && this.busy) {
                 // cancel the prompt and the turn

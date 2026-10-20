@@ -136,12 +136,35 @@ describe("making the worktree", () => {
         for (const bad of ["-rf", "a b", "../up", "", ".hidden"]) {
             expect((await failure(W.enterSessionWorktree({ cwd: main, name: bad }))).code).toBe("bad_folder");
         }
-        git(main, "branch", "harness/taken");
-        const taken = await failure(W.enterSessionWorktree({ cwd: main, name: "taken" }));
-        expect(taken.message).toContain("A branch named harness/taken already exists, but there's no worktree called taken");
+        // A branch checked out elsewhere can't get a worktree of its own.
+        const inUse = await failure(W.enterSessionWorktree({ cwd: main, name: "main", branchPrefix: "" }));
+        expect(inUse.message).toBe("main is checked out in another worktree. Pick another name, or work there.");
         mkdirSync(join(main, ".claude", "worktrees", "stray"), { recursive: true });
         expect((await failure(W.enterSessionWorktree({ cwd: main, name: "stray" }))).message).toContain("isn't one of this repository's worktrees");
         expect(worktreePaths(main)).toEqual([main]);
+    });
+
+    test("feat/login and feat-login share a folder name, not a worktree", async () => {
+        const main = repo();
+        await W.enterSessionWorktree({ cwd: main, name: "feat/login" });
+        const e = await failure(W.enterSessionWorktree({ cwd: main, name: "feat-login" }));
+        expect(e.message).toContain("already the worktree for “feat/login”");
+    });
+
+    test("a name whose worktree was removed but whose branch was kept comes back on that branch", async () => {
+        const main = repo();
+        const first = await W.enterSessionWorktree({ cwd: main, name: "kept" });
+        git(first.path, "commit", "--allow-empty", "-m", "work");
+        const tip = git(first.path, "rev-parse", "HEAD");
+        expect(await (await decideWorktree(first, { cleanup: "auto", ask: async () => "remove" }))()).toEqual({ kind: "removed", branchDeleted: false });
+        const again = await W.enterSessionWorktree({ cwd: main, name: "kept" });
+        expect(again).toMatchObject({ created: true, fromBranch: true, branch: "harness/kept", base: tip });
+        expect(git(again.path, "rev-parse", "HEAD")).toBe(tip);
+        expect(stripAnsi(worktreeLine(again))).toBe("worktree: kept · branch harness/kept (back on its kept branch)");
+        // Nothing done this time: the worktree goes, but the branch it came back for stays, though main has its commit.
+        git(main, "merge", "--ff-only", "harness/kept");
+        expect(await (await decideWorktree(again, { cleanup: "auto" }))()).toEqual({ kind: "removed", branchDeleted: false });
+        expect(branches(main)).toContain("harness/kept");
     });
 
     test("a worktree whose folder was deleted says how to clear it", async () => {
@@ -160,6 +183,20 @@ describe("making the worktree", () => {
 });
 
 describe("settings", () => {
+    test("a project's worktree settings add to the user's, field by field", () => {
+        const { loadSettings } = require("../src/config/settings") as typeof import("../src/config/settings");
+        const main = repo();
+        mkdirSync(join(main, ".harness"));
+        writeFileSync(join(main, ".harness", "settings.json"), JSON.stringify({ worktree: { baseRef: "fresh" } }));
+        writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ worktree: { cleanup: "keep", branchPrefix: "me/" } }));
+        try {
+            expect(worktreeSettings(loadSettings(main, { trusted: true }))).toEqual({ branchPrefix: "me/", baseRef: "fresh", cleanup: "keep" });
+            expect(worktreeSettings(loadSettings(main, { trusted: false }))).toEqual({ branchPrefix: "me/", baseRef: "head", cleanup: "keep" });
+        } finally {
+            rmSync(join(iso.home, "settings.json"));
+        }
+    });
+
     test("defaults, and malformed values fall back to them", () => {
         expect(worktreeSettings({})).toEqual({ branchPrefix: "harness/", baseRef: "head", cleanup: "auto" });
         expect(worktreeSettings({ worktree: { branchPrefix: " me/ ", baseRef: "fresh", cleanup: "keep" } })).toEqual({ branchPrefix: "me/", baseRef: "fresh", cleanup: "keep" });
@@ -350,6 +387,16 @@ describe("the shared pieces", () => {
         expect(branches(main)).toEqual(["lonely", "main", "moved"]);
     });
 
+    test("deleting the branch never runs the repository's hooks", async () => {
+        const main = repo();
+        const base = git(main, "rev-parse", "HEAD");
+        git(main, "branch", "hooked");
+        const ran = join(main, "hook-ran");
+        writeFileSync(join(main, ".git", "hooks", "reference-transaction"), `#!/bin/sh\ntouch "${ran}"\n`, { mode: 0o755 });
+        expect(W.deleteBranchAtBase(main, "hooked", base)).toBe(true);
+        expect(existsSync(ran)).toBe(false);
+    });
+
     test("removeIfPristine: for sub-agents, ignored files can count as nothing", async () => {
         const main = repo();
         const wt = await W.enterSessionWorktree({ cwd: main, name: "agent" });
@@ -402,6 +449,42 @@ describe("App exit", () => {
         }
         expect(order).toEqual(["decide:remove", "finish", "print", "stop"]);
         expect(printed).toEqual(["Removed worktree x."]);
+    });
+
+    test("a signal while the question is up still exits, keeping the worktree; keys don't reach the prompt meanwhile", async () => {
+        const cwd = realpathSync(iso.home);
+        let release!: (v: "keep" | "remove" | undefined) => void;
+        let finished = false;
+        const app = new App({
+            cwd,
+            trusted: true,
+            mode: "default",
+            allowBypass: false,
+            startupNotes: [],
+            worktree: { line: "", resume: "", decide: async (ask) => (await ask?.({ title: "", header: [], items: [] }), async () => ((finished = true), [])) },
+        });
+        const stops: number[] = [];
+        (app as any).screen = { interactive: true, print() {}, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop: () => stops.push(1), clearScreen() {} };
+        (app as any).renderLive = () => {};
+        (app as any).showDialog = () => new Promise((r) => (release = r));
+        app.session = Session.create(cwd, { persist: false });
+        const codes: number[] = [];
+        const exit = spyOn(process, "exit").mockImplementation(((c: number) => void codes.push(c)) as never);
+        try {
+            const first = app.exit(0);
+            await Bun.sleep(10);
+            (app as any).onKey({ name: "x", sequence: "x", ctrl: false, meta: false, shift: false });
+            expect(app.editor.text).toBe("");
+            await app.exit(0, { signal: true });
+            expect(codes).toEqual([0]);
+            release("remove");
+            await first;
+        } finally {
+            exit.mockRestore();
+        }
+        // The question's late answer changes nothing: the exit that ran didn't remove it.
+        expect(finished).toBe(false);
+        expect(stops).toEqual([1]);
     });
 
     test("after a signal nothing is asked", async () => {
@@ -486,6 +569,19 @@ describe("harness -p --worktree", () => {
         expect(r.stderr).toContain("branch bot/kept");
         expect(r.stderr).toContain(`harness: Worktree kept: ~/${relative(iso.home, join(main, ".claude", "worktrees", "kept"))} · branch bot/kept`);
         expect(r.stderr).toContain("harness: Come back to it with: harness -w kept --continue");
+    });
+
+    test("an untrusted project is warned about once, for the worktree", async () => {
+        const main = repo();
+        mkdirSync(join(main, ".harness"));
+        writeFileSync(join(main, ".harness", "settings.json"), JSON.stringify({ worktree: { branchPrefix: "project/" } }));
+        git(main, "add", "-A");
+        git(main, "commit", "-m", "project settings");
+        const r = await harness(["-w", "untrusted", "say ok"], main);
+        expect(r.code).toBe(0);
+        expect(r.stderr.match(/isn't trusted/g)).toHaveLength(1);
+        // Its settings don't count: the user's default prefix.
+        expect(r.stderr).toContain("branch harness/untrusted");
     });
 
     test("outside a Git repository it says so and exits 1", async () => {

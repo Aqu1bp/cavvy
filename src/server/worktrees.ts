@@ -117,7 +117,7 @@ export function mainCheckoutOf(cwd: string): string {
 const CONTROL = /[\x00-\x1f\x7f]/;
 
 /** Git decides (check-ref-format); the hints only say why in words. */
-function checkBranch(cwd: string, branch: string): string {
+function checkBranch(cwd: string, branch: string, o: { existing?: boolean } = {}): string {
     const invalid = (why: string) => new RpcError(`Not a valid branch name: ${why}`, "invalid_branch");
     if (!branch) throw new RpcError("Enter a branch name.", "invalid_branch");
     if (CONTROL.test(branch)) throw invalid("it can't contain control characters.");
@@ -128,7 +128,12 @@ function checkBranch(cwd: string, branch: string): string {
     const checked = runGit(cwd, ["check-ref-format", "--branch", branch])?.replace(/\n$/, "");
     // --branch expands @{-1} and the like; only the name as typed is wanted.
     if (checked !== branch) throw invalid(branchHint(branch));
-    if (runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]) !== undefined) {
+    const exists = runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]) !== undefined;
+    if (o.existing) {
+        if (!exists) throw new RpcError(`There's no branch named ${branch}.`, "bad_base");
+        return branch;
+    }
+    if (exists) {
         throw new RpcError(`A branch named ${branch} already exists. Pick a new name (a worktree for an existing branch isn't supported yet).`, "branch_exists");
     }
     return branch;
@@ -429,17 +434,21 @@ function excludeManagedWorktrees(main: string, log?: Log) {
     }
 }
 
-/** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
-export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string; commit: string }> {
+/**
+ * `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream.
+ * `existingBranch`: checks out a branch that's already there instead (`base` is ignored).
+ */
+export async function createWorktree(o: CreateWorktreeParams, log?: Log, x: { existingBranch?: boolean } = {}): Promise<{ path: string; branch: string; commit: string }> {
     const cwd = resolve(o.path);
     const main = checkCreate(cwd);
-    const branch = checkBranch(cwd, o.branch);
+    const branch = checkBranch(cwd, o.branch, { existing: x.existingBranch });
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
-    const commit = resolveBase(cwd, o.base);
+    const commit = resolveBase(cwd, x.existingBranch ? `refs/heads/${branch}` : o.base);
     const target = o.location ? chosenTarget(o.location) : managedTarget(main, o.folder || defaultFolder(branch));
     target.prepare();
     // A partial clone fetches the files it checks out (its config is trusted, or it would have been refused above).
-    const r = await runGitAsync(main, [...NO_HOOKS, "worktree", "add", "-b", branch, target.path, commit], CREATE_TIMEOUT_MS, { lazyFetch: true });
+    const add = x.existingBranch ? [target.path, branch] : ["-b", branch, target.path, commit];
+    const r = await runGitAsync(main, [...NO_HOOKS, "worktree", "add", ...add], CREATE_TIMEOUT_MS, { lazyFetch: true });
     if (r.timedOut) {
         logFailure(log, "git worktree add timed out", r.stderr);
         throw new RpcError(`Git took too long to create the worktree. If ${target.path} was left half made, remove it with git worktree remove --force.`, "timeout");
@@ -631,6 +640,8 @@ export interface WorktreeMarker {
     /** The commit the branch started at. */
     base: string;
     createdAt: number;
+    /** False when it checked out a branch that was already there: cleanup never deletes that one. */
+    ownBranch?: boolean;
 }
 
 function gitDirOf(worktree: string): string | undefined {
@@ -649,7 +660,7 @@ export function readMarker(worktree: string): WorktreeMarker | undefined {
     try {
         const m = JSON.parse(readFileSync(join(dir, MARKER), "utf8")) as Partial<WorktreeMarker>;
         if (typeof m.name !== "string" || typeof m.branch !== "string" || typeof m.base !== "string" || !/^[0-9a-f]{40,64}$/.test(m.base)) return undefined;
-        return { name: m.name, branch: m.branch, base: m.base, createdAt: typeof m.createdAt === "number" ? m.createdAt : 0 };
+        return { name: m.name, branch: m.branch, base: m.base, createdAt: typeof m.createdAt === "number" ? m.createdAt : 0, ownBranch: m.ownBranch !== false };
     } catch {
         return undefined;
     }
@@ -684,6 +695,8 @@ export interface SessionWorktree {
     baseLabel?: string;
     /** False when an existing worktree of that name was reopened. */
     created: boolean;
+    /** Made again on the branch an earlier one of that name left behind. */
+    fromBranch?: boolean;
     /** How long getting it ready took. */
     ms: number;
     /** Something the user should know (a fresh base that fell back to HEAD). */
@@ -740,6 +753,8 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
             // Git will run there: its metadata must be this repository's, and its config trusted.
             checkCreate(existing.path);
             const marker = readMarker(existing.path);
+            // feat/login and feat-login share a folder name, not a worktree.
+            if (marker && marker.name !== name) throw new RpcError(`The folder ${folder} is already the worktree for “${marker.name}”. Use that name to reopen it, or pick another.`, "path_exists");
             return done({ name, path: existing.path, cwd: sameSubfolder(cwd, existing.path), branch: existing.branch, base: marker?.base, created: false });
         }
         if (lexists(path)) throw new RpcError(`${path} exists but isn't one of this repository's worktrees. Move it, or pick another name.`, "path_exists");
@@ -749,24 +764,25 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
         for (let i = 2; taken(name) && i < 50; i++) name = `${randomName()}${i > 10 ? `-${i}` : ""}`;
     }
 
-    const base = pickBase(cwd, o.baseRef ?? "head");
+    // A worktree removed earlier with its branch kept comes back on that branch.
+    const branch = `${prefix}${name}`;
+    const kept = o.name !== undefined && runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]) !== undefined;
+    const base = kept ? { label: branch } : pickBase(cwd, o.baseRef ?? "head");
     let made;
     try {
-        made = await createWorktree({ path: cwd, branch: `${prefix}${name}`, folder: defaultFolder(name), base: base.ref }, log);
+        made = await createWorktree({ path: cwd, branch, folder: defaultFolder(name), base: base.ref }, log, { existingBranch: kept });
     } catch (e) {
+        if (e instanceof RpcError && e.code === "branch_in_use") throw new RpcError(`${branch} is checked out in another worktree. Pick another name, or work there.`, "branch_in_use");
         if (e instanceof RpcError && e.code === "bad_base" && !base.ref) throw new RpcError("This repository has no commits yet, so there's nothing to check out. Make a first commit, then try again.", "bad_base");
-        if (e instanceof RpcError && e.code === "branch_exists") {
-            throw new RpcError(`A branch named ${prefix}${name} already exists, but there's no worktree called ${name}. Pick another name, or delete the branch with git branch -d ${prefix}${name}.`, "branch_exists");
-        }
         throw e;
     }
     try {
-        writeMarker(made.path, { name, branch: made.branch, base: made.commit, createdAt: Date.now() });
+        writeMarker(made.path, { name, branch: made.branch, base: made.commit, createdAt: Date.now(), ownBranch: !kept });
     } catch (e) {
         // Without it the worktree is never cleaned up automatically, which is the safe side.
         logFailure(log, "couldn't mark the worktree", String(e));
     }
-    return done({ name, path: made.path, cwd: sameSubfolder(cwd, made.path), branch: made.branch, base: made.commit, baseLabel: base.label, created: true, note: base.note });
+    return done({ name, path: made.path, cwd: sameSubfolder(cwd, made.path), branch: made.branch, base: made.commit, baseLabel: base.label, created: true, fromBranch: kept, note: base.note });
 }
 
 /** What removing a worktree would lose. Nothing here changes anything. */
@@ -826,14 +842,14 @@ export function deleteBranchAtBase(main: string, branch: string, base: string): 
     if (!/^[0-9a-f]{40,64}$/.test(base) || branch.startsWith("-") || CONTROL.test(branch)) return false;
     const others = runGit(main, ["for-each-ref", "--format=%(refname)", "--contains", base])?.split("\n").filter((r) => r && r !== `refs/heads/${branch}`);
     if (!others?.length) return false;
-    return runGit(main, ["update-ref", "-d", `refs/heads/${branch}`, base]) !== undefined;
+    return runGit(main, [...NO_HOOKS, "update-ref", "-d", `refs/heads/${branch}`, base]) !== undefined;
 }
 
 /** Removes the worktree (Git refuses if anything uncommitted is there) and, when it was never moved, its branch. */
 export async function removeSessionWorktree(o: { plan: Removal; marker: WorktreeMarker; work: WorktreeWork }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean }> {
     const r = await runRemoval(o.plan, { deleteIgnored: o.work.confirm }, log);
     if (!r.removed) return { removed: false, branchDeleted: false };
-    const branchDeleted = o.work.atBase && o.work.commits === 0 && deleteBranchAtBase(o.plan.main, o.marker.branch, o.marker.base);
+    const branchDeleted = o.marker.ownBranch !== false && o.work.atBase && o.work.commits === 0 && deleteBranchAtBase(o.plan.main, o.marker.branch, o.marker.base);
     return { removed: true, branchDeleted };
 }
 

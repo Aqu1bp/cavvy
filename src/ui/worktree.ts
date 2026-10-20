@@ -7,6 +7,7 @@ import { homedir } from "os";
 import { relative, sep } from "path";
 import { APP_NAME } from "../config/paths";
 import { trustFolder } from "../config/trust";
+import { askOnce } from "./ask";
 import type { CleanupMode, SessionWorktree, WorktreeMarker, WorktreeWork } from "../server/worktrees";
 import { enterSessionWorktree, isPristine, readMarker, removeSessionWorktree, worktreeWork, type BaseRef } from "../server/worktrees";
 import { RpcError } from "../server/rpc-error";
@@ -16,28 +17,6 @@ import { redact } from "../util/redact";
 import { bold, theme } from "./ansi";
 import type { SelectItem } from "./components";
 
-/** One question on its own screen (before the TUI starts, or after it stopped). Undefined when cancelled. */
-export async function askOnce<T extends string>(o: { title: string; header: string[]; items: { label: string; value: T; description?: string }[]; color?: (s: string) => string }): Promise<T | undefined> {
-    const { Screen } = await import("./screen");
-    const { SelectDialog } = await import("./dialogs");
-    const screen = new Screen();
-    const d = new SelectDialog<T>({ title: o.title, header: o.header, items: o.items, numbers: true, color: o.color });
-    const render = () => screen.setLive(["", ...d.render(Math.min(process.stdout.columns || 100, 100), process.stdout.rows || 40)]);
-    screen.start(
-        (k) => {
-            if (k.ctrl && k.name === "c") d.cancel();
-            else d.onKey(k);
-            render();
-        },
-        render,
-    );
-    render();
-    const v = await d.done;
-    screen.setLive([]);
-    screen.flushNow();
-    screen.stop();
-    return v as T | undefined;
-}
 
 /** `.claude/worktrees/x` rather than the whole path. */
 export function shortPath(wt: { main: string; path: string }): string {
@@ -56,6 +35,7 @@ export function worktreeLine(wt: SessionWorktree): string {
     // The cwd line above it has the path.
     const where = `${wt.name}${wt.branch ? ` · branch ${wt.branch}` : " · detached HEAD"}`;
     if (!wt.created) return `worktree: ${where} (reopened)`;
+    if (wt.fromBranch) return `worktree: ${where} (back on its kept branch)`;
     return `worktree: ${where}${wt.baseLabel ? ` · from ${wt.baseLabel}` : ""}`;
 }
 
@@ -173,6 +153,7 @@ export function endingLines(wt: SessionWorktree, end: Ending): string[] {
     }
     return [
         `Worktree kept${end.why ? ` (${end.why})` : ""}: ${tildePath(wt.path)}${branch ? theme.muted(` · branch ${branch}`) : ""}`,
-        theme.muted(`Come back to it with: ${resumeCommand(wt.name)} --continue`),
+        // Sessions are found by folder: --continue finds this one from the same subfolder it started in.
+        theme.muted(`Come back to it with: ${resumeCommand(wt.name)} --continue${wt.cwd !== wt.path ? ` (from ${relative(wt.path, wt.cwd)} in your checkout)` : ""}`),
     ];
 }

@@ -288,7 +288,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     const layers = trusted ? [user, loadScope("project", cwd), local] : [user, restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(local)];
     const merged: Settings = {};
     for (const s of layers) {
-        const { permissions, env, mcpServers, hooks, ...rest } = s;
+        const { permissions, env, mcpServers, hooks, worktree, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
         for (const [k, v] of Object.entries(rest)) if (k !== "__proto__") (merged as Record<string, unknown>)[k] = v;
         if (permissions) {
@@ -300,6 +300,8 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
             if (permissions.allowBypass !== undefined) p.allowBypass = permissions.allowBypass;
         }
         if (env) merged.env = { ...merged.env, ...env };
+        // Field by field: a project's baseRef mustn't drop the user's own cleanup or prefix.
+        if (worktree && typeof worktree === "object") merged.worktree = { ...merged.worktree, ...worktree };
         if (mcpServers) merged.mcpServers = { ...merged.mcpServers, ...mcpServers };
         if (hooks) {
             const h = (merged.hooks ??= {});
