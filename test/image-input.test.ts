@@ -9,6 +9,18 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const { cleanup } = isolate();
 const img = await import("../src/ui/images");
+
+/** Killed processes can linger as zombies for a moment until their new parent reaps them; a live one (these sleep for seconds) won't go. */
+async function goneSoon(pid: number, ms = 1500): Promise<boolean> {
+    for (const until = Date.now() + ms; Date.now() < until; await Bun.sleep(20)) {
+        try {
+            process.kill(pid, 0);
+        } catch {
+            return true;
+        }
+    }
+    return false;
+}
 const { Editor, HISTORY_IMAGES, imagesIn, plainText, withoutImage } = await import("../src/ui/editor");
 const { App } = await import("../src/ui/app");
 const { Session } = await import("../src/agent/session");
@@ -810,15 +822,26 @@ describe("commands that won't stop", () => {
         expect(took).toBeGreaterThanOrEqual(200 + img.KILL_GRACE_MS - 20);
         expect(took).toBeLessThan(200 + img.KILL_GRACE_MS + 700);
         const pid = Number(readFileSync(f, "utf8"));
-        expect(() => process.kill(pid, 0)).toThrow();
+        expect(await goneSoon(pid)).toBe(true);
     });
     test("past the output cap it's killed, and the runner waits for it to exit", async () => {
         const f = join(tempDir(), "pid");
         const started = Date.now();
-        expect(await img.runCommand(["sh", "-c", `echo $$ > '${f}'; trap "" TERM; exec yes`], 10_000, 4096)).toBeUndefined();
+        // Ignores TERM and the closed pipe alike, so only the kill stops it.
+        expect(await img.runCommand(["sh", "-c", `echo $$ > '${f}'; trap "" TERM PIPE; while :; do echo y 2>/dev/null; done`], 10_000, 4096)).toBeUndefined();
         expect(Date.now() - started).toBeGreaterThanOrEqual(img.KILL_GRACE_MS - 20);
         const pid = Number(readFileSync(f, "utf8"));
-        expect(() => process.kill(pid, 0)).toThrow();
+        expect(await goneSoon(pid)).toBe(true);
+    });
+    test("a timed-out command that exits cleanly on TERM still counts as failed, and what it started is gone", async () => {
+        const dir = tempDir();
+        const f = join(dir, "pid");
+        const started = Date.now();
+        const r = await img.runCommand(["sh", "-c", `sh -c 'trap "" TERM; echo $$ > "${f}"; exec sleep 30' > /dev/null & trap "exit 0" TERM; wait`], 300);
+        expect(r).toBeUndefined();
+        expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+        const pid = Number(readFileSync(f, "utf8"));
+        expect(await goneSoon(pid)).toBe(true);
     });
     test("a helper still running when the harness exits goes with it", async () => {
         const dir = tempDir();
@@ -830,7 +853,7 @@ describe("commands that won't stop", () => {
         const pid = Number(readFileSync(f, "utf8"));
         expect(pid).toBeGreaterThan(0);
         await Bun.sleep(100);
-        expect(() => process.kill(pid, 0)).toThrow();
+        expect(await goneSoon(pid)).toBe(true);
     });
 });
 
@@ -1065,6 +1088,6 @@ describe("a command's process group", () => {
         expect(Date.now() - started).toBeGreaterThanOrEqual(200 + img.KILL_GRACE_MS - 20);
         const gpid = Number(readFileSync(f, "utf8"));
         expect(gpid).not.toBe(Number(readFileSync(`${f}.parent`, "utf8")));
-        expect(() => process.kill(gpid, 0)).toThrow();
+        expect(await goneSoon(gpid)).toBe(true);
     });
 });

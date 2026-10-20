@@ -81,19 +81,24 @@ export const runCommand: Runner = async (argv, timeoutMs = 5000, maxBytes = 1024
     let dropOutput = () => {};
     const stop = () =>
         (stopped ??= (async () => {
+            // Its output isn't wanted any more, and a flood of it starves the timers below; Bun also
+            // doesn't report the exit while unread output is still in the pipe.
+            dropOutput();
             group("SIGTERM");
             // The command may exit on TERM while something it started ignores it, so the grace is the group's.
             await gone(KILL_GRACE_MS);
             group("SIGKILL");
-            // Bun doesn't report the exit while unread output is still in the pipe.
-            dropOutput();
             await Promise.race([p.exited.catch(() => {}), sleep(2000)]);
             await gone(1000);
             return "stopped" as const;
         })());
     let wake = () => {};
     const stopping = new Promise<"stopped">((r) => (wake = () => void stop().then(r)));
-    const timer = setTimeout(wake, timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        wake();
+    }, timeoutMs);
     const reader = p.stdout.getReader();
     dropOutput = () => void reader.cancel().catch(() => {});
     try {
@@ -112,15 +117,21 @@ export const runCommand: Runner = async (argv, timeoutMs = 5000, maxBytes = 1024
             chunks.push(r.value);
         }
         const code = await Promise.race([p.exited, stopping]);
-        return code === "stopped" || p.signalCode ? undefined : { code, stdout: Buffer.concat(chunks) };
+        // Timed out, even if the command itself then exited cleanly on TERM: what it started may not have.
+        if (timedOut || code === "stopped") {
+            await stop();
+            return undefined;
+        }
+        return p.signalCode ? undefined : { code, stdout: Buffer.concat(chunks) };
     } catch {
         await stop();
         return undefined;
     } finally {
         clearTimeout(timer);
         reader.cancel().catch(() => {});
-        // Nothing it left behind outlives the call.
-        if (!stopped) group("SIGKILL");
+        // Nothing it left behind outlives the call, and it stays on the exit list until then.
+        if (stopped) await stopped;
+        else group("SIGKILL");
         liveGroups.delete(p.pid);
     }
 };
