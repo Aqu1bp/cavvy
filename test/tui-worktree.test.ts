@@ -6,7 +6,8 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
+import { homedir } from "os";
+import { join, relative, resolve } from "path";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
@@ -63,7 +64,7 @@ describe("making the worktree", () => {
         // The marker is in Git's own folder, never in the checkout.
         expect(git(wt.path, "status", "--porcelain")).toBe("");
         expect(wt.ms).toBeGreaterThanOrEqual(0);
-        expect(stripAnsi(worktreeLine(wt))).toBe("worktree: .claude/worktrees/feature-login · branch harness/feature/login · from main");
+        expect(stripAnsi(worktreeLine(wt))).toBe("worktree: feature/login · branch harness/feature/login · from main");
     });
 
     test("the same name again reopens it instead of making another", async () => {
@@ -201,7 +202,7 @@ describe("on exit", () => {
             expect(existsSync(join(wt.path, "new.txt"))).toBe(true);
             expect(branches(main)).toContain("harness/w");
             const lines = stripAnsi(endingLines(wt, end).join("\n"));
-            expect(lines).toContain(`Worktree kept (2 uncommitted changes): ${wt.path} · branch harness/w`);
+            expect(lines).toContain(`Worktree kept (2 uncommitted changes): ${wt.path.replace(homedir(), "~")} · branch harness/w`);
             expect(lines).toContain("Come back to it with: harness -w w --continue");
         }
     });
@@ -459,7 +460,7 @@ describe("harness -p --worktree", () => {
         const main = repo();
         const r = await harness(["-w", "quick", "say ok"], main);
         expect(r).toMatchObject({ code: 0, stdout: "ok\n" });
-        expect(r.stderr).toContain("harness: worktree: .claude/worktrees/quick · branch harness/quick · from main");
+        expect(r.stderr).toContain("harness: worktree: quick · branch harness/quick · from main");
         expect(r.stderr).toContain("harness: Removed worktree .claude/worktrees/quick and branch harness/quick.");
         expect(worktreePaths(main)).toEqual([main]);
     });
@@ -468,7 +469,7 @@ describe("harness -p --worktree", () => {
         const main = repo();
         const r = await harness(["--worktree", "fix the tests"], main);
         expect(r.code).toBe(0);
-        expect(r.stderr).toMatch(/worktree: \.claude\/worktrees\/[a-z]+-[a-z]+/);
+        expect(r.stderr).toMatch(/worktree: [a-z]+-[a-z]+ · branch harness\/[a-z]+-[a-z]+/);
         expect(r.stderr).not.toContain("fix the tests");
     });
 
@@ -483,7 +484,7 @@ describe("harness -p --worktree", () => {
         }
         expect(r.code).toBe(0);
         expect(r.stderr).toContain("branch bot/kept");
-        expect(r.stderr).toContain(`harness: Worktree kept: ${join(main, ".claude", "worktrees", "kept")} · branch bot/kept`);
+        expect(r.stderr).toContain(`harness: Worktree kept: ~/${relative(iso.home, join(main, ".claude", "worktrees", "kept"))} · branch bot/kept`);
         expect(r.stderr).toContain("harness: Come back to it with: harness -w kept --continue");
     });
 

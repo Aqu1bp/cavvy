@@ -3,7 +3,8 @@
 // The Git side is src/server/worktrees.ts (shared with the GUI); this is the
 // terminal side: the questions, and what's printed.
 
-import { relative } from "path";
+import { homedir } from "os";
+import { relative, sep } from "path";
 import { APP_NAME } from "../config/paths";
 import { trustFolder } from "../config/trust";
 import type { CleanupMode, SessionWorktree, WorktreeMarker, WorktreeWork } from "../server/worktrees";
@@ -44,9 +45,16 @@ export function shortPath(wt: { main: string; path: string }): string {
     return rel && !rel.startsWith("..") ? rel : wt.path;
 }
 
+/** ~/code/x rather than /Users/me/code/x. */
+function tildePath(path: string): string {
+    const home = homedir();
+    return home && home !== "/" && isInside(path, home) && path !== home ? `~${sep}${relative(home, path)}` : path;
+}
+
 /** The welcome box's line: where, on which branch, from what. */
 export function worktreeLine(wt: SessionWorktree): string {
-    const where = `${shortPath(wt)}${wt.branch ? ` · branch ${wt.branch}` : " · detached HEAD"}`;
+    // The cwd line above it has the path.
+    const where = `${wt.name}${wt.branch ? ` · branch ${wt.branch}` : " · detached HEAD"}`;
     if (!wt.created) return `worktree: ${where} (reopened)`;
     return `worktree: ${where}${wt.baseLabel ? ` · from ${wt.baseLabel}` : ""}`;
 }
@@ -146,7 +154,7 @@ export async function decideWorktree(wt: SessionWorktree, o: { cleanup: CleanupM
         title: "Keep this worktree?",
         header,
         items: [
-            { label: "Keep it", value: "keep", description: "folder and branch stay as they are" },
+            { label: "Keep it", value: "keep", description: "nothing is deleted" },
             keepsBranch
                 ? { label: `Remove the worktree, keep branch ${marker.branch}`, value: "remove", description: "its commits stay on the branch" }
                 : { label: `Remove the worktree and branch ${marker.branch}`, value: "remove" },
@@ -164,7 +172,7 @@ export function endingLines(wt: SessionWorktree, end: Ending): string[] {
         return [theme.muted(`Removed worktree ${shortPath(wt)}${end.branchDeleted ? ` and branch ${branch}` : branch ? `; branch ${branch} is kept` : ""}.`)];
     }
     return [
-        `Worktree kept${end.why ? ` (${end.why})` : ""}: ${wt.path}${branch ? theme.muted(` · branch ${branch}`) : ""}`,
+        `Worktree kept${end.why ? ` (${end.why})` : ""}: ${tildePath(wt.path)}${branch ? theme.muted(` · branch ${branch}`) : ""}`,
         theme.muted(`Come back to it with: ${resumeCommand(wt.name)} --continue`),
     ];
 }
