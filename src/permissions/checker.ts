@@ -686,18 +686,22 @@ const PLAIN_READERS = new Set(["cat", "head", "tail", "wc", "grep", "egrep", "fg
 function plainReads(a: CommandAnalysis, cwd: string, folderCovered: (abs: string) => boolean): boolean {
     if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return false;
     return a.commands.every((c) => {
-        if (c.argv[0] !== effectiveArgv(c.argv)[0] || !PLAIN_READERS.has(c.argv[0] ?? "")) return false;
+        const prog = c.argv[0] ?? "";
+        if (prog !== effectiveArgv(c.argv)[0] || !PLAIN_READERS.has(prog)) return false;
+        const letters = new RegExp(`^-(\\d+|[${PLAIN_OPTIONS[prog] ?? ""}nivlhHsa]+)$`);
         // grep's first operand is its pattern, not a file (no option here gives it another way).
-        let pattern = /^[ef]?grep$/.test(c.argv[0]!);
+        let pattern = /^[ef]?grep$/.test(prog);
         let options = true;
-        return c.argv.slice(1).every((w) => {
+        return c.argv.every((w, i) => {
+            if (i === 0) return true;
             if (options && w === "--") {
                 options = false;
                 return true;
             }
-            if (options && w.startsWith("-")) return /^-(\d+|[nivlhHsa]+)$/.test(w);
-            // `..` is taken away before a symlink in front of it is followed: `link/../.env` isn't ./.env.
-            if (/[$`*?[{]/.test(w) || /^~(?!\/|$)/.test(w) || /(^|\/)\.\.(\/|$)/.test(w)) return false;
+            if (options && w.startsWith("-")) return letters.test(w);
+            // Shell globs and variables can become other words; `..` is taken away before a symlink in
+            // front of it is followed (`link/../.env` isn't ./.env); spaces around a name are part of it.
+            if (c.globbed?.includes(i) || c.expands?.includes(i) || /^~(?!\/|$)/.test(w) || /(^|\/)\.\.(\/|$)/.test(w) || w !== w.trim()) return false;
             if (pattern) {
                 pattern = false;
                 return true;
@@ -711,6 +715,9 @@ function plainReads(a: CommandAnalysis, cwd: string, folderCovered: (abs: string
         });
     });
 }
+
+/** Option letters, beyond those every plain reader shares, that name no file and don't recurse for that program. */
+const PLAIN_OPTIONS: Record<string, string> = { cat: "bestuvA", grep: "EFwxcoq", egrep: "wxcoq", fgrep: "wxcoq" };
 
 /** The only thing that may share a line with an install: a cd into a folder written out. */
 function installCompanion(argv: string[]): boolean {
