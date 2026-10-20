@@ -8,8 +8,8 @@ import { tmpdir } from "os";
 import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
 import type { Key } from "./keys";
-import { bold, dim, italic, strike, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
-import { MarkdownStream, renderMarkdown } from "./markdown";
+import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
+import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
 import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
@@ -758,7 +758,7 @@ export class App {
         if (!t || !this.shouldShowThinking()) return;
         const max = this.verbose ? 400 : this.settings.showThinking ? 60 : 8;
         this.screen.print((cols) => {
-            const lines = t.split("\n").flatMap((l) => wrapLine(l, cols - 4));
+            const lines = thinkingLines(t, cols);
             const shown = lines.slice(0, max);
             const out = ["", ...shown.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l)))];
             if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (ctrl+o to show more next time)`));
@@ -1819,7 +1819,7 @@ export class App {
         if (this.exiting) return;
         const cols = termCols();
         const rows = termRows();
-        // The reply and running tools continue the output; the spinner, prompt and footer stay on the bottom rows.
+        // The reply and running tools, then the spinner, prompt and footer, all right after the output.
         const { flow, status } = this.busy ? this.renderActivity(cols, rows) : { flow: [], status: [] };
         const lines = [...flow];
         if (status.length) lines.push("", ...status);
@@ -1827,7 +1827,7 @@ export class App {
         const top = this.dialogs[this.dialogs.length - 1];
         if (top) lines.push(...top.render(cols, Math.max(8, rows - lines.length - 1)));
         else lines.push(...this.renderInput(cols));
-        this.screen.setLive(lines, flow.length);
+        this.screen.setLive(lines);
     }
 
     /**
@@ -1852,7 +1852,7 @@ export class App {
             );
         }
         if (this.thinking && this.shouldShowThinking() && !this.md) {
-            const tl = this.thinking.trim().split("\n").flatMap((l) => wrapLine(l, cols - 4)).slice(-3);
+            const tl = thinkingLines(this.thinking.trim(), cols).slice(-3);
             block(tl.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l))));
         }
         for (const [, r] of this.receiving) {
@@ -2040,4 +2040,13 @@ function shortcutHelp(cols: number): string[] {
         ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c, w - 1)), w)).join("")),
         "  " + theme.muted(truncate("shift+enter also adds a newline, in terminals that support it", cols - 4)),
     ];
+}
+
+/**
+ * Thinking as it's shown: its markdown styled (Codex's summaries open with a **bold** title), wrapped to fit
+ * beside the ✻. Links aren't terminal hyperlinks: thinking is cut to its last lines, which could drop a link's end.
+ */
+function thinkingLines(text: string, cols: number): string[] {
+    // Escape codes in the model's own text (a raw hyperlink, a color) are taken out first, for the same reason.
+    return text.split("\n").flatMap((l) => wrapLine(inline(stripAnsi(l), false), cols - 4));
 }

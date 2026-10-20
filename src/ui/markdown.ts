@@ -9,15 +9,18 @@ import { redact } from "../util/redact";
 
 const OSC8 = ["iTerm.app", "WezTerm", "vscode", "ghostty", "Hyper"].includes(process.env.TERM_PROGRAM ?? "") || Boolean(process.env.KITTY_WINDOW_ID) || Boolean(process.env.WT_SESSION) || Boolean(process.env.VTE_VERSION);
 
-function link(text: string, url: string): string {
+function link(text: string, url: string, hyperlinks = OSC8): string {
     const styled = theme.link(underline(text));
-    if (OSC8 && /^https?:\/\//.test(url)) return `\x1b]8;;${url}\x1b\\${styled}\x1b]8;;\x1b\\`;
+    if (hyperlinks && /^https?:\/\//.test(url)) return `\x1b]8;;${url}\x1b\\${styled}\x1b]8;;\x1b\\`;
     if (stripAnsi(text) === url) return styled;
     return `${styled} ${theme.subtle(`(${url})`)}`;
 }
 
-/** Inline markdown: code spans, bold, italic, strike, links. */
-export function inline(src: string): string {
+/**
+ * Inline markdown: code spans, bold, italic, strike, links. Without `hyperlinks`, a link is its text
+ * and URL, with no terminal hyperlink: one cut short (a capped block) would leave the rest linked.
+ */
+export function inline(src: string, hyperlinks = OSC8): string {
     const slots: string[] = [];
     const hold = (s: string) => `\u0000${slots.push(s) - 1}\u0000`;
     let s = src;
@@ -26,10 +29,10 @@ export function inline(src: string): string {
     // code spans (``x`` or `x`)
     s = s.replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (_, _t, code) => hold(theme.code(code.replace(/^ (.*) $/, "$1"))));
     // images and links
-    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, alt, url) => hold(link(`[image: ${alt || "image"}]`, url)));
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, text, url) => hold(link(inline(text), url)));
-    s = s.replace(/<(https?:\/\/[^>\s]+)>/g, (_, url) => hold(link(url, url)));
-    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"*_])/g, (_, pre, url) => pre + hold(link(url, url)));
+    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, alt, url) => hold(link(`[image: ${alt || "image"}]`, url, hyperlinks)));
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, text, url) => hold(link(inline(text, hyperlinks), url, hyperlinks)));
+    s = s.replace(/<(https?:\/\/[^>\s]+)>/g, (_, url) => hold(link(url, url, hyperlinks)));
+    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"*_])/g, (_, pre, url) => pre + hold(link(url, url, hyperlinks)));
     // emphasis
     s = s.replace(/(\*\*\*|___)(?=\S)([\s\S]*?\S)\1/g, (_, _m, t) => bold(italic(t)));
     s = s.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, (_, t) => bold(t));
