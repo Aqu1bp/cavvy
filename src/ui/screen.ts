@@ -1,7 +1,8 @@
 // Terminal renderer. The harness takes over the whole window: output fills it
-// from the top and the "live region" (streaming text, running tools, spinner,
-// prompt, dialogs and footer) follows it with no gap, redrawn in place; the
-// rows it doesn't need stay empty below it. Finished
+// from the top and the "live region" (streaming text and running tools right
+// after the output; spinner, prompt, dialogs and footer on the bottom rows)
+// is redrawn in place. At the end of a turn the output is brought back down to
+// the prompt if the region shrank after scrolling it up. Finished
 // output scrolls into the terminal's own scrollback, so scrolling, selecting
 // and copying work as usual (no alternate screen).
 //
@@ -43,7 +44,11 @@ export interface Entry {
 
 export class Screen {
     private live: string[] = [];
-    /** Rows the live region occupies on screen right now. */
+    /** Leading live lines that go right after the output, before the gap. */
+    private liveFlow = 0;
+    /** Fill the space below the output so the rest of the live region sits on the bottom rows. */
+    private pinned = true;
+    /** Rows the live region (with its gap) occupies on screen right now. */
     private liveRows = 0;
     /** Paint the screen again on the next draw if the region left empty rows (see settle). */
     private settlePending = false;
@@ -86,6 +91,7 @@ export class Screen {
         this.resizeHandler = onResize;
         if (!this.interactive || this.started) return;
         this.started = true;
+        this.pinned = true;
         process.stdin.setRawMode(true);
         process.stdin.setEncoding("utf8");
         process.stdin.on("data", this.dataListener);
@@ -105,6 +111,8 @@ export class Screen {
         if (!this.started) return;
         clearTimeout(this.resizeTimer);
         this.redrawPending = false;
+        // No gap below the output: the shell prompt goes right after it.
+        this.pinned = false;
         this.flushNow();
         this.setFocusReporting(false);
         this.started = false;
@@ -224,9 +232,12 @@ export class Screen {
      * The live region, right after the output: when it grows (a spinner, a running tool) it takes
      * the empty rows below it, and when it shrinks the prompt moves back up to the output.
      */
-    setLive(lines: string[]) {
+    setLive(lines: string[], flow = 0) {
         // One entry per terminal row, or the redraw loses track of the region's height.
-        this.live = lines.flatMap((l) => sanitizeLine(l).split("\n"));
+        const split = (ls: string[]) => ls.flatMap((l) => sanitizeLine(l).split("\n"));
+        const head = split(lines.slice(0, flow));
+        this.live = [...head, ...split(lines.slice(flow))];
+        this.liveFlow = head.length;
         this.schedule();
     }
 
@@ -314,9 +325,18 @@ export class Screen {
 
     /** The live region, starting on screen row `from` (0-based). Records where it landed. */
     private drawLive(from: number, cols: number, rows: number): string {
+        let live = this.live;
+        let flow = this.liveFlow;
         // Keep it within the screen so we can always move back to its top.
-        const live = this.live.length > rows - 1 ? this.live.slice(this.live.length - (rows - 1)) : this.live;
-        const block = live.map((l) => (width(l) > cols - 1 ? truncate(l, cols - 1) : l));
+        if (live.length > rows - 1) {
+            const cut = live.length - (rows - 1);
+            live = live.slice(cut);
+            flow = Math.max(0, flow - cut);
+        }
+        const fitted = live.map((l) => (width(l) > cols - 1 ? truncate(l, cols - 1) : l));
+        // Blank rows after the flowing part fill what the output leaves, so the rest ends on the last row.
+        const gap = this.pinned && fitted.length ? Math.max(0, rows - from - fitted.length) : 0;
+        const block = [...fitted.slice(0, flow), ...Array<string>(gap).fill(""), ...fitted.slice(flow)];
         // Rows past the bottom scroll the screen up.
         const scrolled = Math.max(0, from + block.length - rows);
         this.top = from - scrolled;

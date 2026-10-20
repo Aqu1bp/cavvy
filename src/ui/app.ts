@@ -40,7 +40,7 @@ import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveMode
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
-import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
+import { modelRef, parseModelRef, textOf, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
@@ -679,7 +679,7 @@ export class App {
                     }
                 } else {
                     // A Claude Code or Codex turn ends with what it did ("[Codex used: …]"): shown as its actions, one a line.
-                    const { text: t, actions } = splitActionsNote(textOf(m).trim());
+                    const { text: t, actions } = splitActionsNote(m);
                     if (t) {
                         const md = renderMarkdown(t, cols - 2);
                         out.push("", ...md.slice(0, 30).map((l, i) => (i === 0 ? `${BULLET} ` : "  ") + l));
@@ -1824,7 +1824,7 @@ export class App {
         if (this.exiting) return;
         const cols = termCols();
         const rows = termRows();
-        // The reply and running tools, then the spinner, prompt and footer, all right after the output.
+        // The reply and running tools continue the output; the spinner, prompt and footer stay on the bottom rows.
         const { flow, status } = this.busy ? this.renderActivity(cols, rows) : { flow: [], status: [] };
         const lines = [...flow];
         if (status.length) lines.push("", ...status);
@@ -1832,7 +1832,7 @@ export class App {
         const top = this.dialogs[this.dialogs.length - 1];
         if (top) lines.push(...top.render(cols, Math.max(8, rows - lines.length - 1)));
         else lines.push(...this.renderInput(cols));
-        this.screen.setLive(lines);
+        this.screen.setLive(lines, flow.length);
         // Back at the plain prompt (a turn ended, a dialog closed): what was shown meanwhile is gone,
         // so bring the output back down to the prompt.
         const idle = !this.busy && !this.dialogs.length;
@@ -2067,11 +2067,18 @@ function historyRule(label: string, cols: number): string {
     return theme.subtle(head + "─".repeat(Math.max(2, cols - 2 - width(head))));
 }
 
-/** A backend turn's text without its closing "[Codex used: Bash(…), Edit(…)]" note, and the actions it lists. */
-export function splitActionsNote(text: string): { text: string; actions: string[] } {
-    const m = /\n*\[([\w][\w .-]*) used: ([\s\S]*)\]\s*$/.exec(text);
-    if (!m) return { text, actions: [] };
+/**
+ * A Claude Code or Codex turn's text without the note that closes it, "[Codex used: Bash(…), Edit(…)]",
+ * and the actions the note lists. The note is the message's last text part (or that part's last
+ * paragraph), on one line: a mention of one in the reply itself is just text.
+ */
+export function splitActionsNote(m: Message): { text: string; actions: string[] } {
+    const parts = (m.content as Message["content"][number][]).filter((p): p is TextPart => p.type === "text");
+    const last = parts.at(-1)?.text.trimEnd() ?? "";
+    const note = /(?:^|\n\n)\[([\w][\w .-]*) used: ([^\n]*)\]$/.exec(last);
+    if (!note) return { text: textOf(m).trim(), actions: [] };
     // Each action starts with a tool's name and "(": split on the commas before one.
-    const actions = m[2]!.split(/, (?=(?:and \d+ more$|[\w.-]+\())/).map((a) => a.trim()).filter(Boolean);
-    return { text: text.slice(0, m.index).trim(), actions };
+    const actions = note[2]!.split(/, (?=(?:and \d+ more$|[\w.-]+\())/).map((a) => a.trim()).filter(Boolean);
+    const text = [...parts.slice(0, -1).map((p) => p.text), last.slice(0, note.index)].join("").trim();
+    return { text, actions };
 }

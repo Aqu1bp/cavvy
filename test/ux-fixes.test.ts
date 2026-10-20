@@ -629,8 +629,23 @@ describe("TUI input handling", () => {
         expect(out).toContain(`  ${BULLET} Edit(src/a.ts)`);
         expect(out.some((l) => /^── Resumed session .* · 2 messages ─+$/.test(l))).toBe(true);
         expect(out.slice(-3)).toEqual(["", expect.stringMatching(/^── end of resumed history ─+$/), ""]);
-        expect(splitActionsNote("plain reply")).toEqual({ text: "plain reply", actions: [] });
-        expect(splitActionsNote("done\n\n[Claude Code used: Read(a), Bash(ls), and 3 more]").actions).toEqual(["Read(a)", "Bash(ls)", "and 3 more"]);
+        const reply = (...texts: string[]) => ({ role: "assistant" as const, content: texts.map((text) => ({ type: "text" as const, text })) });
+        expect(splitActionsNote(reply("plain reply"))).toEqual({ text: "plain reply", actions: [] });
+        expect(splitActionsNote(reply("done", "[Claude Code used: Read(a), Bash(ls), and 3 more]"))).toEqual({ text: "done", actions: ["Read(a)", "Bash(ls)", "and 3 more"] });
+        expect(splitActionsNote(reply("[Codex used: Bash(ls)]"))).toEqual({ text: "", actions: ["Bash(ls)"] });
+    });
+    test("a reply that mentions a [Codex used: …] note isn't cut there: only the note closing the turn is taken out", () => {
+        const { app, printed } = testApp();
+        const prose = "To see the changes:\n- **Resumed history:** actions one per line, with no `[Codex used: …]` blob. Full-width rules mark it.\n- **End of a turn:** no blank rows under the footer.";
+        app.session.push({ role: "user", content: [{ type: "text", text: "go" }], meta: { kind: "prompt" } });
+        app.session.push({ role: "assistant", content: [{ type: "text", text: prose }, { type: "text", text: "[Claude Code used: Bash(gh pr merge 162), Bash(harness --version)]" }] });
+        (app as any).replayTranscript();
+        const out = printed.map(stripAnsi).join("\n");
+        expect(out).toContain("with no [Codex used: …] blob. Full-width rules mark it.");
+        expect(out).toContain("End of a turn: no blank rows under the footer.");
+        expect(out).not.toContain("**");
+        expect(out).toContain(`  ${BULLET} Bash(gh pr merge 162)\n  ${BULLET} Bash(harness --version)`);
+        expect(splitActionsNote(app.session.messages.at(-1)!).text).toBe(prose);
     });
     test("a ! command can be interrupted", async () => {
         const { app, printed } = testApp();
