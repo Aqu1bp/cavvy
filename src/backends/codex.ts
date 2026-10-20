@@ -390,6 +390,8 @@ class CodexTurn {
     private threadId?: string;
     private turnId?: string;
     private items = new Map<string, OpenItem>();
+    /** PostToolUse hooks still running: the turn waits for them. */
+    private hookRuns = new Set<Promise<void>>();
     private streamed = new Set<string>();
     private texts: string[] = [];
     /** The main thread's answer: what a sub-agent on Codex reports. */
@@ -653,6 +655,8 @@ class CodexTurn {
         else if (this.turnId) this.modeChanged(this.host.mode());
         await Promise.race([done, this.rpc.done]);
         this.turnDone = undefined;
+        // A command's PostToolUse hooks finish before the turn does (Codex can end it right after the command).
+        if (this.hookRuns.size) await Promise.allSettled([...this.hookRuns]);
         if (!this.status && !this.aborted && !this.failure) this.failure = `Codex stopped before the turn finished${cliMessage(this.rpc.proc.stderr()) ? `: ${cliMessage(this.rpc.proc.stderr())}` : ""}`;
     }
 
@@ -1120,7 +1124,10 @@ class CodexTurn {
         if (open.sub) return this.subEmit(open.sub, e);
         this.actions.push(open.title);
         this.host.emit(e);
-        if (ran) void this.postToolUse(id, open, content, isError, e.durationMs);
+        if (ran) {
+            const run = this.postToolUse(id, open, content, isError, e.durationMs).finally(() => this.hookRuns.delete(run));
+            this.hookRuns.add(run);
+        }
     }
 
     /** The harness has hooks for this event (Codex runs none of them itself). */

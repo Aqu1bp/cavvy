@@ -19,7 +19,7 @@ import { isInside } from "../util/files";
 import type { Billing, PermissionModeId, RunOutcome, RunResult } from "./protocol";
 import { RpcError } from "./rpc-error";
 import { checkFiles, checkMedia } from "./attachments";
-import { checkCreate, createWorktree, listWorktrees, runGitAsync, WORKTREES_DIR, type Log } from "./worktrees";
+import { checkCreate, createWorktreeWithHooks, listWorktrees, runGitAsync, WORKTREES_DIR, type Log } from "./worktrees";
 
 export const MIN_MODELS = 2;
 export const MAX_MODELS = 4;
@@ -352,7 +352,7 @@ async function run(host: RunHost, req: RunRequest, main: string): Promise<{ runI
             if (!name) break;
             claimed.add(name.toLowerCase());
             try {
-                made = await createWorktree({ path: req.path, branch: name, folder: name, base: commit }, host.log);
+                made = await createWorktreeWithHooks({ path: req.path, branch: name, folder: name, base: commit }, host.log);
             } catch (e) {
                 // Made meanwhile (by Git outside Harness, say): the next name.
                 if (e instanceof RpcError && (e.code === "branch_exists" || e.code === "path_exists")) continue;

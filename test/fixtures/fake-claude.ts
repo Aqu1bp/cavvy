@@ -392,9 +392,38 @@ function execute(tool: string, input: any): { content: string; structured?: unkn
     return { content: "ok" };
 }
 
+/** Hooks the host registered in initialize (SDK callbacks): run like Claude Code's, by sending hook_callback. */
+let sdkHooks: Record<string, { matcher?: string; hookCallbackIds: string[] }[]> = {};
+function sdkHook(event: string, input: Record<string, unknown>): Promise<any[]> {
+    const ids = (sdkHooks[event] ?? []).filter((g) => !g.matcher || g.matcher === "*" || g.matcher.split("|").includes(String(input.tool_name))).flatMap((g) => g.hookCallbackIds);
+    return Promise.all(
+        ids.map((callback_id) => {
+            const request_id = `req-${++seq}`;
+            out({ type: "control_request", request_id, request: { subtype: "hook_callback", callback_id, input: { session_id: sessionId, cwd, hook_event_name: event, permission_mode: mode, ...input }, tool_use_id: input.tool_use_id } });
+            return new Promise((resolve) => pending.set(request_id, resolve));
+        }),
+    ).then((answers) => (log({ hookAnswers: { event, answers } }), answers));
+}
+
 /** One tool call, decided like the real CLI. False when the turn was stopped. */
 async function use(id: string, tool: string, input: any): Promise<boolean> {
     toolUse(id, tool, input);
+    const pre = await sdkHook("PreToolUse", { tool_name: tool, tool_input: input, tool_use_id: id });
+    const refused = pre.find((r) => r?.hookSpecificOutput?.permissionDecision === "deny");
+    if (refused) {
+        toolResult(id, String(refused.hookSpecificOutput.permissionDecisionReason ?? "Denied by a hook"), true);
+        return true;
+    }
+    if (sdkHooks.PostToolUse) {
+        const run = execute;
+        const done = (r: { content: string }) => sdkHook("PostToolUse", { tool_name: tool, tool_input: input, tool_use_id: id, tool_response: r.content });
+        if (!deny.some((r) => ruleHits(r, tool, input)) && !askRules.some((r) => ruleHits(r, tool, input)) && selfApproved(tool, input)) {
+            const r = run(tool, input);
+            toolResult(id, r.content, false, r.structured);
+            await done(r);
+            return true;
+        }
+    }
     if (deny.some((r) => ruleHits(r, tool, input))) {
         toolResult(id, `Permission to use ${tool} has been denied by your permission settings.`, true);
         return true;
@@ -655,6 +684,7 @@ for await (const chunk of Bun.stdin.stream()) {
         if (m.type === "control_request") {
             const sub = m.request?.subtype;
             if (sub === "initialize") {
+                sdkHooks = m.request.hooks ?? {};
                 out({
                     type: "control_response",
                     response: {

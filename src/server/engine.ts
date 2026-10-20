@@ -33,7 +33,7 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktree, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
+import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
@@ -1107,7 +1107,7 @@ export class Engine {
         this.implementing.add(rt.id);
         try {
             const from = rt.ws.cwd;
-            const made = resume ? this.madeWorktree(from, resume, branch) : await createWorktree({ path: from, branch, base, folder }, this.o.log);
+            const made = resume ? this.madeWorktree(from, resume, branch) : await createWorktreeWithHooks({ path: from, branch, base, folder }, this.o.log);
             // The new session works where the planning one did, relative to its worktree.
             const top = gitRoot(from);
             const sub = top ? relative(realPath(top), realPath(from)) : "";
@@ -2023,7 +2023,7 @@ export class Engine {
                     }
                     preview = { id: text(s.id, "setupScript.id", 64), command: text(s.command, "setupScript.command", SCRIPT_LIMITS.command) };
                 }
-                const made = await createWorktree(
+                const made = await createWorktreeWithHooks(
                     {
                         path: resolve(expandHome(text(p.path, "path", 4096))),
                         branch: text(p.branch, "branch", 200),

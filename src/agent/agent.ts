@@ -2288,7 +2288,7 @@ export function errorType(message: string): string {
  */
 export const CLAUDE_CODE_HOOK_EVENTS: HookEvent[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PermissionDenied", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged", "WorktreeCreate", "WorktreeRemove"];
 
-function backendOwnedHooks(s: Settings): BackendTurn["hooks"] {
+export function backendOwnedHooks(s: Settings): BackendTurn["hooks"] {
     const out: NonNullable<BackendTurn["hooks"]> = {};
     for (const e of CLAUDE_CODE_HOOK_EVENTS) if (s.hooks?.[e]?.length) out[e] = s.hooks[e];
     return Object.keys(out).length ? out : undefined;

@@ -4,7 +4,9 @@ import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, statS
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { gitArgv, gitEnv } from "../util/git";
 import { isInside } from "../util/files";
-import { trustedByUser } from "../config/trust";
+import { isTrusted, trustedByUser } from "../config/trust";
+import { loadSettings, type Settings } from "../config/settings";
+import { runHooks } from "../agent/hooks";
 import { redact } from "../util/redact";
 import { RpcError } from "./rpc-error";
 import type { CreateWorktreeParams, RemoveWorktreeResult, WorktreeInfo } from "./protocol";
@@ -456,6 +458,41 @@ export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promis
     return { path: target.path, branch, commit };
 }
 
+/** The repository's settings, as a session in it would have them (project hooks only once it's trusted). */
+function repoSettings(dir: string): Settings {
+    return loadSettings(dir, { trusted: isTrusted(dir) });
+}
+
+/** The hook's answer as a folder to work in: an existing directory, a plain path, and not through a symlink inside the repository. */
+function hookWorktreePath(main: string, given: string): string {
+    if (isAbsolute(given) && given.split("/").some((s) => s === "." || s === "..")) throw new RpcError(`The WorktreeCreate hook gave ${given}: use a path without . or .. in it.`, "hook_failed");
+    const path = resolve(main, given);
+    if (!isDir(path)) throw new RpcError(`The WorktreeCreate hook gave ${path}, which isn't a folder.`, "hook_failed");
+    // A symlink committed to the repository could point the worktree anywhere.
+    if (isInside(path, main) && realpathSync(path) !== path) throw new RpcError(`The WorktreeCreate hook gave ${path}, which goes through a symlink inside the repository.`, "hook_failed");
+    return path;
+}
+
+/**
+ * A worktree, as createWorktree makes it, unless the repository's settings
+ * have WorktreeCreate hooks: then they make it instead of Git (as in Claude
+ * Code), printing the folder's path, and it's checked like any folder.
+ */
+export async function createWorktreeWithHooks(o: CreateWorktreeParams, log?: Log, settings?: Settings): Promise<{ path: string; branch: string; commit: string }> {
+    const cwd = resolve(o.path);
+    const s = settings ?? repoSettings(cwd);
+    if (!s.hooks?.WorktreeCreate?.length) return createWorktree(o, log);
+    const main = checkCreate(cwd);
+    const name = o.folder || defaultFolder(o.branch);
+    const h = await runHooks(s, "WorktreeCreate", { name, branch: o.branch, base: o.base ?? null, ...(o.location ? { location: o.location } : {}) }, main);
+    if (h.blocked) throw new RpcError(`A WorktreeCreate hook refused: ${redact(h.blocked)}`, "hook_failed");
+    if (h.errors.length) throw new RpcError(`The WorktreeCreate hook failed: ${redact(h.errors[0]!)}`, "hook_failed");
+    if (!h.worktreePath) throw new RpcError("The WorktreeCreate hook didn't print the new worktree's path.", "hook_failed");
+    const path = hookWorktreePath(main, h.worktreePath);
+    const head = await runGitAsync(path, ["rev-parse", "--verify", "HEAD"], CREATE_TIMEOUT_MS);
+    return { path, branch: o.branch, commit: head.code === 0 ? head.stdout.trim() : "" };
+}
+
 /** `wanted`, or wanted-2, -3, … when a branch has that name already (only a suggestion: checkBranch decides). */
 export function suggestBranch(cwd: string, wanted: string): string {
     const taken = (b: string) => runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${b}`]) !== undefined;
@@ -589,9 +626,25 @@ export async function unpushedReason(o: { path: string; worktree: string }): Pro
  * deleted when `deleteIgnored` is the token for exactly the list the user saw.
  * A folder that's already gone loses only its own record.
  */
-export async function runRemoval(plan: Removal, o: { deleteIgnored?: string } = {}, log?: Log): Promise<RemoveWorktreeResult> {
+export async function runRemoval(plan: Removal, o: { deleteIgnored?: string; settings?: Settings } = {}, log?: Log): Promise<RemoveWorktreeResult> {
     const waiting = await ignoredWaiting(plan, o.deleteIgnored, log);
     if (waiting) return waiting;
+    // WorktreeRemove hooks run first (after the same checks). One that deleted the folder
+    // removed it (a worktree a WorktreeCreate hook made); otherwise Git removes it as usual.
+    const settings = o.settings ?? repoSettings(plan.main);
+    if (settings.hooks?.WorktreeRemove?.length) {
+        const h = await runHooks(settings, "WorktreeRemove", { worktree_path: plan.path }, plan.main);
+        const stays = isDir(plan.path);
+        if (h.errors.length && stays) {
+            logFailure(log, "WorktreeRemove hook failed", h.errors.join("\n"));
+            throw new RpcError(`The WorktreeRemove hook failed, so ${plan.path} stays: ${redact(h.errors[0]!)}`, "hook_failed");
+        }
+        if (!stays) {
+            // Git's record of a folder the hook deleted.
+            await runGitAsync(plan.main, [...NO_HOOKS, "worktree", "prune"], REMOVE_TIMEOUT_MS);
+            return { removed: true };
+        }
+    }
     // Untracked files count even where the user's config hides them from status.
     const r = await runGitAsync(plan.main, [...NO_HOOKS, "-c", "status.showUntrackedFiles=normal", "worktree", "remove", plan.exists ? canonical(plan.path) : plan.path], REMOVE_TIMEOUT_MS);
     if (r.timedOut) {
