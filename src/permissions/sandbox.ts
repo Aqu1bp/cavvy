@@ -13,10 +13,11 @@
 
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { dirname, isAbsolute, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { ANALYSIS_LIMIT, commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, withoutMessages } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 import { accountProtectedPaths } from "../providers/accounts";
+import { paths } from "../config/paths";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -36,6 +37,11 @@ export interface SandboxPolicy {
     unreadable: string[];
     /** Git directories: their hooks and config stay read-only, submodules' and worktrees' included. */
     gitDirs: string[];
+    /**
+     * Paths whose files can't be read but can be listed (names, sizes, dates): the harness
+     * home, where settings and session logs may hold secrets. bubblewrap hides them whole.
+     */
+    contentsUnreadable?: string[];
 }
 
 export interface Sandbox {
@@ -89,7 +95,8 @@ function real(p: string): string {
  * default with Seatbelt; bubblewrap only when turned on (`"sandbox": true`),
  * since its rules haven't been tested on a Linux machine yet.
  */
-export function sandboxEnabled(setting: boolean | undefined): boolean {
+export function sandboxEnabled(setting: boolean | { enabled?: boolean } | undefined): boolean {
+    if (typeof setting === "object" && setting !== null) setting = setting.enabled;
     const kind = sandboxKind();
     return kind === "seatbelt" ? setting !== false : kind === "bwrap" ? setting === true : false;
 }
@@ -157,6 +164,17 @@ function claudeWorktrees(root: string): string[] {
     }
 }
 
+/** Where a symlinked file leads, if it's a file there (a link to a folder, or to `/`, would wall off far more than it). */
+function linkedFile(p: string): string[] {
+    try {
+        if (!lstatSync(p).isSymbolicLink()) return [];
+        const target = realpathSync(p);
+        return statSync(target).isFile() ? [target] : [];
+    } catch {
+        return [];
+    }
+}
+
 /** What a sandboxed command may touch, for these workspace roots. */
 export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHome: string }): SandboxPolicy {
     const home = real(opts.home ?? homedir());
@@ -166,15 +184,22 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHom
     const temp = [...new Set([process.platform === "darwin" ? "/private/tmp" : "/tmp", real(tmpdir())])];
     const harness = real(opts.harnessHome);
     // Resolve afresh so newly added accounts are protected in running sessions.
-    const accounts = [...new Set(accountProtectedPaths().map(canonical))].filter((a) => !isWithin(a, harness));
+    const allAccounts = [...new Set(accountProtectedPaths().map(canonical))];
+    const accounts = allAccounts.filter((a) => !isWithin(a, harness));
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
+    // The secrets and accounts/ (registered or not) can't even be listed; the rest of the
+    // home can, but not read: settings and session logs may hold secrets too.
+    const secrets = [basename(paths.credentialsFile()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(harness, f)));
+    // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
+    const settings = linkedFile(join(harness, basename(paths.userSettings())));
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
         // A worktree's own config and its .git pointer stay read-only, as in the project around it.
         readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), harness, ...accounts])],
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
-        unreadable: [...UNREADABLE_IN_HOME.map((p) => join(home, p)), harness, ...accounts],
+        unreadable: [...new Set([...UNREADABLE_IN_HOME.map((p) => join(home, p)), ...secrets, ...allAccounts])],
+        contentsUnreadable: [...new Set([harness, ...settings].filter((x, i) => i === 0 || !isWithin(x, harness)))],
         gitDirs: git,
     };
 }
@@ -250,7 +275,7 @@ export function seatbeltProfile(p: SandboxPolicy): string {
         ...(worktrees.length ? [`(allow file-write* ${subpaths(worktrees)})`] : []),
         // Unreadable paths can't be written (or renamed out from under the read rule) either.
         // Config that a worktree holds (a `.codex` symlinked into one) too.
-        `(deny file-write* ${subpaths([...p.readOnly, ...cliInWorktrees(p), ...p.gitDirs.flatMap(gitProtectedPaths), ...p.unreadable])})`,
+        `(deny file-write* ${subpaths([...p.readOnly, ...cliInWorktrees(p), ...p.gitDirs.flatMap(gitProtectedPaths), ...p.unreadable, ...(p.contentsUnreadable ?? [])])})`,
         // Paths that can't be moved, replaced or repointed, only written inside:
         // the git dirs and `.git` pointer files, the writable directories
         // above them (the workspace roots, say), the worktrees, and unreadable
@@ -263,10 +288,15 @@ export function seatbeltProfile(p: SandboxPolicy): string {
             (g) =>
                 `(deny file-write* (regex #"^${sbRegex(g)}/(modules|worktrees)/.+/(hooks(/|$)|config$|config\\.worktree$|info/attributes$|commondir$|gitdir$)") (regex #"^${sbRegex(g)}/(modules|worktrees(/[^/]+)?)$"))`,
         ),
+        // Files there can't be read, but folders can be listed and anything stat'ed (ls, du, find -name).
+        // Extended attributes are contents too (getxattr), folders' included.
+        ...((p.contentsUnreadable ?? []).length ? [`(deny file-read-data (require-all (require-any ${subpaths(p.contentsUnreadable!)}) (require-not (vnode-type DIRECTORY))))`, `(deny file-read-xattr ${subpaths(p.contentsUnreadable!)})`] : []),
         `(deny file-read* ${subpaths(p.unreadable)})`,
         // Signals only within this sandbox: the user's other programs can't be killed.
         "(deny signal)",
         "(allow signal (target same-sandbox))",
+        // Listing processes (ps, pgrep, lsof -p) only reads their info; without these ps fails with EPERM.
+        "(allow process-info-listpids process-info-pidinfo process-info-pidfdinfo process-info-pidfileportinfo process-info-rusage process-info-codesignature)",
         // Ways out: opening apps, Apple Events, launchd jobs, keychain, clipboard, synthetic input.
         "(deny lsopen)",
         "(deny job-creation)",
@@ -331,7 +361,9 @@ export function bwrapArgs(p: SandboxPolicy): string[] {
     // replaced; a `.git` pointer file is bound read-only.
     for (const g of gits) if (existsSync(g)) args.push(statSync(g).isDirectory() ? "--bind" : "--ro-bind", g, g);
     for (const r of [...p.readOnly, ...cliInWorktrees(p), ...gits.flatMap(gitProtectedPaths)]) if (existsSync(r)) args.push("--ro-bind", r, r);
-    for (const u of p.unreadable) {
+    // bwrap can't hide contents and keep names, so those folders are hidden whole.
+    const hidden = p.contentsUnreadable ?? [];
+    for (const u of [...hidden, ...p.unreadable.filter((u) => !hidden.some((h) => isWithin(u, h)))]) {
         if (!existsSync(u)) continue;
         if (statSync(u).isDirectory()) args.push("--tmpfs", u);
         else args.push("--ro-bind", "/dev/null", u);

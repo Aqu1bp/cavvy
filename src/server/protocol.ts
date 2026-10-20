@@ -265,7 +265,7 @@ export interface Turn {
 // Interactions: things the agent waits on the user for.
 
 export interface PermissionOption {
-    id: "yes" | "always" | "session-edits" | "no";
+    id: "yes" | "session" | "always" | "session-edits" | "no";
     label: string;
 }
 
@@ -290,6 +290,10 @@ export interface PermissionInteraction {
     dangerous?: boolean;
     reason?: string;
     classifierReason?: string;
+    /** One plain-English line on what the action does and what makes it risky, written by a model; shown above the command. */
+    plain?: string;
+    /** How to label `plain` so it isn't taken for the command itself ("AI summary"). */
+    plainLabel?: string;
     agentLabel?: string;
     /** The sub-agent asking (an AgentRun id), when one is. */
     agentId?: string;

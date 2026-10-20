@@ -1519,8 +1519,15 @@ function accountListingConsumer(commands: SimpleCommand[], index: number): boole
     return false;
 }
 
-/** Account directories are private even when a command has an explicit allow rule. */
-export function accountTarget(cmd: string, cwd: string): boolean {
+/** Account directories are private even when a command has an explicit allow rule. Variables count by their values in `env`. */
+export function accountTarget(cmd: string, cwd: string, env?: ShellEnv): boolean {
+    if (namesAccount(cmd, cwd)) return true;
+    if (!env || !/[$~]/.test(cmd)) return false;
+    const expanded = withVarsExpanded(cmd, shellVars(cmd, env), cwd);
+    return expanded !== cmd && namesAccount(expanded, cwd);
+}
+
+function namesAccount(cmd: string, cwd: string): boolean {
     const folders = [...new Set(accountFolders().flatMap((p) => [p, canonical(p)]).flatMap(spellings))];
     const files = accountCredentialFiles().flatMap(spellings);
     if (!folders.length && !files.length) return false;
@@ -1589,11 +1596,23 @@ const SENSITIVE = ([
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
     [/\.harness\/(credentials|providers)\.json/, "the harness credential store"],
     [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
-    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.harness(?=$|[/\s'";|&)])/, "the harness credential store"],
+    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.harness\/accounts(?=$|[/\s'";|&)])/, "the harness credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
 ] satisfies [RegExp, string][]).map(([re, what]): [RegExp, string] => [anyCase(re), what]);
+
+/**
+ * The harness's secret files and folders: what "the harness credential store"
+ * means. Its other files (session logs, history, caches, settings) aren't secret,
+ * so mentioning the home or those doesn't count.
+ */
+function credentialStore(harnessHome: string): { files: string[]; folders: string[] } {
+    return {
+        files: [join(harnessHome, "credentials.json"), join(harnessHome, "providers.json"), ...accountCredentialFiles()],
+        folders: [join(harnessHome, "accounts"), ...accountFolders()],
+    };
+}
 
 function matchSensitive(text: string, harnessHome?: string): string | undefined {
     // Every spelling counts. The lower-cased one is no wider than the volume, so
@@ -1601,13 +1620,207 @@ function matchSensitive(text: string, harnessHome?: string): string | undefined 
     const texts = spellings(text);
     for (const t of texts) for (const [re, what] of SENSITIVE) if (re.test(t)) return what;
     if (harnessHome) {
-        for (const h of spellings(harnessHome)) {
-            const esc = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const store = credentialStore(harnessHome);
+        const names = [...store.files, ...store.folders].flatMap((p) => [p, canonical(p)]).flatMap(spellings);
+        for (const n of new Set(names)) {
+            const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             const re = anyCase(new RegExp(`(^|[\\s'"=:])${esc}(?=$|[/\\s'";|&)])`));
             if (texts.some((t) => re.test(t))) return "the harness credential store";
         }
     }
     return undefined;
+}
+
+/** What sensitiveTarget would call a single word, for telling which target a command names. */
+export function sensitiveWord(word: string, harnessHome?: string): string | undefined {
+    return matchSensitive(" " + word, harnessHome);
+}
+
+/** The harness home's other files, as a sensitive target: settings and session logs may hold secrets. */
+export const HARNESS_FILES = "the harness's settings and session logs";
+
+/** The environment a command's shell starts with: what its variables hold. */
+export type ShellEnv = Record<string, string | undefined>;
+
+/** Variables that follow earlier commands on the line, whatever the environment says. */
+const MOVING_VARS = new Set(["_", "OLDPWD", "DIRSTACK", "dirstack", "REPLY", "MATCH", "match", "argv", "BASH_REMATCH", "BASH_ARGV"]);
+const VAR_REF = /\$(?:\{([^}]*)\}|([A-Za-z_]\w*)|([0-9?#$!*@-]))/g;
+
+/**
+ * Looks up a line's variables as its shell would see them: PWD is the folder the
+ * command runs in, HOME the environment's or the user's, the rest the environment's.
+ * Undefined for one it can't know: not in that environment, set or changed on the line
+ * (`X=…`, `read X`, `for X in`, `export X`), anything after `source`, `.`, `eval` or
+ * `set`, and the ones that follow earlier commands (`$_`, OLDPWD).
+ */
+export function shellVars(cmd: string, env: ShellEnv = process.env): (name: string, pwd: string) => string | undefined {
+    const refs = new Set([...cmd.matchAll(VAR_REF)].map((m) => m[1] ?? m[2]).filter((n): n is string => !!n && /^[A-Za-z_]\w*$/.test(n)));
+    const bare = cmd.replace(VAR_REF, " ");
+    const changed = new Set([...refs].filter((n) => new RegExp(`(^|[^\\w])${n}(?!\\w)`).test(bare)));
+    const a = analyzeCommand(cmd);
+    const any = /(^|[\s;&|({])(source|eval|set|emulate)(?=$|[\s;&|)}])/.test(cmd) || a.commands.some((c) => runs(effectiveArgv(c.argv)[0], ".", "source", "eval", "set"));
+    return (name, pwd) => {
+        if (any || changed.has(name) || MOVING_VARS.has(name)) return undefined;
+        if (name === "PWD") return pwd;
+        if (name === "HOME") return env.HOME ?? homedir();
+        return env[name];
+    };
+}
+
+/**
+ * A word with its `$NAME`, `${NAME}`, special parameters and leading `~` replaced
+ * by what the shell puts there. Undefined when one can't be known (see shellVars,
+ * `${…}` with an operator, `~user`). A lone `$` stays: the shell keeps it too.
+ */
+export function expandWord(word: string, look: (name: string, pwd: string) => string | undefined, pwd: string): string | undefined {
+    // `~+` is the folder it runs in; `~-` (OLDPWD) and `~user` can't be known.
+    if (/^~\+(\/|$)/.test(word)) word = pwd + word.slice(2);
+    if (/^~[^/]/.test(word)) return undefined;
+    let ok = true;
+    const w = word.replace(/^~(?=\/|$)/, () => look("HOME", pwd) ?? homedir()).replace(VAR_REF, (_m, braced: string | undefined, name: string | undefined) => {
+        const n = braced ?? name;
+        // $1, $?, $$ and the like: empty or a number in `shell -c`, never a path.
+        if (n === undefined || /^([0-9]+|[?#$!*@-])$/.test(n)) return "";
+        const v = /^[A-Za-z_]\w*$/.test(n) ? look(n, pwd) : undefined;
+        if (v === undefined) ok = false;
+        return v ?? "";
+    });
+    return ok ? w : undefined;
+}
+
+/** The text with every variable it can work out replaced by its value; the rest left as written. */
+export function withVarsExpanded(text: string, look: (name: string, pwd: string) => string | undefined, pwd: string): string {
+    return text.replace(/(^|[\s'"=:<>])~(?=\/|$)/g, (_m, b: string) => b + (look("HOME", pwd) ?? homedir())).replace(VAR_REF, (m, braced: string | undefined, name: string | undefined) => {
+        const n = braced ?? name;
+        return n && /^[A-Za-z_]\w*$/.test(n) ? (look(n, pwd) ?? m) : m;
+    });
+}
+
+/** Programs that only list or stat what they're given; find only without its actions. */
+const LISTS_ONLY = new Set(["ls", "du", "stat", "find", "tree", "test", "[", "cd", "pushd", "pwd"]);
+const FIND_ACTIONS = /^-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/;
+// Options that make a lister read files: names from one (du, find, tree), patterns (du -X, tree --gitfile), comments (tree --info).
+const LISTER_READS: Record<string, (w: string) => boolean> = {
+    // Long options by any unambiguous prefix, as getopt_long takes them (`--files0` is --files0-from).
+    du: (w) => {
+        const m = /^--([\w-]+)(=|$)/.exec(w);
+        return m ? "files0-from".startsWith(m[1]!) || (m[1]!.length > 7 && "exclude-from".startsWith(m[1]!)) : /^-[a-zA-Z]*X/.test(w);
+    },
+    find: (w) => w === "-files0-from",
+    tree: (w) => /^--(fromfile|fromtabfile|info|infofile|gitfile|gitignore)(=|$)/.test(w),
+};
+
+const NO_FILE_WORDS = new Set(["echo", "printf", "export", "unset", "true", "false", ":", "exit", "return", "shift"]);
+
+/** What a command reads in the harness home: the paths it names there, and whether it may read more than it shows. */
+export interface HomeReads {
+    paths: string[];
+    /** It may read there through what the harness can't follow: an expansion, a pattern, a cd, a substitution. */
+    unsure: boolean;
+}
+
+/**
+ * Could the command read files in the harness home (not just list them)? Any
+ * program but a lister that names a path there, runs there, or reads a listing
+ * of it through xargs and the like does. Unsure (an expansion it can't work out,
+ * a cd it can't follow) and naming the home counts as yes. Variables are
+ * resolved against `env`, the environment the command's shell gets.
+ */
+export function readsHarnessHome(cmd: string, cwd: string, harnessHome: string, env?: ShellEnv): boolean {
+    return harnessHomeReads(cmd, cwd, harnessHome, env) !== undefined;
+}
+
+export function harnessHomeReads(cmd: string, cwd: string, harnessHome: string, env?: ShellEnv): HomeReads | undefined {
+    const homes = [...new Set([harnessHome, canonical(harnessHome)].flatMap(spellings))];
+    const inHome = (p: string) => [p, canonical(p)].flatMap(spellings).some((f) => homes.some((h) => isInside(f, h)));
+    const res = homes.map((h) => anyCase(new RegExp(`(^|[\\s'"=:<>])${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/\\s'";|&)<>])`)));
+    const look = shellVars(cmd, env);
+    const named = (text: string, pwd = cwd) => {
+        const texts = [text, withVarsExpanded(text, look, pwd)].flatMap(spellings);
+        return res.some((re) => texts.some((t) => re.test(t)));
+    };
+    const unsure: HomeReads = { paths: [], unsure: true };
+    const a = analyzeCommand(cmd);
+    // Lines it can't follow word by word never run unreviewed outside the sandbox (they aren't read-only), so naming is enough here.
+    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return named(cmd) || inHome(cwd) ? unsure : undefined;
+    const commands = commandsWithDirs(cmd, cwd);
+    if (commands.exhausted) return named(cmd) || inHome(cwd) ? unsure : undefined;
+    if (named(cmd) && a.commands.some((_, i) => accountListingConsumer(a.commands, i))) return unsure;
+    // A lister is the real one only by its bare name, on a line that can't change what it finds (PATH=., hash).
+    const plainLine = isReadOnlyCommand(cmd) && a.commands.every((c) => c.argv[0] === effectiveArgv(c.argv)[0] && !runs(c.argv[0], "hash"));
+    // Each word as the lister gets it: a variable can hold an option (`$OPT` = `-exec`).
+    const listerWord = (raw: string): string | undefined => {
+        if (!/[$~]/.test(raw)) return raw;
+        const w = expandWord(raw, look, cwd);
+        // A value can split into words or be matched as a pattern (`-e*` finding a file named -exec).
+        return w === undefined || /[\s*?[{]/.test(w) ? undefined : w;
+    };
+    const lists = (argv: string[]) =>
+        plainLine &&
+        LISTS_ONLY.has(argv[0] ?? "") &&
+        argv.slice(1).every((raw) => {
+            const w = listerWord(raw);
+            return w !== undefined && !FIND_ACTIONS.test(w) && !LISTER_READS[argv[0]!]?.(w);
+        });
+    // Builtins that never open their words (`export PATH=$PATH:./bin`), unless the line could redefine them.
+    const definesAny = /\(\s*\)\s*[{(]|(^|[\s;&|])(function|alias)\s/.test(cmd);
+    const opensNothing = (argv: string[]) => !definesAny && NO_FILE_WORDS.has(argv[0] ?? "");
+    // A cd whose folder it can't work out (`cd $X`) leaves the commands after it anywhere.
+    const lostCd = a.commands.some((c) => {
+        const argv = effectiveArgv(c.argv);
+        if (argv[0] !== "cd" && argv[0] !== "pushd") return false;
+        const to = argv.slice(1).find((w) => !/^-[PL]*$/.test(w));
+        return to !== undefined && (to === "-" || (/[$~]/.test(to) && expandWord(to, look, cwd) === undefined));
+    });
+    const out: HomeReads = { paths: [], unsure: false };
+    const touches = (word: string, dir: string, expands: boolean) => {
+        let w = /^[\w-]*=/.test(word) && !word.startsWith("-") ? word.slice(word.indexOf("=") + 1) : word.replace(/^--?[\w-]+=/, "");
+        if (expands || w.startsWith("~")) {
+            const e = expandWord(w, look, dir);
+            if (e === undefined) return (out.unsure = true);
+            w = e;
+        }
+        if (!w) return false;
+        // An unquoted value splits into words, each a path of its own.
+        const parts = expands ? [w, ...w.split(/\s+/).filter(Boolean)] : [w];
+        let hit = false;
+        for (const p of new Set(parts)) {
+            if (!/[*?[]/.test(p)) {
+                const abs = expandPath(p, dir);
+                if (inHome(abs)) (hit = true), out.paths.push(abs);
+                continue;
+            }
+            const found = expandGlob(p, dir).filter(inHome);
+            if (found.length || inHome(expandPath(p.slice(0, p.search(/[*?[]/)).replace(/[^/]*$/, "") || ".", dir))) {
+                hit = true;
+                out.unsure = true;
+                out.paths.push(...found);
+            }
+        }
+        return hit;
+    };
+    // A brace or an unquoted pattern can also turn into an option: `-e{x,}ec`, or `-e*` / `*`
+    // matching a file named -exec.
+    const makesOptions = (text: string) =>
+        analyzeCommand(text).commands.some(
+            (c) => c.globbed?.some((i) => c.globStart?.includes(i) || c.argv[i]!.startsWith("-")) || c.spans.some(([from, to]) => /\{[^}]*(,|\.\.)[^}]*\}/.test(text.slice(from, to))),
+        );
+    let reads = false;
+    for (const { programs, dir, text } of commands) {
+        if (programs.length && !makesOptions(text) && programs.every((argv) => lists(argv) || opensNothing(argv))) continue;
+        if (named(text, dir ?? cwd)) reads = true;
+        if (dir === null) {
+            if (lostCd || named(cmd)) return unsure;
+            continue;
+        }
+        const expanded = new Set(analyzeCommand(text).commands.flatMap((c) => (c.expands ?? []).map((j) => c.argv[j]!)));
+        for (const argv of programs) for (const w of argv) if (touches(w, dir ?? cwd, expanded.has(w))) reads = true;
+    }
+    for (const r of a.redirects) if (touches(r, cwd, /\$/.test(r))) reads = true;
+    if (!reads && !out.unsure) return undefined;
+    // Named but not found word by word (`cat x$HOME_DIR/…`): it may be read some other way.
+    if (!out.paths.length) out.unsure = true;
+    return out;
 }
 
 /** Expand a glob word against the filesystem the way bash would (no globstar), capped. */
@@ -1754,7 +1967,7 @@ export function withoutMessages(cmd: string): string {
  * exclusions (`rg -g '!.env*'`) don't count when the command line has
  * nothing the analysis can't follow (expansions, substitutions).
  */
-export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?: string } = {}): string | undefined {
+export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?: string; env?: ShellEnv } = {}): string | undefined {
     const a = analyzeCommand(cmd);
     const plain = !a.unparsable && !a.hasSubstitution && !a.unsafeExpansion;
     // Words count by position, so not when one can turn into more or fewer (an
@@ -1771,7 +1984,10 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     const commands = a.commands.map((c, k) => ({ ...c, argv: c.argv.filter((_, i) => !excluded[k]!.has(i)) }));
     // The words as the shell reads them too, so quoting (`cat .e''nv`) doesn't hide a name.
     const unquoted = commands.map((c) => c.argv.join(" ")).join(" ; ");
-    const direct = matchSensitive(text, opts.harnessHome) ?? matchSensitive(unquoted, opts.harnessHome);
+    // And with the variables it can work out filled in: `cat $HARNESS_HOME/credentials.json`.
+    const look = /[$~]/.test(cmd) ? shellVars(cmd, opts.env) : undefined;
+    const vars = (t: string) => (look ? matchSensitive(withVarsExpanded(t, look, opts.cwd ?? process.cwd()), opts.harnessHome) : undefined);
+    const direct = matchSensitive(text, opts.harnessHome) ?? matchSensitive(unquoted, opts.harnessHome) ?? vars(text) ?? vars(unquoted);
     if (direct || !opts.cwd) return direct;
     // Each pattern in every folder its command might run in (`cd private && cat .e*`). A cd
     // can fail (`cd x || cat .e*`) or run in a pipeline's subshell (`cd x | cat .e*`), so the

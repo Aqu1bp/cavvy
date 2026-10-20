@@ -28,7 +28,10 @@ describe("sandboxPolicy", () => {
         expect(p.writable).toContain(process.platform === "darwin" ? "/private/tmp" : "/tmp");
         expect(p.readOnly).toEqual([join(ws, ".harness"), join(ws, ".mcp.json"), real(HARNESS_HOME)]);
         for (const c of [".ssh", ".aws", ".gnupg", ".config/gcloud", ".netrc", ".npmrc", ".git-credentials", "Library/Keychains"]) expect(p.unreadable).toContain(join(home, c));
-        expect(p.unreadable).toContain(real(HARNESS_HOME));
+        // The secrets and accounts/ can't be read or listed; the rest of the home can be listed, not read.
+        for (const f of ["credentials.json", "providers.json", "accounts"]) expect(p.unreadable).toContain(join(real(HARNESS_HOME), f));
+        expect(p.unreadable).not.toContain(real(HARNESS_HOME));
+        expect(p.contentsUnreadable).toEqual([real(HARNESS_HOME)]);
         // Covered before a repo exists, so `git init` can't plant hooks either.
         expect(p.gitDirs).toEqual([join(ws, ".git")]);
     });

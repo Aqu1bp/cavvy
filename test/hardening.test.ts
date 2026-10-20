@@ -147,8 +147,12 @@ describe("sensitiveTarget expands globs", () => {
         // bash's * skips dotfiles, so this never reads .env
         expect(sensitiveTarget("cat *", { cwd: proj })).toBeUndefined();
     });
-    test("the harness home directory itself is sensitive", () => {
-        expect(sensitiveTarget(`ls ${HARNESS_HOME}`, { cwd: proj, harnessHome: HARNESS_HOME })).toBe("the harness credential store");
+    test("only the harness's secrets are sensitive, not the rest of its home", () => {
+        const o = { cwd: proj, harnessHome: HARNESS_HOME };
+        expect(sensitiveTarget(`ls ${HARNESS_HOME}`, o)).toBeUndefined();
+        expect(sensitiveTarget(`ls ${HARNESS_HOME}/projects`, o)).toBeUndefined();
+        expect(sensitiveTarget(`cat ${HARNESS_HOME}/providers.json`, o)).toBe("the harness credential store");
+        expect(sensitiveTarget(`ls ${HARNESS_HOME}/accounts`, o)).toBe("the harness credential store");
         expect(sensitiveTarget(`cat ${HARNESS_HOME}-other/x`, { cwd: proj, harnessHome: HARNESS_HOME })).toBeUndefined();
     });
 });
@@ -165,8 +169,9 @@ describe("checker path handling", () => {
     test("a deny rule follows symlinks", () => {
         expect(checker.check(tool("Read", "read"), { file_path: join(proj, "innocent.txt") }, "auto", proj).behavior).toBe("deny");
     });
-    test("Grep inside the harness home is blocked", () => {
-        expect(checker.check(tool("Grep", "read"), { pattern: "sk-", path: HARNESS_HOME }, "bypassPermissions", proj).behavior).toBe("deny");
+    test("Grep over the harness home runs; Grep of a secret file is blocked", () => {
+        expect(checker.check(tool("Grep", "read"), { pattern: "sk-", path: HARNESS_HOME }, "bypassPermissions", proj).behavior).toBe("allow");
+        expect(checker.check(tool("Grep", "read"), { pattern: "sk-", path: join(HARNESS_HOME, "providers.json") }, "bypassPermissions", proj).behavior).toBe("deny");
     });
     test("a .git file (worktree pointer) asks before edits", () => {
         expect(checker.check(tool("Write", "edit"), { file_path: join(proj, ".git"), content: "gitdir: /tmp/x" }, "acceptEdits", proj).behavior).toBe("ask");

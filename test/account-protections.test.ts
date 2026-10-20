@@ -66,7 +66,9 @@ describe("CLI account folder protections", () => {
         expect(policy.readOnly).toContain(folder);
         expect(policy.unreadable).toContain(folder);
         expect(policy.readOnly).toContain(realpathSync(isolated.home));
-        expect(policy.unreadable).toContain(realpathSync(isolated.home));
+        // Only the secrets in it are unreadable, managed accounts included.
+        expect(policy.unreadable).toContain(join(realpathSync(isolated.home), "accounts"));
+        expect(policy.unreadable).not.toContain(realpathSync(isolated.home));
         const later = join(outside, "later");
         mkdirSync(later);
         saveAgentConfig("claude-code", { accounts: [{ id: "later", name: "Later", folder: later, managed: false }] });

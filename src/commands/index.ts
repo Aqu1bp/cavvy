@@ -12,7 +12,7 @@ import { formatDuration, type SelectItem } from "../ui/components";
 import { renderMarkdown } from "../ui/markdown";
 import { notificationMode, notifyAfterMs } from "../ui/notify";
 import { APP_TITLE, APP_VERSION, paths } from "../config/paths";
-import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, type Effort, type SettingsScope, type Settings } from "../config/settings";
+import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, sandboxSwitch, type Effort, type SettingsScope, type Settings } from "../config/settings";
 import { agentProjectConfig, isTrusted, trustedByUser, trustFolder } from "../config/trust";
 import { MODE_INFO, PERMISSION_MODES, parseMode, type PermissionMode } from "../permissions/modes";
 import { parseRule } from "../permissions/rules";
@@ -1547,7 +1547,7 @@ async function doctorCommand(app: App) {
     lines.push(Bun.which("git") ? ok("git found") : warn("git not found: git context and @-file completion are limited"));
     lines.push(Bun.which("rg") ? ok("ripgrep found (fast Grep)") : warn("ripgrep (rg) not found: Grep falls back to a slower built-in search"));
     const sandbox = sandboxKind();
-    if (app.settings.sandbox === false) lines.push(warn('The auto-mode sandbox is off ("sandbox": false): auto mode sends every shell command to its reviewer'));
+    if (sandboxSwitch(app.settings) === false) lines.push(warn('The auto-mode sandbox is off ("sandbox": false): auto mode sends every shell command to its reviewer'));
     else if (sandbox && sandboxEnabled(app.settings.sandbox)) lines.push(ok(`Auto mode runs shell commands in a sandbox (${sandbox === "seatbelt" ? "Seatbelt" : "bubblewrap, experimental"})`));
     else if (sandbox === "bwrap") lines.push(warn('bubblewrap is here, but the Linux sandbox is experimental and off unless "sandbox": true: auto mode sends every shell command to its reviewer'));
     else lines.push(warn(`No sandbox here${process.platform === "linux" ? " (install bubblewrap, and allow unprivileged user namespaces)" : ""}: auto mode sends every shell command to its reviewer`));

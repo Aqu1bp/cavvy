@@ -516,12 +516,11 @@ describe("sensitiveTarget", () => {
         }
     });
 
-    const globbed = ["cat .env*", "cat ~/.harness/*.json", "grep -r . ~/.harness"];
-    for (const cmd of globbed) {
-        test(`${JSON.stringify(cmd)} is sensitive`, () => {
-            expect(sensitiveTarget(cmd)).toBeDefined();
-        });
-    }
+    test("a glob over the harness home is sensitive when it reaches the secret files", () => {
+        writeFileSync(join(HARNESS_HOME, "providers.json"), "{}");
+        expect(sensitiveTarget("cat .env*")).toBeDefined();
+        expect(sensitiveTarget(`cat ${HARNESS_HOME}/*.json`, { cwd: HARNESS_HOME, harnessHome: HARNESS_HOME })).toBeDefined();
+    });
 });
 
 describe("suggestBashRules", () => {
