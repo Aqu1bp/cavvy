@@ -17,6 +17,7 @@ const settingsMod = await import("../src/config/settings");
 const { paths, projectStateDir } = await import("../src/config/paths");
 const { trustFolder, isTrusted } = await import("../src/config/trust");
 const { setKey } = await import("../src/auth/credentials");
+const { inline } = await import("../src/ui/markdown");
 const { ReadTool, WriteTool } = await import("../src/tools/file-tools");
 const { Session, listSessions, findSession } = await import("../src/agent/session");
 const { stopGroup, KillShellTool } = await import("../src/tools/bash");
@@ -661,8 +662,8 @@ describe("TUI input handling", () => {
 
 describe("live region layout", () => {
     function liveOf(app: InstanceType<typeof App>) {
-        let got = { lines: [] as string[], flow: 0 };
-        (app as any).screen.setLive = (lines: string[], flow = 0) => (got = { lines: lines.map(stripAnsi), flow });
+        let got = { lines: [] as string[] };
+        (app as any).screen.setLive = (lines: string[]) => (got = { lines: lines.map(stripAnsi) });
         App.prototype.renderLive.call(app);
         return got;
     }
@@ -679,7 +680,7 @@ describe("live region layout", () => {
         app.md = { pending: () => ["Let me look."] };
         app.active.set("a", tool("ls -la", "file1\nfile2"));
         app.active.set("b", tool("git status"));
-        const { lines, flow } = liveOf(app);
+        const { lines } = liveOf(app);
         const at = (s: string) => lines.findIndex((l) => l.includes(s));
         expect(lines[0]).toBe("");
         expect(lines[1]).toContain("Let me look.");
@@ -687,9 +688,6 @@ describe("live region layout", () => {
         expect(lines[at("file1") - 1]).toContain("ls -la");
         expect(lines[at("git status") - 1]).toBe("");
         expect(lines[at("esc to interrupt") - 1]).toBe("");
-        // The spinner and everything after it stay on the bottom rows; the rest follows the output.
-        expect(flow).toBe(at("esc to interrupt") - 1);
-        expect(lines.slice(0, flow).some((l) => l.includes("git status"))).toBe(true);
     });
 
     test("a sub-agent still working after the call that started it returned (Codex's spawn) shows until its turn ends", () => {
@@ -792,10 +790,39 @@ describe("live region layout", () => {
         await compact;
     });
 
-    test("when idle, only the prompt is shown, all of it on the bottom rows", () => {
+    test("thinking's markdown is styled, not shown as asterisks (Codex's summaries open with a **bold** title)", () => {
+        const { app, printed } = testApp();
+        const a = app as any;
+        a.settings = { ...a.settings, showThinking: true };
+        a.busy = true;
+        a.turnStart = Date.now();
+        a.thinking = "**Checking independent sources**\n\nComparing `a.ts` with *b*.";
+        const { lines } = liveOf(app);
+        expect(lines.some((l) => l.includes("✻ Checking independent sources"))).toBe(true);
+        expect(lines.join("\n")).not.toContain("**");
+        expect(lines.join("\n")).toContain("Comparing a.ts with b.");
+        a.flushThinking();
+        const shown = printed.map(stripAnsi).join("\n");
+        expect(shown).toContain("✻ Checking independent sources");
+        expect(shown).not.toContain("**");
+        // A link is its text and URL, never a terminal hyperlink that a cut-short block could leave open.
+        printed.length = 0;
+        a.thinking = `See [the docs ${"word ".repeat(200)}](https://example.com/docs).`;
+        a.flushThinking();
+        expect(printed.join("\n")).not.toContain("\x1b]8;");
+        expect(printed.map(stripAnsi).join(" ")).toContain("(https://example.com/docs)");
+        expect(inline("[docs](https://example.com/docs)", true)).toContain("\x1b]8;;https://example.com/docs");
+        // Nor one the model's text holds itself.
+        printed.length = 0;
+        a.thinking = `\x1b]8;;https://example.com\x1b\\${"word ".repeat(2000)}\x1b]8;;\x1b\\ \x1b[31mred`;
+        a.flushThinking();
+        expect(printed.join("\n")).not.toContain("\x1b]8;");
+        expect(printed.join("\n")).not.toContain("\x1b[31m");
+    });
+
+    test("when idle, only the prompt is shown", () => {
         const { app } = testApp();
-        const { lines, flow } = liveOf(app);
-        expect(flow).toBe(0);
+        const { lines } = liveOf(app);
         expect(lines[0]).toBe("");
         expect(lines.some((l) => l.includes("esc to interrupt"))).toBe(false);
     });

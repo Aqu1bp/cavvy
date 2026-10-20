@@ -1,7 +1,7 @@
 // Terminal renderer. The harness takes over the whole window: output fills it
-// from the top and the "live region" (streaming text and running tools right
-// after the output; spinner, prompt, dialogs and footer pinned to the bottom)
-// is redrawn in place. Finished
+// from the top and the "live region" (streaming text, running tools, spinner,
+// prompt, dialogs and footer) follows it with no gap, redrawn in place; the
+// rows it doesn't need stay empty below it. Finished
 // output scrolls into the terminal's own scrollback, so scrolling, selecting
 // and copying work as usual (no alternate screen).
 //
@@ -43,17 +43,13 @@ export interface Entry {
 
 export class Screen {
     private live: string[] = [];
-    /** Leading live lines that go right after the output, before the gap. */
-    private liveFlow = 0;
-    /** Rows the live region (with its gap) occupies on screen right now. */
+    /** Rows the live region occupies on screen right now. */
     private liveRows = 0;
     private log: Entry[] = [];
     /** Printed but not drawn yet. */
     private pending: Entry[] = [];
     /** Screen row (0-based) the live region starts on, right after the output. */
     private top = 0;
-    /** Fill the space below the output so the live region sits at the bottom. */
-    private pinned = true;
     private scheduled = false;
     private redrawPending = false;
     private resizeTimer?: ReturnType<typeof setTimeout>;
@@ -79,7 +75,6 @@ export class Screen {
         this.resizeHandler = onResize;
         if (!this.interactive || this.started) return;
         this.started = true;
-        this.pinned = true;
         process.stdin.setRawMode(true);
         process.stdin.setEncoding("utf8");
         process.stdin.on("data", this.dataListener);
@@ -96,8 +91,6 @@ export class Screen {
         if (!this.started) return;
         clearTimeout(this.resizeTimer);
         this.redrawPending = false;
-        // No gap below the output: the shell prompt goes right after it.
-        this.pinned = false;
         this.flushNow();
         this.setFocusReporting(false);
         this.started = false;
@@ -214,16 +207,12 @@ export class Screen {
     }
 
     /**
-     * The live region. Its first `flow` lines continue the output (a reply
-     * still streaming, a running tool); the blank space that keeps the rest
-     * on the bottom rows goes after them.
+     * The live region, right after the output: when it grows (a spinner, a running tool) it takes
+     * the empty rows below it, and when it shrinks the prompt moves back up to the output.
      */
-    setLive(lines: string[], flow = 0) {
+    setLive(lines: string[]) {
         // One entry per terminal row, or the redraw loses track of the region's height.
-        const split = (ls: string[]) => ls.flatMap((l) => sanitizeLine(l).split("\n"));
-        const head = split(lines.slice(0, flow));
-        this.live = [...head, ...split(lines.slice(flow))];
-        this.liveFlow = head.length;
+        this.live = lines.flatMap((l) => sanitizeLine(l).split("\n"));
         this.schedule();
     }
 
@@ -265,22 +254,11 @@ export class Screen {
         return rows;
     }
 
-    /**
-     * The live region, starting on screen row `from` (0-based), with blank rows
-     * after its flowing part so it ends on the last row. Records where it landed.
-     */
+    /** The live region, starting on screen row `from` (0-based). Records where it landed. */
     private drawLive(from: number, cols: number, rows: number): string {
-        let live = this.live;
-        let flow = this.liveFlow;
         // Keep it within the screen so we can always move back to its top.
-        if (live.length > rows - 1) {
-            const cut = live.length - (rows - 1);
-            live = live.slice(cut);
-            flow = Math.max(0, flow - cut);
-        }
-        const fitted = live.map((l) => (width(l) > cols - 1 ? truncate(l, cols - 1) : l));
-        const gap = this.pinned && fitted.length ? Math.max(0, rows - from - fitted.length) : 0;
-        const block = [...fitted.slice(0, flow), ...Array<string>(gap).fill(""), ...fitted.slice(flow)];
+        const live = this.live.length > rows - 1 ? this.live.slice(this.live.length - (rows - 1)) : this.live;
+        const block = live.map((l) => (width(l) > cols - 1 ? truncate(l, cols - 1) : l));
         // Rows past the bottom scroll the screen up.
         const scrolled = Math.max(0, from + block.length - rows);
         this.top = from - scrolled;
