@@ -369,6 +369,19 @@ describe("permissions", () => {
         }
         expect(opened.filter((p) => p.endsWith("key.png") || p.endsWith("shot.png"))).toEqual([]);
     });
+    test("a paste naming refused files stays exactly as it came, with the reasons", async () => {
+        const cwd = tempDir();
+        writeFileSync(join(cwd, "a.png"), "not an image");
+        writeFileSync(join(cwd, "b.png"), "not an image");
+        const { app, notices } = newApp(cwd);
+        app.settings = { ...app.settings, permissions: { deny: ["Read(*.png)"] } };
+        const text = "  a.png\n\n  b.png\n";
+        paste(app, text);
+        await settle(app);
+        expect(app.editor.attachedImages()).toEqual([]);
+        expect(value(app)).toBe(text);
+        expect(notices.join("\n")).toContain("Can't attach a.png");
+    });
     test("a mentioned symlink into a denied folder isn't read", async () => {
         const { cwd, link } = project();
         const r = await expandMentions(`look @${link} and @secrets/key.png`, state(cwd), [cwd], checker(cwd, ["Read(secrets/**)"]));
