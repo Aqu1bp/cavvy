@@ -931,7 +931,7 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        if (!rt.idle) return this.unloadLater(id);
+        if (!rt.idle || rt.scheduled) return this.unloadLater(id);
         void this.unload(rt);
     }
 

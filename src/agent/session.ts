@@ -314,7 +314,8 @@ export class Session {
 
     /** Saves the durable ones of these jobs, when they changed. */
     setSchedules(jobs: ScheduledJob[]) {
-        const durable = jobs.filter((j) => j.durable).map(({ due: _due, dueAt: _dueAt, ...j }) => j);
+        // What it is, not how it's going: a line per change, not per run (a recurring job's next run comes from its cron).
+        const durable = jobs.filter((j) => j.durable).map(({ due: _due, dueAt: _dueAt, runs: _runs, lastRunAt: _last, nextAt, ...j }) => ({ ...j, runs: 0, ...(j.recurring ? {} : { nextAt }) }));
         const text = JSON.stringify(durable);
         if (text === this.savedSchedules) return;
         this.savedSchedules = text;

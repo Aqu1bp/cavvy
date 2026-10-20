@@ -239,7 +239,8 @@ export class Scheduler {
     /** The soonest run of any job that isn't paused. */
     get nextAt(): number | undefined {
         let next: number | undefined;
-        for (const j of this.jobs) if (!j.paused && j.nextAt !== undefined && (next === undefined || j.nextAt < next)) next = j.nextAt;
+        // A due job waits for the session, not for a time.
+        for (const j of this.jobs) if (!j.paused && !j.due && j.nextAt !== undefined && (next === undefined || j.nextAt < next)) next = j.nextAt;
         return next;
     }
 
@@ -326,7 +327,11 @@ export class Scheduler {
         if (!paused) {
             // From now: no burst of what it would have run meanwhile.
             const now = this.clock.now();
-            if (j.nextAt === undefined || j.nextAt <= now) j.nextAt = j.kind === "loop" ? now + j.everyMs! : j.kind === "cron" ? this.following(j, now) : now;
+            if (!j.recurring && j.nextAt !== undefined && j.nextAt <= now) {
+                // A one-shot whose time passed while paused runs now (its next match could be a year away).
+                j.due = true;
+                j.dueAt = now;
+            } else if (j.nextAt === undefined || j.nextAt <= now) j.nextAt = j.kind === "loop" ? now + j.everyMs! : j.kind === "cron" ? this.following(j, now) : now;
         }
         this.update();
         return { ...j };
@@ -344,9 +349,9 @@ export class Scheduler {
     }
 
     /**
-     * Jobs saved with a session, as it opens again. What a recurring job missed
-     * while the app was closed is skipped; a one-shot that came due runs now if
-     * it's under a day late.
+     * Jobs saved with a session, as it opens again. A recurring job picks up at
+     * its next run (what it would have run while the app was closed is
+     * skipped); a one-shot that came due runs now if it's under a day late.
      */
     restore(saved: ScheduledJob[]) {
         const now = this.clock.now();
@@ -359,12 +364,10 @@ export class Scheduler {
                 notes.push(`The schedule "${clip(j.prompt)}" expired while ${appClosed} and was removed.`);
                 continue;
             }
-            if (j.nextAt !== undefined && j.nextAt <= now && !j.paused) {
-                if (j.recurring) {
-                    const missed = this.missedRuns(j, now);
-                    j.nextAt = this.following(j, now);
-                    if (missed) notes.push(`"${clip(j.prompt)}" missed ${missed === 1 ? "a run" : `${missed}${missed >= 100 ? "+" : ""} runs`} while ${appClosed}; it runs next ${shortTime(j.nextAt ?? now, now)}.`);
-                } else if (now - j.nextAt <= LATE_ONE_SHOT_MS) {
+            // Saved without its next run (that changes every run): from now.
+            if (j.recurring) j.nextAt = j.paused ? undefined : this.following(j, now);
+            else if (j.nextAt !== undefined && j.nextAt <= now && !j.paused) {
+                if (now - j.nextAt <= LATE_ONE_SHOT_MS) {
                     j.due = true;
                     j.dueAt = j.nextAt;
                     notes.push(`"${clip(j.prompt)}" was due ${shortTime(j.nextAt, now)} while ${appClosed}; running it now.`);
@@ -377,16 +380,6 @@ export class Scheduler {
         }
         for (const n of notes) this.host.notice?.(n, "info");
         this.update();
-    }
-
-    private missedRuns(j: ScheduledJob, now: number): number {
-        let n = 0;
-        let t = j.nextAt;
-        while (t !== undefined && t <= now && n < 100) {
-            n++;
-            t = this.following(j, t);
-        }
-        return n;
     }
 
     /** The session may be idle now (a turn ended, a dialog closed): run what's due. */
@@ -411,7 +404,8 @@ export class Scheduler {
             if (j.nextAt !== undefined && j.nextAt <= now) {
                 if (!j.due) j.dueAt = j.nextAt;
                 j.due = true;
-                j.nextAt = expired ? undefined : j.recurring ? this.following(j, now) : undefined;
+                // A one-shot keeps its time until it runs, so one saved while it waits still runs when the session opens again.
+                j.nextAt = expired ? undefined : j.recurring ? this.following(j, now) : j.nextAt;
                 changed = true;
             }
             if (expired && !j.due) {

@@ -69,8 +69,8 @@ export interface ScheduleHostOptions {
     settings: () => Settings;
     /** Nothing in the way of a new turn. */
     idle: () => boolean;
-    /** Start the prompt as a turn; `label` says it's scheduled ("every 10m"). */
-    run: (prompt: string, job: ScheduledJob, label: string) => void;
+    /** Start the prompt as a turn; `label` says it's scheduled ("every 10m"). Settles once it's over (or never started). */
+    run: (prompt: string, job: ScheduledJob, label: string) => Promise<unknown> | void;
     notice: (text: string, level?: "info" | "warn") => void;
     /** After any change, for the UI. */
     changed?: () => void;
@@ -79,8 +79,14 @@ export interface ScheduleHostOptions {
     index?: boolean;
 }
 
+export const NO_SCHEDULES = 'No schedules. /loop 5m <prompt> runs one every 5 minutes, or ask for one ("every weekday at 9, run the tests").';
+
+export type ScheduleAction = "pause" | "resume" | "run" | "delete";
+
 export class SessionSchedules {
     readonly scheduler: Scheduler;
+    /** A scheduled prompt is being started or run: the next waits for it, even before the host says it's busy. */
+    private running = false;
     /** Resumes since a turn last finished: they stop after MAX_RESUMES. */
     private resumes = 0;
     private clock: Clock;
@@ -89,7 +95,7 @@ export class SessionSchedules {
         this.clock = o.clock ?? realClock;
         this.scheduler = new Scheduler(
             {
-                idle: () => o.idle(),
+                idle: () => !this.running && o.idle(),
                 fire: (job) => this.fire(job),
                 changed: (jobs) => this.save(jobs),
                 notice: (text, level) => o.notice(text, level),
@@ -132,7 +138,21 @@ export class SessionSchedules {
     private fire(job: ScheduledJob) {
         if (job.kind === "resume") this.resumes++;
         const label = job.kind === "resume" ? "Resuming after the usage limit reset" : `Scheduled (${describeJob(job)})`;
-        this.o.run(job.prompt, job, label);
+        this.running = true;
+        let run: Promise<unknown> | void;
+        try {
+            run = this.o.run(job.prompt, job, label);
+        } finally {
+            // Over already (or failed to start): nothing to wait for.
+            if (!run) this.running = false;
+        }
+        if (run)
+            void run
+                .catch(() => undefined)
+                .finally(() => {
+                    this.running = false;
+                    this.poke();
+                });
     }
 
     /** The session may be idle now. */
@@ -216,10 +236,16 @@ export class SessionSchedules {
         const [, verb, id] = m;
         const v = verb!.toLowerCase();
         const idle = this.o.idle();
-        const j = v === "pause" || v === "resume" ? this.scheduler.setPaused(id!, v === "pause") : v === "run" ? this.scheduler.runNow(id!) : this.scheduler.remove(id!);
+        const j = this.act(id!, v === "remove" || v === "rm" ? "delete" : (v as ScheduleAction));
         if (!j) return { text: `No schedule ${id}.`, level: "error" };
         const what = `${describeJob(j)}: ${clipPrompt(j.prompt, 50)}`;
         return { text: v === "pause" ? `Paused ${what}` : v === "resume" ? `Resumed ${what}${j.nextAt ? `; next ${shortTime(j.nextAt)}` : ""}` : v === "run" ? `Running ${what}${idle ? "" : " once the current turn ends"}` : `Deleted ${what}` };
+    }
+
+    /** One schedule's pause, resume, run now or delete; undefined when there's no such schedule. */
+    act(id: string, action: ScheduleAction): ScheduledJob | undefined {
+        const s = this.scheduler;
+        return action === "pause" || action === "resume" ? s.setPaused(id, action === "pause") : action === "run" ? s.runNow(id) : s.remove(id);
     }
 
     dispose() {

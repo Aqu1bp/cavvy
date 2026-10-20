@@ -62,7 +62,7 @@ function host(opts: { settings?: Settings; session?: Session; busy?: boolean } =
         session: () => session,
         settings: () => opts.settings ?? {},
         idle: () => !busy,
-        run: (prompt, _job, label) => runs.push({ prompt, label }),
+        run: (prompt, _job, label) => void runs.push({ prompt, label }),
         notice: (t) => notices.push(t),
         clock,
         index: false,
@@ -290,6 +290,55 @@ describe("saved with the session", () => {
         expect(f.schedules).toEqual([]);
         s.release();
         f.release();
+    });
+});
+
+describe("scheduled runs never overlap", () => {
+    test("the next due job waits for the first one's run to settle, even before the host is busy", async () => {
+        const clock = new FakeClock(Date.now());
+        const started: string[] = [];
+        let finish!: () => void;
+        const h = new SessionSchedules({
+            session: () => Session.create(home, { persist: false }),
+            settings: () => ({}),
+            // The host never says it's busy: only the scheduler's own guard holds the second one back.
+            idle: () => true,
+            run: (prompt) => {
+                started.push(prompt);
+                return new Promise<void>((r) => (finish = r));
+            },
+            notice: () => {},
+            clock,
+            index: false,
+        });
+        h.loop("5m a");
+        h.loop("5m b");
+        clock.advance(0);
+        clock.advance(0);
+        expect(started).toEqual(["a"]);
+        finish();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(started).toEqual(["a", "b"]);
+        h.dispose();
+    });
+});
+
+describe("the session file", () => {
+    test("a line when a schedule changes, not every time one runs", () => {
+        const cwd = mkdtempSync(join(home, "proj-"));
+        const session = Session.create(cwd);
+        session.push({ role: "user", content: [{ type: "text", text: "hi" }] });
+        const x = host({ session });
+        createSchedule(x.h.scheduler, { cron: "* * * * *", prompt: "tick", durable: true });
+        const count = () => readFileSync(session.path, "utf-8").split("\n").filter((l) => l.includes('"t":"schedules"')).length;
+        const before = count();
+        x.clock.advance(30 * MIN);
+        expect(x.runs.length).toBe(30);
+        expect(count()).toBe(before);
+        x.h.manage(`pause ${x.h.scheduler.list()[0]!.id}`);
+        expect(count()).toBe(before + 1);
+        session.release();
     });
 });
 

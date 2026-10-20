@@ -233,6 +233,16 @@ describe("Scheduler", () => {
         expect(fired.length).toBe(1);
     });
 
+    test("resuming a paused one-shot whose time passed runs it now", () => {
+        const { s, clock, fired } = setup(new Date(2026, 9, 20, 8, 0).getTime());
+        const j = s.add({ kind: "cron", prompt: "remind", cron: "30 8 20 10 *", recurring: false });
+        s.setPaused(j.id, true);
+        clock.advance(2 * HOUR);
+        expect(fired.length).toBe(0);
+        s.setPaused(j.id, false);
+        expect(fired.map((x) => x.prompt)).toEqual(["remind"]);
+    });
+
     test("run now runs it (even paused) and keeps its schedule", () => {
         const { s, clock, fired } = setup();
         const j = s.add({ kind: "cron", prompt: "x", cron: "0 9 * * 1-5" });
@@ -314,13 +324,27 @@ describe("restore (durable jobs, the app was closed)", () => {
         return { id: "abcd1234", kind: "cron", prompt: "standup", cron: "0 9 * * *", recurring: true, durable: true, createdAt: 0, runs: 0, ...over };
     }
 
-    test("a recurring job skips what it missed and says so", () => {
+    test("a recurring job picks up at its next run: nothing it missed runs", () => {
         const start = new Date(2026, 9, 20, 12, 0).getTime();
-        const { s, fired, notices } = setup(start);
-        s.restore([savedJob({ createdAt: start - 3 * DAY, expiresAt: start + 4 * DAY, nextAt: new Date(2026, 9, 18, 9, 0).getTime() })]);
+        const { s, fired } = setup(start);
+        s.restore([savedJob({ createdAt: start - 3 * DAY, expiresAt: start + 4 * DAY })]);
         expect(fired.length).toBe(0);
-        expect(notices[0]).toMatch(/missed 3 runs/);
         expect(new Date(s.list()[0]!.nextAt!).getDate()).toBe(21);
+    });
+
+    test("a one-shot that came due while busy, saved before it ran, still runs when the session opens", () => {
+        const a = setup(new Date(2026, 9, 20, 8, 0).getTime());
+        a.setBusy(true);
+        a.s.add({ kind: "cron", prompt: "remind", cron: "30 8 20 10 *", recurring: false, durable: true });
+        a.clock.advance(HOUR);
+        const saved = a.saved.at(-1)!;
+        expect(saved[0]!.due).toBe(true);
+        expect(saved[0]!.nextAt).toBeDefined();
+        // No timer spinning for it while the session is busy.
+        expect([...a.clock.timers.values()].every((t) => t.at - a.clock.t >= MIN)).toBe(true);
+        const b = setup(a.clock.t + HOUR);
+        b.s.restore(saved.map(({ due: _d, dueAt: _a, ...j }) => j));
+        expect(b.fired.map((j) => j.prompt)).toEqual(["remind"]);
     });
 
     test("a one-shot under a day late runs now; over a day late is dropped", () => {

@@ -1298,9 +1298,9 @@ export interface Methods {
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
     /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
-    /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     /** One of the session's schedules: pause, resume, run now, or delete. `found` false: it's gone already. */
     "session.schedule": { params: { id: string; scheduleId: string; action: "pause" | "resume" | "run" | "delete" }; result: { found: boolean } };
+    /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     /** "Send now": steer the running turn with it, or run it now if none is running. `sent` false: it had already gone. */
     "session.sendQueuedNow": { params: { id: string; queueId: number }; result: { sent: boolean; started?: boolean } };

@@ -3,7 +3,7 @@
 // sent to every GUI window that has the session open. The terminal app does
 // the same work in ui/app.ts; this is its counterpart without a terminal.
 
-import { SessionSchedules } from "../agent/schedule-host";
+import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
@@ -417,21 +417,16 @@ export class Runtime {
         return !this.closed && !this.busy && !this.pending.size && !this.switching && !this.committing && !this.queued.length && Boolean(this.agent);
     }
 
-    private runScheduled(prompt: string, label: string) {
+    private runScheduled(prompt: string, label: string): Promise<unknown> {
         this.scheduledLabel = label;
-        void this.dispatch(prompt)
+        return this.dispatch(prompt)
             .catch((e) => this.notice(redact((e as Error).message), "error"))
-            .finally(() => {
-                this.scheduledLabel = undefined;
-                this.schedules.poke();
-            });
+            .finally(() => (this.scheduledLabel = undefined));
     }
 
     /** session.schedule: one of the composer's schedule buttons. */
-    scheduleAction(scheduleId: string, action: "pause" | "resume" | "run" | "delete"): boolean {
-        const s = this.schedules.scheduler;
-        const j = action === "pause" || action === "resume" ? s.setPaused(scheduleId, action === "pause") : action === "run" ? s.runNow(scheduleId) : s.remove(scheduleId);
-        return Boolean(j);
+    scheduleAction(scheduleId: string, action: ScheduleAction): boolean {
+        return Boolean(this.schedules.act(scheduleId, action));
     }
 
     /** Claude Code or Codex: an agent backend runs this session's turns. */
@@ -2004,7 +1999,7 @@ export class Runtime {
     /** /schedules in the GUI: the composer shows them too, with buttons. */
     private scheduleList(): string {
         const jobs = this.schedules.scheduler.list();
-        if (!jobs.length) return "No schedules. /loop 5m <prompt> runs one every 5 minutes, or ask for one (\"every weekday at 9, run the tests\").";
+        if (!jobs.length) return NO_SCHEDULES;
         return ["Schedules (pause, run or delete them above the message box):", ...jobs.map((j) => `• ${jobLine(j)}`)].join("\n");
     }
 
@@ -2581,10 +2576,14 @@ export class Runtime {
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
         if (this.busy || this.committing || this.nextQueued() || this.pending.size || this.switching) return false;
-        // Schedules run only while it's loaded: one that will run keeps it open.
-        if (this.schedules.scheduler.active || this.schedules.scheduler.list().some((j) => j.due)) return false;
         if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
+    }
+
+    /** Schedules run only while it's loaded: one that will run keeps it open with no window on it (it isn't busy, though). */
+    get scheduled(): boolean {
+        const s = this.schedules.scheduler;
+        return s.active > 0 || s.list().some((j) => j.due);
     }
 
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */

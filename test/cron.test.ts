@@ -163,6 +163,14 @@ describe("nextRun", () => {
         expect(local(nextRun(c, second))).toBe("2026-11-01 02:30");
     });
 
+    test("fall back: hourly by range, or every few minutes in a fixed hour, keeps running through the repeat", () => {
+        const all = runs("0 0-23 * * *", at(2026, 11, 1, 0, 30), 3);
+        expect(all).toEqual(["2026-11-01 01:00", "2026-11-01 01:00", "2026-11-01 02:00"]);
+        const quarter = runs("*/15 1 * * *", at(2026, 11, 1, 0, 50), 8);
+        expect(quarter.length).toBe(8);
+        expect(quarter.every((r) => r.startsWith("2026-11-01 01:"))).toBe(true);
+    });
+
     test("never matching within 5 years: undefined", () => {
         // Feb 29 on a Monday only, restricted both ways, still matches Feb 29 or Mondays in Feb: fine.
         expect(nextRun(parseCron("0 0 29 2 1"), at(2026, 3, 1))).toBeDefined();

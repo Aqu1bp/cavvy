@@ -228,14 +228,11 @@ export class App {
         return !this.busy && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session);
     }
 
-    private runScheduled(prompt: string, label: string) {
+    private runScheduled(prompt: string, label: string): Promise<unknown> {
         // A line of its own, so it doesn't read as part of the answer before it.
         this.print(["", theme.muted(`⏱ ${label}`)]);
         this.scheduledTurn = true;
-        void this.submitText(prompt).finally(() => {
-            this.scheduledTurn = false;
-            this.schedules.poke();
-        });
+        return this.submitText(prompt).finally(() => (this.scheduledTurn = false));
     }
 
     get cwd(): string {

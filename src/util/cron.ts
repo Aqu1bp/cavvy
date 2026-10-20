@@ -18,6 +18,8 @@ export interface Cron {
     anyDay: boolean;
     anyWeekday: boolean;
     anyHour: boolean;
+    /** The minute field has a `*` in it (every minute, or a step): not one fixed time. */
+    anyMinute: boolean;
 }
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -116,6 +118,7 @@ export function parseCron(expr: string): Cron {
         anyDay: d!.any,
         anyWeekday: w!.any,
         anyHour: h!.any,
+        anyMinute: parts[0]!.includes("*"),
     };
     // Feb 30, Apr 31: a day that no chosen month has.
     if (cron.anyWeekday && !cron.anyDay) {
@@ -126,8 +129,13 @@ export function parseCron(expr: string): Cron {
 }
 
 function dayMatches(c: Cron, d: Date): boolean {
-    const dom = c.days.has(d.getDate());
-    const dow = c.weekdays.has(d.getDay());
+    return daysMatch(c, d.getDate(), d.getDay());
+}
+
+/** Both day fields restricted: either matching counts; one `*`: only the other one. */
+function daysMatch(c: Cron, date: number, weekday: number): boolean {
+    const dom = c.days.has(date);
+    const dow = c.weekdays.has(weekday);
     if (c.anyDay && c.anyWeekday) return true;
     if (c.anyDay) return dow;
     if (c.anyWeekday) return dom;
@@ -143,12 +151,7 @@ function wall(d: Date): number {
 function wallMatches(c: Cron, w: number): boolean {
     const u = new Date(w * 60_000);
     if (!c.months.has(u.getUTCMonth() + 1) || !c.minutes.has(u.getUTCMinutes()) || !c.hours.has(u.getUTCHours())) return false;
-    const dom = c.days.has(u.getUTCDate());
-    const dow = c.weekdays.has(u.getUTCDay());
-    if (c.anyDay && c.anyWeekday) return true;
-    if (c.anyDay) return dow;
-    if (c.anyWeekday) return dom;
-    return dom || dow;
+    return daysMatch(c, u.getUTCDate(), u.getUTCDay());
 }
 
 const MINUTE = 60_000;
@@ -183,8 +186,8 @@ export function nextRun(c: Cron, after: number): number | undefined {
             t += MINUTE;
             continue;
         }
-        // The repeated hour after clocks go back: a fixed time already ran an hour ago.
-        if (!c.anyHour && wall(new Date(t - 3_600_000)) === nowWall) {
+        // The repeated hour after clocks go back: a fixed time (not every few minutes, not every hour) already ran an hour ago.
+        if (!c.anyMinute && c.hours.size < 24 && wall(new Date(t - 3_600_000)) === nowWall) {
             t += MINUTE;
             continue;
         }

@@ -67,6 +67,7 @@ import { account, addAccount, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
 import { describeJob, shortTime } from "../agent/schedule";
+import { NO_SCHEDULES } from "../agent/schedule-host";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
@@ -1788,7 +1789,7 @@ async function schedulesCommand(app: App, args: string) {
     while (true) {
         const jobs = app.schedules.scheduler.list();
         if (!jobs.length) {
-            app.notice("No schedules. /loop 5m <prompt> runs one every 5 minutes, or ask for one (\"every weekday at 9, run the tests\").");
+            app.notice(NO_SCHEDULES);
             return;
         }
         const now = Date.now();
