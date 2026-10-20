@@ -672,3 +672,23 @@ describe("stopped while compacting", () => {
         expect(a.session.notices).toEqual([]);
     });
 });
+
+test("a failed Edit replays from disk with no diff, as it has none live; a successful one keeps its diff", () => {
+    const call = (id: string) => ({ type: "tool_call", id, name: "Edit", input: { file_path: "/w/a.ts", old_string: "foo", new_string: "bar" } });
+    const result = (id: string, isError: boolean) => ({ type: "tool_result", toolCallId: id, toolName: "Edit", content: isError ? "String to replace not found in file." : "Edited /w/a.ts", isError });
+    const msgs: any[] = [
+        { role: "user", content: [{ type: "text", text: "fix a.ts" }] },
+        reply([call("c1")], "tool_use"),
+        { role: "user", meta: { kind: "tool_results" }, content: [result("c1", true)] },
+        reply([call("c2")], "tool_use"),
+        { role: "user", meta: { kind: "tool_results" }, content: [result("c2", false)] },
+        text("Done on the second try."),
+    ];
+    let n = 0;
+    const turns = replay({ segments: [{ messages: msgs }] as any, current: msgs, ui: new UiLog(join(tempDir(), "x.jsonl"), "x", false), meta: (c) => ({ title: c.name, category: "edit" }), newId: () => `i${++n}` });
+    const [failed, applied] = turns[0]!.blocks.filter((b: any) => b.t === "tool") as any[];
+    expect(failed.status).toBe("error");
+    expect(failed.diff).toBeUndefined();
+    expect(applied.status).toBe("ok");
+    expect(applied.diff).toMatchObject({ added: 1, removed: 1 });
+});
