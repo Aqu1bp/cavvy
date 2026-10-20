@@ -34,7 +34,7 @@ import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitBranch } from "../util/git";
-import { redact, lineRedactor } from "../util/redact";
+import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
@@ -1963,7 +1963,8 @@ export class Runtime {
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
-                prompt.slice(0, 3000),
+                // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
+                redactPrefix(prompt, 3000),
                 AbortSignal.timeout(20_000),
             );
             title = raw

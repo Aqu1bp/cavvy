@@ -930,6 +930,23 @@ describe("connecting", () => {
         }
     });
 
+    test("the title request is redacted before it's cut, so a secret across the 3000-character cut doesn't reach the title model", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const { engine, rt } = await engineWithSession();
+        const secret = "zq7Xv9Lr2Wm4Kp8Tq0Jd5Hs3Nb6Yc1Fe";
+        try {
+            registerSecret(secret, "TS");
+            const before = mock.requests.length;
+            await (rt as any).generateTitle(`explain ${"x".repeat(2990 - 8)}${secret} and more`);
+            const sent = mock.requests.slice(before).filter((r) => r.kind === "title");
+            expect(sent).toHaveLength(1);
+            for (let i = 0; i + 6 <= secret.length; i++) expect(sent[0]!.body).not.toContain(secret.slice(i, i + 6));
+        } finally {
+            unregisterSecret(secret);
+            await engine.stop();
+        }
+    });
+
     test("a title that fails every try comes from the first prompt that said something, and each failure is logged", async () => {
         const logged: string[] = [];
         const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
