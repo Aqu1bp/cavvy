@@ -19,6 +19,7 @@
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
+//   "schedule"       schedules the test suite for weekday mornings (CronCreate)
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -194,6 +195,10 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         const todos = (done: number) => ["Read the auth module", "Add the SSO strategy", "Run the tests"].map((content, i) => ({ content, status: i < done ? "completed" : i === done ? "in_progress" : "pending", activeForm: content.replace(/^(\w+)/, (w) => `${w}ing`.replace("eing", "ing")) }));
         if (toolRounds < 3) return { text: toolRounds === 0 ? "I'll track this as a short list." : undefined, calls: [{ name: "TodoWrite", args: { todos: todos(toolRounds) } }] };
         return { text: "All three steps are done." };
+    }
+    if (/\bschedule\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll set that up.", calls: [{ name: "CronCreate", args: { cron: "57 8 * * 1-5", prompt: "Run the test suite and summarize any failures", durable: true } }] };
+        return { text: `Done: the test suite runs on weekday mornings at 8:57. ${lastResult.match(/Next run: [^.]*/)?.[0] ?? ""}. It's saved with this session, and recurring schedules stop after 7 days.` };
     }
     // Starts a background command, then waits a moment and checks it in one response (the check queues behind the wait).
     if (/\bwaitcheck\b/.test(p)) {

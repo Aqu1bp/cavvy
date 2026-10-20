@@ -23,6 +23,9 @@ import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
+import { SessionSchedules } from "../agent/schedule-host";
+import { CRON_TOOLS } from "../agent/schedule-tools";
+import { shortTime } from "../agent/schedule";
 import { appendPromptHistory, loadPromptHistory } from "../agent/session";
 import { rewindTargets } from "../agent/checkpoints";
 import { buildSystemPrompt } from "../agent/system-prompt";
@@ -203,7 +206,36 @@ export class App {
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
         this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
+        this.schedules = new SessionSchedules({
+            session: () => this.session,
+            settings: () => this.settings,
+            idle: () => this.schedulable(),
+            run: (prompt, _job, label) => this.runScheduled(prompt, label),
+            notice: (text, level) => this.notice(text, level),
+            changed: () => this.renderLive(),
+        });
+        this.toolState.scheduler = this.schedules.scheduler;
         this.editor.setHistory(loadPromptHistory(init.cwd));
+    }
+
+    /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
+    readonly schedules: SessionSchedules;
+    /** The next turn to start is a schedule's, not the user's. */
+    private scheduledTurn = false;
+
+    /** A scheduled prompt may start now: nothing running, waiting, or being set up. */
+    private schedulable(): boolean {
+        return !this.busy && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session);
+    }
+
+    private runScheduled(prompt: string, label: string) {
+        // A line of its own, so it doesn't read as part of the answer before it.
+        this.print(["", theme.muted(`⏱ ${label}`)]);
+        this.scheduledTurn = true;
+        void this.submitText(prompt).finally(() => {
+            this.scheduledTurn = false;
+            this.schedules.poke();
+        });
     }
 
     get cwd(): string {
@@ -255,6 +287,7 @@ export class App {
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
+        this.schedules.restore();
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
         void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
 
@@ -273,6 +306,7 @@ export class App {
     async exit(code = 0) {
         if (this.exiting) return;
         this.exiting = true;
+        this.schedules.dispose();
         this.abort?.abort();
         const disposed = this.agent?.dispose();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
@@ -537,7 +571,7 @@ export class App {
         const native = this.nativeSearch();
         const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off"));
         const skill = skillTool(this.skills);
-        return [...builtin, ...(skill ? [skill] : []), ...this.mcp.tools()];
+        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.mcp.tools()];
     }
 
     makeAgent() {
@@ -631,6 +665,7 @@ export class App {
         this.toolState.secrets?.clear();
         this.checker.resetSession();
         this.makeAgent();
+        this.schedules.switchSession();
         this.sessionSwitched(prev, "clear");
     }
 
@@ -653,8 +688,11 @@ export class App {
         if (this.agent) this.makeAgent();
         this.replayTranscript();
         this.restoreSavedQueue();
-        // At startup, run() fires SessionStart.
-        if (prev) this.sessionSwitched(prev, "resume");
+        // At startup, run() fires SessionStart (and restores its schedules).
+        if (prev) {
+            this.schedules.switchSession();
+            this.sessionSwitched(prev, "resume");
+        }
     }
 
     /** /clear or /resume: SessionEnd for the old session, then SessionStart for the new one. */
@@ -1041,6 +1079,7 @@ export class App {
                 const next = this.dialogQueue.shift();
                 if (next) this.dialogs.push(next);
                 this.renderLive();
+                if (!next) this.schedules.poke();
             });
         }
         this.renderLive();
@@ -1727,6 +1766,9 @@ export class App {
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
+        // The user's own turn: a resume waiting for the usage limit isn't needed.
+        if (!this.scheduledTurn) this.schedules.userSent();
+        this.scheduledTurn = false;
         const ac = (this.abort = new AbortController());
         this.turnStart = Date.now();
         this.turnTokens = 0;
@@ -1774,9 +1816,13 @@ export class App {
             this.renderLive();
         }
         if (reason) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
-        if (ac.signal.aborted) return this.returnQueued();
+        if (reason) this.schedules.turnEnded(reason, agent.limitStop);
+        if (ac.signal.aborted) {
+            this.returnQueued();
+            return this.schedules.poke();
+        }
         const next = this.nextQueued();
-        if (next === undefined) return;
+        if (next === undefined) return this.schedules.poke();
         this.queued.shift();
         this.queueUpdated();
         await this.submitText(next);
@@ -1933,7 +1979,11 @@ export class App {
 
     /** Messages typed during a task run next; after a cancel they go back to the prompt. */
     private afterTask(cancelled: boolean) {
-        if (!this.queued.length) return;
+        if (!this.queued.length) {
+            // After the caller (a command like /compact) has finished, as below.
+            setTimeout(() => this.schedules.poke(), 0);
+            return;
+        }
         if (cancelled) return this.returnQueued();
         const next = this.queued.shift()!;
         this.queueUpdated();
@@ -2214,6 +2264,12 @@ export class App {
             }
         }
         if (this.session?.cost) parts.push(formatCost(this.session.cost, this.session.costUnknown));
+        const sched = this.schedules.scheduler;
+        if (sched.size) {
+            const next = sched.nextAt;
+            const due = sched.list().some((j) => j.due);
+            parts.push(theme.accent(`⏱ ${sched.size}`) + (due ? " due" : next ? ` next ${shortTime(next)}` : " paused"));
+        }
         const mcpFailed = [...this.mcp.servers.values()].filter((s) => s.status === "failed").length;
         if (mcpFailed) parts.push(theme.error(`${mcpFailed} MCP failed · /mcp`));
         const custom = this.statusLineText();

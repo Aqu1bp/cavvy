@@ -433,6 +433,42 @@
     outline-offset: 1px;
 }
 
+/* Schedules: what runs when, on the same tab as the queue. */
+.schedule-row.paused .queue-text,
+.schedule-row.paused .schedule-when {
+    color: var(--fg-muted);
+}
+
+.schedule-when {
+    flex: none;
+    max-width: 30%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.821rem;
+    color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+
+.schedule-next {
+    font-variant-numeric: tabular-nums;
+}
+
+.schedule-next.due {
+    color: var(--accent);
+}
+
+.schedule-more {
+    align-self: flex-start;
+    margin: 2px 0 0 24px;
+    font-size: 0.821rem;
+}
+
+@media (max-width: 640px) {
+    .schedule-when {
+        display: none;
+    }
+}
+
 .itab {
     padding: 14px 14px 26px;
     max-height: min(56vh, 520px);

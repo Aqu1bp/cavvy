@@ -236,6 +236,8 @@ export interface TurnPrompt {
     files?: FileChip[];
     /** Started by a slash command (/init, /review, custom commands). */
     command?: boolean;
+    /** Started by a schedule, not the user: what it is ("Scheduled (every 10m)"). */
+    scheduled?: string;
     /** Position of the prompt in the session's messages, when it can be rewound to. */
     index?: number;
 }
@@ -412,6 +414,23 @@ export type QueuedMode = "steer" | "queue" | "turn" | "held";
 
 /** What a message sent while a turn runs does (the followUpBehavior setting, or the opposite key). */
 export type FollowUpMode = "steer" | "queue";
+/** A schedule as a list shows it (src/agent/schedule.ts keeps the jobs). */
+export interface ScheduleInfo {
+    id: string;
+    kind: "loop" | "cron" | "resume";
+    prompt: string;
+    /** "every 10m", "weekdays at 9:00 AM", "once, Tue 21 Oct, 2:30 PM". */
+    when: string;
+    recurring: boolean;
+    durable: boolean;
+    paused: boolean;
+    nextAt?: number;
+    expiresAt?: number;
+    lastRunAt?: number;
+    runs: number;
+    /** Came due while the session was busy: runs as soon as it isn't. */
+    due: boolean;
+}
 
 export interface SessionState {
     accounts?: Record<string, string>;
@@ -459,6 +478,8 @@ export interface SessionState {
     forkOf?: { id: string; title: string };
     /** The names of the secrets the user gave this session (never their values). */
     secrets: string[];
+    /** Its schedules (/loop, cron jobs, the resume after a usage limit), soonest first as the server keeps them. */
+    schedules: ScheduleInfo[];
 }
 
 export interface SessionSnapshot {
@@ -1278,6 +1299,8 @@ export interface Methods {
     /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
     /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
+    /** One of the session's schedules: pause, resume, run now, or delete. `found` false: it's gone already. */
+    "session.schedule": { params: { id: string; scheduleId: string; action: "pause" | "resume" | "run" | "delete" }; result: { found: boolean } };
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     /** "Send now": steer the running turn with it, or run it now if none is running. `sent` false: it had already gone. */
     "session.sendQueuedNow": { params: { id: string; queueId: number }; result: { sent: boolean; started?: boolean } };

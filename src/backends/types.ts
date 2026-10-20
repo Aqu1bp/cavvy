@@ -165,6 +165,8 @@ export interface BackendResult {
     backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
+    /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
+    limit?: { resetsAt?: number };
 }
 
 export interface AgentBackendClient extends ProviderClient {
