@@ -722,7 +722,9 @@ function sameSubfolder(cwd: string, worktree: string): string {
 export async function enterSessionWorktree(o: { cwd: string; name?: string; branchPrefix?: string; baseRef?: BaseRef }, log?: Log): Promise<SessionWorktree> {
     const started = performance.now();
     const cwd = resolve(o.cwd);
-    const main = checkCreate(cwd);
+    // Only where things are, for now: creating (or reopening) checks the rest, once.
+    const repo = repoOf(cwd);
+    const main = repo.main;
     const prefix = o.branchPrefix ?? "harness/";
     const done = (w: Omit<SessionWorktree, "ms" | "main">): SessionWorktree => ({ ...w, main, ms: Math.round(performance.now() - started) });
 
@@ -731,8 +733,9 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
         if (!looksLikeWorktreeName(name)) throw new RpcError(`“${name}” can't be a worktree name: use letters, digits, “.”, “_”, “-” and “/”, starting with a letter or digit.`, "bad_folder");
         const folder = checkFolder(defaultFolder(name));
         const path = join(main, WORKTREES_DIR, folder);
-        const existing = listWorktrees(cwd).find((w) => w.managed && (resolve(w.path) === path || canonical(w.path) === canonical(path)));
-        if (existing) {
+        const record = repo.records.find((r) => !r.bare && (resolve(r.path) === path || canonical(r.path) === canonical(path)));
+        if (record) {
+            const existing = { ...record, exists: isDir(record.path) };
             if (!existing.exists) throw new RpcError(`Git still lists the worktree ${existing.path}, but its folder is gone. Run git worktree prune, then try again.`, "path_missing");
             // Git will run there: its metadata must be this repository's, and its config trusted.
             checkCreate(existing.path);
