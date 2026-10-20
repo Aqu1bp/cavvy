@@ -239,8 +239,7 @@ describe("on exit", () => {
             expect(existsSync(join(wt.path, "new.txt"))).toBe(true);
             expect(branches(main)).toContain("harness/w");
             const lines = stripAnsi(endingLines(wt, end).join("\n"));
-            expect(lines).toContain(`Worktree kept (2 uncommitted changes): ${wt.path.replace(homedir(), "~")} · branch harness/w`);
-            expect(lines).toContain("Come back to it with: harness -w w --continue");
+            expect(lines).toBe(`Worktree w kept (2 uncommitted changes), on branch harness/w\n  at ${wt.path.replace(homedir(), "~")}\n  come back with: harness -w w --continue`);
         }
     });
 
@@ -567,8 +566,7 @@ describe("harness -p --worktree", () => {
         }
         expect(r.code).toBe(0);
         expect(r.stderr).toContain("branch bot/kept");
-        expect(r.stderr).toContain(`harness: Worktree kept: ~/${relative(iso.home, join(main, ".claude", "worktrees", "kept"))} · branch bot/kept`);
-        expect(r.stderr).toContain("harness: Come back to it with: harness -w kept --continue");
+        expect(r.stderr).toContain(`harness: Worktree kept kept, on branch bot/kept\nharness:   at ~/${relative(iso.home, join(main, ".claude", "worktrees", "kept"))}\nharness:   come back with: harness -w kept --continue`);
     });
 
     test("an untrusted project is warned about once, for the worktree", async () => {

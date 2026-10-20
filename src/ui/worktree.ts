@@ -152,8 +152,9 @@ export function endingLines(wt: SessionWorktree, end: Ending): string[] {
         return [theme.muted(`Removed worktree ${shortPath(wt)}${end.branchDeleted ? ` and branch ${branch}` : branch ? `; branch ${branch} is kept` : ""}.`)];
     }
     return [
-        `Worktree kept${end.why ? ` (${end.why})` : ""}: ${tildePath(wt.path)}${branch ? theme.muted(` · branch ${branch}`) : ""}`,
+        `Worktree ${bold(wt.name)} kept${end.why ? ` (${end.why})` : ""}${branch ? `, on branch ${branch}` : ""}`,
+        theme.muted(`  at ${tildePath(wt.path)}`),
         // Sessions are found by folder: --continue finds this one from the same subfolder it started in.
-        theme.muted(`Come back to it with: ${resumeCommand(wt.name)} --continue${wt.cwd !== wt.path ? ` (from ${relative(wt.path, wt.cwd)} in your checkout)` : ""}`),
+        theme.muted(`  come back with: ${resumeCommand(wt.name)} --continue${wt.cwd !== wt.path ? ` (from ${relative(wt.path, wt.cwd)})` : ""}`),
     ];
 }
