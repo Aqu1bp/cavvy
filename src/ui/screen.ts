@@ -382,7 +382,8 @@ export class Screen {
         }
         let printed = chunks.reverse().flat();
         if (i >= 0 || printed.length > MAX_REDRAW_ROWS) {
-            printed = ["\x1b[2m… earlier output isn't shown again after a resize (/export saves the whole conversation)\x1b[22m", ...printed.slice(-MAX_REDRAW_ROWS)];
+            // One row, so the rows add up: cut to the width rather than wrapped.
+            printed = [truncate("\x1b[2m… earlier output isn't shown again after a resize (/export saves the whole conversation)\x1b[22m", cols - 1), ...printed.slice(-MAX_REDRAW_ROWS)];
         }
         this.pending = [];
         // The scrollback is cleared too: nothing on screen is in it.
