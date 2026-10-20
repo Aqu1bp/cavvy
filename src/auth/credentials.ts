@@ -76,6 +76,11 @@ export async function getKey(providerId: string): Promise<ResolvedKey | undefine
     return found;
 }
 
+/** Forget every key looked up so far, so the next lookup reads the environment and stores again. */
+export function forgetCachedKeys() {
+    cache.clear();
+}
+
 async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
     for (const envVar of envKeysFor(providerId)) {
         const v = process.env[envVar]?.trim();

@@ -6,13 +6,15 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Screen, type Entry, type Printable } from "./screen";
-import { Editor } from "./editor";
+import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
 import type { Key } from "./keys";
 import { bold, dim, italic, strike, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
 import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
+import { formatBytes } from "../util/files";
+import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -43,7 +45,7 @@ import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
-import { commandList, runCommand } from "../commands/index";
+import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
@@ -112,7 +114,16 @@ export class App {
     private dialogQueue: Dialog[] = [];
     busy = false;
     private abort?: AbortController;
-    private queued: string[] = [];
+    /** Prompts typed while busy, each with the images behind its placeholders. */
+    private queued: Draft[] = [];
+    /** Images being read or shrunk, by attachment id. */
+    private preparing = new Map<number, Promise<void>>();
+    /** How long sending waits for images still being prepared before going without them. */
+    attachWaitMs = 3000;
+    /** How images are shrunk (tests replace it). */
+    imagePrep: PrepareOptions = {};
+    /** A prompt sent while its images were still being prepared: out of the editor, waiting for them. */
+    private pendingSubmit?: { draft: Draft; cancel: () => void };
     /** Set once the startup model choice is done. */
     private modelReady = false;
     /** The model of a session resumed at startup, tried before the default. */
@@ -545,13 +556,7 @@ export class App {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: () => {
-                    // Plain messages join the running turn; slash commands wait for it to end.
-                    const q = this.queued.filter((t) => !isCommand(t));
-                    this.queued = this.queued.filter(isCommand);
-                    for (const t of q) this.printUser(t);
-                    return q;
-                },
+                drainQueued: () => this.drainQueued(),
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
@@ -1203,6 +1208,7 @@ export class App {
     private handleEditorKey(k: Key) {
         const e = this.editor;
         const n = k.name;
+        if (this.pendingSubmit && ((k.ctrl && n === "c") || n === "escape")) return this.pendingSubmit.cancel();
         const menu = this.completions();
         if (menu && menu.items.length) {
             if (n === "up") return void (this.menuIndex = (this.menuIndex - 1 + menu.items.length) % menu.items.length);
@@ -1262,7 +1268,8 @@ export class App {
             }
             return void this.submit();
         }
-        if (n === "paste" && k.paste !== undefined) return e.paste(k.paste);
+        if (n === "paste" && k.paste !== undefined) return this.pasteInto(k.paste);
+        if (k.ctrl && !k.meta && n === "v") return void this.pasteClipboardImage();
         if (n === "text" && k.text) {
             if (e.isEmpty && this.inputMode === "prompt") {
                 if (k.text === "!" ) return void (this.inputMode = "bash");
@@ -1331,17 +1338,132 @@ export class App {
         const editor = process.env.VISUAL || process.env.EDITOR || "vi";
         const dir = mkdtempSync(join(tmpdir(), "harness-prompt-"));
         const file = join(dir, "prompt.md");
-        writeFileSync(file, this.editor.value());
+        const exported = this.editor.value();
+        const before = this.editor.capture();
+        writeFileSync(file, exported);
         await this.screen.suspend(() => {
             spawnSync(["sh", "-c", `${editor} "$1"`, "sh", file], { stdio: ["inherit", "inherit", "inherit"], env: childEnv() });
         });
         try {
-            const text = readFileSync(file, "utf-8").replace(/\n$/, "");
-            this.editor.set(text);
+            const saved = readFileSync(file, "utf-8");
+            const text = saved.replace(/\n$/, "");
+            // Saved unchanged (editors may add a final newline): the draft keeps its attachments and collapsed pastes exactly as they were.
+            if (saved !== exported && text !== exported) this.editor.setEdited(text, before);
         } catch {
             // ignore
         }
         rmSync(dir, { recursive: true, force: true });
+        this.renderLive();
+    }
+
+    // -----------------------------------------------------------------------
+    // Images in the prompt
+
+    /**
+     * A paste of image paths becomes placeholders right away, in paste order,
+     * and the files are read now: a dragged screenshot thumbnail is gone by
+     * the time the prompt is sent. Anything else is pasted exactly as it came.
+     */
+    private pasteInto(text: string) {
+        const e = this.editor;
+        const guard = (p: string) => this.checker.userReadRefusal(p, { sensitive: true });
+        const plan = e.secret || this.inputMode !== "prompt" ? undefined : planPaste(text, this.cwd, guard);
+        for (const n of plan?.notices ?? []) this.notice(n, "warn");
+        if (!plan?.files.length) return e.paste(text);
+        plan.files.forEach((f, i) => {
+            if (i > 0) e.insert(" ");
+            this.attach(loadImageFile(f.path, guard, this.imagePrep), f.raw);
+        });
+        e.insert(" ");
+    }
+
+    /**
+     * Reserve a placeholder where the cursor is and fill it when the image is
+     * ready. It's tied to that placeholder: if the prompt went without it, the
+     * image goes nowhere. On failure the placeholder becomes `fallback`.
+     */
+    private attach(work: Promise<Prepared | undefined>, fallback = "", onMissing?: () => void) {
+        const uid = this.editor.reserveImage();
+        const done = work
+            .catch((err): Prepared => ({ error: `Couldn't attach the image: ${(err as Error).message}` }))
+            .then((r) => {
+                // A prompt waiting for this image holds its own copy of the placeholder.
+                const d = this.pendingSubmit?.draft.attachments.has(uid) ? this.pendingSubmit.draft : undefined;
+                if (!r) {
+                    this.editor.dropImage(uid);
+                    if (d) withoutImage(d, uid);
+                    onMissing?.();
+                } else if ("error" in r) {
+                    this.editor.dropImage(uid, fallback);
+                    if (d) withoutImage(d, uid, fallback);
+                    this.notice(r.error, "warn");
+                } else {
+                    const waiting = d?.attachments.get(uid);
+                    if (waiting) waiting.image = r.image;
+                    if (this.editor.resolveImage(uid, r.image) || waiting) this.warnImageInput(r.image);
+                }
+                this.renderLive();
+            })
+            .finally(() => this.preparing.delete(uid));
+        this.preparing.set(uid, done);
+        this.renderLive();
+    }
+
+    private warnImageInput(img: NamedImage) {
+        const info = this.session.model ? resolveModelInfo(this.session.model) : undefined;
+        if (info?.supportsImages === false) this.notice(`${info.id} can't read images, so ${img.name} won't be seen. Pick a model with image input via /model.`, "warn");
+    }
+
+    /** Ctrl+V: attach the clipboard's image, if there is one (text pastes arrive as terminal paste events). */
+    private pasteClipboardImage() {
+        if (this.editor.secret || this.inputMode !== "prompt") return;
+        const prep = this.imagePrep;
+        const work = readClipboardImage(prep.run, prep.platform).then((png) => (png ? prepareImage("clipboard.png", png, prep) : undefined));
+        this.attach(work, "", () => {
+            this.flash = { text: "No image on the clipboard", until: Date.now() + 1500 };
+        });
+    }
+
+    /**
+     * Wait (briefly) for a sent draft's images still being prepared; ones that
+     * don't make it are dropped with a notice. False when Ctrl+C or Esc
+     * cancelled the send meanwhile. Images pasted into the editor meanwhile
+     * belong to the next prompt and aren't touched.
+     */
+    private async settleImages(draft: Draft, pending: { uid: number; n: number }[]): Promise<boolean> {
+        const waits = pending.map((p) => this.preparing.get(p.uid)).filter((w): w is Promise<void> => w !== undefined);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let cancel!: () => void;
+        const cancelled = new Promise<"cancelled">((r) => (cancel = () => r("cancelled")));
+        this.pendingSubmit = { draft, cancel };
+        // A running turn owns the status line.
+        const own = !this.busy;
+        if (own) this.status = "Preparing images (esc to cancel)";
+        this.renderLive();
+        const how = await Promise.race([Promise.all(waits), new Promise((r) => (timer = setTimeout(r, this.attachWaitMs))), cancelled]);
+        clearTimeout(timer);
+        this.pendingSubmit = undefined;
+        if (own && !this.busy) this.status = undefined;
+        if (how === "cancelled") {
+            this.cancelSubmit(draft);
+            return false;
+        }
+        for (const p of pending) {
+            const a = draft.attachments.get(p.uid);
+            if (!a || a.image) continue;
+            withoutImage(draft, p.uid);
+            this.editor.dropImage(p.uid);
+            this.notice(`Image #${p.n} wasn't ready in time, so it was left out.`, "warn");
+        }
+        return true;
+    }
+
+    /** Nothing goes out. The draft comes back unless something new has been typed, which is never replaced. */
+    private cancelSubmit(draft: Draft) {
+        if (this.editor.isEmpty && this.inputMode === "prompt") {
+            this.editor.restore([draft]);
+            this.flash = { text: "Not sent; your prompt is back", until: Date.now() + 2000 };
+        } else this.notice("Not sent. What you've typed since stays; the cancelled prompt is in history (↑).", "warn");
         this.renderLive();
     }
 
@@ -1386,11 +1508,23 @@ export class App {
     // Submitting
 
     private async submit() {
+        if (this.pendingSubmit) {
+            this.flash = { text: "Still preparing images for the last prompt (esc cancels it)", until: Date.now() + 2000 };
+            return;
+        }
         const mode = this.inputMode;
         const text = this.editor.value();
         if (!text.trim()) return;
+        // Taken out of the editor now: whatever is typed while images finish is the next prompt.
+        const draft = mode === "prompt" ? this.editor.capture() : undefined;
+        const refuses = draft?.attachments.size ? commandRefusesImages(this, text) : undefined;
+        if (refuses) {
+            this.notice(`/${refuses} can't take images, so it wasn't run. Remove the images to run it.`, "warn");
+            return;
+        }
+        const pending = mode === "prompt" ? this.editor.pendingImages() : [];
         const histEntry = (mode === "bash" ? "!" : mode === "memory" ? "#" : "") + text;
-        this.editor.pushHistory(histEntry);
+        this.editor.pushHistory(histEntry, draft);
         appendPromptHistory(this.cwd, histEntry);
         this.editor.clear();
         this.inputMode = "prompt";
@@ -1398,24 +1532,33 @@ export class App {
         this.renderLive();
         if (mode === "bash") return this.runBashMode(text);
         if (mode === "memory") return this.addMemory(text);
-        await this.submitText(text);
+        if (pending.length) {
+            if (!(await this.settleImages(draft!, pending))) return;
+            // Images that never came leave nothing to send when they were all there was.
+            if (!plainText(draft!.text).trim() && !imagesIn(draft!.text, draft!.attachments).length) return;
+        }
+        await this.submitText(draft ?? text);
     }
 
-    async submitText(text: string) {
+    /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. */
+    async submitText(input: string | Draft) {
+        const draft: Draft = typeof input === "string" ? { text: input, attachments: new Map() } : input;
+        const text = plainText(draft.text);
         if (this.switching) await this.switching.catch(() => undefined);
         if (text.startsWith("/") && !text.startsWith("//")) {
-            const handled = await runCommand(this, text);
+            const handled = await runCommand(this, text, draft);
             if (handled) return;
         }
         if (this.busy) {
-            this.queued.push(text);
+            this.queued.push(draft);
             this.renderLive();
             return;
         }
-        await this.startTurn(text);
+        await this.startTurn(text, { draft });
     }
 
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" } = {}) {
+    /** `draft` carries the images typed with the prompt (or with the command that built it). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
@@ -1436,14 +1579,18 @@ export class App {
         let reason: TurnEndReason | undefined;
         try {
             this.printUser(opts.display ?? text);
+            const images = opts.draft ? imagesIn(opts.draft.text, opts.draft.attachments) : [];
+            if (images.length) this.screen.print((cols) => wrapLine(theme.subtle(`  ⎿  ${images.map((im, i) => `Image ${i + 1}: ${im.name} (${formatBytes(im.bytes)})`).join(", ")}`), cols - 2));
             if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
             if (ac.signal.aborted) {
                 // Nothing was sent: hand the message back rather than dropping it.
                 this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
-                this.queued.unshift(opts.kind === "command" ? (opts.display ?? text) : text);
+                this.queued.unshift(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() });
             } else {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
-                const { parts, attached } = expandMentions(text, this.toolState, roots);
+                const { parts, attached, notices } = await expandMentions(text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                parts.push(...images.map((im) => im.part));
+                for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
                 reason = await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind });
             }
@@ -1501,6 +1648,21 @@ export class App {
         }
     }
 
+    /**
+     * Queued messages that join the running turn: plain ones (slash commands wait
+     * for it to end). The host takes text only, so a message with images gets a
+     * turn of its own, and what was queued after it waits behind it.
+     */
+    private drainQueued(): string[] {
+        const barrier = this.queued.findIndex((d) => imagesIn(d.text, d.attachments).length > 0);
+        const head = barrier < 0 ? this.queued : this.queued.slice(0, barrier);
+        const take = head.filter((d) => !isCommand(plainText(d.text)));
+        this.queued = this.queued.filter((d) => !take.includes(d));
+        const q = take.map((d) => plainText(d.text));
+        for (const t of q) this.printUser(t);
+        return q;
+    }
+
     /** Messages typed during a task run next; after a cancel they go back to the prompt. */
     private afterTask(cancelled: boolean) {
         if (!this.queued.length) return;
@@ -1521,14 +1683,17 @@ export class App {
         const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
         const draft = e.text ? prefix + e.text : "";
         // A long paste shows as a placeholder; what it holds decides whether the draft is a command.
-        if (draft && (isCommand(last) || isCommand(prefix + e.value()))) {
+        if (draft && (isCommand(plainText(last.text)) || isCommand(prefix + e.value()))) {
             this.takeBackBlockedAt = Date.now();
             this.flash = { text: "Clear the prompt to take back the queued command · Esc again to interrupt", until: this.takeBackBlockedAt + 3000 };
             return this.renderLive();
         }
         this.queued.pop();
-        if (draft) e.set(`${last}\n${draft}`, last.length + 1 + prefix.length + e.cursor);
-        else e.set(last);
+        const cursor = e.cursor;
+        if (draft && prefix) e.set(draft);
+        // The queued message's images come back with it, ahead of the draft; the cursor stays where it was in the draft.
+        e.restore([last]);
+        if (draft) e.cursor = last.text.length + 1 + prefix.length + cursor;
         this.inputMode = "prompt";
         const left = this.queued.length;
         this.flash = { text: `Queued message moved back to the prompt · Esc again ${left ? `for the next (${left} more)` : "to interrupt"}`, until: Date.now() + 3000 };
@@ -1544,16 +1709,23 @@ export class App {
         if (!this.queued.length) return;
         const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
         const e = this.editor;
-        // Each item as shown (a long paste stays a placeholder) and in full (what decides, and what history keeps).
-        const all = [...this.queued.map((t) => ({ shown: t, full: t })), ...(e.text ? [{ shown: prefix + e.text, full: prefix + e.value() }] : [])];
+        if (e.text && prefix) e.set(prefix + e.text);
+        // The queue owns its images, so they come back whatever the editor's undo history has dropped.
+        const queued = this.queued;
         this.queued = [];
         this.inputMode = "prompt";
-        if (all.length === 1) e.set(all[0]!.shown);
+        // Each draft in full (paste placeholders expanded) decides whether it's a command; the prompt
+        // keeps showing what's in it as it was (a long paste stays a placeholder) unless it's one.
+        const draft = e.text ? e.capture() : undefined;
+        const all = [...queued, ...(draft ? [draft] : [])];
+        const commands = all.length > 1 ? all.filter((d) => isCommand(plainText(d.text))) : [];
+        if (!commands.length) e.restore(queued);
         else {
-            const commands = all.filter((t) => isCommand(t.full)).map((t) => t.full);
-            for (const c of commands) e.pushHistory(c);
-            e.set(all.filter((t) => !isCommand(t.full)).map((t) => t.shown).join("\n"));
-            if (commands.length) this.notice(`Not run: ${commands.map((c) => truncate(c.replace(/\s+/g, " "), 40)).join(", ")}. ↑ brings ${commands.length === 1 ? "it" : "them"} back.`, "warn");
+            for (const c of commands) e.pushHistory(plainText(c.text), c);
+            if (draft && commands.includes(draft)) e.set("");
+            e.restore(queued.filter((d) => !commands.includes(d)));
+            const names = commands.map((c) => truncate(plainText(c.text).replace(/\s+/g, " "), 40));
+            this.notice(`Not run: ${names.join(", ")}. ↑ brings ${commands.length === 1 ? "it" : "them"} back.`, "warn");
         }
         this.renderLive();
     }
@@ -1705,7 +1877,7 @@ export class App {
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
-        for (const q of this.queued) status.push(theme.muted(`  ⏵ queued: ${truncate(q.replace(/\s+/g, " "), cols - 16)}`));
+        for (const q of this.queued) status.push(theme.muted(`  ⏵ queued: ${truncate(plainText(q.text).replace(/\s+/g, " "), cols - 16)}`));
         return { flow: out, status };
     }
 

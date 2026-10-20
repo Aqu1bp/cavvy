@@ -290,6 +290,25 @@ export class PermissionChecker {
         return asks.length ? `ask:${[...new Set(asks)].sort().join("\0")}` : undefined;
     }
 
+    /**
+     * Why a path the user handed over themselves (an @-mention, a pasted or
+     * dropped image) still can't be read. Their say-so stands in for "outside
+     * the workspace", never for deny rules or the credential store, judged on
+     * the path and where its symlinks lead. `sensitive` also refuses files that
+     * may hold credentials (~/.ssh, .env …): an image's bytes go out unredacted.
+     */
+    userReadRefusal(abs: string, opts: { sensitive?: boolean; dir?: boolean } = {}): string | undefined {
+        const toolName = opts.dir ? "LS" : "Read";
+        const t: RuleTarget = { toolName, path: abs };
+        const c = canonical(abs);
+        const deny = this.settings().permissions?.deny ?? [];
+        const rule = findMatch(deny, t, this.root, "deny") ?? (c !== abs ? findMatch(deny, { ...t, path: c }, this.root, "deny") : undefined);
+        if (rule) return `denied by permission rule ${rule}`;
+        if (this.isProtected(abs, toolName)) return "access to the harness credential store is blocked";
+        if (opts.sensitive && this.isSensitive(abs)) return "it may contain credentials";
+        return undefined;
+    }
+
     /** Inside the system temp directories (symlinks resolved, so a link can't point elsewhere). */
     private inTemp(p: string): boolean {
         const c = canonical(p);

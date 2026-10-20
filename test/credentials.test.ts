@@ -29,6 +29,8 @@ beforeEach(() => {
 afterEach(() => {
     for (const k of Object.keys(process.env)) if (!(k in envSnapshot)) delete process.env[k];
     for (const [k, v] of Object.entries(envSnapshot)) if (process.env[k] !== v) process.env[k] = v;
+    // A key read from a variable just restored away stays cached otherwise, for later test files too.
+    creds.forgetCachedKeys();
 });
 
 const credFile = () => paths.credentialsFile();

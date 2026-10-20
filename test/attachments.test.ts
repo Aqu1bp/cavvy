@@ -846,16 +846,18 @@ describe("conversation-wide limits, and the user's own words", () => {
         expect(r.content).toBe("shot\n[An image this returned isn't included any more: the conversation carries too many attachments to send them all.]");
     });
 
-    test("PDFs plus @mentioned images in the newest prompt stay inside the request budget", () => {
+    test("PDFs plus @mentioned images in the newest prompt stay inside the request budget", async () => {
         const cwd = tempDir();
+        // A 1×1 PNG's header, padded: mentions only send what starts like an image and says its size.
         const image = Buffer.alloc(3 * 1024 * 1024, 1);
+        Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ", "base64").copy(image);
         for (const name of ["a.png", "b.png"]) writeFileSync(join(cwd, name), image);
         const pdf = Buffer.alloc(10 * 1024 * 1024, 0x20);
         pdf.write("%PDF-1.4\n");
         const files = checkFiles(["a.pdf", "b.pdf"].map((name) => ({ name, data: b64(pdf) })));
         expect(() => checkMedia(files)).not.toThrow();
         // Runtime expands mentions after the send checks, then appends the attached files.
-        const { parts, attached } = expandMentions("Read @a.png @b.png", { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, [cwd]);
+        const { parts, attached } = await expandMentions("Read @a.png @b.png", { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, [cwd], new PermissionChecker(() => ({}), cwd));
         expect(attached).toEqual(["a.png", "b.png"]);
         const msgs: Message[] = [{ role: "user", content: [...parts, ...files], meta: { kind: "prompt" } }];
         const fitted = fitMedia(msgs, true);

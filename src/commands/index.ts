@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { spawnSync } from "bun";
 import type { App } from "../ui/app";
+import type { Draft } from "../ui/editor";
 import { renderTodos } from "../ui/app";
 import { InputDialog, MessageDialog, SelectDialog } from "../ui/dialogs";
 import { bold, padEnd, termCols, theme, truncate, width } from "../ui/ansi";
@@ -79,7 +80,9 @@ export interface Command {
     noEcho?: boolean;
     hidden?: boolean;
     custom?: CustomCommand;
-    run(app: App, args: string): Promise<void> | void;
+    /** Starts a model turn, which takes the images typed with the command (`draft`). Other commands refuse images. */
+    images?: boolean;
+    run(app: App, args: string, draft?: Draft): Promise<void> | void;
 }
 
 // ---------------------------------------------------------------------------
@@ -1664,10 +1667,11 @@ const BUILTIN: Command[] = [
         description: "Enter plan mode (optionally with a task)",
         args: "[task]",
         noEcho: true,
-        run: async (app, args) => {
+        images: true,
+        run: async (app, args, draft) => {
             app.setMode("plan");
             app.print(["", `${MODE_INFO.plan.color(MODE_INFO.plan.symbol)} ${bold("Plan mode")} ${theme.muted(MODE_INFO.plan.description)}`]);
-            if (args) await app.startTurn(args);
+            if (args) await app.startTurn(args, { draft });
         },
     },
     {
@@ -1718,8 +1722,8 @@ const BUILTIN: Command[] = [
         whileBusy: true,
         run: async (app) => (app.lastResponse ? app.notice(`Copied the last response to the ${await copyToClipboard(app.lastResponse)}.`) : app.notice("Nothing to copy yet.")),
     },
-    { name: "init", description: "Create a HARNESS.md with notes about this codebase", noEcho: true, run: (app) => app.startTurn(INIT_PROMPT, { display: "/init", kind: "command" }) },
-    { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr-number|focus]", noEcho: true, run: (app, args) => app.startTurn(reviewPrompt(args), { display: `/review${args ? " " + args : ""}`, kind: "command" }) },
+    { name: "init", description: "Create a HARNESS.md with notes about this codebase", noEcho: true, images: true, run: (app, _args, draft) => app.startTurn(INIT_PROMPT, { display: "/init", kind: "command", draft }) },
+    { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr-number|focus]", noEcho: true, images: true, run: (app, args, draft) => app.startTurn(reviewPrompt(args), { display: `/review${args ? " " + args : ""}`, kind: "command", draft }) },
     { name: "memory", description: "Edit memory files (HARNESS.md)", run: memoryCommand },
     { name: "config", aliases: ["settings"], description: "Change settings", run: configCommand },
     { name: "thinking", description: "Toggle showing the model's thinking text", whileBusy: true, run: (app) => {
@@ -1749,7 +1753,8 @@ function customToCommand(c: CustomCommand): Command {
         args: c.argumentHint ?? (/\$ARGUMENTS|\$[1-9]/.test(c.body) ? "[args]" : undefined),
         noEcho: true,
         custom: c,
-        run: (app, args) => app.startTurn(expandCommand(c.body, args), { display: `/${c.name}${args ? " " + args : ""}`, kind: "command" }),
+        images: true,
+        run: (app, args, draft) => app.startTurn(expandCommand(c.body, args), { display: `/${c.name}${args ? " " + args : ""}`, kind: "command", draft }),
     };
 }
 
@@ -1763,27 +1768,50 @@ function findCommand(app: App, name: string): Command | undefined {
     return all.find((c) => c.name === name) ?? all.find((c) => c.aliases?.includes(name));
 }
 
-/** Returns false when the text isn't a command and should be sent as a prompt. */
-export async function runCommand(app: App, text: string): Promise<boolean> {
+function parseCommand(text: string): { name: string; args: string } | undefined {
     const m = text.match(/^\/(\S+)\s*([\s\S]*)$/);
-    if (!m) return false;
-    const name = m[1]!.toLowerCase();
-    const args = m[2]!.trim();
+    return m ? { name: m[1]!.toLowerCase(), args: m[2]!.trim() } : undefined;
+}
+
+/** The name of the command `text` runs when that command can't take images; undefined for prompts and commands that can. */
+export function commandRefusesImages(app: App, text: string): string | undefined {
+    const p = text.startsWith("//") ? undefined : parseCommand(text);
+    const cmd = p && findCommand(app, p.name);
+    return cmd && !cmd.images ? cmd.name : undefined;
+}
+
+/**
+ * Returns false when the text isn't a command and should be sent as a prompt.
+ * `draft` holds the images typed with it; a command that can't use them isn't
+ * run, and the draft goes back to the prompt.
+ */
+export async function runCommand(app: App, text: string, draft?: Draft): Promise<boolean> {
+    const p = parseCommand(text);
+    if (!p) return false;
+    const { name, args } = p;
     const cmd = findCommand(app, name);
     if (!cmd) {
         // "/usr/bin/foo is broken" is a prompt, not a command.
         if (name.includes("/") || name.includes(".")) return false;
         app.notice(`Unknown command /${name}. Type /help to see the commands.`, "error");
+        if (draft?.attachments.size) app.editor.restore([draft]);
+        return true;
+    }
+    if (draft?.attachments.size && !cmd.images) {
+        app.notice(`/${cmd.name} can't take images, so it wasn't run. Remove the images to run it.`, "warn");
+        app.editor.restore([draft]);
         return true;
     }
     if (app.busy && !cmd.whileBusy) {
-        if (cmd.custom || cmd.name === "init" || cmd.name === "review") return false; // queued like a prompt by the caller
+        // Turn-starting commands queue like a prompt (by the caller); a bare /plan only switches mode, so it can't wait.
+        if (cmd.custom || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
         app.notice(`/${cmd.name} isn't available while ${APP_TITLE} is working. Press esc to interrupt first.`, "warn");
+        if (draft) app.editor.restore([draft]);
         return true;
     }
     if (!cmd.noEcho) app.print(["", theme.muted(`> /${name}${args ? " " + args : ""}`)]);
     try {
-        await cmd.run(app, args);
+        await cmd.run(app, args, draft);
     } catch (e) {
         app.notice(redact((e as Error).message), "error");
     }

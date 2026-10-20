@@ -1,14 +1,15 @@
 // @-mentions: file path completion and expansion of "@path" in prompts.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { join, relative } from "path";
+import { join, relative, resolve } from "path";
 import { spawnSync } from "bun";
-import type { ImagePart, TextPart, UserContent } from "../providers/types";
+import type { TextPart, UserContent } from "../providers/types";
 import type { ToolState } from "../tools/types";
-import { expandPath, imageMediaType, looksBinary, isInside, canonical } from "../util/files";
+import { imageMediaType, looksBinary, isInside, canonical } from "../util/files";
 import { fuzzyScore } from "./components";
 import { redact } from "../util/redact";
 import { gitArgv, gitEnv } from "../util/git";
+import { isImageFile, lexWords, loadImageFile, normalizePath, resolveUserPath, type PrepareOptions } from "./images";
 
 const IGNORE = new Set(["node_modules", ".git", "dist", "build", ".next", "target", "__pycache__", ".venv", "venv", ".cache", "coverage", ".turbo", ".idea", ".DS_Store"]);
 
@@ -66,26 +67,100 @@ export class FileIndex {
     }
 }
 
-const MENTION = /(^|\s)@(?:"([^"]+)"|([^\s"']+))/g;
 const MAX_FILE = 256 * 1024;
+const IMAGE_END = /\.(?:png|jpe?g|gif|webp)(?=$|[\s,;:!?)])/gi;
+
+/** What expandMentions may read: PermissionChecker, or a stand-in in tests. */
+export interface MentionGuard {
+    userReadRefusal(abs: string, opts?: { sensitive?: boolean; dir?: boolean }): string | undefined;
+}
+
+export interface MentionOptions {
+    /** Shrinks oversized images (tests replace it). */
+    prepare?: PrepareOptions;
+}
+
+interface Mention {
+    raw: string;
+    abs: string;
+}
+
+function existing(p: string): boolean {
+    try {
+        statSync(p);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** How far past a mention's first word a space-containing image path may reach, and how many such phrases are tried. */
+const MAX_PHRASE = 256;
+const MAX_PHRASES = 8;
+
+/**
+ * The "@path" mentions in a prompt. A mention is one shell-style word (quotes
+ * and backslash escapes allowed); unescaped spaces only join in when the longer
+ * phrase names an existing image and the word alone names nothing (a macOS
+ * screenshot path typed as is), so the prose after a mention stays prose. A
+ * phrase never crosses a line break or the next mention, and each path is
+ * looked up once, so a prompt full of missing names stays cheap.
+ */
+export function findMentions(text: string, cwd: string): Mention[] {
+    const out: Mention[] = [];
+    const memo = new Map<string, string | undefined>();
+    const lookup = (r: string) => {
+        if (!memo.has(r)) memo.set(r, resolveUserPath(r, cwd));
+        return memo.get(r);
+    };
+    const at = /(^|\s)@/g;
+    for (let m = at.exec(text); m; m = at.exec(text)) {
+        const from = m.index + m[0].length;
+        const w = lexWords(text, true, from, 1)[0];
+        if (!w || w.start !== from) continue;
+        const raw = w.raw.replace(/[.,;:!?)]+$/, "");
+        if (!raw) continue;
+        let found: Mention = { raw, abs: lookup(raw) ?? resolve(cwd, normalizePath(raw)) };
+        let end = w.end;
+        if (!existing(found.abs)) {
+            // one character more, so a phrase cut off at the cap isn't mistaken for one ending there
+            const rest = text.slice(from, from + MAX_PHRASE + 1);
+            const stop = rest.search(/\n|\s@/);
+            const span = stop < 0 ? rest : rest.slice(0, stop);
+            let tried = 0;
+            for (const e of span.matchAll(IMAGE_END)) {
+                const phrase = span.slice(0, e.index! + e[0].length);
+                if (!/\s/.test(phrase) || phrase.length > MAX_PHRASE) continue;
+                if (++tried > MAX_PHRASES) break;
+                const f = lookup(phrase);
+                if (f) {
+                    found = { raw: phrase, abs: f };
+                    end = from + phrase.length;
+                    break;
+                }
+            }
+        }
+        out.push(found);
+        at.lastIndex = end;
+    }
+    return out;
+}
 
 /**
  * Turn "@path" mentions into attached file contents (like a Read), images
  * into image parts. Records read state so the model can edit right away.
+ * Mentions reach outside the workspace only for images the user names, and
+ * never past deny rules or protected files; images go through the same checks
+ * and shrinking as pasted ones.
  */
-export function expandMentions(text: string, state: ToolState, allowedRoots: string[]): { parts: UserContent[]; attached: string[] } {
+export async function expandMentions(text: string, state: ToolState, allowedRoots: string[], guard: MentionGuard, opts: MentionOptions = {}): Promise<{ parts: UserContent[]; attached: string[]; notices: string[] }> {
     const parts: UserContent[] = [{ type: "text", text }];
     const attached: string[] = [];
+    const notices: string[] = [];
     const seen = new Set<string>();
-    for (const m of text.matchAll(MENTION)) {
-        const raw = (m[2] ?? m[3] ?? "").replace(/[.,;:!?)]+$/, "");
-        if (!raw) continue;
-        const abs = expandPath(raw, state.cwd);
+    for (const { raw, abs } of findMentions(text, state.cwd)) {
         if (seen.has(abs) || !existsSync(abs)) continue;
         seen.add(abs);
-        const c = canonical(abs);
-        // only inside the workspace (or added dirs): mentions shouldn't become a way around permissions
-        if (!allowedRoots.some((r) => isInside(c, canonical(r)))) continue;
         let st;
         try {
             st = statSync(abs);
@@ -93,6 +168,21 @@ export function expandMentions(text: string, state: ToolState, allowedRoots: str
             continue;
         }
         const rel = relative(state.cwd, abs) || abs;
+        const c = canonical(abs);
+        const inside = allowedRoots.some((r) => isInside(c, canonical(r)));
+        // Permission first, by the name: telling an image from a look-alike reads the file.
+        const imageName = st.isFile() && imageMediaType(abs) !== undefined;
+        if (!inside && !imageName) continue;
+        const refused = guard.userReadRefusal(abs, { sensitive: imageName, dir: st.isDirectory() });
+        if (refused) {
+            notices.push(`Can't attach ${rel}: ${refused}.`);
+            continue;
+        }
+        const image = imageName && isImageFile(abs);
+        if (!inside && !image) {
+            notices.push(`${rel} isn't a PNG, JPEG, GIF or WebP image, so it wasn't attached.`);
+            continue;
+        }
         if (st.isDirectory()) {
             try {
                 const entries = readdirSync(abs, { withFileTypes: true })
@@ -107,10 +197,13 @@ export function expandMentions(text: string, state: ToolState, allowedRoots: str
             }
             continue;
         }
-        const media = imageMediaType(abs);
-        if (media && st.size <= 5 * 1024 * 1024) {
-            parts.push({ type: "image", mediaType: media, data: readFileSync(abs).toString("base64") } as ImagePart);
-            attached.push(rel);
+        if (image) {
+            const r = await loadImageFile(abs, (p) => guard.userReadRefusal(p, { sensitive: true }), opts.prepare);
+            if ("error" in r) notices.push(r.error);
+            else {
+                parts.push(r.image.part);
+                attached.push(rel);
+            }
             continue;
         }
         if (st.size > MAX_FILE) {
@@ -129,5 +222,5 @@ export function expandMentions(text: string, state: ToolState, allowedRoots: str
         state.fileState.set(abs, { mtimeMs: st.mtimeMs, size: st.size, partial: lines.length > 2000 });
         attached.push(rel);
     }
-    return { parts, attached };
+    return { parts, attached, notices };
 }
