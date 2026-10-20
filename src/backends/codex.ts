@@ -23,7 +23,7 @@ import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
-import { canonical, isInside } from "../util/files";
+import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
 import { accountEnv, defaultAccount } from "../providers/accounts";
@@ -1138,8 +1138,7 @@ class CodexTurn {
                 // Codex 0.162 asks about every command in untrusted mode, `cat` included. One that wants the
                 // network says something. One in another folder is checked as `cd <folder> && …`, where it runs,
                 // and only inside the workspace: a search there (`rg --hidden .`) reads what the checker can't see.
-                const inWorkspace = [this.t.cwd, ...this.t.additionalDirectories].some((r) => isInside(dir, canonical(resolve(r))));
-                const asksAlways = !net && inWorkspace && codexPolicy(this.turnMode ?? this.host.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
+                const asksAlways = !net && insideWorkspace(dir, this.t.cwd, this.t.additionalDirectories) && codexPolicy(this.turnMode ?? this.host.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
                 const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }
@@ -1391,6 +1390,11 @@ const WRAPPER_SHELL = /^\/(?:bin|usr\/bin|usr\/local\/bin|opt\/homebrew\/bin)\/(
  * The command as rules, checks and the prompt see it. One the model runs in
  * another folder (Codex takes a workdir) goes behind a cd to it.
  */
+/** Is `dir` (resolved) in the session's folder or one of the added ones (`~/…` and relative ones as the checker reads them)? */
+export function insideWorkspace(dir: string, cwd: string, additionalDirectories: string[]): boolean {
+    return [cwd, ...additionalDirectories].some((r) => isInside(dir, canonical(expandPath(r, cwd))));
+}
+
 function shownCommand(x: any, cwd: string): { command: string; dir: string; elsewhere: boolean } {
     const inner = innerCommand(x);
     // The folder it runs in as the volume has it: through a symlink (`keys -> ~/.ssh`), the checker must see where it leads.

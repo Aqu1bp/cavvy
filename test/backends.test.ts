@@ -4,6 +4,7 @@
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
@@ -18,7 +19,7 @@ const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { isAgentBackend } = await import("../src/backends/types");
 const { checkAgentCli } = await import("../src/backends/index");
-const { applyHunks, codexPolicy, changePreview } = await import("../src/backends/codex");
+const { applyHunks, codexPolicy, changePreview, insideWorkspace } = await import("../src/backends/codex");
 const trust = await import("../src/config/trust");
 const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
 const { loadSettings } = await import("../src/config/settings");
@@ -686,6 +687,11 @@ describe("Codex backend", () => {
 
     test("modes map to Codex's approval policy and sandbox", () => {
         expect(codexPolicy("default", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
+        // Added folders as the checker reads them: `~/…` and relative ones too.
+        const home = realpathSync(homedir());
+        expect(insideWorkspace(join(home, "proj", "src"), "/elsewhere", ["~/proj"])).toBe(true);
+        expect(insideWorkspace(join(home, "other"), "/elsewhere", ["~/proj"])).toBe(false);
+        expect(insideWorkspace(join(realpathSync(tmpdir()), "ws", "lib"), join(realpathSync(tmpdir()), "ws", "app"), ["../lib"])).toBe(true);
         // A read-only agent in auto: reads run in the read-only sandbox; anything more asks the harness, never Codex's reviewer.
         expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
         expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
