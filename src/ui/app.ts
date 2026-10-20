@@ -547,8 +547,8 @@ export class App {
                 },
                 drainQueued: () => {
                     // Plain messages join the running turn; slash commands wait for it to end.
-                    const q = this.queued.filter((t) => !t.startsWith("/"));
-                    this.queued = this.queued.filter((t) => t.startsWith("/"));
+                    const q = this.queued.filter((t) => !isCommand(t));
+                    this.queued = this.queued.filter(isCommand);
                     for (const t of q) this.printUser(t);
                     return q;
                 },
@@ -1520,7 +1520,8 @@ export class App {
         const e = this.editor;
         const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
         const draft = e.text ? prefix + e.text : "";
-        if (draft && (isCommand(last) || isCommand(draft))) {
+        // A long paste shows as a placeholder; what it holds decides whether the draft is a command.
+        if (draft && (isCommand(last) || isCommand(prefix + e.value()))) {
             this.takeBackBlockedAt = Date.now();
             this.flash = { text: "Clear the prompt to take back the queued command · Esc again to interrupt", until: this.takeBackBlockedAt + 3000 };
             return this.renderLive();
@@ -1542,16 +1543,17 @@ export class App {
     private returnQueued() {
         if (!this.queued.length) return;
         const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
-        const draft = this.editor.text ? prefix + this.editor.text : "";
-        const all = [...this.queued, draft].filter(Boolean);
+        const e = this.editor;
+        // Each item as shown (a long paste stays a placeholder) and in full (what decides, and what history keeps).
+        const all = [...this.queued.map((t) => ({ shown: t, full: t })), ...(e.text ? [{ shown: prefix + e.text, full: prefix + e.value() }] : [])];
         this.queued = [];
         this.inputMode = "prompt";
-        if (all.length === 1) this.editor.set(all[0]!);
+        if (all.length === 1) e.set(all[0]!.shown);
         else {
-            const commands = all.filter(isCommand);
-            for (const c of commands) this.editor.pushHistory(c);
-            this.editor.set(all.filter((t) => !isCommand(t)).join("\n"));
-            if (commands.length) this.notice(`Not run: ${commands.join(", ")}. ↑ brings ${commands.length === 1 ? "it" : "them"} back.`, "warn");
+            const commands = all.filter((t) => isCommand(t.full)).map((t) => t.full);
+            for (const c of commands) e.pushHistory(c);
+            e.set(all.filter((t) => !isCommand(t.full)).map((t) => t.shown).join("\n"));
+            if (commands.length) this.notice(`Not run: ${commands.map((c) => truncate(c.replace(/\s+/g, " "), 40)).join(", ")}. ↑ brings ${commands.length === 1 ? "it" : "them"} back.`, "warn");
         }
         this.renderLive();
     }

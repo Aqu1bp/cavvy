@@ -291,6 +291,24 @@ describe("keys in the kitty keyboard protocol's encoding", () => {
             expect(a.editor.text).toBe("// note\ndraft");
         });
 
+        test("a long pasted command is judged by what it holds, not its placeholder", () => {
+            const { a, press, interrupts } = busyApp();
+            const long = "/review " + "x".repeat(1501);
+            a.queued = ["follow-up"];
+            press(`\x1b[200~${long}\x1b[201~`);
+            expect(a.editor.text).toMatch(/^\[Pasted text #\d+ \+\d+ lines\]$/);
+            press("\x1b[27u");
+            expect(a.queued).toEqual(["follow-up"]);
+            expect(a.flash.text).toContain("Clear the prompt");
+            expect(interrupts()).toBe(0);
+            // The interrupt fallback: the command goes to history in full; the plain message comes back.
+            a.returnQueued();
+            expect(a.editor.text).toBe("follow-up");
+            a.editor.set("");
+            a.editor.historyPrev();
+            expect(a.editor.text).toBe(long);
+        });
+
         test("after an interrupt, a lone queued slash command comes back to the prompt", () => {
             const { a } = busyApp();
             a.queued = ["/review"];
