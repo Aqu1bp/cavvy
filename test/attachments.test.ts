@@ -645,7 +645,7 @@ describe("compaction, handoff and the terminal", () => {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         const printed: string[] = [];
         const print = (l: string | string[] | ((cols: number) => string[])) => (printed.push(...(typeof l === "function" ? l(100) : Array.isArray(l) ? l : [l])), {});
-        (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {} };
+        (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {} };
         (app as any).renderLive = () => {};
         app.session = Session.create(cwd, { persist: false });
         for (const m of msgs) app.session.push(m);

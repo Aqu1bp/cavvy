@@ -205,7 +205,7 @@ describe("SubagentStop", () => {
 describe("SessionStart and SessionEnd", () => {
     function testApp(cwd: string) {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
-        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {} };
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {} };
         (app as any).renderLive = () => {};
         app.session = Session.create(cwd, { persist: false });
         return app;

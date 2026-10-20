@@ -308,7 +308,7 @@ describe("the app notifies at the right moments", () => {
     /** An App with the screen stubbed out (unfocused) and its notifier writing into an array. */
     function testApp() {
         const app = new App({ cwd: tempDir(), trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
-        const screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: false as boolean | undefined };
+        const screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: false as boolean | undefined };
         (app as any).screen = screen;
         (app as any).renderLive = () => {};
         app.session = Session.create(app.cwd, { persist: false });

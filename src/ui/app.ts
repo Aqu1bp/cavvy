@@ -113,6 +113,8 @@ export class App {
     private dialogs: Dialog[] = [];
     private dialogQueue: Dialog[] = [];
     busy = false;
+    /** Whether the last renderLive showed just the prompt (no turn, no dialog), to tell when it's back. */
+    private wasIdle = false;
     private abort?: AbortController;
     /** Prompts typed while busy, each with the images behind its placeholders. */
     private queued: Draft[] = [];
@@ -656,7 +658,7 @@ export class App {
         // How turns ended where the messages don't say (an error, a limit): each after the message before it.
         const notices = this.session.notices.filter((n) => n.index > from).sort((a, b) => a.index - b.index);
         this.screen.print((cols) => {
-            const out: string[] = ["", theme.muted(`── Resumed session ${id} (${count} messages) ──`)];
+            const out: string[] = ["", historyRule(`Resumed session ${id} · ${count} messages`, cols)];
             let next = 0;
             const noticesUpTo = (index: number) => {
                 for (; next < notices.length && notices[next]!.index <= index; next++) {
@@ -676,17 +678,20 @@ export class App {
                         if (note) out.push(...(t ? [] : [""]), ...wrapLine(theme.subtle(`  ${truncate(note, cols * 2)}`), cols - 2));
                     }
                 } else {
-                    const t = textOf(m).trim();
+                    // A Claude Code or Codex turn ends with what it did ("[Codex used: …]"): shown as its actions, one a line.
+                    const { text: t, actions } = splitActionsNote(textOf(m).trim());
                     if (t) {
                         const md = renderMarkdown(t, cols - 2);
                         out.push("", ...md.slice(0, 30).map((l, i) => (i === 0 ? `${BULLET} ` : "  ") + l));
                         if (md.length > 30) out.push(theme.subtle(`  … +${md.length - 30} lines`));
                     }
-                    for (const p of m.content) if (p.type === "tool_call") out.push(theme.muted(`  ${BULLET} ${p.name}`));
+                    const tools = [...m.content.flatMap((p) => (p.type === "tool_call" ? [p.name] : [])), ...actions];
+                    for (const name of tools.slice(0, 8)) out.push(theme.muted(truncate(`  ${BULLET} ${name}`, cols - 2)));
+                    if (tools.length > 8) out.push(theme.subtle(`  … +${tools.length - 8} more`));
                 }
             });
             noticesUpTo(Infinity);
-            out.push(theme.muted("── end of resumed history ──"));
+            out.push("", historyRule("end of resumed history", cols), "");
             return out;
         });
         if (!this.session.model || this.init.modelRef) return;
@@ -1828,6 +1833,11 @@ export class App {
         if (top) lines.push(...top.render(cols, Math.max(8, rows - lines.length - 1)));
         else lines.push(...this.renderInput(cols));
         this.screen.setLive(lines);
+        // Back at the plain prompt (a turn ended, a dialog closed): what was shown meanwhile is gone,
+        // so bring the output back down to the prompt.
+        const idle = !this.busy && !this.dialogs.length;
+        if (idle && !this.wasIdle) this.screen.settle();
+        this.wasIdle = idle;
     }
 
     /**
@@ -2049,4 +2059,19 @@ function shortcutHelp(cols: number): string[] {
 function thinkingLines(text: string, cols: number): string[] {
     // Escape codes in the model's own text (a raw hyperlink, a color) are taken out first, for the same reason.
     return text.split("\n").flatMap((l) => wrapLine(inline(stripAnsi(l), false), cols - 4));
+}
+
+/** A muted rule across the width with a label: where the resumed history starts and ends. */
+function historyRule(label: string, cols: number): string {
+    const head = `── ${truncate(label, Math.max(10, cols - 8))} `;
+    return theme.subtle(head + "─".repeat(Math.max(2, cols - 2 - width(head))));
+}
+
+/** A backend turn's text without its closing "[Codex used: Bash(…), Edit(…)]" note, and the actions it lists. */
+export function splitActionsNote(text: string): { text: string; actions: string[] } {
+    const m = /\n*\[([\w][\w .-]*) used: ([\s\S]*)\]\s*$/.exec(text);
+    if (!m) return { text, actions: [] };
+    // Each action starts with a tool's name and "(": split on the commas before one.
+    const actions = m[2]!.split(/, (?=(?:and \d+ more$|[\w.-]+\())/).map((a) => a.trim()).filter(Boolean);
+    return { text: text.slice(0, m.index).trim(), actions };
 }

@@ -383,7 +383,7 @@ describe("the terminal app", () => {
     function testApp() {
         const app = new App({ cwd: tempDir(), trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         const printed: string[] = [];
-        const screen = { print: (f: any) => (printed.push(...(typeof f === "function" ? f(100) : [f]).map(String)), {}), replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true as boolean | undefined };
+        const screen = { print: (f: any) => (printed.push(...(typeof f === "function" ? f(100) : [f]).map(String)), {}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true as boolean | undefined };
         (app as any).screen = screen;
         (app as any).renderLive = () => {};
         app.session = Session.create(app.cwd, { persist: false });

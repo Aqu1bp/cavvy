@@ -79,7 +79,7 @@ test("the dock keeps a partially typed secret when unrelated interactions change
 
 function appForTest() {
     const app: any = new App({ cwd: realpathSync(tempDir()), trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
-    app.screen = { print() {}, replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
+    app.screen = { print() {}, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
     app.renderLive = () => {};
     app.session = Session.create(app.cwd, { persist: false });
     app.notifier.notify = async () => {};

@@ -31,7 +31,8 @@ const { Editor } = await import("../src/ui/editor");
 const { plainErrorText } = await import("../src/util/html");
 const { httpError } = await import("../src/providers/openai-compat");
 const { GrepTool } = await import("../src/tools/search-tools");
-const { App } = await import("../src/ui/app");
+const { App, splitActionsNote } = await import("../src/ui/app");
+const { BULLET } = await import("../src/ui/components");
 const { stripAnsi } = await import("../src/ui/ansi");
 import type { Message } from "../src/providers/types";
 import type { AgentEvent } from "../src/agent/agent";
@@ -491,7 +492,7 @@ function testApp(cwd = tempDir()) {
     const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
     const printed: string[] = [];
     const print = (l: string | string[] | ((cols: number) => string[])) => (printed.push(...(typeof l === "function" ? l(100) : Array.isArray(l) ? l : [l])), {});
-    (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {} };
+    (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {} };
     (app as any).renderLive = () => {};
     app.session = Session.create(cwd, { persist: false });
     app.session.setSystem("test system prompt");
@@ -614,6 +615,22 @@ describe("TUI input handling", () => {
         g.open();
         await sent;
         expect(ran).toEqual(["new"]);
+    });
+    test("a resumed Codex turn shows its actions one a line, not the note the model reads, between clear markers", () => {
+        const { app, printed } = testApp();
+        const note = "[Codex used: Bash(gh issue create --title \"a, b\" --body-file /tmp/x.md), Edit(src/a.ts), Bash(python3 - <<'PY' …)]";
+        app.session.push({ role: "user", content: [{ type: "text", text: "open the issue" }], meta: { kind: "prompt" } });
+        app.session.push({ role: "assistant", content: [{ type: "text", text: `Opened issue #159.\n\n${note}` }] });
+        (app as any).replayTranscript();
+        const out = printed.map(stripAnsi);
+        expect(out.join("\n")).not.toContain("Codex used");
+        expect(out).toContain(`${BULLET} Opened issue #159.`);
+        expect(out).toContain(`  ${BULLET} Bash(gh issue create --title "a, b" --body-file /tmp/x.md)`);
+        expect(out).toContain(`  ${BULLET} Edit(src/a.ts)`);
+        expect(out.some((l) => /^── Resumed session .* · 2 messages ─+$/.test(l))).toBe(true);
+        expect(out.slice(-3)).toEqual(["", expect.stringMatching(/^── end of resumed history ─+$/), ""]);
+        expect(splitActionsNote("plain reply")).toEqual({ text: "plain reply", actions: [] });
+        expect(splitActionsNote("done\n\n[Claude Code used: Read(a), Bash(ls), and 3 more]").actions).toEqual(["Read(a)", "Bash(ls)", "and 3 more"]);
     });
     test("a ! command can be interrupted", async () => {
         const { app, printed } = testApp();
@@ -818,6 +835,27 @@ describe("live region layout", () => {
         a.flushThinking();
         expect(printed.join("\n")).not.toContain("\x1b]8;");
         expect(printed.join("\n")).not.toContain("\x1b[31m");
+    });
+
+    test("back at the plain prompt (a turn ended, then a dialog closed), the screen is asked to bring the output back down, once each", () => {
+        const { app } = testApp();
+        const a = app as any;
+        let settled = 0;
+        a.screen.settle = () => settled++;
+        a.busy = true;
+        a.turnStart = Date.now();
+        App.prototype.renderLive.call(app);
+        App.prototype.renderLive.call(app);
+        expect(settled).toBe(0);
+        // The turn ends with a dialog still open: not yet.
+        a.dialogs.push({ render: () => ["dialog", "", "", ""] });
+        a.busy = false;
+        App.prototype.renderLive.call(app);
+        expect(settled).toBe(0);
+        a.dialogs.pop();
+        App.prototype.renderLive.call(app);
+        App.prototype.renderLive.call(app);
+        expect(settled).toBe(1);
     });
 
     test("when idle, only the prompt is shown", () => {
