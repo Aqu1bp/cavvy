@@ -173,6 +173,21 @@ describe("full-window renderer", () => {
         expect((screen as any).top).toBe(1);
     });
 
+    test("settling brings back rows as they were painted, not as an entry replaced since would lay out", () => {
+        const { vt, screen } = harness(12, 40);
+        const e = screen.print(Array.from({ length: 20 }, (_, i) => `painted ${i}`));
+        screen.setLive(Array.from({ length: 11 }, (_, i) => `busy ${i}`));
+        screen.flushNow();
+        screen.replace([e], Array.from({ length: 20 }, (_, i) => `replacement ${i}`));
+        screen.setLive(Array.from({ length: 5 }, (_, i) => `live ${i}`));
+        screen.settle();
+        screen.flushNow();
+        expect(vt.screen().slice(0, 7)).toEqual(Array.from({ length: 7 }, (_, i) => `painted ${13 + i}`));
+        // Six of them came back from the scrollback; the seventh never left the screen.
+        expect((screen as any).restored).toBe(6);
+        expect(vt.scrollback.slice(-6)).toEqual(Array.from({ length: 6 }, (_, i) => `painted ${13 + i}`));
+    });
+
     test("output printed with no live region scrolls the copies away, and they aren't dropped again", () => {
         const { vt, screen } = harness(12, 40);
         screen.print(Array.from({ length: 20 }, (_, i) => `line ${i}`));
