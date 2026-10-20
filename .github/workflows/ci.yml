@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    # Drafts don't run (see `if:` below); marking one ready does.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -22,6 +24,7 @@ env:
 jobs:
   checks:
     name: Typecheck and GUI build
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -38,6 +41,7 @@ jobs:
 
   test:
     name: Tests (${{ matrix.shard }}/4)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -73,7 +77,8 @@ jobs:
   # above passed, however the matrix changes.
   ci:
     name: ci
-    if: always()
+    # Skipped with the rest for a draft (which can't be merged anyway).
+    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     needs: [checks, test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
