@@ -279,19 +279,19 @@ export class PermissionChecker {
         const granted = this.grants(cwd).paths.flatMap(pathForms);
         if (!policy && !granted.length) return found;
         // The sandbox blocks what a path leads to, so that's what must be covered; a grant is by the path the user saw.
+        // Words are resolved against the folder the command starts in, so a line that may change
+        // folders (`cat .env; cd other; cat .env`) gets no cover: the same word can mean another file.
+        const a = analyzeCommand(cmd);
+        if (a.commands.some((c) => /^(cd|pushd|popd)$/.test(effectiveArgv(c.argv)[0] ?? ""))) return found;
         const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || pathForms(w.abs).some((f) => granted.some((r) => isInside(f, r))));
         if (!covered.length) return found;
         // Blank only the covered words themselves, by where they stand: a covered `.env` must not
-        // also erase the `.env` inside an uncovered `.env.prod` next to it.
+        // also erase the `.env` inside an uncovered `.env.prod` or "other .env file" next to it.
+        // Redirect targets have no span, so they stay, and a line reading one still gets judged.
         const words = new Set(covered.map((w) => w.word));
-        const spans = analyzeCommand(cmd).commands.flatMap((c) => c.argv.flatMap((w, i) => (words.has(w) ? [c.spans[i]!] : [])));
+        const spans = a.commands.flatMap((c) => c.argv.flatMap((w, i) => (words.has(w) ? [c.spans[i]!] : [])));
         let rest = cmd;
         for (const [from, to] of spans.sort((x, y) => y[0] - x[0])) rest = rest.slice(0, from) + " ".repeat(to - from) + rest.slice(to);
-        // Redirect targets have no span: whole words only.
-        for (const w of words) {
-            const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            rest = rest.replace(new RegExp(`(^|[\\s<>])${esc}(?=$|[\\s;|&)])`, "g"), "$1 ");
-        }
         return sensitiveTarget(rest, opts);
     }
 

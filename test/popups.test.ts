@@ -373,7 +373,14 @@ describe("session approvals", () => {
         expect(s.check(Bash, { command: "cat .env", dangerouslyDisableSandbox: false }, "default", W).sensitive).toBeUndefined();
         // The grant covers .env itself, not a longer name it's the start of, alone or beside it.
         writeFileSync(join(W, ".env.prod"), "B=2\n");
-        for (const command of ["cat .env.prod", "cat .env .env.prod", `cat ${env} ${env}.prod`, "cat .env.prod .env", "cat .env < .env.prod"]) {
+        mkdirSync(join(W, "other"), { recursive: true });
+        writeFileSync(join(W, "other", ".env"), "C=3\n");
+        writeFileSync(join(W, "other .env file"), "D=4\n");
+        for (const command of [
+            "cat .env.prod", "cat .env .env.prod", `cat ${env} ${env}.prod`, "cat .env.prod .env", "cat .env < .env.prod",
+            // The same word after a cd can be another file; a quoted name holding the word is another file.
+            "cat .env; cd other; cat .env", "cd other && cat .env", 'cat .env "other .env file"',
+        ]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
             expect([command, auto(s, { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true }]);
         }
