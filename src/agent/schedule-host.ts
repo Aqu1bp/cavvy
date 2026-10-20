@@ -139,7 +139,7 @@ export class SessionSchedules {
         if (job.kind === "resume") this.resumes++;
         const label = job.kind === "resume" ? "Resuming after the usage limit reset" : `Scheduled (${describeJob(job)})`;
         this.running = true;
-        let run: Promise<unknown> | void;
+        let run: Promise<unknown> | void = undefined;
         try {
             run = this.o.run(job.prompt, job, label);
         } finally {
