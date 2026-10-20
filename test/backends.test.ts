@@ -4,6 +4,7 @@
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
@@ -18,7 +19,7 @@ const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { isAgentBackend } = await import("../src/backends/types");
 const { checkAgentCli } = await import("../src/backends/index");
-const { applyHunks, codexPolicy, changePreview } = await import("../src/backends/codex");
+const { applyHunks, codexPolicy, changePreview, insideWorkspace } = await import("../src/backends/codex");
 const trust = await import("../src/config/trust");
 const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
 const { loadSettings } = await import("../src/config/settings");
@@ -686,6 +687,14 @@ describe("Codex backend", () => {
 
     test("modes map to Codex's approval policy and sandbox", () => {
         expect(codexPolicy("default", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
+        // Added folders as the checker reads them: `~/…` and relative ones too.
+        const home = realpathSync(homedir());
+        expect(insideWorkspace(join(home, "proj", "src"), "/elsewhere", ["~/proj"])).toBe(true);
+        expect(insideWorkspace(join(home, "other"), "/elsewhere", ["~/proj"])).toBe(false);
+        expect(insideWorkspace(join(realpathSync(tmpdir()), "ws", "lib"), join(realpathSync(tmpdir()), "ws", "app"), ["../lib"])).toBe(true);
+        // A read-only agent in auto: reads run in the read-only sandbox; anything more asks the harness, never Codex's reviewer.
+        expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
+        expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
         expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] }, approvalsReviewer: "user" });
         expect(codexPolicy("auto", [])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
@@ -787,6 +796,49 @@ describe("Codex backend", () => {
         expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "cat greet.py" });
     });
 
+    test("a read-only command in another folder is checked there, and runs without asking unless it reads a secret", async () => {
+        const other = join(cwd, "other");
+        mkdirSync(other, { recursive: true });
+        process.env.FAKE_COMMAND = "sed -n '1,5p' greet.py";
+        process.env.FAKE_COMMAND_CWD = other;
+        const quiet = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+        expect(await quiet.run("read it")).toBe("done");
+        expect(quiet.asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true });
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND = "cat .env";
+        const secret = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+        await secret.run("read it");
+        expect(secret.asked.map((a) => a.input.command)).toEqual([`cd '${realpathSync(other)}' && cat .env`]);
+        // A folder that's a symlink is checked where it leads: `keys -> .ssh` is the .ssh folder.
+        const ssh = join(tempDir(), ".ssh");
+        mkdirSync(ssh, { recursive: true });
+        writeFileSync(join(ssh, "deploy_key"), "fake\n");
+        symlinkSync(ssh, join(cwd, "keys"));
+        for (const command of ["cat deploy_key", "cat *"]) {
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = command;
+            process.env.FAKE_COMMAND_CWD = join(cwd, "keys");
+            const linked = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+            await linked.run("read it");
+            expect(linked.asked.map((a) => a.input.command)).toEqual([`cd '${realpathSync(ssh)}' && ${command}`]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        }
+        // Outside the workspace, even a read-only command asks: a search there reads what the checker can't see.
+        const outside = tempDir();
+        writeFileSync(join(outside, ".env"), "FAKE=1\n");
+        symlinkSync(outside, join(cwd, "env-link"));
+        for (const folder of [outside, join(cwd, "env-link")]) {
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = "rg --hidden .";
+            process.env.FAKE_COMMAND_CWD = folder;
+            const search = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+            await search.run("look");
+            expect(search.asked.map((a) => a.input.command)).toEqual([`cd '${realpathSync(outside)}' && rg --hidden .`]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        }
+    });
+
     test("the command comes out of Codex's quoted shell wrapper as a shell would read it", async () => {
         // As Codex 0.162 showed it: double quotes, with the ! part in single quotes.
         process.env.FAKE_COMMAND_RAW = `/bin/zsh -lc "rg --files -g 'greet.py' -g '"'!**/.git/**'"'"`;
@@ -808,7 +860,7 @@ describe("Codex backend", () => {
         const cases: [Record<string, string>, string][] = [
             [{ FAKE_COMMAND_RAW: "./bash -lc 'cat greet.py'" }, "./bash -lc 'cat greet.py'"],
             [{ FAKE_COMMAND_RAW: "/tmp/x/zsh -lc 'cat greet.py'" }, "/tmp/x/zsh -lc 'cat greet.py'"],
-            [{ FAKE_COMMAND: "cat credentials.json", FAKE_COMMAND_CWD: "/tmp/elsewhere" }, "cd '/tmp/elsewhere' && cat credentials.json"],
+            [{ FAKE_COMMAND: "touch notes.txt", FAKE_COMMAND_CWD: "/tmp/elsewhere" }, `cd '${realpathSync("/tmp")}/elsewhere' && touch notes.txt`],
         ];
         for (const [vars, shown] of cases) {
             rmSync(LOG, { force: true });

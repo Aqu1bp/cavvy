@@ -11,7 +11,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
 const { clientFor, forgetClient } = await import("../src/providers/models");
-const { Agent } = await import("../src/agent/agent");
+const { Agent, readOnlyBackendMode } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
@@ -1645,5 +1645,18 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         expect(r2).toMatchObject({ isError: false, text: "[REDACTED DEPLOY_KEY]\nMATCH" });
         expect(t2.asked).toHaveLength(1);
         expect(readFileSync(LOG, "utf-8")).not.toContain(VALUE);
+    });
+});
+
+describe("a read-only agent on Claude Code or Codex", () => {
+    test("in auto runs in Codex's own (read-only) auto mode; Claude Code's stays in default, where the harness runs read-only commands", () => {
+        expect(readOnlyBackendMode("auto", "codex")).toBe("auto");
+        expect(readOnlyBackendMode("auto", "claude-code")).toBe("default");
+        for (const p of ["codex", "claude-code"]) {
+            expect(readOnlyBackendMode("plan", p)).toBe("plan");
+            expect(readOnlyBackendMode("default", p)).toBe("default");
+            expect(readOnlyBackendMode("acceptEdits", p)).toBe("default");
+            expect(readOnlyBackendMode("bypassPermissions", p)).toBe("default");
+        }
     });
 });
