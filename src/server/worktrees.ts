@@ -481,7 +481,8 @@ function hookWorktreePath(main: string, given: string): string {
 export async function createWorktreeWithHooks(o: CreateWorktreeParams, log?: Log, settings?: Settings): Promise<{ path: string; branch: string; commit: string }> {
     const cwd = resolve(o.path);
     const s = settings ?? repoSettings(cwd);
-    if (!s.hooks?.WorktreeCreate?.length) return createWorktree(o, log);
+    // Awaited, so its errors reject this call (handed back unawaited, Bun reported them as unhandled and the server stopped).
+    if (!s.hooks?.WorktreeCreate?.length) return await createWorktree(o, log);
     const main = checkCreate(cwd);
     const name = o.folder || defaultFolder(o.branch);
     const h = await runHooks(s, "WorktreeCreate", { name, branch: o.branch, base: o.base ?? null, ...(o.location ? { location: o.location } : {}) }, main);
