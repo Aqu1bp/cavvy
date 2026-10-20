@@ -562,6 +562,38 @@ describe("queued prompts keep their images", () => {
         await submit(app);
         expect(sent[0]!.images.map((i) => i.name)).toEqual(["q.png"]);
     });
+    test("esc during the turn takes back a queued message with its image, one per press", async () => {
+        const app = await queueWithImage();
+        const a = app as any;
+        a.interrupt = () => {
+            throw new Error("esc shouldn't interrupt while messages are queued");
+        };
+        a.takeBackQueued();
+        expect(value(app)).toBe("after");
+        a.editor.set("");
+        a.takeBackQueued();
+        expect(value(app)).toBe("[Image #1] look");
+        expect(app.editor.attachedImages().map((i) => i.bytes)).toEqual([300]);
+        expect(a.queued.map((d: { text: string }) => d.text)).toEqual(["first"]);
+    });
+    test("after an interrupt, a queued command with an image goes to history with it, not into the draft", async () => {
+        const { app } = newApp();
+        const f = join(tempDir(), "r.png");
+        writeFileSync(f, png(1, 1, 250));
+        app.busy = true;
+        app.editor.insert("/review ");
+        paste(app, f);
+        await settle(app);
+        await submit(app);
+        await app.submitText("plain");
+        app.editor.insert("draft");
+        (app as any).returnQueued();
+        expect(value(app)).toBe("plain\ndraft");
+        app.editor.set("");
+        app.editor.historyPrev();
+        expect(value(app).trim()).toBe("/review [Image #1]");
+        expect(app.editor.attachedImages().map((i) => i.bytes)).toEqual([250]);
+    });
 });
 
 describe("images still being prepared", () => {

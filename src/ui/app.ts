@@ -160,6 +160,8 @@ export class App {
     private ticker?: ReturnType<typeof setInterval>;
     private ctrlCAt = 0;
     private escAt = 0;
+    /** When Esc last found a queued slash command it couldn't take back: the next Esc interrupts. */
+    private takeBackBlockedAt = 0;
     private flash?: { text: string; until: number };
     private showHelp = false;
     private menuIndex = 0;
@@ -1236,7 +1238,12 @@ export class App {
             return e.del();
         }
         if (n === "escape") {
-            if (this.busy) return this.interrupt();
+            if (this.busy) {
+                // An Esc meant to cancel a queued follow-up must not kill the running turn.
+                if (this.queued.length && Date.now() - this.takeBackBlockedAt >= 3000) return this.takeBackQueued();
+                this.takeBackBlockedAt = 0;
+                return this.interrupt();
+            }
             if (this.showHelp) return void (this.showHelp = false);
             if (Date.now() - this.escAt < 800) {
                 this.escAt = 0;
@@ -1592,6 +1599,7 @@ export class App {
             reason = "error";
         } finally {
             this.busy = false;
+            this.takeBackBlockedAt = 0;
             this.abort = undefined;
             this.stopTicker();
             this.active.clear();
@@ -1630,6 +1638,7 @@ export class App {
             return undefined;
         } finally {
             this.busy = false;
+            this.takeBackBlockedAt = 0;
             this.abort = undefined;
             this.stopTicker();
             this.active.clear();
@@ -1647,7 +1656,7 @@ export class App {
     private drainQueued(): string[] {
         const barrier = this.queued.findIndex((d) => imagesIn(d.text, d.attachments).length > 0);
         const head = barrier < 0 ? this.queued : this.queued.slice(0, barrier);
-        const take = head.filter((d) => !plainText(d.text).startsWith("/"));
+        const take = head.filter((d) => !isCommand(plainText(d.text)));
         this.queued = this.queued.filter((d) => !take.includes(d));
         const q = take.map((d) => plainText(d.text));
         for (const t of q) this.printUser(t);
@@ -1663,16 +1672,59 @@ export class App {
         setTimeout(() => void this.submitText(next), 0);
     }
 
-    /** After an interrupt, unsent messages go back to the prompt, ahead of anything being typed, instead of running. */
+    /**
+     * Esc while busy: the latest queued message comes back to the prompt, one per press. A slash
+     * command can't share the prompt with other text (it would take that text as its arguments),
+     * so with a draft in the way it stays queued and the next Esc interrupts.
+     */
+    private takeBackQueued() {
+        const last = this.queued.at(-1)!;
+        const e = this.editor;
+        const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
+        const draft = e.text ? prefix + e.text : "";
+        // A long paste shows as a placeholder; what it holds decides whether the draft is a command.
+        if (draft && (isCommand(plainText(last.text)) || isCommand(prefix + e.value()))) {
+            this.takeBackBlockedAt = Date.now();
+            this.flash = { text: "Clear the prompt to take back the queued command · Esc again to interrupt", until: this.takeBackBlockedAt + 3000 };
+            return this.renderLive();
+        }
+        this.queued.pop();
+        const cursor = e.cursor;
+        if (draft && prefix) e.set(draft);
+        // The queued message's images come back with it, ahead of the draft; the cursor stays where it was in the draft.
+        e.restore([last]);
+        if (draft) e.cursor = last.text.length + 1 + prefix.length + cursor;
+        this.inputMode = "prompt";
+        const left = this.queued.length;
+        this.flash = { text: `Queued message moved back to the prompt · Esc again ${left ? `for the next (${left} more)` : "to interrupt"}`, until: Date.now() + 3000 };
+        this.renderLive();
+    }
+
+    /**
+     * After an interrupt, unsent messages go back to the prompt, ahead of anything being typed,
+     * instead of running. A slash command can't share the prompt (it would take the rest as its
+     * arguments), so unless it's all there is, it goes to the history (↑) instead.
+     */
     private returnQueued() {
         if (!this.queued.length) return;
         const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
-        if (this.editor.text && prefix) this.editor.set(prefix + this.editor.text);
+        const e = this.editor;
+        if (e.text && prefix) e.set(prefix + e.text);
         // The queue owns its images, so they come back whatever the editor's undo history has dropped.
         const queued = this.queued;
         this.queued = [];
-        this.editor.restore(queued);
         this.inputMode = "prompt";
+        // Each draft in full (paste placeholders expanded) decides whether it's a command.
+        const all = [...queued, ...(e.text ? [e.capture()] : [])];
+        const commands = all.length > 1 ? all.filter((d) => isCommand(plainText(d.text))) : [];
+        if (!commands.length) e.restore(queued);
+        else {
+            for (const c of commands) e.pushHistory(plainText(c.text), c);
+            e.set("");
+            e.restore(all.filter((d) => !commands.includes(d)));
+            const names = commands.map((c) => truncate(plainText(c.text).replace(/\s+/g, " "), 40));
+            this.notice(`Not run: ${names.join(", ")}. ↑ brings ${commands.length === 1 ? "it" : "them"} back.`, "warn");
+        }
         this.renderLive();
     }
 
@@ -1819,7 +1871,7 @@ export class App {
                 : quiet >= 10_000 && this.agentWork && this.model && !this.status && !this.active.size && !this.receiving.size
                   ? ` · waiting for ${shortModel(this.model)} ${formatDuration(quiet)}`
                   : "";
-            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting} · esc to interrupt)`)}`);
+            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting} · ${this.queued.length ? "esc to take back the queued message" : "esc to interrupt"})`)}`);
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
@@ -1956,12 +2008,17 @@ export function renderTodos(todos: TodoItem[], cols: number): string[] {
     });
 }
 
+/** A slash command, as submitting reads it (`//` is plain text). */
+function isCommand(text: string): boolean {
+    return text.startsWith("/") && !text.startsWith("//");
+}
+
 function shortcutHelp(cols: number): string[] {
     const rows = [
         ["! for bash mode", "double esc to clear or rewind", "shift+tab to cycle modes"],
         ["/ for commands", "ctrl+g to edit in $EDITOR", "ctrl+o for verbose output"],
         ["@ for file paths", "\\⏎ or ctrl+j for newline", "ctrl+t to toggle todos"],
-        ["# to memorize", "esc to interrupt", "ctrl+c twice to exit"],
+        ["# to memorize", "esc to interrupt (queued first)", "ctrl+c twice to exit"],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [

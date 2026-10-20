@@ -181,6 +181,160 @@ describe("keys in the kitty keyboard protocol's encoding", () => {
         press("\x1b[9;2u");
         expect(app.mode).toBe("acceptEdits");
     });
+
+    describe("esc while a turn runs", () => {
+        const drafts = (...ts: string[]) => ts.map((text) => ({ text, attachments: new Map() }));
+        const texts = (q: { text: string }[]) => q.map((d) => d.text);
+        function busyApp() {
+            const { app } = testApp();
+            const a = app as any;
+            let interrupts = 0;
+            a.interrupt = () => void interrupts++;
+            a.busy = true;
+            return { app, a, press: keyboard(app), interrupts: () => interrupts };
+        }
+
+        test("with messages queued, each esc takes back the latest one; once none are left, esc interrupts", () => {
+            const { a, press, interrupts } = busyApp();
+            a.queued = drafts("first", "second");
+            press("\x1b[27u");
+            expect(texts(a.queued)).toEqual(["first"]);
+            expect(a.editor.text).toBe("second");
+            expect(a.flash.text).toContain("for the next (1 more)");
+            press("\x1b[27u");
+            expect(texts(a.queued)).toEqual([]);
+            expect(a.editor.text).toBe("first\nsecond");
+            expect(a.flash.text).toContain("Esc again to interrupt");
+            expect(interrupts()).toBe(0);
+            press("\x1b[27u");
+            expect(interrupts()).toBe(1);
+        });
+
+        test("a taken-back message goes ahead of the draft, and the cursor stays where it was in the draft", () => {
+            const { a, press } = busyApp();
+            a.queued = drafts("first");
+            press("draft");
+            a.editor.cursor = 2;
+            press("\x1b[27u");
+            expect(a.editor.text).toBe("first\ndraft");
+            expect(a.editor.cursor).toBe("first\n".length + 2);
+        });
+
+        test("a queued slash command doesn't merge with a draft (it would take it as arguments): it stays queued and the next esc interrupts", () => {
+            const { a, press, interrupts } = busyApp();
+            a.queued = drafts("/review");
+            press("draft", "\x1b[27u");
+            expect(texts(a.queued)).toEqual(["/review"]);
+            expect(a.editor.text).toBe("draft");
+            expect(a.flash.text).toContain("Clear the prompt");
+            expect(interrupts()).toBe(0);
+            press("\x1b[27u");
+            expect(interrupts()).toBe(1);
+        });
+
+        test("with an empty prompt, a queued slash command comes back on its own", () => {
+            const { a, press, interrupts } = busyApp();
+            a.queued = drafts("/review");
+            press("\x1b[27u");
+            expect(texts(a.queued)).toEqual([]);
+            expect(a.editor.text).toBe("/review");
+            expect(interrupts()).toBe(0);
+        });
+
+        test("an esc from before the turn (esc again to clear) doesn't make the next one interrupt", () => {
+            const { a, press, interrupts } = busyApp();
+            a.busy = false;
+            press("x", "\x1b[27u");
+            a.busy = true;
+            a.queued = drafts("first");
+            press("\x1b[27u");
+            expect(interrupts()).toBe(0);
+            expect(texts(a.queued)).toEqual([]);
+        });
+
+        test("with nothing queued, esc interrupts at once", () => {
+            const { a, press, interrupts } = busyApp();
+            press("draft", "\x1b[27u");
+            expect(interrupts()).toBe(1);
+            expect(a.editor.text).toBe("draft");
+        });
+
+        test("when idle, esc esc still clears the draft and never interrupts", () => {
+            const { a, press, interrupts } = busyApp();
+            a.busy = false;
+            press("draft", "\x1b[27u");
+            expect(a.editor.text).toBe("draft");
+            press("\x1b[27u");
+            expect(a.editor.text).toBe("");
+            expect(interrupts()).toBe(0);
+        });
+
+        test("after an interrupt, a queued slash command goes to the history, not into the draft as its arguments", () => {
+            const { a, press } = busyApp();
+            a.queued = drafts("/review", "also this");
+            press("draft");
+            a.returnQueued();
+            expect(texts(a.queued)).toEqual([]);
+            expect(a.editor.text).toBe("also this\ndraft");
+            a.editor.set("");
+            a.editor.historyPrev();
+            expect(a.editor.text).toBe("/review");
+        });
+
+        test("// is plain text, as when it's submitted: it comes back with the rest", () => {
+            const { a, press } = busyApp();
+            a.queued = drafts("// explain this", "also this");
+            a.returnQueued();
+            expect(a.editor.text).toBe("// explain this\nalso this");
+            a.editor.set("");
+            a.queued = drafts("// note");
+            press("draft", "\x1b[27u");
+            expect(texts(a.queued)).toEqual([]);
+            expect(a.editor.text).toBe("// note\ndraft");
+        });
+
+        test("a long pasted command is judged by what it holds, not its placeholder", () => {
+            const { a, press, interrupts } = busyApp();
+            const long = "/review " + "x".repeat(1501);
+            a.queued = drafts("follow-up");
+            press(`\x1b[200~${long}\x1b[201~`);
+            expect(a.editor.text).toMatch(/^\[Pasted text #\d+ \+\d+ lines\]$/);
+            press("\x1b[27u");
+            expect(texts(a.queued)).toEqual(["follow-up"]);
+            expect(a.flash.text).toContain("Clear the prompt");
+            expect(interrupts()).toBe(0);
+            // The interrupt fallback: the command goes to history in full; the plain message comes back.
+            a.returnQueued();
+            expect(a.editor.text).toBe("follow-up");
+            a.editor.set("");
+            a.editor.historyPrev();
+            expect(a.editor.text).toBe(long);
+        });
+
+        test("after an interrupt, a lone queued slash command comes back to the prompt", () => {
+            const { a } = busyApp();
+            a.queued = drafts("/review");
+            a.returnQueued();
+            expect(a.editor.text).toBe("/review");
+        });
+
+        test("a blocked take-back doesn't carry into the next turn", async () => {
+            const { a, press, interrupts } = busyApp();
+            a.queued = drafts("/review");
+            press("draft", "\x1b[27u");
+            expect(a.takeBackBlockedAt).toBeGreaterThan(0);
+            a.busy = false;
+            a.queued = drafts();
+            await a.runTask("working", async () => 1);
+            expect(a.takeBackBlockedAt).toBe(0);
+            a.busy = true;
+            a.queued = drafts("follow-up");
+            a.editor.set("");
+            press("\x1b[27u");
+            expect(interrupts()).toBe(0);
+            expect(a.editor.text).toBe("follow-up");
+        });
+    });
 });
 
 // ---------------------------------------------------------------------------
