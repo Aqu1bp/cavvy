@@ -25,6 +25,7 @@ function planningRuntime() {
         setStatus() {},
         backendModel: () => false,
         engine: { notify() {} },
+        schedules: { poke() {} },
     });
     return rt;
 }

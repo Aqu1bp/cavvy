@@ -24,7 +24,7 @@ function fixture() {
     };
     const rt = Object.assign(Object.create(Runtime.prototype), {
         engine, session, ws: { cwd: session.meta.cwd }, view, busy: true,
-        lastActive: 100, turnId: "first", pending: new Map(),
+        lastActive: 100, turnId: "first", pending: new Map(), schedules: { poke() {} },
         op: (op: SessionOp) => applyOp(view, op),
     });
     const summaries: SessionSummary[] = [];
