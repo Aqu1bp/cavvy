@@ -85,6 +85,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             .filter((g) => g.models.length || g.status === "error"),
     );
     const providerName = (id: string) => app.models.find((g) => g.provider === id)?.providerName ?? id;
+    /** The model and whose it is: Claude Code's Opus and the Anthropic API's both read "Opus 5.5" on the chip. */
+    const chipName = () => {
+        const name = currentModel()?.name ?? currentRef() ?? "Model";
+        const provider = currentProvider();
+        return provider ? `${name} · ${providerName(provider)}` : name;
+    };
     const favorites = createMemo(() => {
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
         return prefs.favoriteModels.map((ref) => all.get(ref)).filter((m): m is ModelSummary => Boolean(m));
@@ -185,7 +191,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`ctl model ${multi() ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : `${currentModel()?.name ?? currentRef() ?? "Model"} (${mod}+/)`}>
+            <button ref={anchor} class={`ctl model ${multi() ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : `${chipName()} (${mod}+/)`} aria-label={multi() ? undefined : `Model: ${chipName()}`}>
                 <Show when={multi()} fallback={
                     <>
                         <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>

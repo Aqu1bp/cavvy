@@ -160,3 +160,12 @@ test("unavailable Compare is disabled and excluded from keyboard focus", () => {
     expect(f.comparePicks()).toBeUndefined();
     expect(text(f.root)).toContain("Requires a Git project");
 });
+
+test("the model chip's tooltip and accessible name say whose model it is", () => {
+    const f = picker();
+    f.key("Escape");
+    // Claude Code's Opus and the Anthropic API's read the same on the chip; the provider tells them apart.
+    expect(f.trigger.props.title).toBe("Alpha · Mock (Ctrl+/)");
+    expect(f.trigger.props["aria-label"]).toBe("Model: Alpha · Mock");
+    expect(text(f.trigger)).toContain("Alpha");
+});
