@@ -116,7 +116,7 @@ describe.skipIf(!seatbelt)("sandboxed commands (Seatbelt)", () => {
 
     test("a command that needs the network but lists no hosts is turned back with advice, before running or review", async () => {
         const ws = workspace();
-        const r = await runAuto({ ws, prompt: "add lodash", script: oneCommand({ command: "npm install lodash && touch ran.txt" }) });
+        const r = await runAuto({ ws, prompt: "look up lodash", script: oneCommand({ command: "npm view lodash && touch ran.txt" }) });
         expect(r.reviews).toHaveLength(0);
         expect(r.asked).toBe(0);
         expect(r.results[0]).toContain('allowedHosts naming the hosts it needs (probably ["registry.npmjs.org"]');

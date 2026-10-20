@@ -79,7 +79,8 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
         // Keep only the fixture workspace writable so the baseline is independent of OS temp paths.
         policy.writable = [home];
         const expected = await Bun.file(join(import.meta.dir, "fixtures", "seatbelt-no-accounts.txt")).text();
-        // Frozen from origin/main's construction without account paths, including its literal deny set.
+        // Frozen from origin/main's construction without account paths, including its literal deny set; since then the harness
+        // home's contents and extended attributes (not its listing) are what's denied, with its secrets and accounts/ wholly, and ps works.
         expect(seatbeltProfile(policy).replaceAll(home, "/workspace")).toBe(expected);
     });
 

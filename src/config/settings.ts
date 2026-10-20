@@ -87,8 +87,12 @@ export interface Settings {
     enableAllProjectMcpServers?: boolean;
     /** Custom status line: a shell command whose first output line is shown. */
     statusLine?: { command: string };
-    /** Auto mode runs shell commands in a sandbox where the OS has one (default true). */
-    sandbox?: boolean;
+    /**
+     * Auto mode runs shell commands in a sandbox where the OS has one (default true).
+     * The object form adds hosts and exemptions. Those count from user settings
+     * alone: a cloned repo mustn't grant its own commands network or a way out.
+     */
+    sandbox?: boolean | SandboxSettings;
     /** How to alert you to a long turn ending, a prompt or an error while the window isn't focused (auto: terminal or bell). */
     notifications?: NotificationMode;
     /** A finished turn alerts only when it took at least this long (default 30). */
@@ -97,6 +101,32 @@ export interface Settings {
     delegation?: boolean;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
     editor?: string;
+}
+
+export interface SandboxSettings {
+    /** false turns the sandbox off (same as `"sandbox": false`). */
+    enabled?: boolean;
+    /** Hosts open to every sandboxed command, with no listing and no review. */
+    allowedHosts?: string[];
+    /** Bash rule patterns (`docker:*`, `Bash(make deploy)`) for commands that run unsandboxed: the whole call must match. They still go to the reviewer in auto mode. */
+    excludedCommands?: string[];
+}
+
+/** The sandbox's on/off setting, whichever form it's written in. */
+export function sandboxSwitch(s: Settings): boolean | undefined {
+    return typeof s.sandbox === "object" && s.sandbox !== null ? s.sandbox.enabled : s.sandbox;
+}
+
+const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "") : []);
+
+/** Hosts the user opened for every sandboxed command. */
+export function sandboxAllowedHosts(s: Settings): string[] {
+    return typeof s.sandbox === "object" && s.sandbox !== null ? stringList(s.sandbox.allowedHosts) : [];
+}
+
+/** Rules for commands that run outside the sandbox. */
+export function sandboxExcludedCommands(s: Settings): string[] {
+    return typeof s.sandbox === "object" && s.sandbox !== null ? stringList(s.sandbox.excludedCommands) : [];
 }
 
 export type SettingsScope = "user" | "project" | "local";
@@ -257,8 +287,22 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     }
     if (user.reviewModel) merged.reviewModel = user.reviewModel;
     else delete merged.reviewModel;
+    mergeSandbox(merged, layers, user);
     mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
     return merged;
+}
+
+/** Any layer can turn the sandbox off; hosts and exemptions come from the user's own settings only. */
+function mergeSandbox(merged: Settings, layers: Settings[], user: Settings) {
+    delete merged.sandbox;
+    const enabled = layers.map(sandboxSwitch).filter((v): v is boolean => typeof v === "boolean").at(-1);
+    const allowedHosts = sandboxAllowedHosts(user);
+    const excludedCommands = sandboxExcludedCommands(user);
+    if (!allowedHosts.length && !excludedCommands.length) {
+        if (enabled !== undefined) merged.sandbox = enabled;
+        return;
+    }
+    merged.sandbox = { ...(enabled !== undefined ? { enabled } : {}), ...(allowedHosts.length ? { allowedHosts } : {}), ...(excludedCommands.length ? { excludedCommands } : {}) };
 }
 
 /** Each layer adds approvals and rejections; a later one decides a name both approve. */

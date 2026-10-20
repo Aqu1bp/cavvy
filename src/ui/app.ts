@@ -602,6 +602,7 @@ export class App {
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
+        this.checker.resetSession();
         this.makeAgent();
         this.sessionSwitched(prev, "clear");
     }
@@ -621,6 +622,7 @@ export class App {
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
+        this.checker.resetSession();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
         // At startup, run() fires SessionStart.
@@ -1015,9 +1017,12 @@ export class App {
         const header: string[] = [];
         let title = "Tool use";
         const projectName = this.cwd.split("/").pop() || this.cwd;
-        type Choice = "yes" | "always" | "session-edits" | "no";
+        type Choice = "yes" | "session" | "always" | "session-edits" | "no";
         const items: SelectItem<Choice>[] = [{ label: "Yes", value: "yes" }];
+        if (decision.grant) items.push({ label: `Yes, and allow ${bold(decision.grant.label)} for the session`, value: "session" });
         const suggestions = decision.suggestions ?? [];
+        // Where a generated summary can't be checked against the command, more of the command shows.
+        let hiddenNote = "";
 
         if (req.agentLabel) header.push(theme.muted(`Requested by sub-agent: ${req.agentLabel}`), "");
         if (tool.name === "Bash") {
@@ -1025,8 +1030,12 @@ export class App {
             const cmd = String(input.command ?? "");
             const { highlightCode } = await import("./highlight");
             const lines = highlightCode(cmd, "sh");
-            header.push(...lines.slice(0, 12).map((l) => "  " + l));
-            if (lines.length > 12) header.push(theme.subtle(`  … +${lines.length - 12} lines`));
+            const shown = req.summary ? 40 : 12;
+            header.push(...lines.slice(0, shown).map((l) => "  " + l));
+            if (lines.length > shown) {
+                header.push(theme.subtle(`  … +${lines.length - shown} lines`));
+                hiddenNote = ` (command is ${lines.length} lines; showing first ${shown})`;
+            }
             if (input.description) header.push(theme.muted(`  ${input.description}`));
             if (req.secrets?.length) header.push(theme.warning(`  It gets ${req.secrets.map((n) => `$${n}`).join(", ")} in its environment.`));
             const hosts = Array.isArray(input.allowedHosts) ? input.allowedHosts.map(String) : [];
@@ -1071,6 +1080,8 @@ export class App {
         if (decision.dangerous) header.unshift(theme.error(`⚠ ${decision.reason ?? "This action is potentially destructive."}`), "");
         else if (decision.reason && tool.name !== "Bash") header.push("", theme.muted(decision.reason));
         if (req.classifierReason) header.push("", theme.autoMode(`Auto mode asked you because: ${req.classifierReason}`));
+        // What it does in a line, above the command, marked as the model's.
+        if (req.summary) header.unshift(theme.muted("AI summary: ") + bold(req.summary) + (hiddenNote ? theme.warning(hiddenNote) : ""), "");
         header.push("", "Do you want to proceed?");
         items.push({ label: `No, and tell ${APP_TITLE} what to do differently ${theme.muted("(esc)")}`, value: "no" });
         // Its sub-agent was stopped while this was put together.
@@ -1100,6 +1111,8 @@ export class App {
         switch (choice) {
             case "yes":
                 return { allow: true };
+            case "session":
+                return { allow: true, grant: true };
             case "always":
                 return { allow: true, rules: suggestions, scope: tool.category === "read" || tool.category === "edit" ? "session" : "local" };
             case "session-edits":

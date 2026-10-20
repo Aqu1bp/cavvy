@@ -159,6 +159,11 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 }
             />
             <div class="itab-body">
+                <Show when={p.it.plain}>
+                    <div class="itab-desc">
+                        {p.it.plainLabel ?? "AI summary"}: <b>{p.it.plain}</b>
+                    </div>
+                </Show>
                 <Show when={p.it.dangerous}>
                     <div class="itab-warn">
                         <AlertTriangle size={14} /> {p.it.reason ?? "This action looks potentially destructive."}

@@ -20,18 +20,20 @@
 // failure) goes to the reviewer and runs unsandboxed if it's allowed. Without
 // a sandbox, read-only commands run and the rest go to the reviewer.
 
-import { existsSync } from "fs";
+import { existsSync, readdirSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
-import type { Settings } from "../config/settings";
+import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, configTarget, dangerousReason, effectiveArgv, ENV_FILE, isReadOnlyCommand, pushesDefaultBranch, sensitiveTarget, suggestBashRules } from "./bash-safety";
-import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, type SandboxKind } from "./sandbox";
+import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules } from "./bash-safety";
+import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
+import { stableStringify, type ApprovedAction } from "./classifier";
 import { isReadOnly } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
+import { childEnv } from "../util/env";
 import { accountCredentialFiles, accountFolders, accountProtectedPaths } from "../providers/accounts";
 
 export type Behavior = "allow" | "ask" | "deny";
@@ -51,6 +53,29 @@ export interface Decision {
     needsClassifier?: boolean;
     /** Auto mode: run the command in the sandbox. */
     sandbox?: boolean;
+    /** The sensitive target the command names (what the reviewer is told, and what a grant covers). */
+    sensitive?: string;
+    /** Sandboxed: every host to open for the command (what it listed, the settings' and the package managers' or gh's own). */
+    hosts?: string[];
+    /** Hosts the command listed that nothing opens by itself: the reason for the review. */
+    listedHosts?: string[];
+    /** Changes the harness's own configuration: only the exact action can be approved, never a wider grant. */
+    config?: boolean;
+    /** The "allow this for the session" choice the popup offers. */
+    grant?: SessionGrant;
+    /** Allowed because the user said yes to this exact action earlier in the session. */
+    remembered?: boolean;
+}
+
+/** What "Yes, and allow this for the session" covers, derived from what triggered the popup. */
+export interface SessionGrant {
+    label: string;
+    /** Permission rules (a command prefix, a domain, an MCP tool). */
+    rules?: string[];
+    /** Sensitive files or folders commands may name. */
+    paths?: string[];
+    /** Hosts a sandboxed command may list without review. */
+    hosts?: string[];
 }
 
 const SENSITIVE_HOME = [".ssh", ".aws", ".gnupg", ".kube", ".docker/config.json", ".config/gcloud", ".netrc", ".npmrc", ".pypirc", "Library/Keychains"];
@@ -88,6 +113,13 @@ function withoutWorktrees(p: string): string {
 export class PermissionChecker {
     /** Rules granted for this session only (not persisted). */
     sessionAllow: string[] = [];
+    /** "Allow for the session" grants: command prefixes, sensitive paths, hosts. Only within the workspace roots. */
+    grantedRules: string[] = [];
+    grantedPaths: string[] = [];
+    grantedHosts: string[] = [];
+    /** Actions the user said yes to: only those exact ones run unasked again. Sub-agents share it with their parent. */
+    private approved = new Set<string>();
+    private approvals: ApprovedAction[] = [];
 
     constructor(
         private settings: () => Settings,
@@ -121,9 +153,186 @@ export class PermissionChecker {
         return t;
     }
 
+    /** A new, cleared, resumed or switched-to session: nothing approved in another one carries over. */
+    resetSession() {
+        this.sessionAllow = [];
+        this.grantedRules = [];
+        this.grantedPaths = [];
+        this.grantedHosts = [];
+        this.approved = new Set();
+        this.approvals = [];
+    }
+
     check(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string): Decision {
+        const d = this.decide(tool, input, mode, cwd);
+        if (d.behavior !== "ask") return d;
+        // Rules that ask every time keep asking; anything else the user already said yes to runs.
+        if (!d.rule && this.approved.has(this.actionKey(tool, input, cwd, d.sandbox))) return { behavior: "allow", remembered: true, reason: "approved earlier this session", ...(d.sandbox ? { sandbox: true } : {}), ...(d.hosts ? { hosts: d.hosts } : {}) };
+        return d;
+    }
+
+    /** The decision with the scoped "allow for the session" choice the popup offers, if there is one. */
+    withGrant(tool: Tool<any>, input: any, d: Decision, cwd: string): Decision {
+        const grant = d.grant ?? this.grantFor(tool, input, d, cwd);
+        return grant ? { ...d, grant } : d;
+    }
+
+    /**
+     * The user said yes to this exact action, here: the same one in the same folder needs no
+     * asking again this session. What the reviewer hears is the action itself, never a summary.
+     */
+    approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
+        this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
+        const a = approvedAction(tool, input, canonical(cwd), this.target(tool, input, cwd).path, opts.grant);
+        const key = stableStringify(a);
+        this.approvals = [...this.approvals.filter((x) => stableStringify(x) !== key), a].slice(-10);
+    }
+
+    /** What the user approved lately, oldest first, for the reviewer. */
+    recentApprovals(): ApprovedAction[] {
+        return [...this.approvals];
+    }
+
+    /** The user chose "allow this for the session". */
+    applyGrant(g: SessionGrant) {
+        this.grantedRules.push(...(g.rules ?? []));
+        this.grantedPaths.push(...(g.paths ?? []));
+        this.grantedHosts.push(...(g.hosts ?? []));
+    }
+
+    /** Same action, same answer: the tool, its input, the folder it runs in and (file tools) the file it resolves to. */
+    private actionKey(tool: Tool<any>, input: any, cwd: string, sandbox?: boolean): string {
+        const where = canonical(cwd);
+        if (tool.name !== "Bash") {
+            const p = this.target(tool, input, cwd).path;
+            return stableStringify([tool.name, input ?? null, where, p ? canonical(p) : null]);
+        }
+        const hosts = [...allowedHostsOf(input)].sort();
+        return stableStringify([tool.name, String(input?.command ?? ""), Boolean(sandbox), hosts, input?.dangerouslyDisableSandbox === true, where]);
+    }
+
+    /**
+     * The scoped grant a popup offers. None for what must stay exact: dangerous
+     * commands, rules that ask every time and changes to the harness's own
+     * configuration (a grant there would let the model widen its permissions).
+     */
+    private grantFor(tool: Tool<any>, input: any, d: Decision, cwd: string): SessionGrant | undefined {
+        if (d.dangerous || d.config || d.rule || tool.category === "edit" || tool.category === "read") return undefined;
+        if (tool.name === "Bash") {
+            const cmd = String(input?.command ?? "");
+            if (d.sensitive) {
+                const paths = [...new Set(this.sensitivePaths(cmd, cwd))];
+                return paths.length && paths.every((p) => !isInside(homedir(), p)) ? { label: paths.map((p) => displayHome(p)).join(", "), paths } : undefined;
+            }
+            if (d.listedHosts?.length) return { label: d.listedHosts.join(", "), hosts: d.listedHosts };
+            const rules = d.suggestions ?? [];
+            return rules.length ? { label: rules.map((r) => r.replace(/^Bash\((.*?)(:\*)?\)$/, "$1")).join(", "), rules } : undefined;
+        }
+        const rules = d.suggestions ?? [];
+        if (!rules.length) return undefined;
+        if (tool.name === "WebFetch") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
+        return { label: tool.name, rules };
+    }
+
+    /** The paths a command's sensitive words name (globs by the folder before them). */
+    private sensitivePaths(cmd: string, cwd: string): string[] {
+        return this.sensitiveWords(cmd, cwd).map((w) => w.abs);
+    }
+
+    private sensitiveWords(cmd: string, cwd: string): { word: string; abs: string }[] {
+        const a = analyzeCommand(cmd);
+        if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return [];
+        const look = shellVars(cmd, this.shellEnv());
+        const out: { word: string; abs: string }[] = [];
+        for (const word of new Set([...a.commands.flatMap((c) => c.argv), ...a.redirects])) {
+            // Variables by their values, as the shell gets them: `$HARNESS_HOME/credentials.json`.
+            const value = /[$~]/.test(word) ? expandWord(word, look, cwd) : word;
+            if (value === undefined || !sensitiveWord(value, harnessHome())) continue;
+            const abs = wordPath(value, cwd);
+            if (abs) out.push({ word, abs });
+        }
+        return out;
+    }
+
+    /** The environment the Bash tool gives commands: what their variables hold. */
+    private shellEnv(): ShellEnv {
+        return childEnv(this.settings().env);
+    }
+
+    /**
+     * What the command names that's sensitive and not covered: the sandbox
+     * blocks the read whatever the text says, or the user allowed that path.
+     * Words are taken out one by one and the rest judged again, so one
+     * covered word never hides another target.
+     */
+    private sensitiveTarget(cmd: string, cwd: string, sandboxed: boolean): string | undefined {
+        // The policy the command will run under, built as the agent builds it.
+        const policy = sandboxed ? sandboxPolicy(this.workspaceRoots(), { harnessHome: harnessHome() }) : undefined;
+        return this.secretTarget(cmd, cwd, policy) ?? this.harnessFilesTarget(cmd, cwd, policy);
+    }
+
+    private secretTarget(cmd: string, cwd: string, policy: SandboxPolicy | undefined): string | undefined {
+        const opts = { cwd, harnessHome: harnessHome(), env: this.shellEnv() };
+        const found = sensitiveTarget(cmd, opts);
+        // Without the sandbox a recursive search of a folder holding the secrets reads them too.
+        if (!found) return policy ? undefined : this.searchesStore(cmd, cwd);
+        const granted = this.grants(cwd).paths.flatMap(pathForms);
+        if (!policy && !granted.length) return found;
+        // The sandbox blocks what a path leads to, so that's what must be covered; a grant is by the path the user saw.
+        const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || pathForms(w.abs).some((f) => granted.some((r) => isInside(f, r))));
+        if (!covered.length) return found;
+        let rest = cmd;
+        for (const { word } of covered) rest = rest.split(word).join(" ");
+        return sensitiveTarget(rest, opts);
+    }
+
+    /**
+     * Reading the harness home's other files (settings, session logs). Listing them is fine. In the
+     * sandbox, only if its policy doesn't already keep the home's file contents from being read.
+     */
+    private harnessFilesTarget(cmd: string, cwd: string, policy: SandboxPolicy | undefined): string | undefined {
+        const reads = harnessHomeReads(cmd, cwd, harnessHome(), this.shellEnv());
+        if (!reads) return undefined;
+        if (!policy) return HARNESS_FILES;
+        // Each path by where it leads; what it can't pin down (a folder, a pattern, an expansion) only when no symlink leads out of the home.
+        const home = harnessHome();
+        if (reads.unsure && !blocks(policy, home, true)) return HARNESS_FILES;
+        return reads.paths.every((p) => blocks(policy, p, true)) ? undefined : HARNESS_FILES;
+    }
+
+    /** Does a search command (rg, grep -r, find) have a folder that holds the harness's secret files as an operand? */
+    private searchesStore(cmd: string, cwd: string): string | undefined {
+        const a = analyzeCommand(cmd);
+        if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return undefined;
+        const store = [paths.credentialsFile(), paths.providers(), harnessAccounts(), ...accountCredentialFiles()].flatMap(pathForms);
+        for (const c of a.commands) {
+            const argv = effectiveArgv(c.argv);
+            const prog = (argv[0] ?? "").split("/").pop()!;
+            if (!/^(rg|ag|ack|grep|egrep|fgrep|find|fd)$/.test(prog)) continue;
+            // Names alone aren't the secrets: find and fd count only when they run something on what they find.
+            if (/^(find|fd)$/.test(prog) && !argv.some((w) => /^(-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls|x|X)|--exec(-batch)?)(=|$)/.test(w))) continue;
+            for (const word of argv.slice(1)) {
+                const abs = word.startsWith("-") ? undefined : wordPath(word, cwd);
+                if (abs && pathForms(abs).some((f) => store.some((file) => isInside(file, f)))) return "the harness credential store";
+            }
+        }
+        return undefined;
+    }
+
+    /** The session's scoped grants, which hold only within the workspace roots. */
+    private grants(cwd: string): { rules: string[]; paths: string[]; hosts: string[] } {
+        return this.inWorkspace(cwd) ? { rules: this.grantedRules, paths: this.grantedPaths, hosts: this.grantedHosts } : { rules: [], paths: [], hosts: [] };
+    }
+
+    /** Does a user-scope exclusion cover the whole call? Every command in a chain must match. */
+    private excluded(cmd: string): boolean {
+        const rules = sandboxExcludedCommands(this.settings()).map((r) => (/^Bash(\(|$)/.test(r.trim()) ? r.trim() : `Bash(${r.trim()})`));
+        return rules.length > 0 && findMatch(rules, { toolName: "Bash", command: cmd }, this.root, "allow") !== undefined;
+    }
+
+    private decide(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string): Decision {
         const s = this.settings();
-        const allow = [...(s.permissions?.allow ?? []), ...this.sessionAllow];
+        const allow = [...(s.permissions?.allow ?? []), ...this.sessionAllow, ...this.grants(cwd).rules];
         const deny = s.permissions?.deny ?? [];
         const ask = s.permissions?.ask ?? [];
         const t = this.target(tool, input, cwd);
@@ -134,10 +343,10 @@ export class PermissionChecker {
         const denied = findMatch(deny, t, this.root, "deny") ?? (resolved && findMatch(deny, resolved, this.root, "deny"));
         if (denied) return { behavior: "deny", rule: denied, reason: `Denied by permission rule ${denied}` };
 
-        if (t.path && this.isProtected(t.path, tool.name)) {
+        if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
             return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
         }
-        if (tool.name === "Bash" && accountTarget(t.command ?? "", cwd)) {
+        if (tool.name === "Bash" && accountTarget(t.command ?? "", cwd, this.shellEnv())) {
             return { behavior: "deny", reason: "Access to CLI account folders is blocked." };
         }
 
@@ -170,11 +379,11 @@ export class PermissionChecker {
         // The model must not be able to widen its own permissions (settings,
         // hooks, MCP servers) or plant git hooks without the user seeing it.
         if (tool.category === "edit" && t.path && this.isHarnessConfig(t.path)) {
-            return { behavior: "ask", reason: "This file configures the harness or git itself (permissions, hooks, MCP servers); changes always need your approval." };
+            return { behavior: "ask", config: true, reason: "This file configures the harness or git itself (permissions, hooks, MCP servers); changes always need your approval." };
         }
         if (tool.name === "Bash") {
             const cfg = configTarget(t.command ?? "", harnessHome());
-            if (cfg) return { behavior: "ask", reason: `This command changes ${cfg} (permissions, hooks, MCP servers or programs git runs); it always needs your approval.` };
+            if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg} (permissions, hooks, MCP servers or programs git runs); it always needs your approval.` };
         }
 
         const allowed = findMatch(allow, t, this.root, "allow");
@@ -210,20 +419,29 @@ export class PermissionChecker {
                     const cmd = t.command ?? "";
                     const suggestions = suggestBashRules(cmd);
                     const access = accessNeeded(cmd, cwd);
-                    const hosts = allowedHostsOf(input);
-                    const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true ? this.sandbox() : undefined;
+                    const listed = allowedHostsOf(input);
+                    const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true && !this.excluded(cmd) ? this.sandbox() : undefined;
                     // Seatbelt can open hosts for a command (through its proxy); bubblewrap can't, so
                     // there a command that wants the network runs outside, after review.
-                    const sandbox = kind !== undefined && !access.host && (kind === "seatbelt" || (!access.network && !hosts.length));
-                    const opensHosts = sandbox && hosts.length > 0;
-                    const sensitive = sensitiveTarget(cmd, { cwd, harnessHome: harnessHome() });
-                    if (sensitive && !(mode === "auto" && sensitive === ENV_FILE)) return { behavior: "ask", reason: `This command reads or touches ${sensitive}, which may contain credentials.` };
+                    const sandbox = kind !== undefined && !access.host && (kind === "seatbelt" || (!access.network && !listed.length));
+                    // Hosts nothing needs the model to list: the user's own (settings), and a package manager's
+                    // registry when all the line does besides installing needs no network.
+                    const auto = sandbox && kind === "seatbelt" ? [...sandboxAllowedHosts(s), ...(access.network && installsOnly(cmd, cwd) ? registryHosts(cmd) : [])] : [];
+                    const needReview = listed.filter((h) => !auto.includes(h) && !this.grants(cwd).hosts.includes(h));
+                    const hosts = [...new Set([...auto, ...listed])];
+                    const opensHosts = sandbox && needReview.length > 0;
+                    const sensitive = this.sensitiveTarget(cmd, cwd, sandbox);
+                    if (sensitive && mode !== "auto") return { behavior: "ask", sensitive, reason: `This command reads or touches ${sensitive}, which may contain credentials.` };
                     // It would only fail in the sandbox: say how to ask for the network before running it.
                     if (sandbox && access.network && !hosts.length) return { behavior: "deny", reason: networkAdvice(access.network, cmd) };
+                    const open = sandbox && hosts.length ? { hosts } : {};
+                    const push = mode === "auto" ? pushesDefaultBranch(cmd, cwd) : undefined;
+                    // Naming something sensitive doesn't take a push to main past the user.
+                    if (push) return { behavior: "ask", reason: `This command updates the main branch on the remote (${push}); auto mode always asks for that.`, suggestions };
                     if (sensitive) {
-                        // Using a .env (loading it to run the tests, creating one from the
-                        // example) is routine; printing or sending it isn't. The reviewer tells them apart.
-                        return { behavior: "ask", needsClassifier: true, sandbox, reason: `This command reads or touches ${sensitive}, which may contain credentials.`, suggestions };
+                        // Using a .env (loading it to run the tests, creating one from the example) is routine;
+                        // printing or sending it isn't. The reviewer tells them apart, and the user hears only if it won't allow it.
+                        return { behavior: "ask", needsClassifier: true, sandbox, sensitive, ...open, reason: `This command reads or touches ${sensitive}, which may contain credentials.`, suggestions };
                     }
                     // Opening hosts always takes the reviewer, read-only command or not.
                     if (isReadOnlyCommand(cmd) && !opensHosts) {
@@ -232,17 +450,15 @@ export class PermissionChecker {
                         // So in auto mode with a sandbox these run in it, and one that can't (it
                         // needs the network, or the model opted out) takes the reviewer.
                         const unsandboxed = mode === "auto" && !sandbox && this.sandboxAvailable();
-                        if (!unsandboxed) return { behavior: "allow", reason: "read-only command", ...(sandbox ? { sandbox } : {}) };
+                        if (!unsandboxed) return { behavior: "allow", reason: "read-only command", ...(sandbox ? { sandbox } : {}), ...open };
                     }
                     if (mode !== "auto") return { behavior: "ask", suggestions };
-                    const push = pushesDefaultBranch(cmd, cwd);
-                    if (push) return { behavior: "ask", reason: `This command updates the main branch on the remote (${push}); auto mode always asks for that.`, suggestions };
                     if (sandbox) {
                         // The sandbox contains everything but damage inside the project, so deletions get a look.
                         const destructive = looksDestructive(cmd, cwd);
-                        if (destructive) return { behavior: "ask", needsClassifier: true, sandbox, reason: `This command deletes or discards work (${destructive}).`, suggestions };
-                        if (opensHosts) return { behavior: "ask", needsClassifier: true, sandbox, reason: `This command opens network access to ${hosts.join(", ")}.`, suggestions };
-                        return { behavior: "allow", sandbox, reason: "sandboxed" };
+                        if (destructive) return { behavior: "ask", needsClassifier: true, sandbox, ...open, reason: `This command deletes or discards work (${destructive}).`, suggestions };
+                        if (opensHosts) return { behavior: "ask", needsClassifier: true, sandbox, ...open, listedHosts: needReview, reason: `This command opens network access to ${needReview.join(", ")}.`, suggestions };
+                        return { behavior: "allow", sandbox, ...open, reason: "sandboxed" };
                     }
                     return { behavior: "ask", needsClassifier: true, suggestions };
                 }
@@ -311,25 +527,29 @@ export class PermissionChecker {
     isProtectedArea(dir: string): boolean {
         const forms = pathForms(dir);
         const store = [paths.credentialsFile(), paths.providers(), ...accountCredentialFiles()].flatMap(pathForms);
-        const accounts = accountFolders().flatMap(pathForms);
+        const accounts = [harnessAccounts(), ...accountFolders()].flatMap(pathForms);
         return store.some((f) => forms.some((d) => isInside(f, d))) || accounts.some((f) => forms.some((d) => isInside(f, d) || isInside(d, f)));
     }
 
-    private isProtected(p: string, toolName: string, contents = toolName === "Grep"): boolean {
+    /**
+     * Is this a secret file or inside a secret folder (accounts/, registered or not)? For the
+     * read tools the user settings count too: they can hold env values and MCP auth headers.
+     * The rest of the harness home doesn't. A search root that merely holds some (`root`)
+     * isn't refused: its secrets are hidden file by file (hiddenFromSearch).
+     */
+    private isProtected(p: string, toolName: string, contents = toolName === "Grep", root = false): boolean {
         const forms = pathForms(p);
+        // Only a root in the harness home is lenient; an account folder elsewhere keeps its parents refused.
+        const home = pathForms(harnessHome());
+        root = root && forms.some((f) => home.some((h) => isInside(f, h)));
         const accounts = accountFolders().flatMap(pathForms);
         const credentials = accountCredentialFiles().flatMap(pathForms);
-        if (forms.some((f) => credentials.some((a) => f === a || (contents && isInside(a, f))))) return true;
+        if (forms.some((f) => credentials.some((a) => f === a || (contents && !root && isInside(a, f))))) return true;
         const search = toolName === "Grep" || toolName === "Glob" || toolName === "LS";
-        if (forms.some((f) => accounts.some((a) => isInside(f, a) || (search && isInside(a, f))))) return true;
-        const store = [paths.credentialsFile(), paths.providers()].flatMap(pathForms);
-        if (forms.some((f) => store.includes(f))) return true;
-        // Searching the store's directory reads the store.
-        if (toolName === "Grep" || toolName === "Glob") {
-            const home = pathForms(harnessHome());
-            return forms.some((f) => home.some((h) => isInside(f, h)));
-        }
-        return false;
+        if (forms.some((f) => accounts.some((a) => isInside(f, a) || (search && !root && isInside(a, f))))) return true;
+        if (forms.some((f) => pathForms(harnessAccounts()).some((a) => isInside(f, a)))) return true;
+        const store = [paths.credentialsFile(), paths.providers(), ...(READ_TOOLS.has(toolName) ? [paths.userSettings()] : [])].flatMap(pathForms);
+        return forms.some((f) => store.includes(f));
     }
 
     private isHarnessConfig(p: string): boolean {
@@ -349,6 +569,134 @@ export class PermissionChecker {
         // name only the wider fold turns into `.env.example` (`.env.ｅxample`) isn't exempt.
         return pathForms(p).some((f) => secrets.some((s) => isInside(f, s)) || /(^|\/)\.env(?!\.(example|sample|template|dist)$)(\.|$)/.test(f));
     }
+}
+
+/**
+ * Does the policy keep the contents of what `p` leads to from being read? By its
+ * canonical target, as Seatbelt matches it. A folder (and with `deep`, anything
+ * read through it) only when no symlink under it leads somewhere uncovered.
+ */
+function blocks(policy: SandboxPolicy, p: string, deep: boolean): boolean {
+    const roots = [...(policy.contentsUnreadable ?? []), ...policy.unreadable].flatMap((r) => spellings(r));
+    const covered = (x: string) => spellings(canonical(x)).some((f) => roots.some((r) => isInside(f, r)));
+    if (!covered(p)) return false;
+    if (!deep) return true;
+    let dir = false;
+    try {
+        dir = statSync(p).isDirectory();
+    } catch {
+        return true;
+    }
+    return !dir || !linksOut(p, covered);
+}
+
+/** Is there a symlink under `dir` whose target isn't `covered`? Yes too when there's more than it will look through. */
+function linksOut(dir: string, covered: (p: string) => boolean): boolean {
+    const queue: [string, number][] = [[dir, 0]];
+    let seen = 0;
+    while (queue.length) {
+        const [d, depth] = queue.shift()!;
+        let entries;
+        try {
+            entries = readdirSync(d, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const e of entries) {
+            if (++seen > 20_000) return true;
+            const p = join(d, e.name);
+            if (e.isSymbolicLink()) {
+                if (!covered(p)) return true;
+            } else if (e.isDirectory()) {
+                if (depth >= 8) return true;
+                queue.push([p, depth + 1]);
+            }
+        }
+    }
+    return false;
+}
+
+/** The harness's own accounts folder: private whether or not any account is registered. */
+function harnessAccounts(): string {
+    return join(harnessHome(), "accounts");
+}
+
+/** An approval as the reviewer hears it: the exact action and what it granted, nothing model-written. */
+function approvedAction(tool: Tool<any>, input: any, cwd: string, path: string | undefined, grant: SessionGrant | undefined): ApprovedAction {
+    const i = (input ?? {}) as Record<string, unknown>;
+    const a: ApprovedAction = { tool: tool.name, cwd };
+    if (tool.name === "Bash") a.command = String(i.command ?? "");
+    else if (path) a.path = path;
+    else if (typeof i.url === "string") a.url = i.url;
+    else a.input = stableStringify(input ?? {});
+    if (grant) {
+        const scope = [...(grant.rules ?? []), ...(grant.paths ?? []), ...(grant.hosts ?? [])];
+        if (scope.length) a.scope = scope;
+    }
+    return a;
+}
+
+/**
+ * Is the line nothing but package-manager installs from their registry, and cds into
+ * folders written out? Only then does the registry open by itself. Any other program
+ * on the line could send what it reads there, and even harmless-looking ones can change
+ * what runs next (`printf -v PATH`), so none are allowed. Residual: the install's own
+ * lifecycle scripts (postinstall) run with the registry open too; they reach only the
+ * registry hosts, and installing the package is what was asked.
+ */
+export function installsOnly(cmd: string, cwd: string): boolean {
+    const a = analyzeCommand(cmd);
+    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return false;
+    // Each program written out by name: an assignment (`PATH=./bin npm i`, `PATH=x;`) or a
+    // wrapper (`env`, `command`, `nice`) could run something else than the package manager.
+    if (a.commands.some((c) => /^[A-Za-z_]\w*=/.test(c.argv[0] ?? "") || c.argv[0] !== effectiveArgv(c.argv)[0])) return false;
+    const commands = commandsWithDirs(cmd, cwd);
+    if (commands.exhausted) return false;
+    let installs = false;
+    for (const { programs } of commands) for (const argv of programs) {
+        if (installsPackages(argv)) installs = true;
+        else if (!installCompanion(argv)) return false;
+    }
+    return installs;
+}
+
+/** The only thing that may share a line with an install: a cd into a folder written out. */
+function installCompanion(argv: string[]): boolean {
+    return argv[0] === "cd" && argv.length === 2 && !/^[-~+]|[$*?[{`]/.test(argv[1]!);
+}
+
+const INSTALLS: Record<string, RegExp> = { npm: /^(install|i|ci|add)$/, pnpm: /^(install|i|ci|add)$/, bun: /^(install|add|i)$/, yarn: /^(install|add)$/, pip: /^install$/, pip3: /^install$/, uv: /^(sync|add)$/ };
+
+/** A package manager's install-type operation, by its bare name (no `./npm`). */
+function installsPackages(argv: string[]): boolean {
+    const name = argv[0] ?? "";
+    if (name.includes("/")) return false;
+    const names = programNames(name);
+    let words = argv.slice(1).filter((w) => !w.startsWith("-"));
+    let prog = names.find((n) => Object.hasOwn(INSTALLS, n));
+    if (!prog && names.some((n) => /^python[\d.]*$/.test(n)) && argv[1] === "-m" && /^pip3?$/.test(argv[2] ?? "")) {
+        prog = "pip";
+        words = argv.slice(3).filter((w) => !w.startsWith("-"));
+    }
+    if (!prog) return false;
+    // Plain `yarn` installs; `uv pip install` too.
+    if (prog === "yarn" && words.length === 0) return true;
+    if (prog === "uv" && words[0] === "pip") return words[1] === "install";
+    return INSTALLS[prog]!.test(words[0] ?? "");
+}
+
+function displayHome(p: string): string {
+    const h = homedir();
+    return p === h ? "~" : p.startsWith(h + "/") ? "~" + p.slice(h.length) : p;
+}
+
+/** Where a command word points: `~` and $HOME expanded, a glob cut back to the folder before it. Not for words with other variables. */
+function wordPath(word: string, cwd: string): string | undefined {
+    const w = /^[\w-]*=/.test(word) && !word.startsWith("-") ? word.slice(word.indexOf("=") + 1) : word.replace(/^--?[\w-]+=/, "");
+    if (!w || /[$`]/.test(w.replace(/^\$\{?HOME\}?(?=\/|$)/, ""))) return undefined;
+    const at = w.search(/[*?[]/);
+    const p = at < 0 ? w : w.slice(0, at).replace(/[^/]*$/, "") || ".";
+    return expandPath(p.replace(/^\$\{?HOME\}?(?=\/|$)/, homedir()), cwd);
 }
 
 /** The Bash tool's allowedHosts (validated by the tool before the check). */
@@ -372,6 +720,13 @@ export function likelyHosts(cmd: string): string[] {
         if (!h) continue;
         if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(h)) out.add(h);
     }
+    for (const h of registryHosts(cmd)) out.add(h);
+    return [...out];
+}
+
+/** The default registries of the package managers a command runs (npm, pnpm, bun, yarn, pip, uv). A project's own registry isn't one. */
+export function registryHosts(cmd: string): string[] {
+    const out = new Set<string>();
     for (const c of analyzeCommand(cmd).commands) {
         const argv = effectiveArgv(c.argv);
         const prog = (argv[0] ?? "").split("/").pop()!;

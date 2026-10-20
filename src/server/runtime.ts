@@ -1523,8 +1523,11 @@ export class Runtime {
             dangerous: decision.dangerous,
             reason: decision.reason ? redact(decision.reason) : undefined,
             classifierReason: req.classifierReason ? redact(req.classifierReason) : undefined,
+            plain: req.summary ? redact(req.summary) : undefined,
+            plainLabel: req.summary ? "AI summary" : undefined,
             agentLabel: req.agentLabel,
         };
+        if (decision.grant) it.options.push({ id: "session", label: `Allow ${redact(decision.grant.label)} for the session` });
         if (req.preview?.summary) it.summary = redact(req.preview.summary);
         if (tool.name === "Bash") {
             it.heading = req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
@@ -1587,6 +1590,8 @@ export class Runtime {
         switch (choice) {
             case "yes":
                 return { allow: true };
+            case "session":
+                return { allow: true, grant: true };
             case "always":
                 return { allow: true, rules: suggestions, scope: tool.category === "read" || tool.category === "edit" ? "session" : "local" };
             case "session-edits":

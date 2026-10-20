@@ -134,27 +134,42 @@ describe("harness credential store is denied", () => {
         expect(check(T("Read"), { file_path: join(W, "creds-link") }, "bypassPermissions").behavior).toBe("deny");
     });
 
-    test("other files under HARNESS_HOME are not on the deny list", () => {
-        expect(check(T("Read"), { file_path: paths.userSettings() }).behavior).not.toBe("deny");
+    test("other files under HARNESS_HOME are not on the deny list, but settings.json is for the read tools", () => {
+        expect(check(T("Read"), { file_path: join(H, "history.jsonl") }).behavior).not.toBe("deny");
+        // It can hold env values and MCP auth headers.
+        expect(check(T("Read"), { file_path: paths.userSettings() }).behavior).toBe("deny");
+        expect(check(T("Edit"), { file_path: paths.userSettings(), old_string: "a", new_string: "b" }).behavior).toBe("ask");
     });
 
     test("cat of the store via Bash is a dangerous ask even in bypass", () => {
         expect(check(T("Bash"), bash("cat ~/.harness/credentials.json"), "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
     });
 
-    // BUG: isProtected only matches the two exact file paths, so searching
-    // the HARNESS_HOME directory reads credentials.json through ripgrep. In
-    // auto mode reads outside the workspace are allowed, so this needs no
-    // prompt. (Default mode asks only because H is outside the workspace.)
-    test("Grep over the HARNESS_HOME directory is not auto-allowed", () => {
-        expect(check(T("Grep"), { pattern: "sk-", path: H }, "auto").behavior).not.toBe("allow");
+    // Searching the home isn't refused: the secret files in it are hidden file by file.
+    test("Grep and Glob over the HARNESS_HOME directory run, with the secret files hidden", () => {
+        expect(check(T("Grep"), { pattern: "sk-", path: H }, "auto").behavior).toBe("allow");
+        expect(check(T("Glob"), { pattern: "*.json", path: H }, "auto").behavior).toBe("allow");
+        expect(checker.hiddenFromSearch("Grep", paths.credentialsFile())).toBe("protected");
+        expect(checker.hiddenFromSearch("Glob", paths.providers())).toBe("protected");
+        expect(checker.hiddenFromSearch("Grep", paths.userSettings())).toBe("protected");
+        expect(checker.hiddenFromSearch("Grep", join(paths.projectsDir(), "x", "session.jsonl"))).toBeUndefined();
     });
 
-    // BUG: the Bash guards look for the literal file names, so a glob or a
-    // recursive grep reads the store as a plain read-only command.
-    test("globbing the credential store via Bash is not allowed without asking", () => {
-        expect(check(T("Bash"), bash("cat ~/.harness/*.json")).behavior).not.toBe("allow");
-        expect(check(T("Bash"), bash("grep -r . ~/.harness")).behavior).not.toBe("allow");
+    test("globbing or recursively searching the credential store via Bash is not allowed without asking", () => {
+        expect(check(T("Bash"), bash(`cat ${H}/*.json`)).behavior).not.toBe("allow");
+        expect(check(T("Bash"), bash(`grep -r . ${H}`)).behavior).not.toBe("allow");
+        // With the sandbox the OS hides the secrets instead; without one the search is judged.
+        const bare = new PermissionChecker(() => settings, W, () => undefined);
+        expect(bare.check(T("Bash"), bash(`rg sk- ${H}`), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
+    });
+
+    test("listing the harness home or reading its other files isn't a credential-store ask; reading them is sensitive", () => {
+        for (const cmd of [`ls ${H}/projects`, `du -sh ${H}/projects`, `cat ${H}/history.jsonl`, `bun -e 'console.log("${H}/projects")'`]) {
+            expect(check(T("Bash"), bash(cmd), "auto").reason ?? "").not.toMatch(/credential store/);
+        }
+        expect(check(T("Bash"), bash(`ls ${H}/projects`), "default").behavior).toBe("allow");
+        expect(check(T("Bash"), bash(`cat ${H}/history.jsonl`), "default")).toMatchObject({ behavior: "ask", sensitive: "the harness's settings and session logs" });
+        expect(check(T("Bash"), bash(`cat ${H}/providers.json`), "default").reason).toMatch(/credential/);
     });
 });
 
@@ -541,13 +556,8 @@ describe("Bash", () => {
 
         describe("a command that needs only the network", () => {
             test.each([
-                ["npm install lodash", ["registry.npmjs.org"]],
-                ["bun add zod", ["registry.npmjs.org"]],
-                ["yarn add react", ["registry.npmjs.org", "registry.yarnpkg.com"]],
-                ["FOO=1 python3 -m pip install -r requirements.txt", ["pypi.org", "files.pythonhosted.org"]],
                 ["curl -fsSL https://api.github.com/repos/a/b -o b.json", ["api.github.com"]],
                 ["git clone --depth 1 https://user@gitlab.example.com/a/b.git", ["gitlab.example.com"]],
-                ["npx prettier --check .", ["registry.npmjs.org"]],
             ])("%p without hosts is refused, with advice on which to list", (cmd, likely) => {
                 const d = auto(withSandbox(true), bash(cmd));
                 expect(d.behavior).toBe("deny");
@@ -557,8 +567,8 @@ describe("Bash", () => {
             });
 
             test("with hosts it goes to the classifier, then runs sandboxed", () => {
-                const d = auto(withSandbox(true), { command: "npm install lodash", allowedHosts: ["registry.npmjs.org"] });
-                expect(d).toEqual({ behavior: "ask", needsClassifier: true, sandbox: true, reason: "This command opens network access to registry.npmjs.org.", suggestions: ["Bash(npm install:*)"] });
+                const d = auto(withSandbox(true), { command: "curl -O https://example.com/a.tgz", allowedHosts: ["example.com"] });
+                expect(d).toEqual({ behavior: "ask", needsClassifier: true, sandbox: true, hosts: ["example.com"], listedHosts: ["example.com"], reason: "This command opens network access to example.com.", suggestions: ["Bash(curl:*)"] });
             });
 
             test("hosts take a read-only command to the classifier too", () => {
@@ -571,8 +581,8 @@ describe("Bash", () => {
             });
 
             test("loading .env for it: refused without hosts, reviewed with them", () => {
-                expect(auto(withSandbox(true), bash("source .env && npm install")).behavior).toBe("deny");
-                expect(auto(withSandbox(true), { command: "source .env && npm install", allowedHosts: ["registry.npmjs.org"] })).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true });
+                expect(auto(withSandbox(true), bash("source .env && curl -O https://example.com/a")).behavior).toBe("deny");
+                expect(auto(withSandbox(true), { command: "source .env && curl -O https://example.com/a", allowedHosts: ["example.com"] })).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true });
             });
 
             test("git worktree add skips the sandbox (it can't write .git/worktrees there) and goes to the classifier", () => {
@@ -689,17 +699,39 @@ describe("Bash", () => {
         expect(check(T("Bash"), bash("npm test && rm -rf build")).behavior).toBe("ask");
     });
 
-    test.each(["cat ~/.ssh/id_rsa", "cat ~/.aws/credentials", "ls ~/Library/Keychains", "cat ~/.harness/credentials.json"])(
-        "credential store %p asks without the classifier, in auto mode too",
+    test.each(["cat ~/.ssh/id_rsa", "cat ~/.aws/credentials", "ls ~/Library/Keychains", `cat ${H}/providers.json`])(
+        "credential store %p asks in manual modes; in auto mode the reviewer decides first",
         (cmd) => {
+            const bare = new PermissionChecker(() => settings, W, () => undefined);
             for (const mode of ["default", "acceptEdits", "auto"] as const) {
-                const d = check(T("Bash"), bash(cmd), mode);
+                const d = bare.check(T("Bash"), bash(cmd), mode, W);
                 expect(d.behavior).toBe("ask");
                 expect(d.reason).toMatch(/credential/);
-                expect(d.needsClassifier).toBeFalsy();
+                expect(d.sensitive).toBeTruthy();
+                // The reviewer sees it first in auto mode.
+                expect(Boolean(d.needsClassifier)).toBe(mode === "auto");
             }
         },
     );
+
+    test.each(["cat ~/.ssh/id_rsa", "cat ~/.aws/credentials", "ls ~/Library/Keychains", `cat ${H}/providers.json`])(
+        "%p in the sandbox needs no ask: the OS blocks the read",
+        (cmd) => {
+            const d = new PermissionChecker(() => settings, W, () => "seatbelt").check(T("Bash"), bash(cmd), "auto", W);
+            expect(d.behavior).toBe("allow");
+            expect(d.sandbox).toBe(true);
+        },
+    );
+
+    test("a sandboxed command that also names something the sandbox doesn't block still goes to the reviewer", () => {
+        const sandboxed = new PermissionChecker(() => settings, W, () => "seatbelt");
+        writeFileSync(join(W, ".env"), "A=1\n");
+        expect(sandboxed.check(T("Bash"), bash("cat .env"), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true, sensitive: expect.stringContaining(".env") });
+        expect(sandboxed.check(T("Bash"), bash("cat ~/.ssh/id_rsa .env"), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        expect(sandboxed.check(T("Bash"), bash("cat ~/.ssh/id_rsa .e*"), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        // Outside the sandbox nothing blocks it.
+        expect(sandboxed.check(T("Bash"), { command: "cat ~/.ssh/id_rsa", dangerouslyDisableSandbox: true }, "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
+    });
 
     test.each(["cat .env", "grep KEY .env.local", "cp .env /tmp/x", "source .env && npm test", "cp .env.example .env"])(
         ".env command %p asks in manual modes and goes to the classifier in auto mode",

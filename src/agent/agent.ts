@@ -30,7 +30,7 @@ import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
 import { PermissionChecker } from "../permissions/checker";
-import { AutoClassifier, type ReviewContext } from "../permissions/classifier";
+import { AutoClassifier, needsSummary, summaryFits, type ReviewContext } from "../permissions/classifier";
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
 import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
@@ -118,6 +118,8 @@ export interface PermissionRequest {
     callId?: string;
     /** Why the auto-mode reviewer escalated. */
     classifierReason?: string;
+    /** One plain-English line on what it does and what makes it risky. */
+    summary?: string;
     /** Ends when the request no longer matters (its sub-agent was stopped): the prompt is withdrawn. */
     signal?: AbortSignal;
     /** run_with_secrets: the secrets the command gets in its environment, by name. Prompts show them. */
@@ -131,6 +133,8 @@ export interface PermissionResponse {
     scope?: "session" | "local" | "project" | "user";
     setMode?: PermissionMode;
     feedback?: string;
+    /** "Yes, and allow this for the session": the request's decision.grant takes effect. */
+    grant?: boolean;
 }
 
 export interface AgentHost {
@@ -1452,7 +1456,7 @@ export class Agent {
             if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
-        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || tool.category === "edit");
+        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
         let decision = this.o.checker.check(tool, input, mode, cwd);
         let ruled = approves(decision);
         for (const p of req.otherPaths ?? []) {
@@ -1502,7 +1506,7 @@ export class Agent {
             }
         }
         const ask = {
-            ...decision,
+            ...this.o.checker.withGrant(tool, input, decision, cwd),
             behavior: "ask" as const,
             reason: decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
             suggestions: decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined),
@@ -1516,7 +1520,12 @@ export class Agent {
             this.o.checker.sessionAllow.push(...answer.rules);
             if (answer.scope && answer.scope !== "session") this.o.host.saveRules?.(answer.rules, answer.scope);
         }
-        if (answer.allow) return { allow: true, mode: answer.setMode };
+        if (answer.allow) {
+            const grant = answer.grant ? ask.grant : undefined;
+            this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
+            if (grant) this.o.checker.applyGrant(grant);
+            return { allow: true, mode: answer.setMode };
+        }
         const fb = answer.feedback?.trim();
         if (fb) return { allow: false, message: `The user declined this tool call and said:\n${redact(fb)}`, stop: false, fromUser: true };
         return { allow: false, message: "The user declined this tool call. Stop and wait for the user to tell you how to proceed; don't retry it.", stop: true };
@@ -1660,23 +1669,29 @@ export class Agent {
         }
 
         const mode = this.o.mode.get();
-        const decision = this.o.checker.check(tool, input, mode, this.state.cwd);
+        let decision = this.o.checker.check(tool, input, mode, this.state.cwd);
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied") };
+        // What an approval is remembered by: the call as the model made it, before hosts are added.
+        const asked = input;
+        // The hosts the checker opens by itself (settings, registries) join the ones the command listed.
+        if (tool.name === "Bash" && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
         // Whatever approves it, a command the checker sandboxed stays sandboxed.
         const sandbox = decision.sandbox;
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
         if (hookDecision === "allow" && !decision.dangerous) return { tool, input, sandbox, auto: "hook" };
 
         let classifierReason: string | undefined;
+        let summary: string | undefined;
         // A hook that asked wants the user, not the auto-mode reviewer.
         if (decision.needsClassifier && !decision.dangerous && hookDecision !== "ask" && this.o.classifier) {
             try {
-                const v = await this.o.classifier.classify({ toolName: tool.name, input, cwd: this.state.cwd, context: this.reviewContext(), sandboxed: sandbox }, signal);
+                const v = await this.o.classifier.classify({ toolName: tool.name, input, cwd: this.state.cwd, context: this.reviewContext(), sandboxed: sandbox, sensitive: decision.sensitive }, signal);
                 if (v.warning) this.emit({ type: "notice", level: "warn", message: v.warning });
                 if (v.decision === "allow") return { tool, input, sandbox, auto: v.ms === undefined ? v.reason : `${v.reason} (reviewed in ${(v.ms / 1000).toFixed(1)}s)` };
                 // Told why, the agent can take a safer way (the user decides once blocks pile up).
                 if (v.decision === "block") return { result: this.errorResult(call, blockedByReviewer(v.reason)) };
                 classifierReason = v.reason;
+                summary = v.summary;
             } catch (e) {
                 if (isAbort(e, signal)) return { result: this.errorResult(call, "Interrupted") };
             }
@@ -1697,7 +1712,14 @@ export class Agent {
         } catch {
             // preview is optional
         }
-        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id });
+        // No reviewer ran (or it gave none): a long command gets a line from the model, but the popup never waits long for it.
+        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
+        if (!summary && command && needsSummary(command)) summary = await this.o.classifier?.summarize({ toolName: tool.name, input, cwd: this.state.cwd }, signal);
+        if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user") };
+        // Whichever step wrote it (the summary model, the full review, a repeated block), none for an action it couldn't see whole.
+        if (summary && !summaryFits(input)) summary = undefined;
+        decision = this.o.checker.withGrant(tool, asked, decision, this.state.cwd);
+        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, summary, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id });
         if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user") };
         // The reviewer sent it to the user, who has now decided: its blocks count afresh.
         if (classifierReason !== undefined) this.o.classifier?.userDecided();
@@ -1713,7 +1735,13 @@ export class Agent {
                 this.o.host.saveRules?.(answer.rules, answer.scope);
             }
         }
-        if (answer.allow) return { tool, input, sandbox };
+        if (answer.allow) {
+            // This exact action needs no asking again; with a grant, what it covers doesn't either.
+            const grant = answer.grant ? decision.grant : undefined;
+            this.o.checker.approve(tool, asked, this.state.cwd, { sandbox, grant });
+            if (grant) this.o.checker.applyGrant(grant);
+            return { tool, input, sandbox };
+        }
         const fb = answer.feedback?.trim();
         if (fb) {
             return { result: this.errorResult(call, `The user declined this tool call and said:\n${fb}`) };
@@ -1794,8 +1822,10 @@ export class Agent {
     }
 
     private reviewContext(): ReviewContext {
-        if (this.o.parentRequests) return { ...this.o.parentRequests(), delegatedTask: this.o.delegatedTask, recentActions: [...this.recentActions] };
-        return { ...this.requestContext(), recentActions: [...this.recentActions] };
+        // The checker is the session's, shared with its sub-agents: so are the approvals.
+        const approvals = this.o.checker.recentApprovals();
+        if (this.o.parentRequests) return { ...this.o.parentRequests(), delegatedTask: this.o.delegatedTask, recentActions: [...this.recentActions], approvals };
+        return { ...this.requestContext(), recentActions: [...this.recentActions], approvals };
     }
 
     private noteAction(tool: Tool<any>, input: any) {
