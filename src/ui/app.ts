@@ -1359,10 +1359,10 @@ export class App {
      */
     private pasteInto(text: string) {
         const e = this.editor;
-        const plan = e.secret || this.inputMode !== "prompt" ? undefined : planPaste(text, this.cwd);
+        const guard = (p: string) => this.checker.userReadRefusal(p, { sensitive: true });
+        const plan = e.secret || this.inputMode !== "prompt" ? undefined : planPaste(text, this.cwd, guard);
         for (const n of plan?.notices ?? []) this.notice(n, "warn");
         if (!plan?.files.length) return e.paste(text);
-        const guard = (p: string) => this.checker.userReadRefusal(p, { sensitive: true });
         plan.files.forEach((f, i) => {
             if (i > 0) e.insert(" ");
             this.attach(loadImageFile(f.path, guard, this.imagePrep), f.raw);

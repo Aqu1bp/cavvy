@@ -1,6 +1,7 @@
 // Images in the terminal prompt: dropped/pasted paths, the clipboard, limits, permissions, and sending.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "fs";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
@@ -9,6 +10,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const { cleanup } = isolate();
 const img = await import("../src/ui/images");
+const origOpenSync = fs.openSync;
 
 /** Killed processes can linger as zombies for a moment until their new parent reaps them; a live one (these sleep for seconds) won't go. */
 async function goneSoon(pid: number, ms = 1500): Promise<boolean> {
@@ -345,6 +347,27 @@ describe("permissions", () => {
         expect(app.editor.attachedImages()).toEqual([]);
         expect(value(app)).toBe(link + " ");
         expect(notices.join()).toContain("denied by permission rule Read(secrets/**)");
+    });
+    test("a denied path isn't opened at all, not even to tell whether it's an image", async () => {
+        const { cwd, link } = project();
+        const c = checker(cwd, ["Read(secrets/**)"]);
+        const guard = (p: string) => c.userReadRefusal(p, { sensitive: true });
+        const key = join(cwd, "secrets", "key.png");
+        const opened: string[] = [];
+        const spy = spyOn(fs, "openSync").mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
+            opened.push(String(p));
+            return (origOpenSync as (...a: unknown[]) => number)(p, ...rest);
+        }) as typeof fs.openSync);
+        try {
+            // Several paths, and one line with unescaped spaces: both sniff the content when allowed.
+            img.planPaste(`${link} ${key}`, cwd, guard);
+            img.planPaste(`${cwd}/secrets/key.png and more`, cwd, guard);
+            const r = await expandMentions(`@${link} @secrets/key.png`, state(cwd), [cwd], c);
+            expect(r.notices).toHaveLength(2);
+        } finally {
+            spy.mockRestore();
+        }
+        expect(opened.filter((p) => p.endsWith("key.png") || p.endsWith("shot.png"))).toEqual([]);
     });
     test("a mentioned symlink into a denied folder isn't read", async () => {
         const { cwd, link } = project();

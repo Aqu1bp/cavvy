@@ -334,8 +334,11 @@ export interface PastePlan {
  * notice: a dragged screenshot thumbnail is deleted within seconds. Anything
  * else (prose, code) is undefined and pasted exactly as it came.
  */
-export function planPaste(paste: string, cwd: string): PastePlan | undefined {
+export function planPaste(paste: string, cwd: string, guard?: ReadGuard): PastePlan | undefined {
     const body = paste.trim();
+    // Telling an image from a look-alike reads its first bytes, so only where reading is allowed. A
+    // refused path is taken unread: loading it refuses before any read, keeps the text and says why.
+    const looksImage = (f: string) => Boolean(guard?.(f)) || isImageFile(f);
     if (!body || body.length > 4000) return undefined;
     const words = lexWords(body);
     const fileOf = (w: Word | undefined) => {
@@ -350,10 +353,10 @@ export function planPaste(paste: string, cwd: string): PastePlan | undefined {
         return { files: [], notices: [`Couldn't read ${basename(wordPath(single))} (macOS deletes dragged screenshot thumbnails quickly; save the screenshot to a folder or copy it and paste with Ctrl+V)`] };
     }
     const files = words.map(fileOf);
-    if (files.every((f) => f && isImageFile(f))) return { files: files.map((f, i) => ({ path: f!, raw: words[i]!.raw })), notices: [] };
+    if (files.every((f) => f && looksImage(f))) return { files: files.map((f, i) => ({ path: f!, raw: words[i]!.raw })), notices: [] };
     if (!body.includes("\n") && words.length > 1 && /^["']?(\/|~\/|file:\/\/)/i.test(body)) {
         const f = fileOf(lexWords(body, false)[0]);
-        if (f && isImageFile(f)) return { files: [{ path: f, raw: body }], notices: [] };
+        if (f && looksImage(f)) return { files: [{ path: f, raw: body }], notices: [] };
     }
     return undefined;
 }

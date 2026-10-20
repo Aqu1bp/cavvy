@@ -170,14 +170,17 @@ export async function expandMentions(text: string, state: ToolState, allowedRoot
         const rel = relative(state.cwd, abs) || abs;
         const c = canonical(abs);
         const inside = allowedRoots.some((r) => isInside(c, canonical(r)));
-        const image = st.isFile() && imageMediaType(abs) !== undefined && isImageFile(abs);
-        if (!inside && !image) {
-            if (imageMediaType(abs)) notices.push(`${rel} isn't a PNG, JPEG, GIF or WebP image, so it wasn't attached.`);
-            continue;
-        }
-        const refused = guard.userReadRefusal(abs, { sensitive: image, dir: st.isDirectory() });
+        // Permission first, by the name: telling an image from a look-alike reads the file.
+        const imageName = st.isFile() && imageMediaType(abs) !== undefined;
+        if (!inside && !imageName) continue;
+        const refused = guard.userReadRefusal(abs, { sensitive: imageName, dir: st.isDirectory() });
         if (refused) {
             notices.push(`Can't attach ${rel}: ${refused}.`);
+            continue;
+        }
+        const image = imageName && isImageFile(abs);
+        if (!inside && !image) {
+            notices.push(`${rel} isn't a PNG, JPEG, GIF or WebP image, so it wasn't attached.`);
             continue;
         }
         if (st.isDirectory()) {
