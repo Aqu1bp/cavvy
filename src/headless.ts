@@ -280,7 +280,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     process.on("SIGTERM", onSig);
     let reason: string;
     try {
-        const { parts } = expandMentions(o.prompt, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])]);
+        const { parts, notices } = await expandMentions(o.prompt, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])], checker);
+        for (const n of notices) stderr(`warning: ${n}`);
         reason = await agent.run(parts, { signal: ac.signal, display: o.prompt });
     } catch (e) {
         reason = "error";

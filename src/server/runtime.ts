@@ -1853,7 +1853,8 @@ export class Runtime {
                 this.endTurn("aborted");
             } else {
                 const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
-                const { parts, attached } = expandMentions(text, this.toolState, roots);
+                const { parts, attached, notices } = await expandMentions(text, this.toolState, roots, this.checker);
+                for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
                 if (opts.attachments?.length) {
                     if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) this.notice(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
