@@ -942,6 +942,22 @@ describe("connecting", () => {
         }
     });
 
+    test("an untitled session's notification title is one line cut at a word, not the raw prompt with its newlines", async () => {
+        const { engine, rt } = await engineWithSession();
+        const sent: any[] = [];
+        engine.clients.add({ subs: new Set<string>(), send: (m: any) => sent.push(m) } as any);
+        try {
+            expect(rt.title).toBeUndefined();
+            (rt as any).firstPrompt = () => 'Feature request: project scripts ("actions") in the GUI\n\nYou should be able to run them';
+            engine.notify(rt, "done", "Finished in 20m 52s");
+            const title = sent.find((e) => e.type === "notify")?.title;
+            expect(title).not.toContain("\n");
+            expect(title).toBe('Feature request: project scripts ("actions") in the GUI');
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("the title request is redacted before it's cut, so a secret across the 3000-character cut doesn't reach the title model", async () => {
         const { registerSecret, unregisterSecret } = await import("../src/util/redact");
         const { engine, rt } = await engineWithSession();
