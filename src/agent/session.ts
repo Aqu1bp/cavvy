@@ -206,6 +206,10 @@ export class Session {
      * conversations to pick up from the CLI.
      */
     runsFor?: Session;
+    /** Context from SessionStart hooks, sent with the next prompt (never saved). */
+    hookContext: string[] = [];
+    /** Files SessionStart hooks asked FileChanged to watch (never saved). */
+    hookWatchPaths?: string[];
     private subagentRuns = new Set<string>();
     private file: string;
     private persist: boolean;

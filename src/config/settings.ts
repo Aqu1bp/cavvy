@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { ensureDir, paths } from "./paths";
 import type { PermissionMode } from "../permissions/modes";
+import { normalizeHooks, type HookEvent, type HookType } from "./hook-config";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_LEVELS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -20,11 +21,39 @@ export interface McpServerConfig {
     disabled?: boolean;
 }
 
+/**
+ * One hook handler, flat. Settings may also use Claude Code's nested form
+ * ({ matcher, hooks: [...] }); src/config/hook-config.ts flattens it.
+ */
 export interface HookConfig {
-    /** Tool-name matcher: exact name, "*" or a regex like "Edit|Write". */
+    /** What the event is filtered on (a tool name, a source, …): exact, a list like "Edit|Write", "*" or a regex. */
     matcher?: string;
-    command: string;
+    /** Left out: "command". */
+    type?: HookType;
+    /** One permission rule, like "Bash(git *)": tool events run the hook only for calls it matches. */
+    if?: string;
+    /** Seconds (default 60; prompt hooks 30). */
     timeout?: number;
+    statusMessage?: string;
+    /** command: a shell command, or with `args` an executable run without a shell. */
+    command?: string;
+    args?: string[];
+    /** command: run in the background; it can't block, and its context comes with the next request. */
+    async?: boolean;
+    /** http: POSTed the input as JSON. */
+    url?: string;
+    headers?: Record<string, string>;
+    /** http: the environment variables header values may use ($VAR, ${VAR}). */
+    allowedEnvVars?: string[];
+    /** prompt: asked of a small model, with $ARGUMENTS as the input. */
+    prompt?: string;
+    model?: string;
+    /** mcp_tool: a tool on a connected MCP server; string values in input take ${field.path} from the hook input. */
+    server?: string;
+    tool?: string;
+    input?: Record<string, unknown>;
+    /** Set for a plugin's hooks: HARNESS_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT. */
+    pluginRoot?: string;
 }
 
 export interface Settings {
@@ -52,17 +81,7 @@ export interface Settings {
     /** Extra environment variables for Bash tool commands. */
     env?: Record<string, string>;
     mcpServers?: Record<string, McpServerConfig>;
-    hooks?: {
-        PreToolUse?: HookConfig[];
-        PostToolUse?: HookConfig[];
-        UserPromptSubmit?: HookConfig[];
-        Stop?: HookConfig[];
-        SubagentStop?: HookConfig[];
-        Notification?: HookConfig[];
-        SessionStart?: HookConfig[];
-        SessionEnd?: HookConfig[];
-        PreCompact?: HookConfig[];
-    };
+    hooks?: Partial<Record<HookEvent, HookConfig[]>>;
     /** Show model reasoning/thinking text when the provider returns it. */
     showThinking?: boolean;
     /** Upper bound for max output tokens per response. */
@@ -258,6 +277,9 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
  * enableAllProjectMcpServers is a plain flag, so it counts from user
  * settings alone: a repo could ship a settings.local.json.)
  */
+/** Hook entries settings files had that can't run (shown by /hooks rather than on every load). */
+export const hookConfigWarnings = new Set<string>();
+
 export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Settings {
     const trusted = opts.trusted ?? true;
     const user = loadScope("user", cwd);
@@ -278,11 +300,10 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
         }
         if (env) merged.env = { ...merged.env, ...env };
         if (mcpServers) merged.mcpServers = { ...merged.mcpServers, ...mcpServers };
-        if (hooks) {
+        const flat = normalizeHooks(hooks, (msg) => hookConfigWarnings.add(msg));
+        if (flat) {
             const h = (merged.hooks ??= {});
-            for (const [k, v] of Object.entries(hooks) as [keyof NonNullable<Settings["hooks"]>, HookConfig[]][]) {
-                h[k] = [...(h[k] ?? []), ...v];
-            }
+            for (const [k, v] of Object.entries(flat) as [HookEvent, HookConfig[]][]) h[k] = [...(h[k] ?? []), ...v];
         }
     }
     if (user.reviewModel) merged.reviewModel = user.reviewModel;
