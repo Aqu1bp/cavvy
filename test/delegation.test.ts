@@ -1350,7 +1350,8 @@ describe("harness models", () => {
         const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "On Codex", prompt: "a", model: "codex:gpt-fast" } }], "tool_use"), main([{ type: "text", text: "ok" }])];
         let n = 0;
         const client = { stream: async () => steps[n++], listModels: async () => [] };
-        const settings = { hooks: { Stop: [{ command: `[ -f '${flag}' ] || { touch '${flag}'; sleep 1; echo "keep going" >&2; exit 2; }` }] } };
+        // A sub-agent's turn ends with SubagentStop (Stop is the main agent's), on its own models and on the CLIs alike.
+        const settings = { hooks: { SubagentStop: [{ command: `[ -f '${flag}' ] || { touch '${flag}'; sleep 1; echo "keep going" >&2; exit 2; }` }] } };
         const { run, session } = await makeAgent({ provider: "anthropic", model: { id: "claude-main", supportsFastMode: true }, client, settings });
         session.setFastMode(true);
         const done = run("go");

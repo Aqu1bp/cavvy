@@ -241,7 +241,7 @@ export class App {
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
-        void sessionStartHooks(this.settings, this.session, this.init.resumeFile ? "resume" : "startup", this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level));
+        void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
 
         await this.trackSwitch(this.initModel());
         if (this.init.fastMode && !this.model?.supportsFastMode) {
@@ -643,11 +643,13 @@ export class App {
     private sessionSwitched(prev: Session, how: "clear" | "resume") {
         const id = this.session.meta.id;
         const session = this.session;
-        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => (this.session === session ? sessionStartHooks(this.settings, session, how, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level)) : undefined));
+        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => (this.session === session ? this.sessionHook("SessionStart", { session_id: id, source: how }) : undefined));
     }
 
     /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
     private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+        // SessionStart also loads memory files (InstructionsLoaded) and keeps its context for the first prompt.
+        if (event === "SessionStart") return sessionStartHooks(this.settings, this.session, String(payload.source), this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level));
         await fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
