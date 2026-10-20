@@ -20,6 +20,8 @@ import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
 import { BUILTIN_TOOLS } from "../tools/index";
+import { skillTool } from "../tools/skill-tool";
+import { formatSkill, skillMentions, withMentionedSkills } from "../agent/skills";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
@@ -808,11 +810,12 @@ export class Runtime {
     tools(): Tool<any>[] {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...this.ws.mcp.tools()];
+        const skill = skillTool(this.ws.skills);
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...(skill ? [skill] : []), ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -1774,7 +1777,7 @@ export class Runtime {
     /** The /name a message starts with when it names no command this server or the project has. */
     unknownCommand(text: string): string | undefined {
         const c = slashCommand(text);
-        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name)) return undefined;
+        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name) || this.ws.freshSkills().some((s) => s.userInvocable && s.name === c.name)) return undefined;
         // One the session's agent CLI runs itself (Claude Code's /code-review, a skill).
         const provider = this.agent?.model.provider;
         const commands = this.engine.cliCommands(provider, this.ws.cwd);
@@ -1795,6 +1798,13 @@ export class Runtime {
             if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command", attachments });
             const custom = this.ws.commands.find((c) => c.name === cmd);
             if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
+            const skill = this.ws.skills.find((s) => s.userInvocable && s.name === cmd);
+            // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
+            if (skill && !this.engine.cliCommands(this.agent?.model.provider, this.ws.cwd)?.has(cmd)) {
+                const body = formatSkill(skill, args.trim());
+                if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
+                return this.startTurn(body, { display: trimmed, kind: "command", attachments });
+            }
         }
         return this.startTurn(text, { attachments });
     }
@@ -1854,7 +1864,10 @@ export class Runtime {
                 this.endTurn("aborted");
             } else {
                 const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
-                const { parts, attached, notices } = await expandMentions(text, this.toolState, roots, this.checker);
+                // $name brings that skill's instructions along; the transcript keeps what was typed.
+                const skills = opts.kind === "command" ? [] : skillMentions(text, this.ws.skills);
+                const { parts, attached, notices } = await expandMentions(skills.length ? withMentionedSkills(text, skills) : text, this.toolState, roots, this.checker);
+                if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
                 if (opts.attachments?.length) {

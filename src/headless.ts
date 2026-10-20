@@ -12,6 +12,8 @@ import { PermissionChecker } from "./permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "./permissions/classifier";
 import { McpManager } from "./mcp/manager";
 import { BUILTIN_TOOLS } from "./tools/index";
+import { skillTool } from "./tools/skill-tool";
+import { loadSkills } from "./agent/skills";
 import type { Tool, ToolState } from "./tools/types";
 import { killAllShells } from "./tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "./tools/web-tools";
@@ -128,9 +130,11 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     const pref = settings.webSearch ?? "auto";
     const nativeWebSearch = def.kind === "anthropic" && /^https:\/\/api\.anthropic\.com$/.test(resolveBaseUrl(def)) && (pref === "auto" || pref === "anthropic");
     let mode = o.mode;
+    const skill = skillTool(loadSkills(o.cwd, o.trusted));
     const tools = (): Tool<any>[] => [
         // Nobody can answer a question in -p mode.
         ...BUILTIN_TOOLS.filter((t) => t.name !== "AskUserQuestion" && !(t.name === "WebSearch" && (nativeWebSearch || pref === "off"))),
+        ...(skill ? [skill] : []),
         ...mcp.tools(),
     ];
 

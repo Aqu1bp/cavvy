@@ -21,6 +21,7 @@ import {
     MessageCircleQuestion,
     Plug,
     Search,
+    Sparkles,
     ShieldCheck,
     SquareArrowOutUpRight,
     SquareTerminal,
@@ -92,6 +93,7 @@ const VERBS: Record<string, string> = {
     WebFetch: "Fetch",
     WebSearch: "Search the web",
     Task: "Agent",
+    Skill: "Load skill",
     TodoWrite: "Update todos",
     AskUserQuestion: "Ask",
     ExitPlanMode: "Present plan",
@@ -111,6 +113,7 @@ const RUNNING: Record<string, string> = {
     WebFetch: "Fetching",
     WebSearch: "Searching the web",
     Task: "Agent working",
+    Skill: "Loading skill",
     TodoWrite: "Updating todos",
     AskUserQuestion: "Waiting for your answer",
     ExitPlanMode: "Waiting for plan review",
@@ -157,6 +160,7 @@ export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
             <Match when={p.name === "Bash" || p.name === "BashOutput" || p.name === "KillShell"}><SquareTerminal size={s()} /></Match>
             <Match when={p.name === "WebFetch" || p.name === "WebSearch"}><Globe size={s()} /></Match>
             <Match when={p.name === "Task"}><Bot size={s()} /></Match>
+            <Match when={p.name === "Skill"}><Sparkles size={s()} /></Match>
             <Match when={p.name === "TodoWrite"}><ListChecks size={s()} /></Match>
             <Match when={p.name === "AskUserQuestion"}><MessageCircleQuestion size={s()} /></Match>
             <Match when={p.name === "ExitPlanMode"}><ClipboardList size={s()} /></Match>

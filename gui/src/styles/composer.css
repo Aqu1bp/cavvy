@@ -679,6 +679,10 @@
     flex: none;
 }
 
+.cm-icon.skill {
+    color: var(--accent-text, var(--accent));
+}
+
 .cm-name {
     font-size: 0.893rem;
     flex: none;

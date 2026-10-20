@@ -811,6 +811,8 @@ export interface CommandInfo {
     description: string;
     args?: string;
     custom?: boolean;
+    /** A skill (SKILL.md): runs as /name, and $name mentions it in a prompt. */
+    skill?: boolean;
 }
 
 /** One window of a plan's usage limits (five hours, a week), as an agent CLI reported it. */

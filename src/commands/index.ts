@@ -58,6 +58,7 @@ import { displayPath, expandPath } from "../util/files";
 import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
+import { formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
 import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
@@ -80,6 +81,7 @@ export interface Command {
     noEcho?: boolean;
     hidden?: boolean;
     custom?: CustomCommand;
+    skill?: Skill;
     /** Starts a model turn, which takes the images typed with the command (`draft`). Other commands refuse images. */
     images?: boolean;
     run(app: App, args: string, draft?: Draft): Promise<void> | void;
@@ -1517,6 +1519,29 @@ function agentsCommand(app: App) {
     app.print(lines);
 }
 
+function skillsCommand(app: App, args: string) {
+    // Read again, so a skill added since startup shows up (and runs) without a restart.
+    app.skills = sameSkills(app.skills, loadSkills(app.cwd, app.init.trusted));
+    const q = args.trim().toLowerCase();
+    const skills = app.skills.filter((s) => !q || s.name.includes(q) || s.description.toLowerCase().includes(q));
+    app.print((cols) => {
+        const lines = ["", heading("Skills"), theme.muted(`  Run one with /name or mention it with $name in a prompt; the model loads the others when they fit (Skill tool).`)];
+        for (const s of skills) {
+            const who = !s.userInvocable ? "model only" : !s.modelInvocable ? "you only" : undefined;
+            lines.push(`  ${bold(s.name)}${s.argumentHint ? " " + theme.subtle(s.argumentHint) : ""} ${theme.muted(`(${[s.source, who].filter(Boolean).join(", ")})`)}`);
+            lines.push(theme.muted(`    ${truncate(s.description, cols - 8)}`));
+            lines.push(theme.subtle(`    ${truncate(displayPath(s.file, app.cwd), cols - 8)}`));
+        }
+        if (!skills.length) lines.push(theme.muted(q ? `  No skill matches "${q}".` : "  None yet."));
+        if (!app.skills.length) {
+            const dirs = skillRoots(app.cwd, app.init.trusted).map((r) => displayPath(r.dir, app.cwd) + "/");
+            lines.push(theme.muted(`  Add one as <name>/SKILL.md in ${dirs.join(", ")} (frontmatter: name, description).`));
+        }
+        if (!app.init.trusted) lines.push(theme.warning("  This folder isn't trusted, so its skills (.harness/skills, .claude/skills) are ignored."));
+        return lines;
+    });
+}
+
 function hooksCommand(app: App) {
     const h = app.settings.hooks ?? {};
     const lines = ["", heading("Hooks")];
@@ -1733,6 +1758,7 @@ const BUILTIN: Command[] = [
     } },
     { name: "mcp", description: "MCP servers: status, approval, tools, reconnect", run: mcpCommand },
     { name: "agents", description: "List sub-agents", whileBusy: true, run: (app) => agentsCommand(app) },
+    { name: "skills", description: "List skills (and pick up new ones)", args: "[filter]", whileBusy: true, run: skillsCommand },
     { name: "hooks", description: "List configured hooks", whileBusy: true, run: (app) => hooksCommand(app) },
     { name: "todos", description: "Show the current todo list", whileBusy: true, run: (app) => {
             const todos = app.toolState.todos.map((t) => ({ ...t }));
@@ -1758,13 +1784,44 @@ function customToCommand(c: CustomCommand): Command {
     };
 }
 
-export function commandList(app: App): Command[] {
+function skillToCommand(s: Skill): Command {
+    return {
+        name: s.name,
+        description: `${s.description} ${theme.subtle("(skill)")}`,
+        args: s.argumentHint,
+        noEcho: true,
+        skill: s,
+        images: true,
+        run: (app, args, draft) => {
+            const display = `/${s.name}${args ? " " + args : ""}`;
+            // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
+            if (app.cliCommands?.provider === app.model?.provider && app.cliCommands?.names.has(s.name)) return app.startTurn(display, { draft });
+            const text = formatSkill(s, args);
+            if (text === undefined) {
+                app.notice(`The ${s.name} skill is gone: ${displayPath(s.file, app.cwd)} can't be read. Run /skills to read them again.`, "error");
+                if (draft) app.editor.restore([draft]);
+                return;
+            }
+            return app.startTurn(text, { display, kind: "command", draft });
+        },
+    };
+}
+
+/** Built-ins, then custom commands, then skills: a name the one before has is taken. */
+function allCommands(app: App): Command[] {
     const names = new Set(BUILTIN.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
-    return [...BUILTIN.filter((c) => !c.hidden), ...app.customCommands.filter((c) => !names.has(c.name)).map(customToCommand)];
+    const custom = app.customCommands.filter((c) => !names.has(c.name));
+    for (const c of custom) names.add(c.name);
+    const skills = app.skills.filter((s) => s.userInvocable && !names.has(s.name));
+    return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand)];
+}
+
+export function commandList(app: App): Command[] {
+    return allCommands(app).filter((c) => !c.hidden);
 }
 
 function findCommand(app: App, name: string): Command | undefined {
-    const all = [...BUILTIN, ...app.customCommands.map(customToCommand)];
+    const all = allCommands(app);
     return all.find((c) => c.name === name) ?? all.find((c) => c.aliases?.includes(name));
 }
 
@@ -1789,11 +1846,20 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     const p = parseCommand(text);
     if (!p) return false;
     const { name, args } = p;
-    const cmd = findCommand(app, name);
+    let cmd = findCommand(app, name);
+    if (!cmd && !name.includes("/") && !name.includes(".")) {
+        // A skill added since startup.
+        app.skills = sameSkills(app.skills, loadSkills(app.cwd, app.init.trusted));
+        cmd = findCommand(app, name);
+    }
     if (!cmd) {
         // "/usr/bin/foo is broken" is a prompt, not a command.
         if (name.includes("/") || name.includes(".")) return false;
-        app.notice(`Unknown command /${name}. Type /help to see the commands.`, "error");
+        // One the session's agent CLI runs itself (Claude Code's /code-review, its skills and plugins).
+        // Until it has listed them (before the first turn), let Claude Code resolve the name.
+        const cli = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+        if (cli?.has(name) || (!cli && app.model?.provider === "claude-code")) return false;
+        app.notice(`Unknown command /${name}. Type /help to see the commands${app.skills.length ? " and /skills for skills" : ""}.`, "error");
         if (draft?.attachments.size) app.editor.restore([draft]);
         return true;
     }
@@ -1804,7 +1870,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     }
     if (app.busy && !cmd.whileBusy) {
         // Turn-starting commands queue like a prompt (by the caller); a bare /plan only switches mode, so it can't wait.
-        if (cmd.custom || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
+        if (cmd.custom || cmd.skill || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
         app.notice(`/${cmd.name} isn't available while ${APP_TITLE} is working. Press esc to interrupt first.`, "warn");
         if (draft) app.editor.restore([draft]);
         return true;
@@ -1821,7 +1887,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
 
 function helpCommand(app: App) {
     const cmds = commandList(app);
-    const custom = app.customCommands.length;
+    const custom = app.customCommands.length + app.skills.length;
     app.print((cols) => helpLines(app, cmds, custom, cols));
 }
 
@@ -1829,11 +1895,11 @@ function helpLines(app: App, cmds: ReturnType<typeof commandList>, custom: numbe
     const lines = ["", `${theme.accent("✻")} ${bold(APP_TITLE)} ${theme.muted(`v${APP_VERSION} · a coding agent for your terminal, with any model`)}`, "", heading("Commands")];
     const w = Math.min(28, Math.max(...cmds.map((c) => width(c.name) + (c.args ? width(c.args) + 1 : 0))) + 4);
     for (const c of cmds) lines.push(truncate(`  ${padEnd(`/${c.name}${c.args ? " " + theme.subtle(c.args) : ""}`, w)}${theme.muted(c.description)}`, cols - 1));
-    if (!custom) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .harness/commands/`));
+    if (!custom) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .harness/commands/, or skills (<name>/SKILL.md) in ${displayPath(join(paths.home(), "skills"), app.cwd)}/ or .harness/skills/`));
     lines.push(
         "",
         heading("Input"),
-        `  ${theme.bashMode("!")} run a shell command    ${theme.memoryMode("#")} save a memory    ${bold("@")} attach a file    ${bold("/")} commands    ${bold("\\⏎")} or ${bold("shift+⏎")} newline`,
+        `  ${theme.bashMode("!")} run a shell command    ${theme.memoryMode("#")} save a memory    ${bold("@")} attach a file    ${bold("$")} skills    ${bold("/")} commands    ${bold("\\⏎")} or ${bold("shift+⏎")} newline`,
         "",
         heading("Keys"),
         `  ${bold("shift+tab")} cycle permission modes    ${bold("esc")} interrupt    ${bold("esc esc")} clear or rewind    ${bold("ctrl+c ×2")} exit`,

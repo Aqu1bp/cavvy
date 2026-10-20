@@ -17,6 +17,7 @@
 //   "untitled"       the request for the session's title is refused (HTTP 400)
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
 //   "waitcheck"      starts a background command, then waits and checks it in one response
+//   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -190,6 +191,12 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         const shell = /bash_\d+/.exec(lastResult)?.[0];
         if (toolRounds === 1 && shell) return { calls: [{ name: "Bash", args: { command: "sleep 1; echo done", description: "Wait for it" } }, { name: "BashOutput", args: { bash_id: shell } }] };
         return { text: "Done." };
+    }
+    // "use the <name> skill": loads it (Skill), then says what its instructions begin with.
+    const skill = p.match(/\buse the ([a-z0-9][a-z0-9:_-]*) skill\b/);
+    if (skill) {
+        if (toolRounds === 0) return { text: `Loading the ${skill[1]} skill.`, calls: [{ name: "Skill", args: { skill: skill[1] } }] };
+        if (toolRounds === 1) return { text: `Following the skill. It starts: ${lastResult.split("\n").find((l) => l.trim() && !l.startsWith("<") && !l.startsWith("Base directory")) ?? lastResult.slice(0, 80)}` };
     }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };

@@ -22,6 +22,7 @@ import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
 import { forkSession } from "../agent/fork";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
+import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
@@ -206,6 +207,8 @@ export class Workspace {
     mcp: McpManager;
     files: FileIndex;
     commands: CustomCommand[];
+    skills: Skill[];
+    private skillsReadAt = Date.now();
 
     constructor(
         private engine: Engine,
@@ -216,6 +219,7 @@ export class Workspace {
         this.mcp = this.startMcp();
         this.files = new FileIndex(cwd);
         this.commands = loadCustomCommands(cwd, trusted);
+        this.skills = loadSkills(cwd, trusted);
     }
 
     private startMcp(): McpManager {
@@ -226,9 +230,19 @@ export class Workspace {
         return mcp;
     }
 
+    /** The skills, read again when the last read is a couple of seconds old, so a new SKILL.md shows up without a restart. */
+    freshSkills(): Skill[] {
+        if (Date.now() - this.skillsReadAt > 2000) {
+            this.skills = sameSkills(this.skills, loadSkills(this.cwd, this.trusted));
+            this.skillsReadAt = Date.now();
+        }
+        return this.skills;
+    }
+
     reload() {
         this.settings = loadSettings(this.cwd, { trusted: this.trusted });
         this.commands = loadCustomCommands(this.cwd, this.trusted);
+        this.skills = loadSkills(this.cwd, this.trusted);
         this.engine.workspaceChanged(this);
     }
 
@@ -245,6 +259,7 @@ export class Workspace {
         const old = this.mcp;
         this.settings = loadSettings(this.cwd, { trusted: true });
         this.commands = loadCustomCommands(this.cwd, true);
+        this.skills = loadSkills(this.cwd, true);
         this.mcp = this.startMcp();
         await old.closeAll().catch(() => undefined);
         this.engine.workspaceChanged(this);
@@ -1601,10 +1616,14 @@ export class Engine {
         const ws = this.workspaces.get(resolve(cwd));
         // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
         const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
-        const own = new Set([...builtin, ...custom].map((c) => c.name));
+        const taken = new Set([...builtin, ...custom].map((c) => c.name));
+        const skills = (ws?.freshSkills() ?? loadSkills(resolve(cwd), isTrusted(resolve(cwd))))
+            .filter((s) => s.userInvocable && !taken.has(s.name))
+            .map((s) => ({ name: s.name, description: s.description, args: s.argumentHint, skill: true }));
+        const own = new Set([...taken, ...skills.map((s) => s.name)]);
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
         const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
-        return [...builtin, ...custom, ...cli];
+        return [...builtin, ...custom, ...skills, ...cli];
     }
 
     // -----------------------------------------------------------------------

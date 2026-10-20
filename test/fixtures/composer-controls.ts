@@ -7,6 +7,7 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { createComposerDraft } from "../../gui/src/lib/composer-draft";
 import { composerStorage, createComposerStorage } from "../../gui/src/lib/drafts";
 import { composingKey, revealMenuOption } from "../../gui/src/lib/composer-menu";
+import { matchSkills, skillToken } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
 import type { RunResult } from "../../src/server/protocol";
 
@@ -48,9 +49,10 @@ const runSheet = createRunSheet({
 });
 const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
+let commandLists = 0;
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption,
+const components = Object.fromEntries(["ArrowUp", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: { conn: "open", homeCwd: "/workspace", settings: {}, models: [] },
@@ -60,7 +62,7 @@ const deps = { ...solid, ...components, renderer, createComposerDraft, composerS
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
     prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: noop,
     send: async (_text: string, _attachments: unknown[], opts: { accepted: (id: string) => void }) => { sends++; opts.accepted(session()); return true; }, toast: noop,
-    rpc: { call: async (method: string) => { if (method === "commands.list") return [{ name: "help", description: "Help" }]; const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
+    rpc: { call: async (method: string) => { if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
     document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined },
     requestAnimationFrame: (fn: () => void) => { frames.push(fn); return frames.length; }, cancelAnimationFrame: noop,
@@ -88,6 +90,22 @@ for (const ime of [{ isComposing: true }, { keyCode: 229 }]) {
 key("Escape");
 assert.equal(ta.props["aria-expanded"], false);
 assert.equal(ta.props["aria-activedescendant"], undefined);
+// $ opens the skills at the cursor (asking the server again for new ones); the pick goes where the $ was.
+const listsBefore = commandLists;
+input("fill it in with $");
+assert.equal(commandLists, listsBefore + 1);
+await Bun.sleep(0);
+input("fill it in with $p");
+assert.equal(ta.props["aria-expanded"], true);
+assert.ok(renderedText.includes("Read PDFs"));
+key("Enter");
+assert.equal(ta.props.value, "fill it in with $pdf ");
+assert.equal(sends, 0);
+// Prices and shell variables don't open it.
+input("costs $5");
+assert.equal(ta.props["aria-expanded"], false);
+input("echo $HOME");
+assert.equal(ta.props["aria-expanded"], false);
 input("@missing");
 assert.ok(renderedText.includes("Searching…"));
 assert.equal(ta.props["aria-expanded"], true);
