@@ -1032,7 +1032,8 @@ export class Runtime {
                 const turnId = this.addBlock({ t: "tool", id: e.id, name: e.name, title: e.name, category: meta.category, status: "streaming", receiving: 0, ...(runsAgent(e.name) ? { agent: true } : {}) });
                 this.toolTurn.set(e.id, turnId);
                 this.responseBlocks.push(e.id);
-                this.activity(`Writing ${e.name}`);
+                // Its input is still arriving: "Writing Write" read as a typo.
+                this.activity(`Preparing ${e.name}`);
                 break;
             }
             case "tool_call_delta": {

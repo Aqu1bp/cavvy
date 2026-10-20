@@ -930,6 +930,18 @@ describe("connecting", () => {
         }
     });
 
+    test("while a tool call's input streams, the activity says the tool is being prepared, not \"Writing Write\"", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            (rt as any).onEvent({ type: "tool_call_start", id: "call_w", name: "Write" });
+            expect(rt.snapshot().state.activity?.label).toBe("Preparing Write");
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("the title request is redacted before it's cut, so a secret across the 3000-character cut doesn't reach the title model", async () => {
         const { registerSecret, unregisterSecret } = await import("../src/util/redact");
         const { engine, rt } = await engineWithSession();
