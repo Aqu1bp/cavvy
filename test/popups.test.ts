@@ -380,6 +380,8 @@ describe("session approvals", () => {
             "cat .env.prod", "cat .env .env.prod", `cat ${env} ${env}.prod`, "cat .env.prod .env", "cat .env < .env.prod",
             // The same word after a cd can be another file; a quoted name holding the word is another file.
             "cat .env; cd other; cat .env", "cd other && cat .env", 'cat .env "other .env file"',
+            // Programs that read from another folder than the one the command starts in.
+            "git -C other diff --no-index /dev/null .env", "env -C other cat .env", "make -C other .env", "find other -execdir cat .env ;", "echo other | xargs -I{} env -C {} cat .env",
         ]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
             expect([command, auto(s, { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true }]);

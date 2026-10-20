@@ -279,10 +279,11 @@ export class PermissionChecker {
         const granted = this.grants(cwd).paths.flatMap(pathForms);
         if (!policy && !granted.length) return found;
         // The sandbox blocks what a path leads to, so that's what must be covered; a grant is by the path the user saw.
-        // Words are resolved against the folder the command starts in, so a line that may change
-        // folders (`cat .env; cd other; cat .env`) gets no cover: the same word can mean another file.
+        // Words are resolved against the folder the command starts in, so cover is only for lines of
+        // plain file readers: anything that may read from another folder (`cd`, `git -C`, `env -C`,
+        // `make -C`, `find -execdir`, `xargs`, a script) could make the same word another file.
         const a = analyzeCommand(cmd);
-        if (a.commands.some((c) => /^(cd|pushd|popd)$/.test(effectiveArgv(c.argv)[0] ?? ""))) return found;
+        if (!a.commands.every((c) => c.argv[0] === effectiveArgv(c.argv)[0] && PLAIN_READERS.has(c.argv[0] ?? ""))) return found;
         const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || pathForms(w.abs).some((f) => granted.some((r) => isInside(f, r))));
         if (!covered.length) return found;
         // Blank only the covered words themselves, by where they stand: a covered `.env` must not
@@ -670,6 +671,9 @@ export function installsOnly(cmd: string, cwd: string): boolean {
     }
     return installs;
 }
+
+/** Programs that read the files they're named, from the folder they start in, and run nothing. */
+const PLAIN_READERS = new Set(["cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "diff", "cmp", "file", "stat", "ls", "cut", "sort", "uniq", "tr", "nl", "od", "xxd", "hexdump", "strings", "md5", "md5sum", "shasum", "sha256sum"]);
 
 /** The only thing that may share a line with an install: a cd into a folder written out. */
 function installCompanion(argv: string[]): boolean {
