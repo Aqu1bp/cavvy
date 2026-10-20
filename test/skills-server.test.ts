@@ -200,6 +200,27 @@ describe("skills in the GUI", () => {
         c.close();
     });
 
+    test("@paths in a skill's instructions don't attach the project's files; the user's own do", async () => {
+        const c = await client();
+        const cwd = project();
+        writeFileSync(join(cwd, "reference.md"), "PROJECT REFERENCE CONTENT");
+        skill(userSkills, "with-ref", "---\ndescription: Has a reference\n---\nSee @reference.md next to this skill.");
+        try {
+            await Bun.sleep(2100);
+            const id = await c.create(cwd);
+            await c.call("session.send", { id, text: "/with-ref" });
+            await c.until(() => done(c.view(id)));
+            expect(mock.requests.filter((r) => r.kind === "turn").at(-1)!.body).not.toContain("PROJECT REFERENCE CONTENT");
+            await c.call("session.send", { id, text: "/with-ref @reference.md" });
+            await c.until(() => done(c.view(id)) && c.view(id).turns.length === 2);
+            await c.until(() => done(c.view(id)));
+            expect(mock.requests.filter((r) => r.kind === "turn").at(-1)!.body).toContain("PROJECT REFERENCE CONTENT");
+        } finally {
+            rmSync(join(userSkills, "with-ref"), { recursive: true, force: true });
+        }
+        c.close();
+    });
+
     test("a skill added while the server runs shows up and runs", async () => {
         const c = await client();
         const cwd = project();

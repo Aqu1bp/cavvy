@@ -44,6 +44,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [menuStatus, setMenuStatus] = createSignal<"loading" | "empty" | "error" | "no-skills">();
     const menuOpen = () => menu().length > 0 || !!menuStatus();
     let commands: CommandInfo[] = [];
+    /** The list came back (not still loading, not failed), so an empty one means there are none. */
+    let commandsLoaded = false;
     /** Asks for the commands again (a skill added since): set while the composer has a project. */
     let refetchCommands: (() => void) | undefined;
 
@@ -106,11 +108,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 let current = true;
                 onCleanup(() => { current = false; });
                 commands = [];
+                commandsLoaded = false;
                 // A reply from the previous project or provider must not replace this menu.
                 const fetch = () => {
                     if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => {
                         if (!current) return;
                         commands = c;
+                        commandsLoaded = true;
                         // Typed while it loaded: the open menu shows the new list.
                         if (menuOpen() || /^\/\S*$/.test(text()) || skillAtCursor()) updateMenu(false);
                     }).catch(() => undefined);
@@ -151,7 +155,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             setMenu(items.length === 1 && items[0]!.cmd.name === skill.query ? [] : items);
             setMenuSel(0);
             // A lone $ asks for skills; with none, say how to add one (a price like $5 just closes the menu).
-            if (!items.length && t.trim() === "$" && !commands.some((c) => c.skill)) setMenuStatus("no-skills");
+            if (!items.length && t.trim() === "$" && commandsLoaded && !commands.some((c) => c.skill)) setMenuStatus("no-skills");
             return;
         }
         if (/^\/\S*$/.test(t)) {

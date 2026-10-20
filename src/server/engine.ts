@@ -1594,6 +1594,17 @@ export class Engine {
         return usable(model && modelRef(model));
     }
 
+    private homeSkillCache = new Map<string, { at: number; skills: Skill[] }>();
+    /** A project no session has open (Home's composer): its skills, read at most every couple of seconds. */
+    private homeSkills(cwd: string): Skill[] {
+        const hit = this.homeSkillCache.get(cwd);
+        if (hit && Date.now() - hit.at < 2000) return hit.skills;
+        const skills = loadSkills(cwd, isTrusted(cwd));
+        if (this.homeSkillCache.size > 50) this.homeSkillCache.clear();
+        this.homeSkillCache.set(cwd, { at: Date.now(), skills });
+        return skills;
+    }
+
     /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
     private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
@@ -1617,7 +1628,7 @@ export class Engine {
         // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
         const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
         const taken = new Set([...builtin, ...custom].map((c) => c.name));
-        const skills = (ws?.freshSkills() ?? loadSkills(resolve(cwd), isTrusted(resolve(cwd))))
+        const skills = (ws?.freshSkills() ?? this.homeSkills(resolve(cwd)))
             .filter((s) => s.userInvocable && !taken.has(s.name))
             .map((s) => ({ name: s.name, description: s.description, args: s.argumentHint, skill: true }));
         const own = new Set([...taken, ...skills.map((s) => s.name)]);

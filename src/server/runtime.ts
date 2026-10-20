@@ -21,7 +21,7 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "..
 import { toolPath } from "../permissions/rules";
 import { BUILTIN_TOOLS } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
-import { formatSkill, skillMentions, withMentionedSkills } from "../agent/skills";
+import { claudeCodeRuns, formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
@@ -1800,17 +1800,19 @@ export class Runtime {
             if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
             const skill = this.ws.skills.find((s) => s.userInvocable && s.name === cmd);
             // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
-            if (skill && !this.engine.cliCommands(this.agent?.model.provider, this.ws.cwd)?.has(cmd)) {
+            const provider = this.agent?.model.provider;
+            if (skill && !(provider === "claude-code" && claudeCodeRuns(cmd, skill, this.engine.cliCommands(provider, this.ws.cwd)))) {
                 const body = formatSkill(skill, args.trim());
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
-                return this.startTurn(body, { display: trimmed, kind: "command", attachments, about: `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}` });
+                return this.startTurn(body, { display: trimmed, kind: "command", attachments, mentionsIn: args.trim(), about: `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}` });
             }
         }
         return this.startTurn(text, { attachments });
     }
 
     /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[]; about?: string } = {}) {
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string } = {}) {
         if (!this.agent) {
             await this.ready.catch(() => undefined);
             if (this.closed) return;
@@ -1867,7 +1869,8 @@ export class Runtime {
                 const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
                 const skills = opts.kind === "command" ? [] : skillMentions(text, this.ws.skills);
-                const { parts, attached, notices } = await expandMentions(skills.length ? withMentionedSkills(text, skills) : text, this.toolState, roots, this.checker);
+                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker);
+                parts[0] = { type: "text", text: skills.length ? withSkills(text, skills) : text };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);

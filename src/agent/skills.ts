@@ -19,7 +19,7 @@
 
 import { closeSync, openSync, readdirSync, readSync, statSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { harnessHome } from "../config/paths";
 import { expandCommand } from "../commands/custom";
 
@@ -37,13 +37,17 @@ export interface Skill {
     file: string;
     /** Its folder: scripts and references next to it resolve against this. */
     dir: string;
+    /** In one of Claude Code's skill folders, so Claude Code runs it itself. */
+    claudeCode?: boolean;
 }
 
-/** A folder whose children are <skill>/SKILL.md; plugins name theirs <namespace>:<skill>. */
+/** A folder whose children are <skill>/SKILL.md (or, `single`, one skill's own folder); plugins name theirs <namespace>:<skill>. */
 export interface SkillRoot {
     dir: string;
+    single?: boolean;
     source: Skill["source"];
     namespace?: string;
+    claudeCode?: boolean;
 }
 
 const SKILL_FILE = "SKILL.md";
@@ -56,22 +60,24 @@ const NAME = /^[a-z0-9][a-z0-9:_-]*$/;
 export function skillRoots(cwd: string, trusted: boolean): SkillRoot[] {
     const claudeHome = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
     const roots: SkillRoot[] = [
-        { dir: join(claudeHome, "skills"), source: "user" },
+        { dir: join(claudeHome, "skills"), source: "user", claudeCode: true },
         { dir: join(harnessHome(), "skills"), source: "user" },
     ];
     // A repository's skills are instructions from whoever wrote it.
-    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project" }, { dir: join(cwd, ".harness", "skills"), source: "project" });
+    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project", claudeCode: true }, { dir: join(cwd, ".harness", "skills"), source: "project" });
     return roots;
 }
 
 /** Skill folders installed plugins bring (see the plugins loader). */
-export function pluginSkillRoots(_cwd: string, _trusted: boolean): { dir: string; namespace: string }[] {
+export type ExtraSkillRoot = { dir: string; namespace: string; single?: boolean };
+
+export function pluginSkillRoots(_cwd: string, _trusted: boolean): ExtraSkillRoot[] {
     return [];
 }
 
-export function loadSkills(cwd: string, trusted: boolean, extra: { dir: string; namespace: string }[] = pluginSkillRoots(cwd, trusted)): Skill[] {
+export function loadSkills(cwd: string, trusted: boolean, extra: ExtraSkillRoot[] = pluginSkillRoots(cwd, trusted)): Skill[] {
     const byName = new Map<string, Skill>();
-    const roots = [...skillRoots(cwd, trusted), ...extra.map((r) => ({ dir: r.dir, source: "plugin" as const, namespace: r.namespace }))];
+    const roots: SkillRoot[] = [...skillRoots(cwd, trusted), ...extra.map((r) => ({ dir: r.dir, source: "plugin" as const, namespace: r.namespace, single: r.single }))];
     for (const root of roots) for (const s of scanRoot(root)) byName.set(s.name, s);
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -86,6 +92,12 @@ export function findSkill(name: string, cwd: string, trusted: boolean): Skill | 
 }
 
 function scanRoot(root: SkillRoot): Skill[] {
+    if (root.single) {
+        const file = join(root.dir, SKILL_FILE);
+        const text = readSkillFile(file, HEAD_BYTES);
+        const skill = text === undefined ? undefined : parseSkill(text, basename(root.dir), file, root);
+        return skill ? [skill] : [];
+    }
     let entries;
     try {
         entries = readdirSync(root.dir, { withFileTypes: true });
@@ -128,7 +140,7 @@ function readSkillFile(file: string, limit = Infinity): string | undefined {
     }
 }
 
-export function parseSkill(text: string, folder: string, file: string, root: Pick<SkillRoot, "source" | "namespace">): Skill | undefined {
+export function parseSkill(text: string, folder: string, file: string, root: Pick<SkillRoot, "source" | "namespace" | "claudeCode">): Skill | undefined {
     const { data, body } = parseSkillFrontmatter(text);
     const own = (data.name || folder).toLowerCase().trim();
     const base = NAME.test(own) && !own.includes(":") ? own : folder.toLowerCase();
@@ -145,6 +157,7 @@ export function parseSkill(text: string, folder: string, file: string, root: Pic
         source: root.source,
         file,
         dir: dirname(file),
+        ...(root.claudeCode ? { claudeCode: true } : {}),
     };
 }
 
@@ -166,7 +179,10 @@ export function parseSkillFrontmatter(text: string): { data: Record<string, stri
         const kv = lines[i]!.match(/^([A-Za-z0-9_-]+)\s*:(?:\s+(.*))?$/);
         if (!kv) continue;
         const key = kv[1]!.toLowerCase();
-        let value = (kv[2] ?? "").replace(/\s+#.*$/, "").trim();
+        let value = (kv[2] ?? "").trim();
+        // A comment, unless it's inside a quoted value ("Fix issue #12").
+        const quoted = value.match(/^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')\s*(?:#.*)?$/);
+        value = quoted ? quoted[1]! : value.replace(/\s+#.*$/, "");
         const more: string[] = [];
         while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]!) || (!lines[i + 1]!.trim() && /^[|>]/.test(value)))) more.push(lines[++i]!);
         if (/^[|>][-+]?$/.test(value)) {
@@ -202,7 +218,8 @@ export function formatSkill(skill: Skill, args = ""): string | undefined {
     const body = skillBody(skill);
     if (body === undefined) return undefined;
     const withDir = body.replace(/\$\{(?:HARNESS|CLAUDE)_SKILL_DIR\}/g, () => skill.dir);
-    const text = args ? expandCommand(withDir, args) : withDir.replace(/\$ARGUMENTS\b|\$[1-9]\b/g, "");
+    // Without arguments the body is left as written: `awk '{print $1}'` in a skill is a shell snippet.
+    const text = args ? expandCommand(withDir, args) : withDir;
     return `<skill name="${skill.name}">\nBase directory for this skill: ${skill.dir}\n\n${text.trim()}\n</skill>`;
 }
 
@@ -224,8 +241,16 @@ export function skillMentions(text: string, skills: readonly Skill[]): Skill[] {
     return [...out.values()];
 }
 
-/** The prompt with the $mentioned skills' instructions after it, for the model; `text` itself is what the transcript shows. */
-export function withMentionedSkills(text: string, skills: readonly Skill[]): string {
-    const blocks = skillMentions(text, skills).flatMap((s) => formatSkill(s) ?? []);
+/** The prompt with the instructions of `mentioned` (its $mentions) after it, for the model; `text` itself is what the transcript shows. */
+export function withSkills(text: string, mentioned: readonly Skill[]): string {
+    const blocks = mentioned.flatMap((s) => formatSkill(s) ?? []);
     return blocks.length ? `${text}\n\n${blocks.join("\n\n")}` : text;
+}
+
+/**
+ * Should Claude Code run this /name itself? Those it listed, yes; before it
+ * has listed any (the first turn), the skills it reads from its own folders.
+ */
+export function claudeCodeRuns(name: string, skill: Skill | undefined, listed: ReadonlySet<string> | undefined): boolean {
+    return listed ? listed.has(name) : !!skill?.claudeCode;
 }

@@ -58,7 +58,7 @@ import { displayPath, expandPath } from "../util/files";
 import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
-import { formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
+import { claudeCodeRuns, formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
 import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
@@ -1797,14 +1797,15 @@ function skillToCommand(s: Skill): Command {
         run: (app, args, draft) => {
             const display = `/${s.name}${args ? " " + args : ""}`;
             // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
-            if (app.cliCommands?.provider === app.model?.provider && app.cliCommands?.names.has(s.name)) return app.startTurn(display, { draft });
+            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+            if (app.model?.provider === "claude-code" && claudeCodeRuns(s.name, s, listed)) return app.startTurn(display, { draft });
             const text = formatSkill(s, args);
             if (text === undefined) {
                 app.notice(`The ${s.name} skill is gone: ${displayPath(s.file, app.cwd)} can't be read. Run /skills to read them again.`, "error");
                 if (draft) app.editor.restore([draft]);
                 return;
             }
-            return app.startTurn(text, { display, kind: "command", draft });
+            return app.startTurn(text, { display, kind: "command", draft, mentionsIn: args });
         },
     };
 }

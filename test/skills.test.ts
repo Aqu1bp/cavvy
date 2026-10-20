@@ -7,7 +7,7 @@ import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { loadSkills, parseSkillFrontmatter, formatSkill, skillMentions, withMentionedSkills, skillBody, findSkill } = await import("../src/agent/skills");
+const { loadSkills, parseSkillFrontmatter, formatSkill, skillMentions, withSkills, skillBody, findSkill } = await import("../src/agent/skills");
 const { skillTool, skillListing } = await import("../src/tools/skill-tool");
 const { App } = await import("../src/ui/app");
 const { Session } = await import("../src/agent/session");
@@ -47,6 +47,13 @@ describe("loading skills", () => {
         expect(trusted.map((s) => `${s.name}:${s.source}:${s.description}`)).toEqual(["deploy:project:Project deploy (harness)", "only-claude:user:From Claude Code", "pdf:project:Project pdf"]);
         expect(trusted.find((s) => s.name === "pdf")!.dir).toBe(join(cwd, ".harness", "skills", "pdf"));
         expect(findSkill("PDF", cwd, true)?.source).toBe("project");
+    });
+
+    test("a plugin can name one skill's own folder", () => {
+        const plugin = tempDir("harness-skills-plugin-");
+        skill(plugin, "local-ai-use", "description: One skill");
+        const all = loadSkills(project(), false, [{ dir: join(plugin, "local-ai-use"), namespace: "acme", single: true }]);
+        expect(all.map((s) => `${s.name}:${s.source}`)).toEqual(["acme:local-ai-use:plugin"]);
     });
 
     test("plugin folders are namespaced and override nothing of the user's", () => {
@@ -142,6 +149,11 @@ describe("frontmatter YAML", () => {
         expect(body).toBe("Body");
     });
 
+    test("a # inside quotes isn't a comment", () => {
+        const { data } = parseSkillFrontmatter('---\ndescription: "Triage issue #123 reports"\nhint: \'C # notes\'\nplain: value # comment\n---\n');
+        expect(data).toEqual({ description: "Triage issue #123 reports", hint: "C # notes", plain: "value" });
+    });
+
     test("continuation lines, lists, comments and single quotes", () => {
         const { data } = parseSkillFrontmatter("---\ndescription: Starts here\n  and continues\nallowed-tools:\n  - Read\n  - \"Bash(git:*)\"\nwhen_to_use: 'it''s time' # a comment\nempty:\n---\n");
         expect(data.description).toBe("Starts here and continues");
@@ -164,8 +176,9 @@ describe("the skill's text", () => {
         expect(text).toStartWith(`<skill name="fix">\nBase directory for this skill: ${s!.dir}\n\n`);
         expect(text).toContain(`Fix issue 42 in ${s!.dir}/scripts (also ${s!.dir}). All: 42 urgent`);
         expect(text).toEndWith("</skill>");
-        // No arguments: the placeholders go rather than being sent as-is.
-        expect(formatSkill(s!)).toContain("Fix issue  in");
+        // No arguments: the body as written (`awk '{print $1}'` is a shell snippet, not a placeholder).
+        expect(formatSkill(s!)).toContain("Fix issue $1 in");
+        expect(formatSkill(s!)).toContain("All: $ARGUMENTS");
         // Arguments the body doesn't place are added after it.
         skill(userSkills, "fix", "description: Fix", "Changed body.");
         expect(formatSkill(s!, "extra")).toContain("Changed body.\n\nArguments: extra");
@@ -202,9 +215,9 @@ describe("$name mentions", () => {
 
     test("the skills come after the prompt as typed", () => {
         const s = skills();
-        const out = withMentionedSkills("fill this in with $pdf", s);
+        const out = withSkills("fill this in with $pdf", skillMentions("fill this in with $pdf", s));
         expect(out).toStartWith("fill this in with $pdf\n\n<skill name=\"pdf\">");
-        expect(withMentionedSkills("no mentions", s)).toBe("no mentions");
+        expect(withSkills("no mentions", [])).toBe("no mentions");
     });
 });
 
@@ -314,6 +327,17 @@ describe("in the TUI", () => {
         expect(turns).toEqual([]);
         expect(notices.at(-1)).toContain("The vanish skill is gone");
         expect(restored).toHaveLength(1);
+    });
+
+    test("on Claude Code's first turn, a skill in its own folders goes to it; one only the harness has is expanded", async () => {
+        skill(claudeSkills, "cc-skill", "description: Claude Code has it", "CC body");
+        skill(userSkills, "harness-skill", "description: Only here", "Harness only");
+        const { app, turns } = testApp();
+        app.model = { id: "default", provider: "claude-code" } as any;
+        await runCommand(app, "/cc-skill a");
+        await runCommand(app, "/harness-skill b");
+        expect(turns[0]!.text).toBe("/cc-skill a");
+        expect(turns[1]!.text).toContain("Harness only");
     });
 
     test("on Claude Code, its own commands and skills go to it instead of being refused", async () => {

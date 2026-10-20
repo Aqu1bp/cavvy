@@ -231,7 +231,7 @@ function summarize(tools: ToolBlock[]): string {
                 agents++;
                 break;
             case "Skill":
-                skills.add(String(i.skill ?? i.name ?? "").replace(/^[/$]/, ""));
+                skills.add(String(i.skill ?? i.name ?? "").replace(/^[/$]/, "").trim());
                 break;
             case "TodoWrite":
                 if (!todos) misc.push("updated todos");
@@ -259,7 +259,7 @@ function summarize(tools: ToolBlock[]): string {
     if (fetched) parts.push(`fetched ${plural(fetched, "page")}`);
     if (agents) parts.push(agents === 1 ? "ran an agent" : `ran ${agents} agents`);
     if (mcp) parts.push(`used ${plural(mcp, "MCP tool")}`);
-    if (skills.size) parts.push(skills.size === 1 ? `loaded the ${[...skills][0] || "a"} skill` : `loaded ${plural(skills.size, "skill")}`);
+    if (skills.size) parts.push(skills.size === 1 && [...skills][0] ? `loaded the ${[...skills][0]} skill` : `loaded ${plural(skills.size, "skill")}`);
     parts.push(...misc);
     if (unchanged.size) parts.push(unchanged.size === 1 ? `couldn't change ${short([...unchanged][0]!)}` : `couldn't change ${plural(unchanged.size, "file")}`);
     if (declined && !parts.length) parts.push(`${plural(declined, "call")} declined`);

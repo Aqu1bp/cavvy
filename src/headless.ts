@@ -13,7 +13,8 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "./
 import { McpManager } from "./mcp/manager";
 import { BUILTIN_TOOLS } from "./tools/index";
 import { skillTool } from "./tools/skill-tool";
-import { loadSkills } from "./agent/skills";
+import { claudeCodeRuns, formatSkill, loadSkills, skillMentions, withSkills } from "./agent/skills";
+import { slashCommand } from "./commands/custom";
 import type { Tool, ToolState } from "./tools/types";
 import { killAllShells } from "./tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "./tools/web-tools";
@@ -130,7 +131,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     const pref = settings.webSearch ?? "auto";
     const nativeWebSearch = def.kind === "anthropic" && /^https:\/\/api\.anthropic\.com$/.test(resolveBaseUrl(def)) && (pref === "auto" || pref === "anthropic");
     let mode = o.mode;
-    const skill = skillTool(loadSkills(o.cwd, o.trusted));
+    const skills = loadSkills(o.cwd, o.trusted);
+    const skill = skillTool(skills);
     const tools = (): Tool<any>[] => [
         // Nobody can answer a question in -p mode.
         ...BUILTIN_TOOLS.filter((t) => t.name !== "AskUserQuestion" && !(t.name === "WebSearch" && (nativeWebSearch || pref === "off"))),
@@ -284,7 +286,13 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     process.on("SIGTERM", onSig);
     let reason: string;
     try {
-        const { parts, notices } = await expandMentions(o.prompt, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])], checker);
+        // `-p "/name args"` runs a skill, and $name brings one along, as in the TUI; a skill's own text has no @mentions to attach.
+        const slash = slashCommand(o.prompt);
+        const invoked = slash && skills.find((s) => s.userInvocable && s.name === slash.name && !(model.provider === "claude-code" && claudeCodeRuns(s.name, s, undefined)));
+        const body = invoked ? formatSkill(invoked, slash!.args) : undefined;
+        const mentioned = invoked ? [] : skillMentions(o.prompt, skills);
+        const { parts, notices } = await expandMentions(body !== undefined ? slash!.args : o.prompt, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])], checker);
+        parts[0] = { type: "text", text: body ?? withSkills(o.prompt, mentioned) };
         for (const n of notices) stderr(`warning: ${n}`);
         reason = await agent.run(parts, { signal: ac.signal, display: o.prompt });
     } catch (e) {

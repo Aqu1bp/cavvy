@@ -47,7 +47,7 @@ import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
-import { loadSkills, skillMentions, withMentionedSkills, type Skill } from "../agent/skills";
+import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
 import { skillTool } from "../tools/skill-tool";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
@@ -1596,7 +1596,8 @@ export class App {
     }
 
     /** `draft` carries the images typed with the prompt (or with the command that built it). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft } = {}) {
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft; mentionsIn?: string } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
@@ -1628,8 +1629,9 @@ export class App {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
                 const skills = opts.kind === "command" ? [] : skillMentions(text, this.skills);
-                const sent = skills.length ? withMentionedSkills(text, skills) : text;
-                const { parts, attached, notices } = await expandMentions(sent, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                const sent = skills.length ? withSkills(text, skills) : text;
+                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                parts[0] = { type: "text", text: sent };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((sk) => sk.name).join(", ")}`);
                 parts.push(...images.map((im) => im.part));
                 for (const n of notices) this.notice(n, "warn");
