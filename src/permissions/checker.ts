@@ -20,7 +20,7 @@
 // failure) goes to the reviewer and runs unsandboxed if it's allowed. Without
 // a sandbox, read-only commands run and the rest go to the reviewer.
 
-import { existsSync, readdirSync, statSync } from "fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
@@ -276,15 +276,14 @@ export class PermissionChecker {
         const found = sensitiveTarget(cmd, opts);
         // Without the sandbox a recursive search of a folder holding the secrets reads them too.
         if (!found) return policy ? undefined : this.searchesStore(cmd, cwd);
-        const granted = this.grants(cwd).paths.flatMap(pathForms);
-        if (!policy && !granted.length) return found;
-        // The sandbox blocks what a path leads to, so that's what must be covered; a grant is by the path the user saw.
+        const granted = grantedFiles(this.grants(cwd).paths);
+        if (!policy && !granted.size) return found;
+        // The sandbox blocks what a path leads to, so that's what must be covered, and so is a grant.
         // Words are resolved against the folder the command starts in, so cover is only for lines of
         // plain file readers: anything that may read from another folder (`cd`, `git -C`, `env -C`,
         // `make -C`, `find -execdir`, `xargs`, a script) could make the same word another file.
         const a = analyzeCommand(cmd);
-        // An exemption needs every spelling inside a grant: `ａ/.env` folds to `a/.env` but is another file.
-        const grantCovers = (abs: string) => pathForms(abs).every((f) => granted.some((r) => isInside(f, r)));
+        const grantCovers = (abs: string) => insideFiles(abs, granted);
         if (!plainReads(cmd, a, cwd, (dir) => (policy && blocks(policy, dir, true)) || grantCovers(dir))) return found;
         const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || grantCovers(w.abs));
         if (!covered.length) return found;
@@ -740,6 +739,45 @@ function plainReads(cmd: string, a: CommandAnalysis, cwd: string, folderCovered:
             }
         });
     });
+}
+
+/**
+ * The files and folders granted paths lead to, by what the volume knows them as: two paths are the
+ * same place only if they're the same file, however they're spelled (`/tmp` and `/private/tmp`,
+ * `.ENV` and `.env` on a volume that ignores case), and never just because they look alike (`ａ` and `a`).
+ */
+function grantedFiles(paths: string[]): Set<string> {
+    const ids = new Set<string>();
+    for (const p of paths) {
+        try {
+            const s = statSync(p);
+            ids.add(`${s.dev}:${s.ino}`);
+        } catch {
+            // gone since it was granted: covers nothing
+        }
+    }
+    return ids;
+}
+
+/** Is the file at `abs` (symlinks followed all the way) one of `files`, or in one? Not if it isn't there. */
+function insideFiles(abs: string, files: Set<string>): boolean {
+    let p: string;
+    try {
+        p = realpathSync(abs);
+    } catch {
+        return false;
+    }
+    for (;;) {
+        try {
+            const s = statSync(p);
+            if (files.has(`${s.dev}:${s.ino}`)) return true;
+        } catch {
+            return false;
+        }
+        const up = dirname(p);
+        if (up === p) return false;
+        p = up;
+    }
 }
 
 /** Option letters, beyond those every plain reader shares, that name no file and don't recurse for that program. */

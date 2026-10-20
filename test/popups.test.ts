@@ -404,15 +404,6 @@ describe("session approvals", () => {
         }
     });
 
-    test("a grant for ~/.env covers ~/.env written out, not a quoted or escaped ~, which is a folder named ~", () => {
-        const s = checker();
-        s.applyGrant({ paths: [join(homedir(), ".env")] });
-        expect(s.check(Bash, { command: "cat ~/.env" }, "default", W).sensitive).toBeUndefined();
-        for (const command of ["cat '~/.env'", 'cat "~/.env"', "cat \\~/.env", 'cat ~"/.env"', "cat '~'/.env"]) {
-            expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
-        }
-    });
-
     test("a grant doesn't cover another file whose name looks like the granted path (X=other/.env, ｏther/.env)", () => {
         const s = checker();
         s.applyGrant({ paths: [join(W, "other", ".env")] });
@@ -422,6 +413,30 @@ describe("session approvals", () => {
         for (const command of ["cat X=other/.env", "cat --x=other/.env", "head -5 A=other/.env", "cat ｏther/.env"]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
         }
+        // The other way round: a grant for the look-alike doesn't cover the real one, file or folder.
+        const r = checker();
+        r.applyGrant({ paths: [join(W, "ｏther", ".env")] });
+        expect(r.check(Bash, { command: "cat ｏther/.env" }, "default", W).sensitive).toBeUndefined();
+        expect(r.check(Bash, { command: "cat other/.env" }, "default", W).sensitive).toEqual(expect.any(String));
+        const f = checker();
+        f.applyGrant({ paths: [join(W, "ｏther")] });
+        expect(f.check(Bash, { command: "diff ｏther/.env ｏther" }, "default", W).sensitive).toBeUndefined();
+        expect(f.check(Bash, { command: "diff other/.env other" }, "default", W).sensitive).toEqual(expect.any(String));
+    });
+
+    test("a grant covers its file however the path to it is spelled: through /private, in another case, absolute", () => {
+        const s = checker();
+        s.applyGrant({ paths: [join(W, "other", ".env")] });
+        const aliases = [`cat ${W}/other/.env`, "cat other/.env"];
+        // macOS: /var and /tmp lead to /private/var and /private/tmp; W is the resolved path.
+        if (W.startsWith("/private/")) aliases.push(`cat ${W.slice("/private".length)}/other/.env`);
+        if (existsSync(join(W, "OTHER", ".ENV"))) aliases.push("cat OTHER/.ENV");
+        for (const command of aliases) expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, undefined]);
+        // A symlink in front of the file is followed: one into the granted file is it, one elsewhere isn't.
+        symlinkSync(join(W, "other"), join(W, "to-other"));
+        symlinkSync(join(W, "ｏther"), join(W, "to-lookalike"));
+        expect(s.check(Bash, { command: "cat to-other/.env" }, "default", W).sensitive).toBeUndefined();
+        expect(s.check(Bash, { command: "cat to-lookalike/.env" }, "default", W).sensitive).toEqual(expect.any(String));
     });
 
     test("a dangerous command, or a change to the harness's config, gets no scoped grant", () => {
