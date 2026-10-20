@@ -220,6 +220,19 @@ describe("PreCompact and PostCompact", () => {
         await until(() => lines(out).length > 0);
         expect(lines(out)).toEqual([expect.objectContaining({ hook_event_name: "PostCompact", trigger: "manual", compact_summary: "1. Summary of it all" })]);
     });
+    test("after compaction SessionStart runs with source compact, and its context goes with the next prompt", async () => {
+        const proj = tempDir();
+        const out = join(proj, "start.jsonl");
+        const settings = { autoCompact: false, hooks: { SessionStart: [{ matcher: "compact", command: `cat >> '${out}'; echo >> '${out}'; echo 'Re-read TODO.md'` }] } };
+        const { agent, requests } = agentFor(proj, settings, () => text("Summary"));
+        await run(agent, "hello");
+        await agent.compact({ auto: true, signal: new AbortController().signal });
+        await until(() => lines(out).length > 0);
+        expect(lines(out)).toEqual([expect.objectContaining({ hook_event_name: "SessionStart", source: "compact" })]);
+        await Bun.sleep(50);
+        await run(agent, "next");
+        expect(JSON.stringify(requests.at(-1)!.messages)).toContain("Re-read TODO.md");
+    });
 });
 
 describe("CwdChanged and FileChanged", () => {

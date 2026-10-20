@@ -45,7 +45,7 @@ describe("configuration", () => {
             "hooks: an mcp_tool hook needs a server and a tool",
         ]);
         expect(normalizeHooks({ Setup: [{ command: "x" }], Stop: "nope" }, (m) => warnings.push(m))).toEqual({});
-        expect(warnings.slice(-2)).toEqual(["hooks: Setup isn't a hook event the harness runs", "hooks: an event's hooks must be a list"]);
+        expect(warnings.slice(-2)).toEqual(["hooks: Setup isn't a hook event the harness runs", "hooks: Stop: an event's hooks must be a list"]);
     });
     test("extra fields (a plugin's root) go on every handler", () => {
         expect(normalizeHooks({ Stop: [{ hooks: [{ command: "a" }, { command: "b" }] }] }, undefined, { pluginRoot: "/p" })).toEqual({ Stop: [{ pluginRoot: "/p", command: "a" }, { pluginRoot: "/p", command: "b" }] });

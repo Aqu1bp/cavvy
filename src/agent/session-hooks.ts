@@ -4,12 +4,12 @@
 
 import type { Settings } from "../config/settings";
 import type { Session } from "./session";
-import { fireHooks } from "./hooks";
+import { fireHooks, type HookNotice } from "./hooks";
 import { loadMemory } from "./memory";
 
 const MEMORY_TYPE = { user: "User", project: "Project", local: "Local" } as const;
 
-export async function sessionStartHooks(settings: Settings, session: Session, source: string, cwd: string, warn: (msg: string) => void, extra: Record<string, unknown> = {}): Promise<void> {
+export async function sessionStartHooks(settings: Settings, session: Session, source: string, cwd: string, warn: HookNotice, extra: Record<string, unknown> = {}): Promise<void> {
     const common = { session_id: session.meta.id, ...extra };
     const h = await fireHooks(settings, "SessionStart", { ...common, source, ...(session.model ? { model: session.model } : {}) }, cwd, warn);
     if (h?.additionalContext) session.hookContext.push(`Context from a SessionStart hook:\n${h.additionalContext}`);

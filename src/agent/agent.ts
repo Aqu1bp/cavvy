@@ -43,6 +43,7 @@ import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
 import { hookApplies, runHandler, runHooks, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
+import { sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
 import { loadAgents } from "./agents";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
@@ -829,7 +830,9 @@ export class Agent {
         const common: Record<string, unknown> = { session_id: sub?.parentSessionId ?? this.session.meta.id, permission_mode: this.o.mode.get(), ...(sub ? { agent_id: this.session.meta.id, agent_type: sub.type } : {}) };
         if (settings.effort) common.effort = { level: settings.effort };
         const h = await runHooks(settings, event, { ...common, ...payload }, this.state.cwd, this.hookServices(signal)).catch((e): HookOutcome => ({ errors: [`${event} hook failed: ${(e as Error).message}`], messages: [] }));
-        for (const message of [...h.errors, ...h.messages]) this.emit({ type: "notice", level: "warn", message });
+        for (const message of h.errors) this.emit({ type: "notice", level: "warn", message });
+        // A hook's systemMessage is for you to read, not a problem.
+        for (const message of h.messages) this.emit({ type: "notice", level: "info", message });
         if (h.stop && this.running) this.hookStop ??= h.stop;
         if (h.watchPaths) this.watchFiles()?.setDynamic(h.watchPaths);
         return h;
@@ -1011,7 +1014,7 @@ export class Agent {
         this.lastUsageTotal = 0;
         this.state.fileState.clear();
         this.emit({ type: "compact_end", summary });
-        if (!this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: summary });
+        if (!this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: summary }).then(() => this.compacted());
         return true;
     }
 
@@ -1483,7 +1486,14 @@ export class Agent {
         this.contextTokens = 0;
         this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.` });
         if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
+        // Claude Code doesn't run SessionStart for us: the harness runs it, on both backends.
+        if (!this.o.isSubagent) void this.compacted();
         return true;
+    }
+
+    /** After compaction, as in Claude Code: SessionStart (source compact) and the memory files' InstructionsLoaded; their context goes with the next prompt. */
+    private compacted(): Promise<void> {
+        return sessionStartHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }));
     }
 
     /**

@@ -448,12 +448,15 @@ export async function runHooks(settings: Settings, event: HookEvent, payload: Re
     return out;
 }
 
+/** Where fireHooks reports: problems as warnings, a hook's systemMessage as info. */
+export type HookNotice = (msg: string, level?: "info" | "warn") => void;
+
 /** Run an informational event's hooks for their side effects. Never throws; problems go to `warn`. */
-export async function fireHooks(settings: Settings, event: HookEvent, payload: Record<string, unknown>, cwd: string, warn: (msg: string) => void, opts?: AbortSignal | HookServices): Promise<HookOutcome | undefined> {
+export async function fireHooks(settings: Settings, event: HookEvent, payload: Record<string, unknown>, cwd: string, warn: HookNotice, opts?: AbortSignal | HookServices): Promise<HookOutcome | undefined> {
     if (!settings.hooks?.[event]?.length) return undefined;
     const h = await runHooks(settings, event, payload, cwd, opts).catch((e): HookOutcome => ({ errors: [`${event} hook failed: ${(e as Error).message}`], messages: [] }));
     for (const err of h.errors) warn(err);
-    for (const m of h.messages) warn(m);
+    for (const m of h.messages) warn(m, "info");
     return h;
 }
 

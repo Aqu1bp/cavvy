@@ -127,7 +127,7 @@ export function normalizeHooks(raw: unknown, warn?: (msg: string) => void, extra
             warn?.(`hooks: ${event} isn't a hook event the harness runs`);
             continue;
         }
-        const l = normalizeHookList(list, warn, extra);
+        const l = normalizeHookList(list, warn && ((msg) => warn(msg.replace(/^hooks: /, `hooks: ${event}: `))), extra);
         if (l.length) out[event] = l;
     }
     return out;

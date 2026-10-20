@@ -1525,7 +1525,7 @@ function hooksCommand(app: App) {
         const list = h[event] ?? [];
         if (!list.length) continue;
         any = true;
-        lines.push(`  ${bold(event)}${BLOCKING_EVENTS.has(event) ? "" : theme.subtle(" (informational)")}`);
+        lines.push(`  ${bold(event)}${BLOCKING_EVENTS.has(event) || event === "PermissionRequest" ? "" : theme.subtle(" (informational)")}`);
         for (const x of list) {
             const what = x.type === "http" ? `POST ${x.url}` : x.type === "prompt" ? `prompt: ${truncate(x.prompt ?? "", 60)}` : x.type === "mcp_tool" ? `mcp__${x.server}__${x.tool}` : [x.command, ...(x.args ?? [])].join(" ");
             const notes = [x.if ? `if ${x.if}` : "", x.async ? "async" : "", x.timeout ? `timeout ${x.timeout}s` : ""].filter(Boolean).join(", ");

@@ -241,7 +241,7 @@ export class App {
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
-        void sessionStartHooks(this.settings, this.session, this.init.resumeFile ? "resume" : "startup", this.toolState.cwd, (msg) => this.notice(msg, "warn"));
+        void sessionStartHooks(this.settings, this.session, this.init.resumeFile ? "resume" : "startup", this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level));
 
         await this.trackSwitch(this.initModel());
         if (this.init.fastMode && !this.model?.supportsFastMode) {
@@ -643,12 +643,12 @@ export class App {
     private sessionSwitched(prev: Session, how: "clear" | "resume") {
         const id = this.session.meta.id;
         const session = this.session;
-        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => (this.session === session ? sessionStartHooks(this.settings, session, how, this.toolState.cwd, (msg) => this.notice(msg, "warn")) : undefined));
+        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => (this.session === session ? sessionStartHooks(this.settings, session, how, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level)) : undefined));
     }
 
     /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
     private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        await fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
+        await fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
     private replayTranscript() {

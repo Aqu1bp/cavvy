@@ -280,7 +280,7 @@ export class Runtime {
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
         this.ready = this.track(this.initModel());
-        void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, (msg) => this.notice(msg, "warn"));
+        void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level));
     }
 
     get id(): string {
@@ -2406,7 +2406,7 @@ export class Runtime {
     // -----------------------------------------------------------------------
 
     private async hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        await fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
+        await fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
