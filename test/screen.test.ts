@@ -154,6 +154,61 @@ describe("full-window renderer", () => {
         expect(vt.screen().slice(-LIVE.length)).toEqual(LIVE);
     });
 
+    test("after settling, rows on screen are dropped as painted, even when the entry behind them was replaced since", () => {
+        const { vt, screen } = harness(12, 40);
+        const busy = Array.from({ length: 11 }, (_, i) => `busy ${i}`);
+        const live = Array.from({ length: 5 }, (_, i) => `live ${i}`);
+        const e = screen.print(Array.from({ length: 20 }, (_, i) => `streamed ${i}`));
+        screen.setLive(busy);
+        screen.flushNow();
+        screen.setLive(live);
+        screen.settle();
+        screen.flushNow();
+        screen.replace([e], ["whole reply"]);
+        screen.setLive(busy);
+        screen.flushNow();
+        // The last row printed is still right above the live region, which starts where `top` says.
+        expect(vt.screen()[0]).toBe("streamed 19");
+        expect(vt.screen()[1]).toBe("busy 0");
+        expect((screen as any).top).toBe(1);
+    });
+
+    test("output printed with no live region scrolls the copies away, and they aren't dropped again", () => {
+        const { vt, screen } = harness(12, 40);
+        screen.print(Array.from({ length: 20 }, (_, i) => `line ${i}`));
+        screen.setLive(Array.from({ length: 8 }, (_, i) => `live ${i}`));
+        screen.flushNow();
+        screen.setLive(["prompt"]);
+        screen.settle();
+        screen.flushNow();
+        screen.setLive([]);
+        screen.print(Array.from({ length: 12 }, (_, i) => `new ${i}`));
+        screen.flushNow();
+        expect((screen as any).restored).toBe(0);
+        screen.setLive(Array.from({ length: 8 }, (_, i) => `live ${i}`));
+        screen.flushNow();
+        const all = vt.all().filter((l) => l.startsWith("new "));
+        expect(all).toEqual(Array.from({ length: 12 }, (_, i) => `new ${i}`));
+    });
+
+    test("printing nothing draws nothing: no newline scrolls a row into the scrollback", () => {
+        const { vt, screen } = harness(12, 40);
+        screen.print(Array.from({ length: 20 }, (_, i) => `old ${i}`));
+        screen.setLive(Array.from({ length: 11 }, (_, i) => `busy ${i}`));
+        screen.flushNow();
+        screen.setLive(Array.from({ length: 5 }, (_, i) => `live ${i}`));
+        screen.settle();
+        screen.flushNow();
+        const before = [...vt.scrollback];
+        screen.print([]);
+        screen.flushNow();
+        expect(vt.scrollback).toEqual(before);
+        screen.setLive(Array.from({ length: 11 }, (_, i) => `busy ${i}`));
+        screen.flushNow();
+        const olds = vt.scrollback.filter((l) => l.startsWith("old "));
+        expect(new Set(olds).size).toBe(olds.length);
+    });
+
     test("settling with no live region (stopping) leaves the output where it is", () => {
         const { vt, screen } = harness(12, 40);
         for (let i = 0; i < 20; i++) screen.print(`line ${i}`);

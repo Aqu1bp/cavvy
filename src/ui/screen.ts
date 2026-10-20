@@ -52,6 +52,8 @@ export class Screen {
      * back by a fill. They're dropped in place rather than scrolled into the scrollback again.
      */
     private restored = 0;
+    /** The output rows on screen above the live region, as painted (`top` of them). */
+    private onScreen: string[] = [];
     private log: Entry[] = [];
     /** Printed but not drawn yet. */
     private pending: Entry[] = [];
@@ -92,6 +94,7 @@ export class Screen {
         this.top = 0;
         this.liveRows = 0;
         this.restored = 0;
+        this.onScreen = [];
         this.setFocusReporting(true);
     }
 
@@ -257,6 +260,7 @@ export class Screen {
         if (shown.length <= end) return undefined;
         this.pending = [];
         this.restored = Math.min(shown.length, this.restored + shown.length - end);
+        this.onScreen = shown;
         const output = shown.map((l) => cursor.clearLine + l + RESET).join("\n") + "\n";
         return SYNC_START + "\x1b[H" + output + cursor.clearDown + this.drawLive(shown.length, cols, rows) + SYNC_END;
     }
@@ -266,23 +270,19 @@ export class Screen {
      * the screen in place without as many of them as would scroll, so only new rows scroll.
      * Leaves the cursor where the live region starts, with the region erased.
      */
-    private dropRestored(cols: number, rows: number): string {
-        if (!this.restored || !this.live.length) return "";
-        const pendingRows = this.pending.reduce((n, e) => n + this.layout(e, cols).length, 0);
-        const scroll = Math.max(0, this.top + pendingRows + Math.min(this.live.length, rows - 1) - rows);
+    private dropRestored(printedRows: number, rows: number): string {
+        if (!this.restored) return "";
+        // What this draw scrolls: output rows each end with a newline; the live region's last row doesn't.
+        const live = Math.min(this.live.length, rows - 1);
+        const after = this.top + printedRows;
+        const scroll = Math.max(0, live ? after + live - rows : after - (rows - 1));
         const drop = Math.min(scroll, this.restored, this.top);
         if (!drop) return "";
-        // What's on screen above the live region: the newest output rows printed so far (pending ones are last in the log).
-        const pending = new Set(this.pending);
-        const visible: string[] = [];
-        for (let i = this.log.length - 1; i >= 0 && visible.length < this.top; i--) {
-            if (!pending.has(this.log[i]!)) visible.unshift(...this.layout(this.log[i]!, cols));
-        }
-        const kept = visible.slice(-this.top).slice(drop);
+        this.onScreen = this.onScreen.slice(drop);
         this.top -= drop;
         this.restored -= drop;
         this.liveRows = 0;
-        return "\x1b[H" + kept.map((l) => cursor.clearLine + l + RESET + "\n").join("") + cursor.clearDown;
+        return "\x1b[H" + this.onScreen.map((l) => cursor.clearLine + l + RESET + "\n").join("") + cursor.clearDown;
     }
 
     /** Clear the screen, the scrollback and everything printed so far. */
@@ -340,18 +340,22 @@ export class Screen {
             const filled = this.fill(cols, rows);
             if (filled) return void process.stdout.write(filled);
         }
-        let out = SYNC_START + this.dropRestored(cols, rows);
+        const printed = this.pending.flatMap((e) => this.layout(e, cols));
+        this.pending = [];
+        let out = SYNC_START + this.dropRestored(printed.length, rows);
         if (this.liveRows > 0) out += "\r" + cursor.up(this.liveRows - 1) + cursor.clearDown;
         else out += "\r";
         let row = this.top;
-        if (this.pending.length) {
-            const printed = this.pending.flatMap((e) => this.layout(e, cols));
-            this.pending = [];
+        if (printed.length) {
             out += printed.map((l) => l + RESET).join("\n") + "\n";
             row = Math.min(row + printed.length, rows - 1);
         }
+        const above = [...this.onScreen, ...printed];
         out += this.drawLive(row, cols, rows);
         out += SYNC_END;
+        // Rows that scrolled off went to the scrollback: copies brought back by a fill go first.
+        this.restored = Math.max(0, this.restored - (above.length - this.top));
+        this.onScreen = above.slice(above.length - this.top);
         process.stdout.write(out);
     }
 
@@ -381,6 +385,7 @@ export class Screen {
         if (printed.length) out += printed.map((l) => l + RESET).join("\n") + "\n";
         out += this.drawLive(Math.min(printed.length, rows - 1), cols, rows);
         out += SYNC_END;
+        this.onScreen = printed.slice(printed.length - this.top);
         process.stdout.write(out);
     }
 }
