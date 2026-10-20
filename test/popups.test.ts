@@ -371,6 +371,9 @@ describe("session approvals", () => {
         expect(sd.grant?.paths).toEqual([env]);
         s.applyGrant(sd.grant!);
         expect(s.check(Bash, { command: "cat .env", dangerouslyDisableSandbox: false }, "default", W).sensitive).toBeUndefined();
+        for (const command of ["cat -n .env", "grep -n KEY .env", "head -5 .env", "wc -l .env", "grep -v KEY -- .env"]) {
+            expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, undefined]);
+        }
         // The grant covers .env itself, not a longer name it's the start of, alone or beside it.
         writeFileSync(join(W, ".env.prod"), "B=2\n");
         mkdirSync(join(W, "other"), { recursive: true });
@@ -382,6 +385,10 @@ describe("session approvals", () => {
             "cat .env; cd other; cat .env", "cd other && cat .env", 'cat .env "other .env file"',
             // Programs that read from another folder than the one the command starts in.
             "git -C other diff --no-index /dev/null .env", "env -C other cat .env", "make -C other .env", "find other -execdir cat .env ;", "echo other | xargs -I{} env -C {} cat .env",
+            // A folder or a recursive search opens what's inside; an option's value may be a filter or a file list.
+            "diff .env other", "diff -r .env other", "grep KEY .env other", "grep -r --include .env KEY", "grep -r --include .env KEY . other",
+            "grep -R KEY .env", "grep --directories=recurse KEY .env", "ls -R .env other", "sort --files0-from=list .env", "wc --files0-from=list .env",
+            "md5sum -c sums .env", "diff --to-file=other .env", "cat .env other/*", "cat .env $D", "cat .env ~root/x", "cat .env ~", "cat .env ..",
         ]) {
             expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
             expect([command, auto(s, { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true }]);

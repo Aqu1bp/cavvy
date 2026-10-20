@@ -27,7 +27,7 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules } from "./bash-safety";
+import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isReadOnly } from "../tools/types";
@@ -283,8 +283,9 @@ export class PermissionChecker {
         // plain file readers: anything that may read from another folder (`cd`, `git -C`, `env -C`,
         // `make -C`, `find -execdir`, `xargs`, a script) could make the same word another file.
         const a = analyzeCommand(cmd);
-        if (!a.commands.every((c) => c.argv[0] === effectiveArgv(c.argv)[0] && PLAIN_READERS.has(c.argv[0] ?? ""))) return found;
-        const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || pathForms(w.abs).some((f) => granted.some((r) => isInside(f, r))));
+        const grantCovers = (abs: string) => pathForms(abs).some((f) => granted.some((r) => isInside(f, r)));
+        if (!plainReads(a, cwd, (dir) => (policy && blocks(policy, dir, true)) || grantCovers(dir))) return found;
+        const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || grantCovers(w.abs));
         if (!covered.length) return found;
         // Blank only the covered words themselves, by where they stand: a covered `.env` must not
         // also erase the `.env` inside an uncovered `.env.prod` or "other .env file" next to it.
@@ -674,6 +675,30 @@ export function installsOnly(cmd: string, cwd: string): boolean {
 
 /** Programs that read the files they're named, from the folder they start in, and run nothing. */
 const PLAIN_READERS = new Set(["cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "diff", "cmp", "file", "stat", "ls", "cut", "sort", "uniq", "tr", "nl", "od", "xxd", "hexdump", "strings", "md5", "md5sum", "shasum", "sha256sum"]);
+
+/**
+ * Does the line only read the files it names, from the folder it starts in? Each command is a
+ * plain reader with options that name no files and don't recurse, and no word is an uncovered
+ * folder, a pattern or a variable: a folder or a recursive search opens what's inside (`diff .env other`,
+ * `grep -r`), and an option's value may be a filter or a list of files (`--include .env`,
+ * `--files0-from=list`, `md5sum -c sums`) rather than the file it looks like.
+ */
+function plainReads(a: CommandAnalysis, cwd: string, folderCovered: (abs: string) => boolean): boolean {
+    if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return false;
+    return a.commands.every((c) => {
+        if (c.argv[0] !== effectiveArgv(c.argv)[0] || !PLAIN_READERS.has(c.argv[0] ?? "")) return false;
+        return c.argv.slice(1).every((w) => {
+            if (w.startsWith("-")) return /^-(\d+|[nivlhHsa]+|-)$/.test(w);
+            if (/[$`*?[{]/.test(w) || /^~(?!\/|$)/.test(w)) return false;
+            const abs = expandPath(w, cwd);
+            try {
+                return !statSync(abs).isDirectory() || folderCovered(abs);
+            } catch {
+                return true;
+            }
+        });
+    });
+}
 
 /** The only thing that may share a line with an install: a cd into a folder written out. */
 function installCompanion(argv: string[]): boolean {
