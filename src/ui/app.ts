@@ -2042,7 +2042,10 @@ function shortcutHelp(cols: number): string[] {
     ];
 }
 
-/** Thinking as it's shown: its markdown styled (Codex's summaries open with a **bold** title), wrapped to fit beside the ✻. */
+/**
+ * Thinking as it's shown: its markdown styled (Codex's summaries open with a **bold** title), wrapped to fit
+ * beside the ✻. Links aren't terminal hyperlinks: thinking is cut to its last lines, which could drop a link's end.
+ */
 function thinkingLines(text: string, cols: number): string[] {
-    return text.split("\n").flatMap((l) => wrapLine(inline(l), cols - 4));
+    return text.split("\n").flatMap((l) => wrapLine(inline(l, false), cols - 4));
 }

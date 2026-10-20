@@ -17,6 +17,7 @@ const settingsMod = await import("../src/config/settings");
 const { paths, projectStateDir } = await import("../src/config/paths");
 const { trustFolder, isTrusted } = await import("../src/config/trust");
 const { setKey } = await import("../src/auth/credentials");
+const { inline } = await import("../src/ui/markdown");
 const { ReadTool, WriteTool } = await import("../src/tools/file-tools");
 const { Session, listSessions, findSession } = await import("../src/agent/session");
 const { stopGroup, KillShellTool } = await import("../src/tools/bash");
@@ -804,6 +805,13 @@ describe("live region layout", () => {
         const shown = printed.map(stripAnsi).join("\n");
         expect(shown).toContain("✻ Checking independent sources");
         expect(shown).not.toContain("**");
+        // A link is its text and URL, never a terminal hyperlink that a cut-short block could leave open.
+        printed.length = 0;
+        a.thinking = `See [the docs ${"word ".repeat(200)}](https://example.com/docs).`;
+        a.flushThinking();
+        expect(printed.join("\n")).not.toContain("\x1b]8;");
+        expect(printed.map(stripAnsi).join(" ")).toContain("(https://example.com/docs)");
+        expect(inline("[docs](https://example.com/docs)", true)).toContain("\x1b]8;;https://example.com/docs");
     });
 
     test("when idle, only the prompt is shown", () => {
