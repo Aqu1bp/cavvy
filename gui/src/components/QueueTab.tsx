@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, Show } from "solid-js";
 import { CirclePause, CornerDownRight, GripVertical, ListEnd, Paperclip, Pencil, X } from "lucide-solid";
 import type { SessionState } from "@shared/protocol";
 import { reportError, rpc, toast } from "../state/app";
@@ -18,6 +18,16 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     let armed: number | undefined;
     const busy = () => p.state.busy;
     const many = () => p.state.queued.length > 1;
+    let tab: HTMLDivElement | undefined;
+    /** The message whose grip moved it with the keyboard: its grip keeps the focus once the queue shows the move. */
+    const [follow, setFollow] = createSignal<{ id: number; to: number }>();
+    createEffect(() => {
+        const f = follow();
+        if (!f || p.state.queueIds.indexOf(f.id) !== f.to) return;
+        setFollow(undefined);
+        // After the rows have moved (moving a row takes the focus off it).
+        requestAnimationFrame(() => tab?.querySelector<HTMLElement>(`.queue-grip[data-qid="${f.id}"]`)?.focus());
+    });
 
     // By the message's id, so a queue that moved on meanwhile never acts on a different one.
     const sendNow = async (i: number) => {
@@ -30,21 +40,25 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
             reportError(e);
         }
     };
-    const move = async (i: number, to: number | undefined, focus?: HTMLElement) => {
+    const move = async (i: number, to: number | undefined, keyboard = false) => {
         const queueId = p.state.queueIds[i];
         if (queueId === undefined || to === undefined) return;
+        // The grip follows its message, so ↑↑ keeps moving the same one.
+        if (keyboard) setFollow({ id: queueId, to });
         try {
             const r = await rpc.call("session.moveQueued", { id: p.sessionId, queueId, to });
-            if (!r.moved) toast("That message has already been sent", "info");
-            // The grip follows its message, so ↑↑ keeps moving the same one.
-            else if (focus) requestAnimationFrame(() => (focus.closest(".queue-tab")?.querySelectorAll<HTMLElement>(".queue-grip")[to])?.focus());
+            if (!r.moved) {
+                setFollow(undefined);
+                toast("That message has already been sent", "info");
+            }
         } catch (e) {
+            setFollow(undefined);
             reportError(e);
         }
     };
 
     return (
-        <div class="tab queue-tab" role="list" aria-label={`${p.state.queued.length} queued message${p.state.queued.length === 1 ? "" : "s"}`}>
+        <div ref={tab} class="tab queue-tab" role="list" aria-label={`${p.state.queued.length} queued message${p.state.queued.length === 1 ? "" : "s"}`}>
             <For each={p.state.queued}>
                 {(q, i) => {
                     const mode = () => p.state.queuedModes?.[i()];
@@ -85,13 +99,14 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                             <Show when={many()}>
                                 <button
                                     class="hb sm queue-grip"
+                                    data-qid={p.state.queueIds[i()]}
                                     title="Drag to reorder, or press ↑ or ↓"
                                     aria-label={`Reorder queued message ${i() + 1} of ${p.state.queued.length} (↑ or ↓)`}
                                     onPointerDown={() => (armed = i())}
                                     onKeyDown={(e) => {
                                         if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
                                         e.preventDefault();
-                                        void move(i(), stepTarget(i(), e.key === "ArrowUp" ? "up" : "down", p.state.queued.length), e.currentTarget);
+                                        void move(i(), stepTarget(i(), e.key === "ArrowUp" ? "up" : "down", p.state.queued.length), true);
                                     }}
                                 >
                                     <GripVertical size={13} />
