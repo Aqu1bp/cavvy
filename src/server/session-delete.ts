@@ -1,5 +1,5 @@
-// Deleting a session from the GUI. Its files (the transcript, the UI side log
-// and the file copies kept for /rewind) move out of projects/ into
+// Deleting a session from the GUI. Its files (the transcript, the UI side log,
+// its saved queue and the file copies kept for /rewind) move out of projects/ into
 // trash/<id>/ in the Harness home, so Undo can put them back; entries older
 // than a week are purged. Nothing outside the Harness home is touched: paths
 // are built from checked ids, each folder they're in must resolve inside the
@@ -49,6 +49,7 @@ export function pieces(dir: string, id: string): { live: string; trashed: string
         { live: join(dir, `${id}.jsonl`), trashed: "transcript.jsonl" },
         { live: join(dir, "ui", `${id}.jsonl`), trashed: "ui.jsonl" },
         { live: join(dir, "file-history", id), trashed: "file-history" },
+        { live: join(dir, "queue", `${id}.json`), trashed: "queue.json" },
     ];
 }
 
@@ -210,7 +211,7 @@ export function restoreSession(id: string, beforeRestore?: (cwd: string | undefi
     const file = join(dir, `${id}.jsonl`);
     // Each folder is checked before anything is made in it.
     mkdirSync(paths.projectsDir(), { recursive: true, mode: 0o700 });
-    for (const d of [dir, join(dir, "ui"), join(dir, "file-history")]) {
+    for (const d of [dir, join(dir, "ui"), join(dir, "file-history"), join(dir, "queue")]) {
         mustBeInHome(d);
         if (!present(d)) mkdirSync(d, { mode: 0o700 });
     }

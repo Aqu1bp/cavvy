@@ -404,6 +404,15 @@ export interface PlanLink {
 }
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
+/**
+ * A queued message: "steer" joins the running turn at its next step, "queue" waits for it to end,
+ * "turn" must wait (images, files, commands), "held" came back after a restart and waits for the user.
+ */
+export type QueuedMode = "steer" | "queue" | "turn" | "held";
+
+/** What a message sent while a turn runs does (the followUpBehavior setting, or the opposite key). */
+export type FollowUpMode = "steer" | "queue";
+
 export interface SessionState {
     accounts?: Record<string, string>;
     id: string;
@@ -436,6 +445,8 @@ export interface SessionState {
     queueIds: number[];
     /** What each queued message carries besides its text ("report.log, 1 image"), "" for nothing. */
     queuedAttached?: string[];
+    /** What each queued message will do (missing from older servers: all "steer"). */
+    queuedModes?: QueuedMode[];
     interactions: Interaction[];
     mcp: McpStatus[];
     /** Files this session's edit tools changed (the Changes panel). */
@@ -1047,6 +1058,8 @@ export interface GuiSettings {
     autoCompact?: boolean;
     webSearch?: string;
     allowBypass?: boolean;
+    /** A message sent while a turn runs: steer it (default) or wait for it to end. */
+    followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
     editor?: string;
 }
@@ -1198,7 +1211,8 @@ export interface Methods {
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
     /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
-    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean }; result: { queued: boolean } };
+    /** `mode`: what it does if a turn is running (default: the followUpBehavior setting). */
+    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean; mode?: FollowUpMode }; result: { queued: boolean } };
     "session.interrupt": { params: { id: string }; result: null };
     "session.respond": { params: { id: string; interactionId: string; response: InteractionResponse }; result: null };
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
@@ -1248,6 +1262,10 @@ export interface Methods {
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
     /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
+    /** "Send now": steer the running turn with it, or run it now if none is running. `sent` false: it had already gone. */
+    "session.sendQueuedNow": { params: { id: string; queueId: number }; result: { sent: boolean; started?: boolean } };
+    /** Move a queued message to position `to` (0 runs next). */
+    "session.moveQueued": { params: { id: string; queueId: number; to: number }; result: { moved: boolean } };
     "models.list": { params: { refresh?: boolean }; result: ProviderModels[] };
     "session.setAccount": { params: { id: string; provider: string; accountId: string }; result: null };
     "accounts.list": { params: { provider: string; refresh?: boolean }; result: AccountInfo[] };
