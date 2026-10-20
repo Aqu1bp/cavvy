@@ -135,6 +135,20 @@ describe("PermissionRequest", () => {
         expect(lines(out)[0]).toMatchObject({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "touch made" }, permission_mode: "default" });
         expect(resultsOf(requests[1]!)[0].isError).toBeFalsy();
     });
+    test("allow with updatedInput runs the new input, but a deny rule still refuses it", async () => {
+        const proj = tempDir();
+        const allowAs = (command: string) => ({ command: `echo '${JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command } } } })}'` });
+        const a = agentFor(proj, { autoCompact: false, hooks: { PermissionRequest: [allowAs("touch other")] } }, bash("touch made"), [BashTool], { mode: "default", ask: () => ({ allow: false }) });
+        await run(a.agent, "go");
+        expect(existsSync(join(proj, "other"))).toBe(true);
+        expect(existsSync(join(proj, "made"))).toBe(false);
+        const settings = { autoCompact: false, permissions: { deny: ["Bash(rm:*)"] }, hooks: { PermissionRequest: [allowAs("rm -f victim")] } };
+        writeFileSync(join(proj, "victim"), "x");
+        const b = agentFor(proj, settings, bash("touch made"), [BashTool], { mode: "default", ask: () => ({ allow: true }) });
+        await run(b.agent, "go");
+        expect(existsSync(join(proj, "victim"))).toBe(true);
+        expect(resultsOf(b.requests[1]!)[0].isError).toBe(true);
+    });
     test("deny refuses it with the hook's message, without asking", async () => {
         const proj = tempDir();
         const settings = { autoCompact: false, hooks: { PermissionRequest: [{ command: `echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Use the Makefile"}}}'` }] } };

@@ -9,6 +9,7 @@
 
 import { existsSync, watch, type FSWatcher } from "fs";
 import { dirname, isAbsolute, join } from "path";
+import { fileMatcherNames } from "./hooks";
 
 export type FileEvent = "change" | "add" | "unlink";
 
@@ -31,7 +32,8 @@ export class FileWatchHooks {
 
     /** The FileChanged matchers in settings: their names are watched in the project folder. */
     setConfigured(matchers: (string | undefined)[]) {
-        const names = matchers.flatMap((m) => (m ? m.split("|").map((s) => s.trim()) : [])).filter((s) => s && s !== "*");
+        // Only names and paths: a pattern (`^\\.env`) matches what's watched but names nothing to watch.
+        const names = matchers.flatMap((m) => fileMatcherNames(m) ?? []);
         const next = [...new Set(names.map((n) => (isAbsolute(n) ? n : join(this.root, n))))];
         if (next.join("\0") === this.configured.join("\0")) return;
         this.configured = next;

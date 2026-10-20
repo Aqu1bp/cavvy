@@ -1533,7 +1533,7 @@ function hooksCommand(app: App) {
         }
     }
     if (!any) lines.push(theme.muted("  None configured."));
-    for (const w of hookConfigWarnings) lines.push(theme.warning(`  Skipped: ${w.replace(/^hooks: /, "")}`));
+    for (const w of hookConfigWarnings(app.settings)) lines.push(theme.warning(`  Skipped: ${w.replace(/^hooks: /, "")}`));
     lines.push(
         theme.muted(`  Configure under "hooks" in settings (Claude Code's format works too). A command hook gets JSON on stdin; exit code 2 blocks the action and shows stderr to the model (informational events can't block). Hooks can also be http, prompt or mcp_tool.`),
         ...(app.init.trusted ? [] : [theme.warning("  This folder isn't trusted, so project hooks are ignored.")]),

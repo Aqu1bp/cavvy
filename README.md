@@ -324,7 +324,7 @@ Every handler also takes `matcher`, `if` (a permission rule such as `Bash(git *)
 | `StopFailure` | A turn ended on an error | `error` (`rate_limit`, `overloaded`, `authentication_failed`, `billing_error`, `server_error`, `max_output_tokens` or `unknown`), `error_details` | — | `error` |
 | `SessionEnd` | A session ends | `reason`: `exit`, `clear` or `resume` | — | `reason` |
 
-`FileChanged` watches the names its matchers list (`.envrc|.env`) in the project folder; a hook can add paths with `watchPaths` in its JSON output (from SessionStart, CwdChanged or FileChanged). A matcher that isn't a list of names, or none, takes every watched file but adds none.
+`FileChanged` watches the files its matchers list (`.envrc|.env`, `config/app.json`, or an absolute path), relative to the project folder; a name matches a file of that name, a path that file. A hook can add paths with `watchPaths` in its JSON output (from SessionStart, CwdChanged or FileChanged). A pattern (`^\.env`), or no matcher, matches every watched file by name but adds none.
 
 Exit code 2 blocks where the table says it can, with stderr as the reason; elsewhere it's reported like any other failure. JSON on stdout follows Claude Code's format: `continue: false` (with `stopReason`) ends the turn from any event, `systemMessage` is shown to you, `decision: "block"` with `reason` blocks, and `hookSpecificOutput` carries `permissionDecision`, `updatedInput`, `additionalContext` (up to 10,000 characters), `updatedToolOutput`, `watchPaths` and, for PermissionRequest, `decision`. UserPromptSubmit and SessionStart also take plain text as context. SessionStart, SessionEnd and Notification hooks run in the background, except that the harness waits up to 5 seconds for SessionEnd hooks when it exits.
 

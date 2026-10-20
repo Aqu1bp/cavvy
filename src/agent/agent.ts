@@ -41,7 +41,7 @@ import { mcpToolMatches } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
-import { hookApplies, runHandler, runHooks, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
+import { hookApplies, isAsync, runHandler, runHooks, runInBackground, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
@@ -339,6 +339,8 @@ export class Agent {
     private toolHookContext: string[] = [];
     /** A hook said continue: false during this turn: the turn ends, with this reason. */
     private hookStop?: string;
+    /** A PreCompact hook refused automatic compaction this turn. */
+    private autoCompactBlocked = false;
     /** The error the turn ended on, for StopFailure hooks. */
     private turnError?: string;
     private fileWatch?: FileWatchHooks;
@@ -484,6 +486,7 @@ export class Agent {
         opts.signal.addEventListener("abort", onAbort, { once: true });
         this.hookStop = undefined;
         this.turnError = undefined;
+        this.autoCompactBlocked = false;
         if (!this.o.isSubagent) {
             this.watchFiles();
             if (this.session.hookWatchPaths) this.watchFiles()?.setDynamic(this.session.hookWatchPaths.splice(0));
@@ -551,7 +554,8 @@ export class Agent {
                 return "max_turns";
             }
 
-            if (this.shouldAutoCompact()) {
+            // A PreCompact hook that refused once this turn isn't asked again on every request.
+            if (!this.autoCompactBlocked && this.shouldAutoCompact()) {
                 let ok = false;
                 try {
                     ok = await this.compact({ auto: true, signal, continuing: true });
@@ -863,7 +867,8 @@ export class Agent {
                 return { text: r.content, isError: Boolean(r.isError) };
             },
             onAsync: (o) => {
-                for (const message of [...o.errors, ...o.messages]) this.emit({ type: "notice", level: "warn", message });
+                for (const message of o.errors) this.emit({ type: "notice", level: "warn", message });
+                for (const message of o.messages) this.emit({ type: "notice", level: "info", message });
                 if (o.additionalContext) this.addReminder(`Context from a background hook:\n${o.additionalContext}`);
             },
         };
@@ -1023,6 +1028,7 @@ export class Agent {
         if (this.o.isSubagent) return true;
         const h = await this.hooks("PreCompact", { trigger: opts.auto ? "auto" : "manual", custom_instructions: opts.instructions ?? null }, opts.signal);
         if (!h?.blocked) return true;
+        if (opts.auto) this.autoCompactBlocked = true;
         this.emit({ type: "notice", level: "warn", message: `Compaction skipped: a PreCompact hook blocked it: ${h.blocked}` });
         return false;
     }
@@ -1272,9 +1278,14 @@ export class Agent {
                 const full: Record<string, unknown> = { ...input, hook_event_name: event, backend_session_id: input.session_id, session_id: sub?.parentSessionId ?? this.session.meta.id, ...(sub && input.agent_id === undefined ? { agent_id: this.session.meta.id, agent_type: sub.type } : {}) };
                 const cwd = typeof input.cwd === "string" ? input.cwd : this.state.cwd;
                 if (!hookApplies(h, event, full, cwd)) return { kind: "none" };
+                // Claude Code waits for its callback: an async hook answers at once and goes on in the background.
+                if (isAsync(h)) {
+                    runInBackground(h, event, full, cwd, this.hookServices(signal));
+                    return { kind: "none" };
+                }
                 const r = await runHandler(h, event, full, cwd, this.hookServices(AbortSignal.any([signal, sig])));
                 if (r.kind === "error") this.emit({ type: "notice", level: "warn", message: r.message });
-                if (r.kind === "output" && typeof r.json?.systemMessage === "string") this.emit({ type: "notice", level: "warn", message: r.json.systemMessage });
+                if (r.kind === "output" && typeof r.json?.systemMessage === "string") this.emit({ type: "notice", level: "info", message: r.json.systemMessage });
                 return r;
             },
         };
@@ -1902,7 +1913,12 @@ export class Agent {
                 const approvedInput = h.updatedInput ? coerceInput(tool, h.updatedInput) : input;
                 const err = h.updatedInput ? validateInput(tool, approvedInput) : undefined;
                 if (err) return { result: this.errorResult(call, `A PermissionRequest hook changed the input to something invalid: ${err}`) };
-                return { tool, input: approvedInput, sandbox, auto: "hook" };
+                if (!h.updatedInput) return { tool, input, sandbox, auto: "hook" };
+                // The hook answers for you, but not past a deny rule, and the new command gets its own sandbox.
+                const again = this.o.checker.check(tool, approvedInput, mode, this.state.cwd);
+                if (again.behavior === "deny") return { result: this.errorResult(call, again.reason ?? "Permission denied") };
+                const hosts = tool.name === "Bash" && again.sandbox && again.hosts?.length ? { allowedHosts: again.hosts } : {};
+                return { tool, input: { ...approvedInput, ...hosts }, sandbox: again.sandbox, auto: "hook" };
             }
             if (h?.permission?.behavior === "deny") return { result: this.errorResult(call, h.permission.message || "Denied by a PermissionRequest hook"), stop: h.permission.interrupt };
         }

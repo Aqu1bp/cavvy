@@ -9,7 +9,7 @@ import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const { cleanup } = isolate();
 const { normalizeHooks, normalizeHookList } = await import("../src/config/hook-config");
-const { runHooks, matcherFn, claudeCodeHookOutput, hooksFor } = await import("../src/agent/hooks");
+const { runHooks, matcherFn, claudeCodeHookOutput, hooksFor, fileMatcherNames } = await import("../src/agent/hooks");
 const { loadSettings, hookConfigWarnings } = await import("../src/config/settings");
 const { paths } = await import("../src/config/paths");
 
@@ -61,7 +61,11 @@ describe("configuration", () => {
             { matcher: "Bash", command: "user" },
             { matcher: "Bash", type: "command", command: "project" },
         ]);
-        expect([...hookConfigWarnings]).toContain("hooks: TeammateIdle isn't a hook event the harness runs");
+        expect(hookConfigWarnings(s)).toEqual(["hooks: TeammateIdle isn't a hook event the harness runs"]);
+        // Fixed, a reload has none: they belong to the load that found them.
+        writeFileSync(paths.projectSettings(cwd), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", command: "project" }] } }));
+        expect(hookConfigWarnings(loadSettings(cwd))).toEqual([]);
+        expect(hookConfigWarnings(s)).toHaveLength(1);
     });
 });
 
@@ -85,6 +89,23 @@ describe("matchers", () => {
         expect(hooksFor(s, "Stop", {}, "/")).toHaveLength(1);
         expect(hooksFor(s, "FileChanged", { file_path: "/p/.envrc" }, "/")).toHaveLength(1);
         expect(hooksFor(s, "FileChanged", { file_path: "/p/package.json" }, "/")).toHaveLength(0);
+    });
+    test("FileChanged: a name matches the file's name, a path the file itself, a pattern its name", () => {
+        const s = (matcher: string) => ({ hooks: { FileChanged: [{ matcher, command: "c" }] } }) as any;
+        const runs = (matcher: string, file: string) => hooksFor(s(matcher), "FileChanged", { file_path: file }, "/elsewhere").length === 1;
+        expect(runs("config/app.json", "/p/config/app.json")).toBe(true);
+        expect(runs("./config/app.json", "/p/config/app.json")).toBe(true);
+        expect(runs("config/app.json", "/p/app.json")).toBe(false);
+        expect(runs("/p/.env", "/p/.env")).toBe(true);
+        expect(runs("/p/.env", "/q/.env")).toBe(false);
+        expect(runs("^\\.env", "/p/.env.local")).toBe(true);
+        expect(fileMatcherNames(".envrc|config/app.json")).toEqual([".envrc", "config/app.json"]);
+        expect(fileMatcherNames("^\\.env")).toBeUndefined();
+        expect(fileMatcherNames("*")).toBeUndefined();
+    });
+    test("watchPaths from parallel hooks are all kept", async () => {
+        const s = { hooks: { SessionStart: [{ command: `echo '{"watchPaths":["/p/.env"]}'` }, { command: `echo '{"watchPaths":["/p/package.json","/p/.env"]}'` }] } } as any;
+        expect((await runHooks(s, "SessionStart", {}, tempDir())).watchPaths).toEqual(["/p/.env", "/p/package.json"]);
     });
     test("`if` narrows a tool event with a permission rule", () => {
         const s = { hooks: { PreToolUse: [{ matcher: "Bash", if: "Bash(git *)", command: "a" }] } } as any;
@@ -241,6 +262,13 @@ describe("prompt hooks", () => {
         await runHooks({ hooks: { UserPromptSubmit: [{ type: "prompt", prompt: "Costs \\$5?" }] } } as any, "UserPromptSubmit", { prompt: "hi" }, "/w", answering('{"ok":true}'));
         expect(asked[0]!.prompt).toBe(`Costs $5?\n\n{"hook_event_name":"UserPromptSubmit","cwd":"/w","prompt":"hi"}`);
     });
+    test("a \\$ inside the input reaches the model as it is; an escaped \\$ARGUMENTS stays text", async () => {
+        asked.length = 0;
+        await runHooks({ hooks: { PreToolUse: [{ type: "prompt", prompt: "Safe? $ARGUMENTS" }] } } as any, "PreToolUse", { tool_name: "Bash", tool_input: { command: "echo \\$HOME" } }, "/w", answering('{"ok":true}'));
+        expect(asked[0]!.prompt).toContain(JSON.stringify("echo \\$HOME"));
+        await runHooks({ hooks: { PreToolUse: [{ type: "prompt", prompt: "Mentions \\$ARGUMENTS" }] } } as any, "PreToolUse", { tool_name: "Read" }, "/w", answering('{"ok":true}'));
+        expect(asked[1]!.prompt).toStartWith("Mentions $ARGUMENTS\n\n{");
+    });
     test("a no blocks, with its reason; on PreToolUse it denies the call", async () => {
         expect((await runHooks(stop(), "Stop", {}, "/w", answering('Sure: {"ok": false, "reason": "tests still fail"}'))).blocked).toBe("tests still fail");
         const pre = await runHooks({ hooks: { PreToolUse: [{ type: "prompt", prompt: "Block .env reads" }] } } as any, "PreToolUse", { tool_name: "Read" }, "/w", answering('{"ok": false, "reason": "reads .env"}'));
@@ -285,6 +313,8 @@ describe("Claude Code's hook_callback answers", () => {
         expect(claudeCodeHookOutput("PostToolUse", { kind: "output", json: { continue: false, stopReason: "s", hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x" } } })).toEqual({ continue: false, stopReason: "s", hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x" } });
         expect(claudeCodeHookOutput("Stop", { kind: "error", message: "e" })).toEqual({});
         expect(claudeCodeHookOutput("Stop", { kind: "output", text: "plain" })).toEqual({});
+        // Plain text is context where the harness takes it so (a sub-agent's start, on Claude Code).
+        expect(claudeCodeHookOutput("SubagentStart", { kind: "output", text: "Use pnpm\n" })).toEqual({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: "Use pnpm" } });
     });
 });
 

@@ -18,7 +18,7 @@
 //
 // All handlers matching an event run at once; identical ones run once.
 
-import { basename } from "path";
+import { basename, isAbsolute } from "path";
 import type { HookConfig, Settings } from "../config/settings";
 import { HOOK_EVENTS as ALL_EVENTS, type HookEvent } from "../config/hook-config";
 import { parseRule, ruleMatches, toolPath, type RuleTarget } from "../permissions/rules";
@@ -33,6 +33,9 @@ export const HOOK_EVENTS: readonly HookEvent[] = ALL_EVENTS;
 
 /** Events whose hooks can block (exit 2, decision "block", a prompt hook's ok: false). */
 export const BLOCKING_EVENTS = new Set<HookEvent>(["PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "UserPromptSubmit", "Stop", "SubagentStop", "PreCompact", "WorktreeCreate"]);
+
+/** Events where a hook's plain stdout is context for the model, as in Claude Code. */
+const TEXT_CONTEXT = new Set<HookEvent>(["UserPromptSubmit", "SessionStart", "SubagentStart"]);
 
 /** Events whose prompt hooks make sense (the rest have nothing a yes/no could decide). */
 const PROMPT_EVENTS = new Set<HookEvent>(["PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "UserPromptSubmit", "Stop", "SubagentStop", "PermissionRequest", "PermissionDenied"]);
@@ -135,6 +138,23 @@ function target(toolName: string, input: any, cwd: string): RuleTarget {
     return t;
 }
 
+/**
+ * A FileChanged matcher as the files it names (`.envrc|config/app.json`), or
+ * undefined when it's a pattern: those match a file's name but watch nothing.
+ */
+export function fileMatcherNames(m: string | undefined): string[] | undefined {
+    if (!m || m === "*" || /[\\^$*+?()[\]{}]/.test(m)) return undefined;
+    return m.split("|").map((s) => s.trim()).filter(Boolean);
+}
+
+/** A FileChanged handler's matcher against the file that changed: a name its file name, a path the file itself. */
+function fileMatches(m: string, file: string): boolean {
+    const names = fileMatcherNames(m);
+    if (!names) return matcherFn(m)(basename(file));
+    // A relative path is the watcher's, under the project folder; whatever the working directory is now, it ends the file's path.
+    return names.some((n) => (isAbsolute(n) ? n === file : n.includes("/") ? file.endsWith(`/${n.replace(/^\.\//, "")}`) : n === basename(file)));
+}
+
 /** Does this handler run for this occurrence of the event? */
 export function hookApplies(h: HookConfig, event: HookEvent, payload: Record<string, unknown>, cwd: string): boolean {
     const field = MATCH_FIELD[event];
@@ -142,7 +162,7 @@ export function hookApplies(h: HookConfig, event: HookEvent, payload: Record<str
         const v = payload[field];
         if (typeof v === "string" && !matcherFn(h.matcher)(v)) return false;
     }
-    if (event === "FileChanged" && h.matcher && typeof payload.file_path === "string" && !matcherFn(h.matcher)(basename(payload.file_path))) return false;
+    if (event === "FileChanged" && h.matcher && h.matcher !== "*" && typeof payload.file_path === "string" && !fileMatches(h.matcher, payload.file_path)) return false;
     if (h.if && TOOL_EVENTS.has(event) && typeof payload.tool_name === "string") {
         if (!ruleMatches(parseRule(h.if), target(payload.tool_name, payload.tool_input, cwd), cwd, "allow")) return false;
     }
@@ -285,11 +305,14 @@ async function runPrompt(h: HookConfig, event: HookEvent, input: string, service
     if (!services.complete) return { kind: "error", message: `${event} prompt hook skipped: no model is set up to answer it` };
     // $ARGUMENTS is the input; \$ is a literal $. No $ARGUMENTS: the input goes after the prompt.
     const raw = h.prompt!;
-    const prompt = raw.includes("$ARGUMENTS") ? raw.replace(/(\\?)\$ARGUMENTS/g, (all, esc) => (esc ? "$ARGUMENTS" : input)) : `${raw}\n\n${input}`;
+    // One pass over the prompt as written, so a \$ inside the input stays as it is.
+    let used = false;
+    const filled = raw.replace(/\\\$|\$ARGUMENTS/g, (m) => (m === "$ARGUMENTS" ? ((used = true), input) : "$"));
+    const prompt = used ? filled : `${filled}\n\n${input}`;
     const signal = timeoutSignal(h, services, PROMPT_TIMEOUT);
     let answer: string;
     try {
-        answer = await services.complete(PROMPT_SYSTEM, prompt.replace(/\\\$/g, "$"), signal, h.model);
+        answer = await services.complete(PROMPT_SYSTEM, prompt, signal, h.model);
     } catch (e) {
         if (services.signal?.aborted) return { kind: "none" };
         return { kind: "error", message: `${event} prompt hook ${signal.aborted ? `timed out after ${h.timeout ?? PROMPT_TIMEOUT}s` : `failed: ${(e as Error).message}`}` };
@@ -370,7 +393,7 @@ export function absorb(event: HookEvent, r: HookResult, out: HookOutcome) {
         return;
     }
     if (r.text !== undefined) {
-        if (event === "UserPromptSubmit" || event === "SessionStart" || event === "SubagentStart") out.additionalContext = join(out.additionalContext, r.text);
+        if (TEXT_CONTEXT.has(event)) out.additionalContext = join(out.additionalContext, r.text);
         return;
     }
     const j = r.json;
@@ -379,7 +402,8 @@ export function absorb(event: HookEvent, r: HookResult, out: HookOutcome) {
     if (j.continue === false) out.stop ??= typeof j.stopReason === "string" && j.stopReason.trim() ? j.stopReason : `Stopped by a ${event} hook`;
     if (typeof j.systemMessage === "string" && j.systemMessage.trim()) out.messages.push(j.systemMessage);
     if (typeof spec.additionalContext === "string" && spec.additionalContext) out.additionalContext = join(out.additionalContext, spec.additionalContext).slice(0, MAX_CONTEXT);
-    if (Array.isArray(spec.watchPaths)) out.watchPaths = spec.watchPaths.filter((p: unknown): p is string => typeof p === "string");
+    // Each hook's paths are watched: parallel hooks add to one another's.
+    if (Array.isArray(spec.watchPaths)) out.watchPaths = [...new Set([...(out.watchPaths ?? []), ...spec.watchPaths.filter((p: unknown): p is string => typeof p === "string")])];
     if (typeof spec.worktreePath === "string" && spec.worktreePath.trim()) out.worktreePath = spec.worktreePath.trim();
     if (event === "PermissionRequest") {
         const d = spec.decision;
@@ -432,13 +456,8 @@ export async function runHooks(settings: Settings, event: HookEvent, payload: Re
     const json = redactedJson(input);
     const sync: Promise<HookResult>[] = [];
     for (const h of list) {
-        if (h.async && (h.type ?? "command") === "command") {
-            // In the background: it can't block, and what it says comes with the next request.
-            void runHandler(h, event, input, cwd, { ...services, signal: undefined }, json).then((r) => {
-                const o: HookOutcome = { errors: [], messages: [] };
-                absorb(event, r.kind === "block" ? { kind: "output" } : r, o);
-                if (o.additionalContext || o.messages.length || o.errors.length) services.onAsync?.(o);
-            });
+        if (isAsync(h)) {
+            runInBackground(h, event, input, cwd, services, json);
             continue;
         }
         sync.push(runHandler(h, event, input, cwd, services, json).catch((e) => ({ kind: "error", message: `${event} ${hookLabel(h)} failed: ${(e as Error).message}` }) as HookResult));
@@ -446,6 +465,23 @@ export async function runHooks(settings: Settings, event: HookEvent, payload: Re
     // In config order, so contexts and reasons read as configured.
     for (const r of await Promise.all(sync)) absorb(event, r, out);
     return out;
+}
+
+/** A command hook with `async: true`: it runs in the background, whatever the event. */
+export function isAsync(h: HookConfig): boolean {
+    return Boolean(h.async) && (h.type ?? "command") === "command";
+}
+
+/** Run an async hook in the background: it can't block, and what it says reaches `onAsync` (with the next request). */
+export function runInBackground(h: HookConfig, event: HookEvent, input: Record<string, unknown>, cwd: string, services: HookServices, json?: string) {
+    void runHandler(h, event, input, cwd, { ...services, signal: undefined }, json)
+        .catch((e): HookResult => ({ kind: "error", message: `${event} ${hookLabel(h)} failed: ${(e as Error).message}` }))
+        .then((r) => {
+            const o: HookOutcome = { errors: [], messages: [] };
+            absorb(event, r.kind === "block" ? { kind: "output" } : r, o);
+            if (o.additionalContext || o.messages.length || o.errors.length) services.onAsync?.(o);
+        })
+        .catch(() => {});
 }
 
 /** Where fireHooks reports: problems as warnings, a hook's systemMessage as info. */
@@ -471,7 +507,8 @@ export function claudeCodeHookOutput(event: HookEvent, r: HookResult): Record<st
         return { decision: "block", reason: r.reason };
     }
     const j = r.json;
-    if (!j) return {};
+    // Plain text is context where the harness takes it as context (Claude Code wants it as JSON).
+    if (!j) return r.text?.trim() && TEXT_CONTEXT.has(event) ? { hookSpecificOutput: { hookEventName: event, additionalContext: r.text.trim().slice(0, MAX_CONTEXT) } } : {};
     const out: Record<string, unknown> = {};
     for (const k of ["continue", "stopReason", "systemMessage", "reason"]) if (j[k] !== undefined) out[k] = j[k];
     if (j.decision === "block" || j.decision === "approve") out.decision = j.decision;

@@ -277,8 +277,12 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
  * enableAllProjectMcpServers is a plain flag, so it counts from user
  * settings alone: a repo could ship a settings.local.json.)
  */
-/** Hook entries settings files had that can't run (shown by /hooks rather than on every load). */
-export const hookConfigWarnings = new Set<string>();
+/** Hook entries a load's settings files had that can't run, kept with the settings they came from (/hooks shows them, rather than every load). */
+const hookWarnings = new WeakMap<Settings, string[]>();
+
+export function hookConfigWarnings(s: Settings): readonly string[] {
+    return hookWarnings.get(s) ?? [];
+}
 
 export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Settings {
     const trusted = opts.trusted ?? true;
@@ -286,6 +290,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     const local = loadScope("local", cwd);
     const layers = trusted ? [user, loadScope("project", cwd), local] : [user, restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(local)];
     const merged: Settings = {};
+    const warnings = new Set<string>();
     for (const s of layers) {
         const { permissions, env, mcpServers, hooks, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
@@ -300,7 +305,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
         }
         if (env) merged.env = { ...merged.env, ...env };
         if (mcpServers) merged.mcpServers = { ...merged.mcpServers, ...mcpServers };
-        const flat = normalizeHooks(hooks, (msg) => hookConfigWarnings.add(msg));
+        const flat = normalizeHooks(hooks, (msg) => warnings.add(msg));
         if (flat) {
             const h = (merged.hooks ??= {});
             for (const [k, v] of Object.entries(flat) as [HookEvent, HookConfig[]][]) h[k] = [...(h[k] ?? []), ...v];
@@ -310,6 +315,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     else delete merged.reviewModel;
     mergeSandbox(merged, layers, user);
     mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
+    if (warnings.size) hookWarnings.set(merged, [...warnings]);
     return merged;
 }
 

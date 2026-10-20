@@ -128,6 +128,17 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         expect(existsSync(join(cwd, "called"))).toBe(false);
     });
 
+    test("an async hook doesn't hold Claude Code's tool call: the callback answers at once", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const done = join(cwd, "async-done");
+        const { run } = await makeAgent("claude-code", { hooks: { PreToolUse: [{ matcher: "Bash", async: true, command: `sleep 2; touch '${done}'` }] } });
+        const started = Date.now();
+        expect(await run("test it")).toBe("done");
+        expect(Date.now() - started).toBeLessThan(1800);
+        expect(existsSync(done)).toBe(false);
+        expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers).toEqual([{}]);
+    });
+
     test("an `if` condition the backend can't express is checked on the harness's side", async () => {
         process.env.FAKE_SCENARIO = "bash";
         const settings = { hooks: { PreToolUse: [{ matcher: "Bash", if: "Bash(git *)", command: say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "no git" } }) }] } };
