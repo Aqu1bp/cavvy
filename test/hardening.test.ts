@@ -3,7 +3,7 @@
 // symlinks, terminal-escape sanitising, and keys in streamed output.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -16,6 +16,26 @@ const { BashTool } = await import("../src/tools/bash");
 const { lineRedactor, registerSecret, unregisterSecret } = await import("../src/util/redact");
 
 afterAll(cleanup);
+
+describe("Bash PWD", () => {
+    test("a stale PWD in the harness's environment doesn't reach the shell", async () => {
+        const dir = realpathSync(tempDir());
+        const link = join(tempDir(), "link");
+        symlinkSync(dir, link);
+        const prev = { PWD: process.env.PWD, OLDPWD: process.env.OLDPWD };
+        process.env.PWD = link;
+        process.env.OLDPWD = "/stale/old";
+        try {
+            const state = { cwd: dir, projectRoot: dir, fileState: new Map(), todos: [], shells: new Map() };
+            const ctx = { state, settings: {}, signal: new AbortController().signal, mode: () => "default", setMode() {}, ui: {} } as any;
+            const r = await BashTool.run({ command: 'echo "pwd=$PWD"; echo "old=${OLDPWD-unset}"' }, ctx);
+            expect(JSON.stringify(r)).toContain(`pwd=${dir}`);
+            expect(JSON.stringify(r)).not.toContain("/stale/old");
+        } finally {
+            for (const [k, v] of Object.entries(prev)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+        }
+    });
+});
 
 describe("Bash progress", () => {
     test("a key printed in two pieces isn't shown while the command runs", async () => {

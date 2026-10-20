@@ -126,6 +126,12 @@ interface RunResult {
     newCwd?: string;
 }
 
+/** The shell's own idea of where it is: an inherited PWD can spell the directory differently (or through a symlink). */
+function withPwd(env: Record<string, string>, cwd: string): Record<string, string> {
+    const { OLDPWD: _, ...rest } = env;
+    return { ...rest, PWD: cwd };
+}
+
 export function runShell(opts: RunOpts): Promise<RunResult> {
     const cwdFile = join(tmpdir(), `harness-cwd-${process.pid}-${++cwdFileCounter}`);
     const script = `${opts.command}\n__harness_ec=$?\npwd -P > '${cwdFile}' 2>/dev/null\nexit $__harness_ec\n`;
@@ -133,7 +139,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
         const [file, ...args] = shellArgv(script, opts.sandbox);
         const child = spawn(file!, args, {
             cwd: opts.cwd,
-            env: opts.env,
+            env: withPwd(opts.env, opts.cwd),
             detached: true,
             stdio: ["ignore", "pipe", "pipe"],
         });
@@ -397,7 +403,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
     const [file, ...args] = shellArgv(command, ctx.sandbox);
     let child: ReturnType<typeof spawn>;
     try {
-        child = spawn(file!, args, { cwd: ctx.state.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        child = spawn(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true, stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
         proxy?.close();
         throw e;
