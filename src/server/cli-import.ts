@@ -16,6 +16,7 @@ import { account, accountRealPath } from "../providers/accounts";
 import { modelRef, parseModelRef, type AssistantMessage } from "../providers/types";
 import type { CliSessionEntry, CliSource, CliTranscript } from "./cli-sessions";
 import { UiLog } from "./history";
+import { pieces } from "./session-delete";
 
 /** "claude-code:<id>" for a CLI session; ids compared without case. */
 export function linkKey(source: string, id: string): string {
@@ -137,10 +138,17 @@ export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; t
         session.setImported({ source: entry.source, id: entry.id, startedAt: entry.startedAt, importedAt: Date.now(), messages, omitted: transcript.omitted });
     } catch (e) {
         // Half an import would list as a normal session, and a retry would import it again beside it.
-        session.release();
-        for (const f of [session.path, join(dirname(session.path), "ui", `${session.meta.id}.jsonl`)]) rmSync(f, { force: true });
+        // Removed while still held, so no other process takes it up in between; the write's own error is what's reported.
+        for (const { live } of pieces(dirname(session.path), session.meta.id)) {
+            try {
+                rmSync(live, { recursive: true, force: true });
+            } catch {
+                // left behind; the import still failed
+            }
+        }
         throw e;
+    } finally {
+        session.release();
     }
-    session.release();
     return session.meta.id;
 }

@@ -191,12 +191,14 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`ctl model ${multi() ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : `${chipName()} (${mod}+/)`} aria-label={multi() ? undefined : `Model: ${chipName()}`}>
+            <button ref={anchor} class={`ctl model ${multi() ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : `${chipName()} (${mod}+/)`}>
                 <Show when={multi()} fallback={
                     <>
                         <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
                         {/* What an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */}
                         <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
+                        {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
+                        <Show when={currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
                         <Show when={showAccounts()}><span> · {accountName() ?? "Default"}</span></Show>
                     </>
                 }>

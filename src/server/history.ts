@@ -566,7 +566,12 @@ export function replay(o: ReplayInput): Turn[] {
                 if (kind === "interrupt") {
                     const t = ensure(index);
                     t.status = "aborted";
-                    for (const b of t.blocks) if (b.t === "tool" && b.status === "running") b.status = "error";
+                    for (const b of t.blocks)
+                        if (b.t === "tool" && b.status === "running") {
+                            b.status = "error";
+                            // Stopped before it ran: no edit happened, whatever its input said.
+                            if (!o.ui.tools.get(b.id)?.diff) delete b.diff;
+                        }
                     return;
                 }
                 if (kind === "tool_results") {

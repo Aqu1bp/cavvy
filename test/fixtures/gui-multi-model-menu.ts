@@ -166,6 +166,7 @@ test("the model chip's tooltip and accessible name say whose model it is", () =>
     f.key("Escape");
     // Claude Code's Opus and the Anthropic API's read the same on the chip; the provider tells them apart.
     expect(f.trigger.props.title).toBe("Alpha · Mock (Ctrl+/)");
-    expect(f.trigger.props["aria-label"]).toBe("Model: Alpha · Mock");
-    expect(text(f.trigger)).toContain("Alpha");
+    // The accessible name is the chip's own text plus the provider the hidden icon stands for.
+    expect(f.trigger.props["aria-label"]).toBeUndefined();
+    expect(text(f.trigger)).toBe("Alpha, Mock");
 });

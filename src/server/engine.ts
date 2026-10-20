@@ -373,9 +373,10 @@ export class Engine {
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
-        // One line cut at a word, as the sidebar names an untitled session; not the raw prompt with its newlines.
+        // One line cut at a word (as a title from the prompt is made), not the raw prompt with its
+        // newlines. Redacted first: the title reaches every window and the OS notification center.
         const first = rt.firstPrompt();
-        const title = rt.title ?? (first ? promptTitle(first) : undefined) ?? basename(rt.ws.cwd);
+        const title = rt.title ?? (first ? promptTitle(redact(first)) : undefined) ?? basename(rt.ws.cwd);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Harness: ${body}`;

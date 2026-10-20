@@ -293,10 +293,14 @@ function Lineage(p: { handle: SessionHandle }) {
     const agents = () => p.handle.view.agents;
     // A sub-agent's own are listed under it; the counts take in every one.
     const top = createMemo(() => agents().filter((a) => !a.parentId || !agents().some((x) => x.id === a.parentId)));
-    // While the pointer is over the list, an agent that finishes keeps its row: moving it to
-    // "Previous agents" then would slide another row under a click. The order catches up on leave.
+    // While the pointer is over the list, the agents in "Previous agents" stay the ones that were
+    // there: one that finishes (even one that started meanwhile) keeps its row rather than sliding
+    // another under a click. The order catches up on leave.
     const [held, setHeld] = createSignal<ReadonlySet<string>>();
-    const listed = (a: AgentRun) => live(a) || !!held()?.has(a.id);
+    const listed = (a: AgentRun) => {
+        const before = held();
+        return before ? !before.has(a.id) : live(a);
+    };
     const current = createMemo(() => top().filter(listed));
     const previous = createMemo(() => top().filter((a) => !listed(a)).reverse());
     /** It and the ones under it. */
@@ -306,7 +310,7 @@ function Lineage(p: { handle: SessionHandle }) {
     const waiting = () => agents().filter((a) => a.status === "waiting").length;
     return (
         <Show when={agents().length}>
-            <div class="sec" onPointerEnter={() => setHeld(new Set(top().filter(live).map((a) => a.id)))} onPointerLeave={() => setHeld(undefined)}>
+            <div class="sec" onPointerEnter={() => setHeld(new Set(top().filter((a) => !live(a)).map((a) => a.id)))} onPointerLeave={() => setHeld(undefined)}>
                 <div class="sh">
                     Lineage
                     <Show when={running()}>· {waiting() ? `${waiting()} needs you` : `${running()} running`}</Show>

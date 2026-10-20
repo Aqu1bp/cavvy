@@ -953,6 +953,17 @@ describe("connecting", () => {
             const title = sent.find((e) => e.type === "notify")?.title;
             expect(title).not.toContain("\n");
             expect(title).toBe('Feature request: project scripts ("actions") in the GUI');
+            // It reaches every window and the OS notification center, so a key in the prompt is masked.
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const secret = "zq7Xv9Lr2Wm4Kp8Tq0Jd5Hs3Nb6Yc1Fe";
+            registerSecret(secret, "NS");
+            try {
+                (rt as any).firstPrompt = () => `${secret} why does this fail`;
+                engine.notify(rt, "done", "Finished in 3s");
+                expect(sent.filter((e) => e.type === "notify").at(-1)?.title).toBe("[REDACTED NS] why does this fail");
+            } finally {
+                unregisterSecret(secret);
+            }
         } finally {
             await engine.stop();
         }

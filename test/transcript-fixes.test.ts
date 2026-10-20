@@ -691,4 +691,9 @@ test("a failed Edit replays from disk with no diff, as it has none live; a succe
     expect(failed.diff).toBeUndefined();
     expect(applied.status).toBe("ok");
     expect(applied.diff).toMatchObject({ added: 1, removed: 1 });
+    // An Edit interrupted before it ran has none either.
+    const stopped: any[] = [msgs[0], reply([call("c3")], "tool_use"), { role: "user", meta: { kind: "interrupt" }, content: [{ type: "text", text: "[interrupted]" }] }];
+    const [cut] = replay({ segments: [{ messages: stopped }] as any, current: stopped, ui: new UiLog(join(tempDir(), "y.jsonl"), "y", false), meta: (c) => ({ title: c.name, category: "edit" }), newId: () => `j${++n}` })[0]!.blocks.filter((b: any) => b.t === "tool") as any[];
+    expect(cut.status).toBe("error");
+    expect(cut.diff).toBeUndefined();
 });

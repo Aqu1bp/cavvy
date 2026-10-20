@@ -38,14 +38,17 @@ try {
     // A new agent still shows up while the list is held.
     setAgents([...agents(), { id: "d", description: "Explore tests", status: "running" }]);
     expect(rows()).toEqual(["a", "b", "c", "d"]);
+    // And when that one finishes before the pointer leaves, it stays put too.
+    finish("d");
+    expect(rows()).toEqual(["a", "b", "c", "d"]);
     // Leaving the list lets it catch up: "a" folds into Previous agents.
     section.props.onPointerLeave?.();
-    expect(rows()).toEqual(["b", "c", "d"]);
-    expect(text(root)).toContain("Previous agents (1)");
+    expect(rows()).toEqual(["b", "c"]);
+    expect(text(root)).toContain("Previous agents (2)");
     // Without the pointer on it, a finished agent moves at once, as before.
     finish("b");
-    expect(rows()).toEqual(["c", "d"]);
-    expect(text(root)).toContain("Previous agents (2)");
+    expect(rows()).toEqual(["c"]);
+    expect(text(root)).toContain("Previous agents (3)");
 } finally {
     dispose();
 }

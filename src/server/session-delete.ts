@@ -43,7 +43,8 @@ export function checkId(id: unknown): string {
 }
 
 /** A session's files in its project's folder, and their names in its trash entry. */
-function pieces(dir: string, id: string): { live: string; trashed: string }[] {
+/** A session's files: its transcript, ui log and file history. */
+export function pieces(dir: string, id: string): { live: string; trashed: string }[] {
     return [
         { live: join(dir, `${id}.jsonl`), trashed: "transcript.jsonl" },
         { live: join(dir, "ui", `${id}.jsonl`), trashed: "ui.jsonl" },
