@@ -803,7 +803,21 @@ describe("Codex backend", () => {
         process.env.FAKE_COMMAND = "cat .env";
         const secret = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
         await secret.run("read it");
-        expect(secret.asked.map((a) => a.input.command)).toEqual([`cd '${other}' && cat .env`]);
+        expect(secret.asked.map((a) => a.input.command)).toEqual([`cd '${realpathSync(other)}' && cat .env`]);
+        // A folder that's a symlink is checked where it leads: `keys -> .ssh` is the .ssh folder.
+        const ssh = join(tempDir(), ".ssh");
+        mkdirSync(ssh, { recursive: true });
+        writeFileSync(join(ssh, "deploy_key"), "fake\n");
+        symlinkSync(ssh, join(cwd, "keys"));
+        for (const command of ["cat deploy_key", "cat *"]) {
+            rmSync(LOG, { force: true });
+            process.env.FAKE_COMMAND = command;
+            process.env.FAKE_COMMAND_CWD = join(cwd, "keys");
+            const linked = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+            await linked.run("read it");
+            expect(linked.asked.map((a) => a.input.command)).toEqual([`cd '${realpathSync(ssh)}' && ${command}`]);
+            expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        }
     });
 
     test("the command comes out of Codex's quoted shell wrapper as a shell would read it", async () => {
@@ -827,7 +841,7 @@ describe("Codex backend", () => {
         const cases: [Record<string, string>, string][] = [
             [{ FAKE_COMMAND_RAW: "./bash -lc 'cat greet.py'" }, "./bash -lc 'cat greet.py'"],
             [{ FAKE_COMMAND_RAW: "/tmp/x/zsh -lc 'cat greet.py'" }, "/tmp/x/zsh -lc 'cat greet.py'"],
-            [{ FAKE_COMMAND: "touch notes.txt", FAKE_COMMAND_CWD: "/tmp/elsewhere" }, "cd '/tmp/elsewhere' && touch notes.txt"],
+            [{ FAKE_COMMAND: "touch notes.txt", FAKE_COMMAND_CWD: "/tmp/elsewhere" }, `cd '${realpathSync("/tmp")}/elsewhere' && touch notes.txt`],
         ];
         for (const [vars, shown] of cases) {
             rmSync(LOG, { force: true });

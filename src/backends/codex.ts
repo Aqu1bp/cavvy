@@ -1391,8 +1391,9 @@ const WRAPPER_SHELL = /^\/(?:bin|usr\/bin|usr\/local\/bin|opt\/homebrew\/bin)\/(
  */
 function shownCommand(x: any, cwd: string): { command: string; elsewhere: boolean } {
     const inner = innerCommand(x);
-    const dir = typeof x?.cwd === "string" && x.cwd ? resolve(cwd, x.cwd) : cwd;
-    const elsewhere = canonical(dir) !== canonical(resolve(cwd));
+    // The folder it runs in as the volume has it: through a symlink (`keys -> ~/.ssh`), the checker must see where it leads.
+    const dir = canonical(typeof x?.cwd === "string" && x.cwd ? resolve(cwd, x.cwd) : cwd);
+    const elsewhere = dir !== canonical(resolve(cwd));
     return { command: elsewhere ? `cd '${dir.replace(/'/g, `'\\''`)}' && ${inner}` : inner, elsewhere };
 }
 
