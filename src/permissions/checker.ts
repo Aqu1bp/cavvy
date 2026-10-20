@@ -650,6 +650,8 @@ export function installsOnly(cmd: string, cwd: string): boolean {
     // Each program written out by name: an assignment (`PATH=./bin npm i`, `PATH=x;`) or a
     // wrapper (`env`, `command`, `nice`) could run something else than the package manager.
     if (a.commands.some((c) => /^[A-Za-z_]\w*=/.test(c.argv[0] ?? "") || c.argv[0] !== effectiveArgv(c.argv)[0])) return false;
+    // cds are taken as folder changes below, so they're checked here: only folders written out.
+    if (a.commands.some((c) => c.argv[0] === "cd" && !installCompanion(c.argv))) return false;
     const commands = commandsWithDirs(cmd, cwd);
     if (commands.exhausted) return false;
     let installs = false;
@@ -672,13 +674,17 @@ function installsPackages(argv: string[]): boolean {
     const name = argv[0] ?? "";
     if (name.includes("/")) return false;
     const names = programNames(name);
-    let words = argv.slice(1).filter((w) => !w.startsWith("-"));
+    let rest = argv.slice(1);
     let prog = names.find((n) => Object.hasOwn(INSTALLS, n));
     if (!prog && names.some((n) => /^python[\d.]*$/.test(n)) && argv[1] === "-m" && /^pip3?$/.test(argv[2] ?? "")) {
         prog = "pip";
-        words = argv.slice(3).filter((w) => !w.startsWith("-"));
+        rest = argv.slice(3);
     }
     if (!prog) return false;
+    // The subcommand comes first: an option before it may take the next word as its value
+    // (`npm --prefix install run x` runs a script), which can't be told apart here.
+    if (rest[0]?.startsWith("-")) return false;
+    const words = rest.filter((w) => !w.startsWith("-"));
     // Plain `yarn` installs; `uv pip install` too.
     if (prog === "yarn" && words.length === 0) return true;
     if (prog === "uv" && words[0] === "pip") return words[1] === "install";

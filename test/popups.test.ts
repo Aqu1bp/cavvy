@@ -248,6 +248,8 @@ describe("package managers' registries open by themselves", () => {
         "npm install --ignore-scripts --package-lock-only --dry-run\nprintf -v PATH 'bin:/usr/bin:/bin'\nls", "npm i && printf -v PATH x && ls", "npm install && git status", "npm ci; ls node_modules",
         // Only the package manager by its own name: no assignment or wrapper can swap what runs.
         "PATH=./bin:/usr/bin:/bin npm install", "PATH=./bin; npm install", "env npm install", "command npm install", "nice npm install", "time npm install", "exec npm install",
+        // An option before the subcommand may take the next word as its value; cds only into folders written out.
+        "npm --prefix install run probe", "npm --registry x install", "pip --target install x", "cd $TARGET && npm install", "cd - && npm install", "cd ~/x && npm i", "cd w* && npm i",
     ])("%p doesn't open the registry by itself", (cmd) => {
         expect(installsOnly(cmd, W)).toBe(false);
         const d = auto(checker(), { command: cmd });
