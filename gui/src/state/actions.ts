@@ -211,7 +211,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             id = h.id;
             created = true;
         }
-        await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined, mode: opts.followUp });
+        await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined, ...(opts.followUp ? { mode: opts.followUp } : {}) });
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
         if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);
