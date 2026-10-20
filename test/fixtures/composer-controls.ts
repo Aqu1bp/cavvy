@@ -11,6 +11,9 @@ import { matchSkills, skillToken } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
 import { firstSendable, followUpFor, otherFollowUp } from "../../gui/src/lib/queue";
 import { canStop } from "../../gui/src/lib/session-status";
+import { splitComments, takesComments, withComments } from "../../gui/src/lib/review-comments";
+import { plural } from "../../gui/src/lib/format";
+import { createReviewCommentStore } from "../../gui/src/state/review-comments";
 import type { RunResult } from "../../src/server/protocol";
 import { applyKeybindingsFile, keymap, matchKey, shortcut, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
@@ -58,7 +61,7 @@ const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
 let commandLists = 0;
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips"].map((key) => [key, noop]));
 const [working, setWorking] = solid.createSignal(false);
 const [goal, setGoal] = solid.createSignal<any>();
 const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: [1, 2], queuedModes: ["steer", "queue"], interactions: [], model: {}, get busy() { return working(); }, get goal() { return goal(); } };
@@ -68,6 +71,8 @@ const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
 const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, keymap, matchKey, withShortcut, shortcut, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
+    splitComments, takesComments, withComments, plural, setReview: noop,
+    reviewComments: createReviewCommentStore(() => undefined), newCommentId: () => crypto.randomUUID(),
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,
     handleFor: () => ({ view: { state: sessionState }, draft: noop }),
