@@ -113,7 +113,7 @@ test("agent shell and hook environments cannot inherit or reintroduce account se
     expect(shell.exitCode).toBe(0);
     expect(shell.output).toBe("clean");
     const hooks = await runHooks({ hooks: { UserPromptSubmit: [{ command }] } }, "UserPromptSubmit", {}, root);
-    expect(hooks).toEqual({ errors: [], additionalContext: "clean" });
+    expect(hooks).toEqual({ errors: [], messages: [], additionalContext: "clean" });
 });
 
 test("model catalogs use the configured default account, including first use", async () => {
