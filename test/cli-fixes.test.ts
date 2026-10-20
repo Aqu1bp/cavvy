@@ -281,6 +281,16 @@ describe("keys in the kitty keyboard protocol's encoding", () => {
             expect(a.editor.text).toBe("/review");
         });
 
+        test("after an interrupt, a long paste in the draft stays a placeholder when a queued command goes to history", () => {
+            const { a, press } = busyApp();
+            const long = "y".repeat(1501);
+            a.queued = drafts("/review", "also this");
+            press(`\x1b[200~${long}\x1b[201~`);
+            a.returnQueued();
+            expect(a.editor.text).toMatch(/^also this\n\[Pasted text #\d+ \+\d+ lines\]$/);
+            expect(a.editor.value()).toBe(`also this\n${long}`);
+        });
+
         test("// is plain text, as when it's submitted: it comes back with the rest", () => {
             const { a, press } = busyApp();
             a.queued = drafts("// explain this", "also this");

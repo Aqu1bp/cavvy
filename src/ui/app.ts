@@ -1714,14 +1714,16 @@ export class App {
         const queued = this.queued;
         this.queued = [];
         this.inputMode = "prompt";
-        // Each draft in full (paste placeholders expanded) decides whether it's a command.
-        const all = [...queued, ...(e.text ? [e.capture()] : [])];
+        // Each draft in full (paste placeholders expanded) decides whether it's a command; the prompt
+        // keeps showing what's in it as it was (a long paste stays a placeholder) unless it's one.
+        const draft = e.text ? e.capture() : undefined;
+        const all = [...queued, ...(draft ? [draft] : [])];
         const commands = all.length > 1 ? all.filter((d) => isCommand(plainText(d.text))) : [];
         if (!commands.length) e.restore(queued);
         else {
             for (const c of commands) e.pushHistory(plainText(c.text), c);
-            e.set("");
-            e.restore(all.filter((d) => !commands.includes(d)));
+            if (draft && commands.includes(draft)) e.set("");
+            e.restore(queued.filter((d) => !commands.includes(d)));
             const names = commands.map((c) => truncate(plainText(c.text).replace(/\s+/g, " "), 40));
             this.notice(`Not run: ${names.join(", ")}. ↑ brings ${commands.length === 1 ? "it" : "them"} back.`, "warn");
         }
