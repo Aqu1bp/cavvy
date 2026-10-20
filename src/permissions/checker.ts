@@ -284,7 +284,9 @@ export class PermissionChecker {
         // `make -C`, `find -execdir`, `xargs`, a script) could make the same word another file.
         const a = analyzeCommand(cmd);
         const grantCovers = (abs: string) => insideFiles(abs, granted);
-        if (!plainReads(cmd, a, cwd, (dir) => (policy && blocks(policy, dir, true)) || grantCovers(dir))) return found;
+        // A folder the sandbox blocks is blocked down to what links inside it lead to; a granted one only
+        // to be listed, since a link inside could lead out and `diff a/.env a` reads a/.env through it.
+        if (!plainReads(cmd, a, cwd, (dir, listed) => (policy && blocks(policy, dir, true)) || (listed && grantCovers(dir)))) return found;
         const covered = this.sensitiveWords(cmd, cwd).filter((w) => (policy && blocks(policy, w.abs, false)) || grantCovers(w.abs));
         if (!covered.length) return found;
         // Blank only the covered words themselves, by where they stand: a covered `.env` must not
@@ -702,7 +704,7 @@ const PLAIN_READERS = new Set(["cat", "head", "tail", "wc", "grep", "egrep", "fg
  * `grep -r`), and an option's value may be a filter or a list of files (`--include .env`,
  * `--files0-from=list`, `md5sum -c sums`) rather than the file it looks like.
  */
-function plainReads(cmd: string, a: CommandAnalysis, cwd: string, folderCovered: (abs: string) => boolean): boolean {
+function plainReads(cmd: string, a: CommandAnalysis, cwd: string, folderCovered: (abs: string, listed: boolean) => boolean): boolean {
     if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return false;
     return a.commands.every((c) => {
         const prog = c.argv[0] ?? "";
@@ -733,7 +735,7 @@ function plainReads(cmd: string, a: CommandAnalysis, cwd: string, folderCovered:
             if (special || w.includes("=") || (w.startsWith("~") && raw !== "~" && !raw.startsWith("~/"))) return false;
             const abs = expandPath(w, cwd);
             try {
-                return !statSync(abs).isDirectory() || folderCovered(abs);
+                return !statSync(abs).isDirectory() || folderCovered(abs, prog === "ls");
             } catch {
                 return true;
             }

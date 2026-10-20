@@ -420,8 +420,15 @@ describe("session approvals", () => {
         expect(r.check(Bash, { command: "cat other/.env" }, "default", W).sensitive).toEqual(expect.any(String));
         const f = checker();
         f.applyGrant({ paths: [join(W, "ｏther")] });
-        expect(f.check(Bash, { command: "diff ｏther/.env ｏther" }, "default", W).sensitive).toBeUndefined();
-        expect(f.check(Bash, { command: "diff other/.env other" }, "default", W).sensitive).toEqual(expect.any(String));
+        expect(f.check(Bash, { command: "cat ｏther/.env" }, "default", W).sensitive).toBeUndefined();
+        expect(f.check(Bash, { command: "cat other/.env" }, "default", W).sensitive).toEqual(expect.any(String));
+        // A granted folder may be listed, but not opened by a program that picks files inside it:
+        // a link in there can lead out (ｏther/sub/.env -> other/.env).
+        mkdirSync(join(W, "ｏther", "sub"), { recursive: true });
+        symlinkSync(join(W, "other", ".env"), join(W, "ｏther", "sub", ".env"));
+        expect(f.check(Bash, { command: "ls ｏther/.env ｏther" }, "default", W).sensitive).toBeUndefined();
+        expect(f.check(Bash, { command: "diff ｏther/.env ｏther/sub" }, "default", W).sensitive).toEqual(expect.any(String));
+        expect(f.check(Bash, { command: "cat ｏther/sub/.env" }, "default", W).sensitive).toEqual(expect.any(String));
     });
 
     test("a grant covers its file however the path to it is spelled: through /private, in another case, absolute", () => {
