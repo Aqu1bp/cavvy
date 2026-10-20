@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
-import { basename, dirname, isAbsolute, join, resolve } from "path";
+import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import { gitArgv, gitEnv } from "../util/git";
 import { isInside } from "../util/files";
 import { trustedByUser } from "../config/trust";
@@ -610,4 +610,243 @@ export async function runRemoval(plan: Removal, o: { deleteIgnored?: string } = 
 
 export async function removeWorktree(o: { path: string; worktree: string; inUse: (path: string) => boolean; deleteIgnored?: string }, log?: Log): Promise<RemoveWorktreeResult> {
     return runRemoval(planRemoval(o), o, log);
+}
+
+// ---------------------------------------------------------------------------
+// Session worktrees: `harness --worktree [name]` (and anything else that wants
+// a throwaway checkout). Harness marks the ones it makes so cleanup knows the
+// commit each started from; it only ever removes a marked one, and never one
+// with uncommitted or untracked changes (Git refuses those, without --force).
+
+export type BaseRef = "head" | "fresh";
+export type CleanupMode = "auto" | "ask" | "keep";
+
+/** Written in the worktree's own Git dir, so it's never part of the checkout and goes with it. */
+const MARKER = "harness-worktree.json";
+
+export interface WorktreeMarker {
+    /** The name it was asked for by (`harness -w <name>`). */
+    name: string;
+    branch: string;
+    /** The commit the branch started at. */
+    base: string;
+    createdAt: number;
+}
+
+function gitDirOf(worktree: string): string | undefined {
+    return runGit(worktree, ["rev-parse", "--absolute-git-dir"])?.replace(/\n$/, "") || undefined;
+}
+
+export function writeMarker(worktree: string, marker: WorktreeMarker) {
+    const dir = gitDirOf(worktree);
+    if (!dir) throw new Error(`Couldn't find ${worktree}'s Git directory.`);
+    writeFileSync(join(dir, MARKER), JSON.stringify(marker) + "\n");
+}
+
+export function readMarker(worktree: string): WorktreeMarker | undefined {
+    const dir = gitDirOf(worktree);
+    if (!dir) return undefined;
+    try {
+        const m = JSON.parse(readFileSync(join(dir, MARKER), "utf8")) as Partial<WorktreeMarker>;
+        if (typeof m.name !== "string" || typeof m.branch !== "string" || typeof m.base !== "string" || !/^[0-9a-f]{40,64}$/.test(m.base)) return undefined;
+        return { name: m.name, branch: m.branch, base: m.base, createdAt: typeof m.createdAt === "number" ? m.createdAt : 0 };
+    } catch {
+        return undefined;
+    }
+}
+
+const ADJECTIVES = ["amber", "brave", "bright", "calm", "clever", "cosmic", "crisp", "eager", "gentle", "golden", "happy", "humble", "jolly", "keen", "lively", "lucky", "mellow", "nimble", "proud", "quick", "quiet", "rapid", "shiny", "silent", "steady", "sunny", "swift", "tidy", "witty", "zesty"];
+const NOUNS = ["badger", "beacon", "cedar", "comet", "falcon", "fern", "harbor", "heron", "lantern", "maple", "meadow", "otter", "panda", "pebble", "pine", "puffin", "quartz", "raven", "river", "robin", "sparrow", "spruce", "summit", "tiger", "tulip", "walrus", "willow", "wren", "yak", "zebra"];
+
+/** adjective-noun, like swift-otter. */
+export function randomName(random: () => number = Math.random): string {
+    const pick = (list: string[]) => list[Math.floor(random() * list.length) % list.length]!;
+    return `${pick(ADJECTIVES)}-${pick(NOUNS)}`;
+}
+
+/** Something a worktree name can be: what a user would type, no spaces or leading "-". */
+export function looksLikeWorktreeName(s: string): boolean {
+    return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(s) && !s.includes("..");
+}
+
+export interface SessionWorktree {
+    name: string;
+    /** The worktree's root. */
+    path: string;
+    /** Where the session starts: the folder it was launched from, at the same place in the worktree (when it's there). */
+    cwd: string;
+    main: string;
+    /** Undefined when it's on a detached HEAD (a reopened one). */
+    branch?: string;
+    /** The commit it started from, when Harness made it. */
+    base?: string;
+    /** What the base was, in words: a branch, origin/main, or a commit. */
+    baseLabel?: string;
+    /** False when an existing worktree of that name was reopened. */
+    created: boolean;
+    /** How long getting it ready took. */
+    ms: number;
+    /** Something the user should know (a fresh base that fell back to HEAD). */
+    note?: string;
+}
+
+/** The base commit and how to name it: HEAD, or `origin/HEAD` as last fetched (nothing is fetched). */
+function pickBase(cwd: string, baseRef: BaseRef): { ref?: string; label?: string; note?: string } {
+    if (baseRef === "fresh") {
+        const commit = runGit(cwd, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/HEAD^{commit}"])?.trim();
+        if (commit && /^[0-9a-f]{40,64}$/.test(commit)) {
+            const label = runGit(cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])?.trim() || "origin/HEAD";
+            return { ref: commit, label };
+        }
+        return { label: currentBase(cwd), note: "worktree.baseRef is “fresh”, but this repository has no origin/HEAD (run git remote set-head origin --auto), so the worktree starts from HEAD." };
+    }
+    return { label: currentBase(cwd) };
+}
+
+/** The same place in `worktree` as `cwd` is in its own worktree, if that folder is there. */
+function sameSubfolder(cwd: string, worktree: string): string {
+    const top = runGit(cwd, ["rev-parse", "--show-toplevel"])?.replace(/\n$/, "");
+    if (!top) return worktree;
+    const rel = relative(canonical(top), canonical(cwd));
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return worktree;
+    const there = join(worktree, rel);
+    return isDir(there) ? there : worktree;
+}
+
+/**
+ * Creates `<main>/.claude/worktrees/<name>` on branch `<prefix><name>`, or
+ * reopens it when Git already has a managed worktree there. Without a name,
+ * one is made up that's free as both folder and branch. Throws RpcError with
+ * a message for the user when it can't.
+ */
+export async function enterSessionWorktree(o: { cwd: string; name?: string; branchPrefix?: string; baseRef?: BaseRef }, log?: Log): Promise<SessionWorktree> {
+    const started = performance.now();
+    const cwd = resolve(o.cwd);
+    const main = checkCreate(cwd);
+    const prefix = o.branchPrefix ?? "harness/";
+    const done = (w: Omit<SessionWorktree, "ms" | "main">): SessionWorktree => ({ ...w, main, ms: Math.round(performance.now() - started) });
+
+    let name = o.name;
+    if (name !== undefined) {
+        if (!looksLikeWorktreeName(name)) throw new RpcError(`“${name}” can't be a worktree name: use letters, digits, “.”, “_”, “-” and “/”, starting with a letter or digit.`, "bad_folder");
+        const folder = checkFolder(defaultFolder(name));
+        const path = join(main, WORKTREES_DIR, folder);
+        const existing = listWorktrees(cwd).find((w) => w.managed && (resolve(w.path) === path || canonical(w.path) === canonical(path)));
+        if (existing) {
+            if (!existing.exists) throw new RpcError(`Git still lists the worktree ${existing.path}, but its folder is gone. Run git worktree prune, then try again.`, "path_missing");
+            // Git will run there: its metadata must be this repository's, and its config trusted.
+            checkCreate(existing.path);
+            const marker = readMarker(existing.path);
+            return done({ name, path: existing.path, cwd: sameSubfolder(cwd, existing.path), branch: existing.branch, base: marker?.base, created: false });
+        }
+        if (lexists(path)) throw new RpcError(`${path} exists but isn't one of this repository's worktrees. Move it, or pick another name.`, "path_exists");
+    } else {
+        const taken = (n: string) => lexists(join(main, WORKTREES_DIR, n)) || runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${prefix}${n}`]) !== undefined;
+        name = randomName();
+        for (let i = 2; taken(name) && i < 50; i++) name = `${randomName()}${i > 10 ? `-${i}` : ""}`;
+    }
+
+    const base = pickBase(cwd, o.baseRef ?? "head");
+    let made;
+    try {
+        made = await createWorktree({ path: cwd, branch: `${prefix}${name}`, folder: defaultFolder(name), base: base.ref }, log);
+    } catch (e) {
+        if (e instanceof RpcError && e.code === "bad_base" && !base.ref) throw new RpcError("This repository has no commits yet, so there's nothing to check out. Make a first commit, then try again.", "bad_base");
+        if (e instanceof RpcError && e.code === "branch_exists") {
+            throw new RpcError(`A branch named ${prefix}${name} already exists, but there's no worktree called ${name}. Pick another name, or delete the branch with git branch -d ${prefix}${name}.`, "branch_exists");
+        }
+        throw e;
+    }
+    try {
+        writeMarker(made.path, { name, branch: made.branch, base: made.commit, createdAt: Date.now() });
+    } catch (e) {
+        // Without it the worktree is never cleaned up automatically, which is the safe side.
+        logFailure(log, "couldn't mark the worktree", String(e));
+    }
+    return done({ name, path: made.path, cwd: sameSubfolder(cwd, made.path), branch: made.branch, base: made.commit, baseLabel: base.label, created: true, note: base.note });
+}
+
+/** What removing a worktree would lose. Nothing here changes anything. */
+export interface WorktreeWork {
+    /** Changed, staged, deleted or untracked paths (git status). */
+    changes: number;
+    /** Commits at HEAD that the base doesn't have. */
+    commits: number;
+    /** HEAD is still the base commit, on the branch it was made with. */
+    atBase: boolean;
+    /** Ignored files and folders removal would delete (at most a dozen named). */
+    ignored: string[];
+    ignoredTotal: number;
+    /** Hands the user's go-ahead for exactly those ignored files to runRemoval. */
+    confirm?: string;
+}
+
+/** The checks removal makes (a managed worktree, not locked, no other session in it, trusted config), then what's in it. */
+export async function worktreeWork(o: { main: string; path: string; marker: WorktreeMarker; inUse: (path: string) => boolean }, log?: Log): Promise<{ plan: Removal; work: WorktreeWork }> {
+    const plan = planRemoval({ path: o.main, worktree: o.path, inUse: o.inUse });
+    if (!plan.exists) return { plan, work: { changes: 0, commits: 0, atBase: true, ignored: [], ignoredTotal: 0 } };
+    const status = await runGitAsync(plan.path, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none"], REMOVE_TIMEOUT_MS);
+    if (status.code !== 0 || status.timedOut) {
+        logFailure(log, "git status failed", status.stderr);
+        throw new RpcError("Git couldn't check the worktree for changes.", "git_failed");
+    }
+    // -z: one NUL per entry, and a rename's old path as one more field.
+    const fields = status.stdout.split("\0").filter(Boolean);
+    let changes = 0;
+    for (let i = 0; i < fields.length; i++) {
+        changes++;
+        if (/^[RC]/.test(fields[i]!)) i++;
+    }
+    const head = runGit(plan.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?.trim();
+    const branch = runGit(plan.path, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.trim();
+    const counted = head ? runGit(plan.main, ["rev-list", "--count", head, "--not", o.marker.base]) : undefined;
+    const commits = counted === undefined ? NaN : Number(counted.trim());
+    if (!head || !Number.isInteger(commits)) throw new RpcError("Git couldn't count the worktree's commits.", "git_failed");
+    const waiting = await ignoredWaiting(plan, undefined, log);
+    return {
+        plan,
+        work: { changes, commits, atBase: head === o.marker.base && branch === o.marker.branch, ignored: waiting?.ignored ?? [], ignoredTotal: waiting?.total ?? 0, confirm: waiting?.confirm },
+    };
+}
+
+/** Nothing would be lost: no changes, no commits of its own, and (unless they don't count) no ignored files. */
+export function isPristine(work: WorktreeWork, o: { ignoredIsWork?: boolean } = {}): boolean {
+    return work.changes === 0 && work.commits === 0 && work.atBase && (o.ignoredIsWork === false || work.ignoredTotal === 0);
+}
+
+/**
+ * Deletes the branch a removed worktree was made with, only while it still
+ * points at its base commit (compare-and-delete, so a commit made meanwhile
+ * keeps it) and some other ref has that commit: nothing can be lost.
+ */
+export function deleteBranchAtBase(main: string, branch: string, base: string): boolean {
+    if (!/^[0-9a-f]{40,64}$/.test(base) || branch.startsWith("-") || CONTROL.test(branch)) return false;
+    const others = runGit(main, ["for-each-ref", "--format=%(refname)", "--contains", base])?.split("\n").filter((r) => r && r !== `refs/heads/${branch}`);
+    if (!others?.length) return false;
+    return runGit(main, ["update-ref", "-d", `refs/heads/${branch}`, base]) !== undefined;
+}
+
+/** Removes the worktree (Git refuses if anything uncommitted is there) and, when it was never moved, its branch. */
+export async function removeSessionWorktree(o: { plan: Removal; marker: WorktreeMarker; work: WorktreeWork }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean }> {
+    const r = await runRemoval(o.plan, { deleteIgnored: o.work.confirm }, log);
+    if (!r.removed) return { removed: false, branchDeleted: false };
+    const branchDeleted = o.work.atBase && o.work.commits === 0 && deleteBranchAtBase(o.plan.main, o.marker.branch, o.marker.base);
+    return { removed: true, branchDeleted };
+}
+
+/**
+ * A throwaway worktree's whole cleanup for callers with nobody to ask (a
+ * sub-agent's): removed with its branch when nothing would be lost, else
+ * kept. `ignoredIsWork: false` lets ignored files (build output) go too.
+ */
+export async function removeIfPristine(o: { main: string; path: string; inUse?: (path: string) => boolean; ignoredIsWork?: boolean }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean; kept?: string }> {
+    const marker = readMarker(o.path);
+    if (!marker) return { removed: false, branchDeleted: false, kept: "Harness didn't make this worktree." };
+    try {
+        const { plan, work } = await worktreeWork({ main: o.main, path: o.path, marker, inUse: o.inUse ?? (() => false) }, log);
+        if (!isPristine(work, o)) return { removed: false, branchDeleted: false, kept: "It has work in it." };
+        return await removeSessionWorktree({ plan, marker, work }, log);
+    } catch (e) {
+        return { removed: false, branchDeleted: false, kept: (e as Error).message };
+    }
 }

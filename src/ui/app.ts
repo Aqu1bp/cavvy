@@ -14,6 +14,7 @@ import { TuiKeybindings, tuiStroke } from "../keybindings/tui";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
+import type { Ask as WorktreeAsk } from "./worktree";
 import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
 import { formatBytes } from "../util/files";
@@ -32,7 +33,7 @@ import { buildSystemPrompt } from "../agent/system-prompt";
 import { addMemoryNote } from "../agent/memory";
 import type { Effort, Settings } from "../config/settings";
 import { loadSettings, loadScope, addPermissionRule, onConfigWarning } from "../config/settings";
-import { APP_TITLE, APP_VERSION } from "../config/paths";
+import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { MODE_INFO, nextMode, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
@@ -84,6 +85,11 @@ export interface AppInit {
     resumePicker?: boolean;
     /** Default model when settings don't name one (legacy MODEL in the harness .env). */
     fallbackModel?: string;
+    /**
+     * --worktree: its line in the welcome box, and what happens to it on exit: decided first (asking
+     * with `ask`, when given), done once the session's shells are gone, returning the lines to print.
+     */
+    worktree?: { line: string; resume: string; decide: (ask?: WorktreeAsk) => Promise<() => Promise<string[]>> };
 }
 
 interface ActiveTool {
@@ -187,6 +193,8 @@ export class App {
     private menuHiddenFor?: string;
     private exitResolve!: () => void;
     private exiting = false;
+    /** Exit has started asking what to do with the worktree. */
+    private leaving = false;
     readonly notifier = new Notifier({
         settings: () => this.settings,
         focus: () => this.screen.focus,
@@ -270,7 +278,7 @@ export class App {
         // stderr would scribble over the screen.
         onConfigWarning((msg) => this.notice(msg, "warn"));
         this.keys.watch((km, status) => this.reportKeybindings(km, status));
-        for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0));
+        for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0, { signal: true }));
 
         this.customCommands = loadCustomCommands(this.cwd, this.init.trusted);
         this.skills = loadSkills(this.cwd, this.init.trusted);
@@ -301,8 +309,21 @@ export class App {
         await done;
     }
 
-    async exit(code = 0) {
-        if (this.exiting) return;
+    /** `signal`: nobody may be at the keyboard, so nothing on the way out asks. */
+    async exit(code = 0, o: { signal?: boolean } = {}) {
+        if (this.exiting || this.leaving) return;
+        // The worktree's fate is asked about while the prompt is still up; nothing is removed yet.
+        let finishWorktree: (() => Promise<string[]>) | undefined;
+        if (this.init.worktree) {
+            this.leaving = true;
+            this.abort?.abort();
+            const ask: WorktreeAsk | undefined = o.signal || !this.screen.interactive ? undefined : async (q) => (await this.showDialog(new SelectDialog({ ...q, numbers: true }))) as "keep" | "remove" | undefined;
+            try {
+                finishWorktree = await this.init.worktree.decide(ask);
+            } catch (e) {
+                finishWorktree = async () => [theme.error(`Couldn't check the worktree, so it's kept: ${redact((e as Error).message)}`)];
+            }
+        }
         this.exiting = true;
         this.schedules.dispose();
         this.abort?.abort();
@@ -311,13 +332,17 @@ export class App {
         this.stopTicker();
         this.keys.close();
         this.screen.setLive([]);
-        const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
+        const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: ${this.init.worktree?.resume ?? APP_NAME} --resume ${this.session.meta.id}`) : "";
         if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
         await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        if (finishWorktree) {
+            for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
+            this.screen.flushNow();
+        }
         this.screen.stop();
         this.exitResolve?.();
         process.exit(code);
@@ -330,6 +355,7 @@ export class App {
             theme.muted(`  /help for help · /model to switch models · /login to add an API key`),
             "",
             theme.muted(`  cwd: ${displayPath(this.cwd, process.env.HOME ?? "/")}`),
+            ...(this.init.worktree ? [theme.muted(`  ${this.init.worktree.line}`)] : []),
         ];
         this.screen.print((cols) => {
             const inner = Math.min(cols, 90) - 5;

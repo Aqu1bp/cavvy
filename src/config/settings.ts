@@ -106,6 +106,24 @@ export interface Settings {
     delegation?: boolean;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
     editor?: string;
+    /** `harness --worktree`: the new branch's name prefix (default "harness/"), where it starts, and what happens to it on exit. */
+    worktree?: {
+        branchPrefix?: string;
+        /** head (default): the current HEAD. fresh: origin/HEAD as last fetched. */
+        baseRef?: "head" | "fresh";
+        /** auto (default): remove a worktree nothing was done in, ask when there are commits. ask: always ask. keep: never remove. Uncommitted changes always keep it. */
+        cleanup?: "auto" | "ask" | "keep";
+    };
+}
+
+/** The worktree settings, with anything malformed (a hand edit) replaced by its default. */
+export function worktreeSettings(s: Settings): { branchPrefix: string; baseRef: "head" | "fresh"; cleanup: "auto" | "ask" | "keep" } {
+    const w = typeof s.worktree === "object" && s.worktree !== null ? s.worktree : {};
+    return {
+        branchPrefix: typeof w.branchPrefix === "string" ? w.branchPrefix.trim() : "harness/",
+        baseRef: w.baseRef === "fresh" ? "fresh" : "head",
+        cleanup: w.cleanup === "ask" || w.cleanup === "keep" ? w.cleanup : "auto",
+    };
 }
 
 export interface SandboxSettings {
