@@ -68,6 +68,7 @@ import {
     orchestratorTitle,
     orchestratorTools,
     taskReport,
+    taskStatusText,
     type ChildRequest,
     type ChildResult,
     type DelegatedTask,
@@ -184,8 +185,8 @@ export interface AgentOptions {
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
     readOnly?: boolean;
-    /** Sub-agents: its definition sets its permission mode, which `mode` works out under the parent's. */
-    ownMode?: boolean;
+    /** Sub-agents: the folder its memory is kept in, which isn't harness configuration for it. */
+    memoryDir?: string;
     maxTurns?: number;
     /**
      * This run's --append-system-prompt. Added to the session's frozen system
@@ -415,8 +416,8 @@ export class Agent {
         // A backend turn in progress takes the new mode now (where the backend can), and so do
         // sub-agents running on Claude Code or Codex, each in its own mode (a read-only one stays read-only).
         if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
-        // One whose definition sets a mode takes what that comes to under the new one (childMode).
-        for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(c.o.ownMode ? c.o.mode.get() : to);
+        // Each in the mode it works out under the new one: a read-only one stays read-only, one whose definition sets a mode keeps it (childMode).
+        for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(c.o.mode.get());
         this.noteState("mode", from, to, (origin) => modeNote(origin, to));
     }
 
@@ -1036,8 +1037,11 @@ export class Agent {
 
     /** At the end of a turn of the harness's own: background tasks still running say where their results will go. */
     private noteRunningTasks() {
+        if (this.o.isSubagent) return;
+        // One that finished while the model was answering: said now, and its result goes with the next prompt.
+        this.deliverTasks();
         const running = this.delegations?.running().length ?? 0;
-        if (!running || this.o.isSubagent) return;
+        if (!running) return;
         this.emit({ type: "notice", level: "info", message: `${running} background task${running === 1 ? " is" : "s are"} still running. ${running === 1 ? "Its result goes" : "Their results go"} to ${this.model.name ?? this.model.id} with your next message (/tasks shows them, /tasks stop stops them).` });
     }
 
@@ -1235,12 +1239,16 @@ export class Agent {
                 return this.endBackendTurn(provider, "max_turns");
             }
             const settings = this.o.settings();
-            if (settings.hooks?.Stop?.length && stopRounds < 3) {
-                const h = await runHooks(settings, "Stop", { session_id: this.session.meta.id, last_message: result.text }, this.state.cwd, signal).catch(() => undefined);
+            // A sub-agent's turn ends with SubagentStop, as one the harness runs does.
+            const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
+            const sub = this.o.subagent;
+            if (settings.hooks?.[stopEvent]?.length && stopRounds < 3) {
+                const payload = sub ? { session_id: sub.parentSessionId, agent_type: sub.type, description: sub.description } : { session_id: this.session.meta.id };
+                const h = await runHooks(settings, stopEvent, { ...payload, last_message: result.text }, this.state.cwd, signal).catch(() => undefined);
                 for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
                 if (h?.blocked) {
                     stopRounds++;
-                    prompt = reminder([`A Stop hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0)].join("\n\n")).text;
+                    prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0)].join("\n\n")).text;
                     promptImages = [];
                     promptDocuments = [];
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
@@ -1479,11 +1487,12 @@ export class Agent {
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
-        let decision = this.o.checker.check(tool, input, mode, cwd);
+        const own = { memoryDir: this.o.memoryDir };
+        let decision = this.o.checker.check(tool, input, mode, cwd, own);
         let ruled = approves(decision);
         for (const p of req.otherPaths ?? []) {
             if (decision.behavior === "deny") break;
-            const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd);
+            const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd, own);
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }
@@ -1692,7 +1701,7 @@ export class Agent {
         }
 
         const mode = this.o.mode.get();
-        let decision = this.o.checker.check(tool, input, mode, this.state.cwd);
+        let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied") };
         // What an approval is remembered by: the call as the model made it, before hosts are added.
         const asked = input;
@@ -1862,8 +1871,9 @@ export class Agent {
     // Sub-agents (Task tool, and tasks a backend delegates)
 
     private async runSubagent(callId: string, opts: { description: string; prompt: string; agentType?: string; model?: string; background?: boolean }, signal: AbortSignal): Promise<{ report: string; isError?: boolean; model?: string; background?: boolean }> {
-        const req: ChildRequest = { description: opts.description, prompt: opts.prompt, agent: opts.agentType || "general-purpose", model: opts.model, callId };
-        const def = loadAgents(this.state.projectRoot).find((a) => a.name === req.agent);
+        const agent = opts.agentType || "general-purpose";
+        const def = loadAgents(this.state.projectRoot).find((a) => a.name === agent);
+        const req: ChildRequest = { description: opts.description, prompt: opts.prompt, agent, model: opts.model, callId, def };
         // A one-shot run (-p) ends with this turn: nothing would be there to take a background result.
         if (def && (opts.background || def.background) && !this.oneShot) return this.startBackground(req, def);
         const r = await this.runChild(callId, req, signal);
@@ -1878,28 +1888,16 @@ export class Agent {
         let model = req.model;
         if (!model && def.model && def.model !== modelRef(this.model)) model = (await this.o.helpers?.resolveModel?.(def.model)) ? def.model : undefined;
         model ??= modelRef(this.model);
-        const t = this.tasks().start({ ...req, model, writes: !def.readOnly && def.isolation !== "worktree" });
-        if (typeof t === "string") return { report: t.replace(/task_status/g, "TaskStatus").replace(/task_cancel/g, "/tasks stop").replace(/agent "explore"/, 'agent type "explore" (or one with isolation: worktree)'), isError: true, model };
+        const t = this.tasks().start({ ...req, model, writes: !def.readOnly && def.isolation !== "worktree" }, { status: "TaskStatus", cancel: "/tasks stop (the user's)" });
+        if (typeof t === "string") return { report: t, isError: true, model };
         return { report: `Started background task ${t.id} "${t.description}" (${t.agent} on ${t.model}). Its result comes to you automatically when it finishes; TaskStatus shows how it's going, or waits for it.`, model, background: true };
     }
 
     /** The TaskStatus tool: a background task's result or state, or all of them. */
     private async taskStatus(id: string | undefined, waitMs: number, signal: AbortSignal): Promise<{ text: string; isError?: boolean }> {
-        const tasks = this.delegations;
-        const all = tasks?.list() ?? [];
-        if (!tasks || !all.length) return { text: "No background tasks were started in this session.", isError: Boolean(id) };
-        const give = (t: DelegatedTask) => {
-            if (t.status !== "running" && !signal.aborted) t.delivered = true;
-            return taskReport(t);
-        };
-        if (id) {
-            const t = tasks.get(id);
-            if (!t) return { text: `No task ${id}. Tasks: ${all.map((x) => x.id).join(", ")}.`, isError: true };
-            await tasks.wait([t], waitMs, signal);
-            return { text: give(t) };
-        }
-        await tasks.wait(tasks.running(), waitMs, signal);
-        return { text: all.map((t) => (t.status !== "running" && !t.delivered ? give(t) : t.status === "running" ? taskReport(t) : `Task ${t.id} "${t.description}": ${t.status} (result already given).`)).join("\n\n---\n\n") };
+        const none = "No background tasks were started in this session.";
+        if (!this.delegations) return { text: none, isError: Boolean(id) };
+        return taskStatusText(this.delegations, id, waitMs, signal, none);
     }
 
     /**
@@ -1914,7 +1912,7 @@ export class Agent {
         const started = Date.now();
         const fail = (report: string, model = req.model ?? modelRef(this.model)): ChildResult => ({ status: "failed", report, model, tokens: 0, durationMs: Date.now() - started });
         const type = req.agent || "general-purpose";
-        const defs = loadAgents(this.state.projectRoot);
+        const defs = req.def?.name === type ? [req.def] : loadAgents(this.state.projectRoot);
         const def = defs.find((a) => a.name === type);
         if (!def) return fail(`Unknown agent type "${type}". Available: ${defs.map((d) => d.name).join(", ")}`);
 
@@ -1928,7 +1926,7 @@ export class Agent {
             else if (req.model) return fail(`Can't run a sub-agent on ${req.model}: ${parseModelRef(req.model) ? "that provider isn't set up here, or the model isn't known" : "it isn't a provider:model reference"}. Call ListModels to see the models that can run.`);
         }
         // Asked for (delegate's effort), else the agent type's, else the session's: each only where the model has it.
-        const effort = req.effort ?? (def.effort ? inheritedEffort(model, def.effort) : inheritedEffort(model, this.o.settings().effort));
+        const effort = req.effort ?? (def.effort && inheritedEffort(model, def.effort)) ?? inheritedEffort(model, this.o.settings().effort);
         const backend = isAgentBackend(client);
         const other = modelRef(model) !== modelRef(this.model);
         const maxTurns = def.maxTurns ?? DEFAULT_MAX_TURNS;
@@ -1959,16 +1957,13 @@ export class Agent {
 
         const exclude = new Set(["Task", "TaskStatus", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode"]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
-        // Its own servers' tools, over any of the session's with the same name.
-        if (servers?.tools.length) {
-            const own = new Set(servers.tools.map((t) => t.name));
-            tools = [...tools.filter((t) => !own.has(t.name)), ...servers.tools];
-        }
+        // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
+        if (servers?.tools.length) tools = [...tools, ...servers.tools];
         if (def.readOnly) tools = tools.filter((t) => EXPLORE_TOOLS.has(t.name) || (t.category === "mcp" && t.readOnly === true));
         if (def.tools?.length) {
             const allow = new Set(def.tools);
-            // The servers it names, and the file tools its memory needs, come with it.
-            const named = [...(servers?.referenced ?? []), ...(def.mcpServers ?? []).filter((s) => s.config).map((s) => s.name)];
+            // The servers it names, and the file tools its memory needs, come with it; a server it lists tools of gets only those.
+            const named = [...(servers?.referenced ?? []), ...(servers?.started ?? [])].filter((name) => !def.tools!.some((a) => fromServers(a, [name])));
             tools = tools.filter((t) => allow.has(t.name) || [...allow].some((a) => mcpToolMatches(a, t.name)) || fromServers(t.name, named) || (def.memory && MEMORY_TOOLS.has(t.name)));
         }
         if (def.disallowedTools?.length) {
@@ -1983,9 +1978,10 @@ export class Agent {
             if (skill) extra.push(`# Skill: ${name}\n\n${skill.body}`);
             else notes.push(`Skill "${name}" wasn't found, so it wasn't loaded.`);
         }
-        if (def.memory) {
-            // The main checkout's, not a worktree's: what it learns outlives the worktree.
-            const dir = agentMemoryDir(def.memory, def.name, this.state.projectRoot);
+        // The main checkout's, not a worktree's: what it learns outlives the worktree.
+        const memoryDir = def.memory ? agentMemoryDir(def.memory, def.name, this.state.projectRoot) : undefined;
+        if (def.memory && memoryDir) {
+            const dir = memoryDir;
             const readable = def.memory === "user" || isTrusted(this.state.projectRoot);
             if (def.memory === "local") keepLocal(dir);
             extra.push(agentMemoryPrompt(def.memory, dir, readable ? readAgentMemory(dir) : undefined));
@@ -2039,7 +2035,7 @@ export class Agent {
                 : def.permissionMode
                   ? { get: () => childMode(parentMode.get(), def.permissionMode), set: () => {} }
                   : this.o.mode,
-            ownMode: Boolean(def.permissionMode) && !(backend && def.readOnly),
+            memoryDir,
             maxTurns,
             // Claude Code and Codex use their own system prompts: this goes on top.
             appendSystemPrompt: backend ? [BACKEND_SUBAGENT, own, def.readOnly ? BACKEND_READ_ONLY : ""].filter(Boolean).join("\n\n") : undefined,

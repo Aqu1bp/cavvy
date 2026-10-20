@@ -95,8 +95,7 @@ export interface WorktreeOutcome {
  * count). Otherwise kept, for the user to look at and merge.
  */
 export async function finishAgentWorktree(w: AgentWorktree): Promise<WorktreeOutcome> {
-    const status = await runGitAsync(w.path, [...NO_HOOKS, "status", "--porcelain=v1", "--untracked-files=normal"], GIT_TIMEOUT_MS);
-    const commits = await runGitAsync(w.path, ["rev-list", "--count", `${w.base}..HEAD`], GIT_TIMEOUT_MS);
+    const [status, commits] = await Promise.all([runGitAsync(w.path, [...NO_HOOKS, "status", "--porcelain=v1", "--untracked-files=normal"], GIT_TIMEOUT_MS), runGitAsync(w.path, ["rev-list", "--count", `${w.base}..HEAD`], GIT_TIMEOUT_MS)]);
     if (status.code !== 0 || status.timedOut || commits.code !== 0 || commits.timedOut) return { removed: false, error: "Git couldn't tell whether it has changes, so it was kept." };
     const changes = { uncommitted: status.stdout.split("\n").filter(Boolean).length, commits: Number(commits.stdout.trim()) || 0 };
     if (changes.uncommitted || changes.commits) return { removed: false, changes };
@@ -121,6 +120,8 @@ export interface AgentServers {
     tools: Tool<any>[];
     /** Configured servers it names: their tools stay available even when its tools list doesn't name them. */
     referenced: string[];
+    /** Its own servers that started. */
+    started: string[];
     /** What didn't start, and why. */
     notes: string[];
     instructions: string;
@@ -144,6 +145,11 @@ export async function startAgentServers(def: AgentDef, o: { projectRoot: string;
             else notes.push(`MCP server "${s.name}" isn't configured in this session.`);
             continue;
         }
+        // Same tool names as a configured server would share its allow rules: refused, as .mcp.json's are.
+        if (o.has(s.name) || Object.keys(o.settings.mcpServers ?? {}).some((n) => serverSegment(n) === serverSegment(s.name))) {
+            notes.push(`MCP server "${s.name}" wasn't started: a server with that name is configured in this session, and the two would share tool names and permission rules. Give it another name.`);
+            continue;
+        }
         if (def.source === "project") {
             const approval = approvalOf(s.name, s.config, o.settings, o.projectRoot, trustedByUser(o.projectRoot));
             if (approval.state !== "approved") {
@@ -163,6 +169,7 @@ export async function startAgentServers(def: AgentDef, o: { projectRoot: string;
     return {
         tools: manager?.tools() ?? [],
         referenced,
+        started: [...(manager?.servers.values() ?? [])].filter((st) => st.status === "connected").map((st) => st.name),
         notes,
         instructions: manager?.instructions() ?? "",
         close: async () => {

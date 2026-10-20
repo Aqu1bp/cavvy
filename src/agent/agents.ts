@@ -106,6 +106,13 @@ export function parseYamlFrontmatter(text: string): { data: Record<string, unkno
     }
     const data: Record<string, unknown> = {};
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) for (const [k, v] of Object.entries(parsed)) data[k.toLowerCase()] = v;
+    // An unquoted " #" starts a YAML comment, where the line-by-line reading kept it in free text ("tagged #frontend"): keep it still.
+    const lines = parseLines(m[1]!);
+    for (const k of ["name", "description"]) {
+        const v = data[k];
+        const line = lines[k];
+        if (typeof v === "string" && line !== undefined && line.startsWith(v) && /^\s+#/.test(line.slice(v.length))) data[k] = line;
+    }
     return { data, body: m[2]!, yaml: true };
 }
 
@@ -127,9 +134,15 @@ export const BUILTIN_AGENTS: AgentDef[] = [
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v.trim() || undefined : typeof v === "number" || typeof v === "boolean" ? String(v) : undefined);
 
-/** "Read, Grep" or a YAML list. */
+/** "Read, Grep" or a YAML list ("[Read, Grep]" too, as frontmatter read line by line has it). */
 function names(v: unknown): string[] | undefined {
-    const items = Array.isArray(v) ? v.map(str).filter((x): x is string => Boolean(x)) : (str(v)?.split(/[,\s]+/).filter(Boolean) ?? []);
+    const items = Array.isArray(v)
+        ? v.map(str).filter((x): x is string => Boolean(x))
+        : (str(v)
+              ?.replace(/^\[([\s\S]*)\]$/, "$1")
+              .split(/[,\s]+/)
+              .map((x) => x.replace(/^["']|["']$/g, ""))
+              .filter(Boolean) ?? []);
     return items.length ? items : undefined;
 }
 
@@ -347,8 +360,8 @@ export const MEMORY_BYTES = 25_000;
 /** Where an agent's memory lives. Project and local memory is in the project's .harness/. */
 export function agentMemoryDir(scope: AgentMemoryScope, name: string, projectRoot: string): string {
     const safe = name.replace(/[^\w.-]+/g, "-").replace(/^\.+/, "") || "agent";
-    const [user, project, local] = paths.agentMemoryRoots(projectRoot);
-    return join(scope === "user" ? user! : scope === "local" ? local! : project!, safe);
+    if (scope === "user") return join(harnessHome(), "agent-memory", safe);
+    return join(projectRoot, ".harness", scope === "local" ? "agent-memory-local" : "agent-memory", safe);
 }
 
 /** The first lines of MEMORY.md, and whether there was more. */

@@ -126,6 +126,19 @@ mcpServers:
         expect(d.name).toBe("bad");
     });
 
+    test("line by line, YAML-style lists still work", () => {
+        const d = parseAgentFile(file("description: a: b\ntools: [Read, Grep]\ndisallowedTools: ['Bash', \"WebFetch\"]"), "x", "user");
+        expect(d.tools).toEqual(["Read", "Grep"]);
+        expect(d.disallowedTools).toEqual(["Bash", "WebFetch"]);
+    });
+
+    test("an unquoted # in a value is kept, as before (YAML would take it for a comment)", () => {
+        const d = parseAgentFile(file("description: Fixes issues tagged #frontend\neffort: high # the default is medium"), "x", "user");
+        expect(d.description).toBe("Fixes issues tagged #frontend");
+        // Where the value must be one of a few, the comment is a comment.
+        expect(d.effort).toBe("high");
+    });
+
     test("model: inherit is the session's model; maxTurns as a string", () => {
         const d = parseAgentFile(file("model: inherit\nmaxTurns: '7'"), "a", "user");
         expect(d.model).toBeUndefined();
@@ -316,8 +329,8 @@ describe("running", () => {
         const { run } = await makeAgent({ settings: { effort: "low" } });
         await run("go");
         expect(childRequests[0]!.effort).toBe("high");
-        // gemini-test has low and high only: max isn't sent, and nor is the session's low.
-        expect(childRequests[1]!.effort).toBeUndefined();
+        // gemini-test has low and high only: for max it falls back to the session's.
+        expect(childRequests[1]!.effort).toBe("low");
     });
 
     test("tools and disallowedTools", async () => {
@@ -416,6 +429,17 @@ describe("running", () => {
         expect(subNotices()).toContain('MCP server "nothere" isn\'t configured in this session.');
         // The parent never had it.
         expect(mainRequests[0]!.tools.map((t) => t.name)).not.toContain("mcp__fix__echo");
+    });
+
+    test("listing some of a server's tools gives only those; a name the session uses is refused", async () => {
+        const fixture = join(import.meta.dir, "fixtures", "mcp-stdio-server.ts");
+        const server = `command: ${JSON.stringify(process.execPath)}\n      args: ["--no-env-file", ${JSON.stringify(fixture)}]`;
+        defineAgent("picky", `tools: [Read, mcp__fix__echo]\nmcpServers:\n  - fix:\n      ${server}\n  - taken:\n      ${server}`, "x", "user");
+        mainCalls(["t1", "Task", task("picky")]);
+        const { run, subNotices } = await makeAgent({ settings: { mcpServers: { taken: { command: "true" } } } });
+        await run("go");
+        expect(childRequests[0]!.tools.map((t) => t.name).sort()).toEqual(["Read", "mcp__fix__echo"]);
+        expect(subNotices().join("\n")).toContain('MCP server "taken" wasn\'t started: a server with that name is configured');
     });
 
     test("a project agent's own MCP server needs approval like a .mcp.json server", async () => {
@@ -596,6 +620,22 @@ describe("background", () => {
         expect(mainSent[0]!).toContain("late report");
     });
 
+    test("one that finishes while the model writes its last answer is announced at the turn's end", async () => {
+        childScript = () => say("quick report");
+        mainSteps = [
+            () => use("t1", "Task", task("general-purpose", { run_in_background: true }), "main"),
+            async () => {
+                await until(() => agent.delegatedTasks[0]?.status === "done");
+                return say("all done", "main");
+            },
+        ];
+        const { run, events, agent } = await makeAgent();
+        await run("go");
+        const said = events.flatMap((e) => (e.type === "notice" ? [e.message] : []));
+        expect(said.some((m) => m.startsWith('Background task task-1 "Test task"') && m.includes("finished"))).toBe(true);
+        expect(said.some((m) => m.includes("still running"))).toBe(false);
+    });
+
     test("interrupting the turn stops it; so does the session ending", async () => {
         childScript = (_r, _n, signal) =>
             new Promise((_res, rej) => {
@@ -658,18 +698,23 @@ describe("background", () => {
 // The permission checker and memory folders
 
 describe("checker", () => {
-    test("an agent's memory folder isn't harness config; .harness/ beside it still is, and a link out doesn't count", () => {
+    test("an agent's memory folder isn't harness config for that agent alone; a link out still is", () => {
         const settings = {};
         const checker = new PermissionChecker(() => settings, cwd);
         const write = BUILTIN_TOOLS.find((t) => t.name === "Write")!;
-        const decide = (p: string) => checker.check(write, { file_path: p, content: "x" }, "acceptEdits", cwd);
         const mem = agentMemoryDir("project", "r", cwd);
+        const decide = (p: string, memoryDir: string | null = mem) => checker.check(write, { file_path: p, content: "x" }, "acceptEdits", cwd, { memoryDir: memoryDir ?? undefined });
         mkdirSync(mem, { recursive: true });
         expect(decide(join(mem, "MEMORY.md")).behavior).toBe("allow");
+        // Another agent (or the main one) is asked, as for any harness config.
+        expect(decide(join(mem, "MEMORY.md"), agentMemoryDir("project", "other", cwd)).behavior).toBe("ask");
+        expect(decide(join(mem, "MEMORY.md"), null).behavior).toBe("ask");
         expect(decide(join(cwd, ".harness", "settings.json")).behavior).toBe("ask");
-        // Right in agent-memory/ (not an agent's folder) is still config.
-        expect(decide(join(cwd, ".harness", "agent-memory", "x.md")).behavior).toBe("ask");
         symlinkSync(join(cwd, ".harness", "settings.json"), join(mem, "evil.md"));
         expect(decide(join(mem, "evil.md")).behavior).toBe("ask");
+        // User memory lives in the harness home: the same holds there.
+        const user = agentMemoryDir("user", "r", cwd);
+        expect(decide(join(user, "MEMORY.md"), user).behavior).not.toBe("deny");
+        expect(decide(join(user, "MEMORY.md"), null).behavior).toBe("ask");
     });
 });

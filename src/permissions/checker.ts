@@ -89,6 +89,16 @@ function pathForms(p: string): string[] {
     return [...new Set([p, canonical(p)].flatMap(spellings))];
 }
 
+/**
+ * In a sub-agent's own memory folder, as written and where its symlinks lead:
+ * notes it keeps for its own prompt, not configuration (for that agent alone).
+ */
+function inMemory(p: string, dir: string): boolean {
+    const dirs = [resolve(dir), canonical(dir)];
+    const inside = (x: string) => dirs.some((d) => x !== d && isInside(x, d));
+    return inside(resolve(p)) && inside(canonical(p)) && !/(^|\/)\.git(\/|$)/.test(p);
+}
+
 /** What isHarnessConfig looks for in a path. */
 const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
 
@@ -163,8 +173,9 @@ export class PermissionChecker {
         this.approvals = [];
     }
 
-    check(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string): Decision {
-        const d = this.decide(tool, input, mode, cwd);
+    /** `own.memoryDir`: a sub-agent's memory folder (src/agent/agents.ts), which isn't configuration for that agent. */
+    check(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string, own?: { memoryDir?: string }): Decision {
+        const d = this.decide(tool, input, mode, cwd, own?.memoryDir);
         if (d.behavior !== "ask") return d;
         // Rules that ask every time keep asking; anything else the user already said yes to runs.
         if (!d.rule && this.approved.has(this.actionKey(tool, input, cwd, d.sandbox))) return { behavior: "allow", remembered: true, reason: "approved earlier this session", ...(d.sandbox ? { sandbox: true } : {}), ...(d.hosts ? { hosts: d.hosts } : {}) };
@@ -343,7 +354,7 @@ export class PermissionChecker {
         return rules.length > 0 && findMatch(rules, { toolName: "Bash", command: cmd }, this.root, "allow") !== undefined;
     }
 
-    private decide(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string): Decision {
+    private decide(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string, memoryDir?: string): Decision {
         const s = this.settings();
         const allow = [...(s.permissions?.allow ?? []), ...this.sessionAllow, ...this.grants(cwd).rules];
         const deny = s.permissions?.deny ?? [];
@@ -391,7 +402,7 @@ export class PermissionChecker {
 
         // The model must not be able to widen its own permissions (settings,
         // hooks, MCP servers) or plant git hooks without the user seeing it.
-        if (tool.category === "edit" && t.path && this.isHarnessConfig(t.path)) {
+        if (tool.category === "edit" && t.path && this.isHarnessConfig(t.path) && !(memoryDir && inMemory(t.path, memoryDir))) {
             return { behavior: "ask", config: true, reason: "This file configures the harness or git itself (permissions, hooks, MCP servers); changes always need your approval." };
         }
         if (tool.name === "Bash") {
@@ -585,8 +596,6 @@ export class PermissionChecker {
     }
 
     private isHarnessConfig(p: string): boolean {
-        // A sub-agent's memory is notes it keeps, not configuration: nothing reads it but that agent's prompt.
-        if (this.inAgentMemory(p)) return false;
         const forms = pathForms(p);
         const home = pathForms(harnessHome());
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
@@ -595,13 +604,6 @@ export class PermissionChecker {
         // .claude/ and .codex/ configure the agent CLIs the harness can run (hooks, skills, rules).
         const judged = new Set([p, canonical(p)].map(withoutWorktrees).flatMap(spellings));
         return [...judged].some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
-    }
-
-    /** Inside an agent's memory folder (not the folder that holds them), as written and where its symlinks lead. */
-    private inAgentMemory(p: string): boolean {
-        const roots = paths.agentMemoryRoots(this.root).flatMap((r) => [r, canonical(r)]);
-        const inside = (x: string) => roots.some((r) => x !== r && isInside(x, r) && dirname(x) !== r);
-        return inside(resolve(p)) && inside(canonical(p)) && !/(^|\/)\.git(\/|$)/.test(p);
     }
 
     private isSensitive(p: string): boolean {
