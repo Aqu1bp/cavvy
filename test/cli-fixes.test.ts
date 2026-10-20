@@ -28,7 +28,7 @@ function testApp(init: { cwd?: string; appendSystemPrompt?: string; maxTurns?: n
     const app = new App({ cwd: init.cwd ?? tempDir(), trusted: true, mode: "default", allowBypass: false, startupNotes: [], appendSystemPrompt: init.appendSystemPrompt, maxTurns: init.maxTurns });
     const printed: string[] = [];
     const print = (l: string | string[] | ((cols: number) => string[])) => (printed.push(...(typeof l === "function" ? l(100) : Array.isArray(l) ? l : [l])), {});
-    (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {} };
+    (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {} };
     (app as any).renderLive = () => {};
     app.session = Session.create(app.cwd, { persist: false });
     return { app, printed, text: () => printed.map(stripAnsi).join("\n") };

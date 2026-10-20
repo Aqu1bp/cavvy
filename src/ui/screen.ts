@@ -45,6 +45,8 @@ export class Screen {
     private live: string[] = [];
     /** Rows the live region occupies on screen right now. */
     private liveRows = 0;
+    /** Paint the screen again on the next draw if the region left empty rows (see settle). */
+    private settlePending = false;
     private log: Entry[] = [];
     /** Printed but not drawn yet. */
     private pending: Entry[] = [];
@@ -230,6 +232,26 @@ export class Screen {
         this.render();
     }
 
+    /**
+     * The screen painted again from the top: the newest output rows that fit above the live
+     * region, then the region. Undefined when no empty rows would be left under the region, or
+     * nothing more is out of sight above. Rows are overwritten in place, never cleared as a
+     * screen, so nothing extra goes to the scrollback; the rows brought back are already in it.
+     */
+    private fill(cols: number, rows: number): string | undefined {
+        const pendingRows = this.pending.reduce((n, e) => n + this.layout(e, cols).length, 0);
+        const end = Math.min(this.top + pendingRows, rows - 1);
+        const room = rows - Math.min(this.live.length, rows - 1);
+        if (end >= room) return undefined;
+        const tail: string[] = [];
+        for (let i = this.log.length - 1; i >= 0 && tail.length < room; i--) tail.unshift(...this.layout(this.log[i]!, cols));
+        const shown = tail.slice(-room);
+        if (shown.length <= end) return undefined;
+        this.pending = [];
+        const output = shown.map((l) => cursor.clearLine + l + RESET).join("\n") + "\n";
+        return SYNC_START + "\x1b[H" + output + cursor.clearDown + this.drawLive(shown.length, cols, rows) + SYNC_END;
+    }
+
     /** Clear the screen, the scrollback and everything printed so far. */
     clearScreen() {
         if (!this.interactive) return;
@@ -266,10 +288,25 @@ export class Screen {
         return block.map((l) => l + RESET).join("\n");
     }
 
+    /**
+     * At the end of a turn: if the live region has shrunk and left empty rows under it while
+     * earlier output is out of sight above, the next draw paints the screen again from the
+     * newest output down, so the output reaches the prompt and the prompt sits on the bottom rows.
+     */
+    settle() {
+        this.settlePending = true;
+        this.schedule();
+    }
+
     render() {
         if (!this.interactive || this.suspended || this.redrawPending) return;
         const cols = termCols();
         const rows = termRows();
+        if (this.settlePending) {
+            this.settlePending = false;
+            const filled = this.fill(cols, rows);
+            if (filled) return void process.stdout.write(filled);
+        }
         let out = SYNC_START;
         if (this.liveRows > 0) out += "\r" + cursor.up(this.liveRows - 1) + cursor.clearDown;
         else out += "\r";

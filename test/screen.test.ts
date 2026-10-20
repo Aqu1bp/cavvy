@@ -99,6 +99,41 @@ describe("full-window renderer", () => {
         expect(vt.screen().slice(at, at + 3 + LIVE.length)).toEqual(["done", "", "spinner", ...LIVE]);
     });
 
+    test("at the end of a turn, the output comes back down to the prompt, which sits on the bottom rows", () => {
+        const { vt, screen } = harness(12, 40);
+        for (let i = 0; i < 20; i++) screen.print(`line ${i}`);
+        screen.setLive([...Array.from({ length: 6 }, (_, i) => `busy ${i}`), ...LIVE]);
+        screen.flushNow();
+        screen.print("done");
+        screen.setLive(LIVE);
+        screen.flushNow();
+        const before = vt.scrollback.length;
+        screen.settle();
+        screen.flushNow();
+        const s = vt.screen();
+        expect(s.slice(-LIVE.length)).toEqual(LIVE);
+        expect(s.slice(0, 12 - LIVE.length)).toEqual(["line 14", "line 15", "line 16", "line 17", "line 18", "line 19", "done"]);
+        // Nothing more went to the scrollback: the rows brought back were already there.
+        expect(vt.scrollback.length).toBe(before);
+        // And the next output follows on as usual.
+        screen.print("next");
+        screen.flushNow();
+        expect(vt.screen().slice(-LIVE.length - 2, -LIVE.length)).toEqual(["done", "next"]);
+    });
+
+    test("with nothing out of sight above, settling leaves the prompt right under the output", () => {
+        const { vt, screen } = harness(12, 40);
+        screen.print(["first", "second"]);
+        screen.setLive(["", "spinner", ...LIVE]);
+        screen.flushNow();
+        screen.setLive(LIVE);
+        screen.settle();
+        screen.flushNow();
+        const s = vt.screen();
+        expect(s.slice(0, 7)).toEqual(["first", "second", ...LIVE]);
+        expect(s.slice(7).every((l) => l === "")).toBe(true);
+    });
+
     test("a resize clears everything and lays it out again at the new width, once", async () => {
         const { vt, screen, resize } = harness(14, 60);
         screen.print((cols) => ["╭" + "─".repeat(cols - 3) + "╮"]);

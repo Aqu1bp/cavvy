@@ -46,6 +46,10 @@ export class VT {
                         for (let k = this.r + 1; k < this.rows; k++) this.grid[k]!.fill(" ");
                     } else if (n === 2) this.grid = this.blank(this.rows);
                     else if (n === 3) this.scrollback = [];
+                } else if (fin === "K") {
+                    if (n === 0) this.grid[this.r]!.fill(" ", this.c);
+                    else if (n === 1) this.grid[this.r]!.fill(" ", 0, this.c + 1);
+                    else if (n === 2) this.grid[this.r]!.fill(" ");
                 }
                 if (fin !== "m") this.pendingWrap = false;
                 continue;

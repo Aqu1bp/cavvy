@@ -1388,7 +1388,7 @@ describe("harness models", () => {
 describe("the app", () => {
     test("a stopped sub-agent's prompt is withdrawn, and one still queued isn't shown", async () => {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
-        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
         app.session = Session.create(cwd, { persist: false });
         const shown: string[] = [];
         const seen = new Set<object>();

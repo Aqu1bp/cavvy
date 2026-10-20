@@ -491,7 +491,7 @@ function testApp(cwd = tempDir()) {
     const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
     const printed: string[] = [];
     const print = (l: string | string[] | ((cols: number) => string[])) => (printed.push(...(typeof l === "function" ? l(100) : Array.isArray(l) ? l : [l])), {});
-    (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, flushNow() {}, stop() {}, clearScreen() {} };
+    (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {} };
     (app as any).renderLive = () => {};
     app.session = Session.create(cwd, { persist: false });
     app.session.setSystem("test system prompt");
@@ -818,6 +818,22 @@ describe("live region layout", () => {
         a.flushThinking();
         expect(printed.join("\n")).not.toContain("\x1b]8;");
         expect(printed.join("\n")).not.toContain("\x1b[31m");
+    });
+
+    test("when a turn ends, the screen is asked to bring the output back down to the prompt, once", () => {
+        const { app } = testApp();
+        const a = app as any;
+        let settled = 0;
+        a.screen.settle = () => settled++;
+        a.busy = true;
+        a.turnStart = Date.now();
+        App.prototype.renderLive.call(app);
+        App.prototype.renderLive.call(app);
+        expect(settled).toBe(0);
+        a.busy = false;
+        App.prototype.renderLive.call(app);
+        App.prototype.renderLive.call(app);
+        expect(settled).toBe(1);
     });
 
     test("when idle, only the prompt is shown", () => {

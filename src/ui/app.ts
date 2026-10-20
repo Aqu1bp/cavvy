@@ -113,6 +113,8 @@ export class App {
     private dialogs: Dialog[] = [];
     private dialogQueue: Dialog[] = [];
     busy = false;
+    /** Whether the last renderLive was during a turn, to tell when one ends. */
+    private wasBusy = false;
     private abort?: AbortController;
     /** Prompts typed while busy, each with the images behind its placeholders. */
     private queued: Draft[] = [];
@@ -1828,6 +1830,9 @@ export class App {
         if (top) lines.push(...top.render(cols, Math.max(8, rows - lines.length - 1)));
         else lines.push(...this.renderInput(cols));
         this.screen.setLive(lines);
+        // A turn just ended: what it showed while running is gone, so bring the output back down to the prompt.
+        if (this.wasBusy && !this.busy) this.screen.settle();
+        this.wasBusy = this.busy;
     }
 
     /**
