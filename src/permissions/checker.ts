@@ -728,9 +728,9 @@ function plainReads(cmd: string, a: CommandAnalysis, cwd: string, folderCovered:
                 // A regex in one quoted string is literal to the shell; an unquoted one mustn't be able to expand.
                 return !special || /^'[^']*'$/.test(raw) || /^"[^"$`\\]*"$/.test(raw);
             }
-            // Even quoted: the grant check reads `$X` in a name as the variable, and `~` as home, which
-            // a quoted or escaped `~` isn't (`'~/.env'` is a folder named ~).
-            if (special || (w.startsWith("~") && raw !== "~" && !raw.startsWith("~/"))) return false;
+            // Even quoted: the grant check reads `$X` in a name as the variable, `~` as home, which a
+            // quoted or escaped `~` isn't (`'~/.env'` is a folder named ~), and `X=a` as the path a.
+            if (special || w.includes("=") || (w.startsWith("~") && raw !== "~" && !raw.startsWith("~/"))) return false;
             const abs = expandPath(w, cwd);
             try {
                 return !statSync(abs).isDirectory() || folderCovered(abs);

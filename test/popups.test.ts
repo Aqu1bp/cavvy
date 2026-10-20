@@ -413,6 +413,15 @@ describe("session approvals", () => {
         }
     });
 
+    test("a grant doesn't cover a file whose name only ends in the granted path (X=other/.env)", () => {
+        const s = checker();
+        s.applyGrant({ paths: [join(W, "other", ".env")] });
+        expect(s.check(Bash, { command: "cat other/.env" }, "default", W).sensitive).toBeUndefined();
+        for (const command of ["cat X=other/.env", "cat --x=other/.env", "head -5 A=other/.env"]) {
+            expect([command, s.check(Bash, { command }, "default", W).sensitive]).toEqual([command, expect.any(String)]);
+        }
+    });
+
     test("a dangerous command, or a change to the harness's config, gets no scoped grant", () => {
         const c = checker({}, undefined);
         for (const command of ["rm -rf ~", "git reset --hard", "git config core.hooksPath /tmp/h", "git push --force origin main"]) {
