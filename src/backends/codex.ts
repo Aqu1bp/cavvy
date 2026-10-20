@@ -182,7 +182,9 @@ interface Policy {
 }
 
 /** The harness's permission mode as Codex's approval policy and sandbox. */
-export function codexPolicy(mode: PermissionMode, additionalDirectories: string[]): Policy {
+export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false): Policy {
+    // A read-only agent in auto: reads run in the read-only sandbox without asking; anything more asks the harness, which refuses it.
+    if (mode === "auto" && readOnly) return { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" };
     const workspaceWrite = { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
     switch (mode) {
         case "acceptEdits":
@@ -200,8 +202,8 @@ export function codexPolicy(mode: PermissionMode, additionalDirectories: string[
 }
 
 /** Modes with the same Codex policy (plan adds instructions on top). */
-function codexPolicyKey(m: PermissionMode): string {
-    const p = codexPolicy(m, []);
+function codexPolicyKey(m: PermissionMode, readOnly: boolean): string {
+    const p = codexPolicy(m, [], readOnly);
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
@@ -433,7 +435,7 @@ class CodexTurn {
 
     modeChanged(m: PermissionMode) {
         if (!this.turnId || this.turnMode === undefined || this.aborted) return;
-        if (STRICTNESS[m] > STRICTNESS[this.turnMode] && codexPolicyKey(m) !== codexPolicyKey(this.turnMode) || (m === "plan" && this.turnMode !== "plan")) {
+        if (STRICTNESS[m] > STRICTNESS[this.turnMode] && codexPolicyKey(m, Boolean(this.t.readOnly)) !== codexPolicyKey(this.turnMode, Boolean(this.t.readOnly)) || (m === "plan" && this.turnMode !== "plan")) {
             this.restartFor = m;
             this.interrupt();
         }
@@ -476,7 +478,7 @@ class CodexTurn {
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).
             if (this.billedToPlan) void this.readLimits();
-            const policy = codexPolicy(this.host.mode(), t.additionalDirectories);
+            const policy = codexPolicy(this.host.mode(), t.additionalDirectories, Boolean(t.readOnly));
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
             const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), o?.name);
@@ -539,7 +541,7 @@ class CodexTurn {
                 while (true) {
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.host.mode();
-                    const policy = codexPolicy(mode, t.additionalDirectories);
+                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly));
                     const note = modeNote(mode, Boolean(t.readOnly));
                     const input = this.input(note ? `${note}\n\n${text}` : text, images);
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
@@ -1131,11 +1133,11 @@ class CodexTurn {
         const agentLabel = from ? (from.sub?.label ?? "Codex sub-agent") : undefined;
         switch (method) {
             case "item/commandExecution/requestApproval": {
-                const { command, elsewhere } = shownCommand(p, this.t.cwd);
+                const { command } = shownCommand(p, this.t.cwd);
                 const net = p.networkApprovalContext?.host ? ` It needs network access to ${String(p.networkApprovalContext.host)}.` : "";
-                // Codex 0.162 asks about every command in untrusted mode, `cat` included. One that wants
-                // the network says something, and one in another folder isn't checked where it runs.
-                const asksAlways = !net && !elsewhere && codexPolicy(this.turnMode ?? this.host.mode(), []).approvalPolicy === "untrusted";
+                // Codex 0.162 asks about every command in untrusted mode, `cat` included. One that wants the
+                // network says something. One in another folder is checked as `cd <folder> && …`, where it runs.
+                const asksAlways = !net && codexPolicy(this.turnMode ?? this.host.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
                 const a = await this.host.permission({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }

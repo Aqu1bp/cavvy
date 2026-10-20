@@ -686,6 +686,9 @@ describe("Codex backend", () => {
 
     test("modes map to Codex's approval policy and sandbox", () => {
         expect(codexPolicy("default", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
+        // A read-only agent in auto: reads run in the read-only sandbox; anything more asks the harness, never Codex's reviewer.
+        expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
+        expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
         expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] }, approvalsReviewer: "user" });
         expect(codexPolicy("auto", [])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
@@ -787,6 +790,22 @@ describe("Codex backend", () => {
         expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "cat greet.py" });
     });
 
+    test("a read-only command in another folder is checked there, and runs without asking unless it reads a secret", async () => {
+        const other = join(cwd, "other");
+        mkdirSync(other, { recursive: true });
+        process.env.FAKE_COMMAND = "sed -n '1,5p' greet.py";
+        process.env.FAKE_COMMAND_CWD = other;
+        const quiet = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
+        expect(await quiet.run("read it")).toBe("done");
+        expect(quiet.asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true });
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND = "cat .env";
+        const secret = await makeAgent({ provider: "codex", ask: () => ({ allow: false, feedback: "no" }) });
+        await secret.run("read it");
+        expect(secret.asked.map((a) => a.input.command)).toEqual([`cd '${other}' && cat .env`]);
+    });
+
     test("the command comes out of Codex's quoted shell wrapper as a shell would read it", async () => {
         // As Codex 0.162 showed it: double quotes, with the ! part in single quotes.
         process.env.FAKE_COMMAND_RAW = `/bin/zsh -lc "rg --files -g 'greet.py' -g '"'!**/.git/**'"'"`;
@@ -808,7 +827,7 @@ describe("Codex backend", () => {
         const cases: [Record<string, string>, string][] = [
             [{ FAKE_COMMAND_RAW: "./bash -lc 'cat greet.py'" }, "./bash -lc 'cat greet.py'"],
             [{ FAKE_COMMAND_RAW: "/tmp/x/zsh -lc 'cat greet.py'" }, "/tmp/x/zsh -lc 'cat greet.py'"],
-            [{ FAKE_COMMAND: "cat credentials.json", FAKE_COMMAND_CWD: "/tmp/elsewhere" }, "cd '/tmp/elsewhere' && cat credentials.json"],
+            [{ FAKE_COMMAND: "touch notes.txt", FAKE_COMMAND_CWD: "/tmp/elsewhere" }, "cd '/tmp/elsewhere' && touch notes.txt"],
         ];
         for (const [vars, shown] of cases) {
             rmSync(LOG, { force: true });

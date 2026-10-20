@@ -1914,7 +1914,9 @@ export class Agent {
             subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
             // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and the harness refuses).
-            mode: backend && def.readOnly ? { get: () => (parentMode.get() === "plan" ? "plan" : "default"), set: () => {} } : this.o.mode,
+            // In auto, Codex's is its read-only auto mode: reads run in its read-only sandbox without asking. Claude Code's
+            // stays in default, where every command comes to the harness, which runs read-only ones without asking.
+            mode: backend && def.readOnly ? { get: () => readOnlyBackendMode(parentMode.get(), model.provider), set: () => {} } : this.o.mode,
             maxTurns: 200,
             // Claude Code and Codex use their own system prompts: this goes on top.
             appendSystemPrompt: backend ? [BACKEND_SUBAGENT, def.prompt, def.readOnly ? BACKEND_READ_ONLY : ""].filter(Boolean).join("\n\n") : undefined,
@@ -2044,4 +2046,10 @@ function redactBackendEvent(e: AgentEvent): AgentEvent {
 /** How a sub-agent's own sub-agent is named (in its permission prompts, and in the GUI): under the one whose it is. */
 function nestedAgentLabel(parent: string, label: string): string {
     return `${parent} › ${label}`;
+}
+
+/** The mode a read-only agent on Claude Code or Codex runs in, under the session's mode. */
+export function readOnlyBackendMode(mode: PermissionMode, provider: string): PermissionMode {
+    if (mode === "plan") return "plan";
+    return mode === "auto" && provider === "codex" ? "auto" : "default";
 }
