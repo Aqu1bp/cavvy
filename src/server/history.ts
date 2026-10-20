@@ -644,7 +644,8 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     const rec = ui.tools.get(p.toolCallId);
     Object.assign(b, resultPatch(p.content, p.isError, b.agent));
     // A diff built from the call's input is of an edit that never happened when the call failed.
-    if (p.isError && !rec?.diff) delete b.diff;
+    // A declined one keeps it: that's what the user was shown and said no to.
+    if (b.status === "error" && !rec?.diff) delete b.diff;
     if (rec?.summary) b.summary = rec.summary;
     else if (b.status === "ok") b.summary = derivedSummary(b, p.content);
     if (rec?.durationMs !== undefined) b.durationMs = rec.durationMs;
