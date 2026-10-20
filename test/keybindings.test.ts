@@ -372,7 +372,7 @@ describe("file on disk and live reload", () => {
         }
     });
 
-    test("watcher ignores other files in the folder", async () => {
+    test("watcher ignores changes to other files in the folder", async () => {
         const dir = tmp();
         const p = join(dir, "keybindings.json");
         let calls = 0;

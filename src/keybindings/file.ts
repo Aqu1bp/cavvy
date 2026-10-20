@@ -1,7 +1,7 @@
 // The keybindings file on disk: read it, and watch it so a save applies at once.
 
 import { existsSync, mkdirSync, readFileSync, watch, writeFileSync, type FSWatcher } from "fs";
-import { basename, dirname, join } from "path";
+import { dirname, join } from "path";
 import { harnessHome } from "../config/paths";
 import { KEYBINDINGS_TEMPLATE } from "./core";
 
@@ -29,11 +29,11 @@ export function ensureKeybindingsFile(path = keybindingsPath()): boolean {
 /**
  * Calls `onChange` with the file's text after it's saved, created or deleted.
  * Watches the folder, not the file: editors save by renaming a new file over
- * the old one, which a watch on the file itself stops seeing.
+ * the old one, which a watch on the file itself stops seeing. Saves to other
+ * files in the folder are read past: only a change of this file's text counts.
  */
 export function watchKeybindings(onChange: (r: { text?: string; error?: string }) => void, path = keybindingsPath(), debounceMs = 60): () => void {
     const dir = dirname(path);
-    const name = basename(path);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let last = readKeybindings(path).text;
     let watcher: FSWatcher | undefined;
@@ -47,8 +47,9 @@ export function watchKeybindings(onChange: (r: { text?: string; error?: string }
     };
     try {
         mkdirSync(dir, { recursive: true, mode: 0o700 });
-        watcher = watch(dir, { persistent: false }, (_event, file) => {
-            if (file && file.toString() !== name) return;
+        // Any change in the folder is checked: a save that renames a temp file over this one may be
+        // reported under the temp file's name only (Bun 1.3), and an unchanged file costs one small read.
+        watcher = watch(dir, { persistent: false }, () => {
             if (timer) clearTimeout(timer);
             timer = setTimeout(fire, debounceMs);
         });
