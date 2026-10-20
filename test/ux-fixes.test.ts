@@ -31,7 +31,8 @@ const { Editor } = await import("../src/ui/editor");
 const { plainErrorText } = await import("../src/util/html");
 const { httpError } = await import("../src/providers/openai-compat");
 const { GrepTool } = await import("../src/tools/search-tools");
-const { App } = await import("../src/ui/app");
+const { App, splitActionsNote } = await import("../src/ui/app");
+const { BULLET } = await import("../src/ui/components");
 const { stripAnsi } = await import("../src/ui/ansi");
 import type { Message } from "../src/providers/types";
 import type { AgentEvent } from "../src/agent/agent";
@@ -614,6 +615,22 @@ describe("TUI input handling", () => {
         g.open();
         await sent;
         expect(ran).toEqual(["new"]);
+    });
+    test("a resumed Codex turn shows its actions one a line, not the note the model reads, between clear markers", () => {
+        const { app, printed } = testApp();
+        const note = "[Codex used: Bash(gh issue create --title \"a, b\" --body-file /tmp/x.md), Edit(src/a.ts), Bash(python3 - <<'PY' …)]";
+        app.session.push({ role: "user", content: [{ type: "text", text: "open the issue" }], meta: { kind: "prompt" } });
+        app.session.push({ role: "assistant", content: [{ type: "text", text: `Opened issue #159.\n\n${note}` }] });
+        (app as any).replayTranscript();
+        const out = printed.map(stripAnsi);
+        expect(out.join("\n")).not.toContain("Codex used");
+        expect(out).toContain(`${BULLET} Opened issue #159.`);
+        expect(out).toContain(`  ${BULLET} Bash(gh issue create --title "a, b" --body-file /tmp/x.md)`);
+        expect(out).toContain(`  ${BULLET} Edit(src/a.ts)`);
+        expect(out.some((l) => /^── Resumed session .* · 2 messages ─+$/.test(l))).toBe(true);
+        expect(out.slice(-3)).toEqual(["", expect.stringMatching(/^── end of resumed history ─+$/), ""]);
+        expect(splitActionsNote("plain reply")).toEqual({ text: "plain reply", actions: [] });
+        expect(splitActionsNote("done\n\n[Claude Code used: Read(a), Bash(ls), and 3 more]").actions).toEqual(["Read(a)", "Bash(ls)", "and 3 more"]);
     });
     test("a ! command can be interrupted", async () => {
         const { app, printed } = testApp();
