@@ -374,8 +374,7 @@
 }
 
 /* Steering: it joins the turn, so it takes the accent; held after a restart: it waits on you. */
-.queue-row.m-steer .queue-icon,
-.queue-row.m-steer .queue-hint {
+.queue-row.m-steer .queue-icon {
     color: var(--accent);
 }
 

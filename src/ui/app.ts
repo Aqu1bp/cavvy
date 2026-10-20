@@ -7,6 +7,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
+import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import type { Key } from "./keys";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
@@ -40,7 +41,7 @@ import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveMode
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
-import { modelRef, parseModelRef, textOf, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart } from "../providers/types";
+import { modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
@@ -121,8 +122,8 @@ export class App {
     /** Whether the last renderLive showed just the prompt (no turn, no dialog), to tell when it's back. */
     private wasIdle = false;
     private abort?: AbortController;
-    /** Prompts typed while busy, each with the images behind its placeholders. */
-    private queued: Draft[] = [];
+    /** Prompts typed while busy, each with the images behind its placeholders, and whether it steers the turn or waits for its end. */
+    private queued: QueuedDraft[] = [];
     /** Images being read or shrunk, by attachment id. */
     private preparing = new Map<number, Promise<void>>();
     /** How long sending waits for images still being prepared before going without them. */
@@ -641,6 +642,7 @@ export class App {
         this.checker.resetSession();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
+        this.restoreSavedQueue();
         // At startup, run() fires SessionStart.
         if (prev) this.sessionSwitched(prev, "resume");
     }
@@ -1293,6 +1295,8 @@ export class App {
             return;
         }
         if (n === "tab" && k.shift) return this.cycleMode();
+        // While working: send it the other way (queue instead of steer, or steer instead of queue).
+        if (n === "tab" && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
         if (n === "enter") {
             if (k.shift || k.meta || k.ctrl) return e.insert("\n");
             if (e.text.endsWith("\\") && e.cursor === e.text.length) {
@@ -1550,7 +1554,8 @@ export class App {
     // -----------------------------------------------------------------------
     // Submitting
 
-    private async submit() {
+    /** `opposite`: Tab while working, the other of steer and queue for this message. */
+    private async submit(opposite = false) {
         if (this.pendingSubmit) {
             this.flash = { text: "Still preparing images for the last prompt (esc cancels it)", until: Date.now() + 2000 };
             return;
@@ -1580,11 +1585,16 @@ export class App {
             // Images that never came leave nothing to send when they were all there was.
             if (!plainText(draft!.text).trim() && !imagesIn(draft!.text, draft!.attachments).length) return;
         }
-        await this.submitText(draft ?? text);
+        await this.submitText(draft ?? text, opposite ? otherFollowUp(this.followUp()) : undefined);
     }
 
-    /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. */
-    async submitText(input: string | Draft) {
+    /** What a message sent while a turn runs does, unless the key says otherwise. */
+    followUp(): FollowUp {
+        return followUpDefault(this.settings.followUpBehavior);
+    }
+
+    /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. `followUp`: what it does if a turn is running (default: the setting). */
+    async submitText(input: string | Draft, followUp?: FollowUp) {
         const draft: Draft = typeof input === "string" ? { text: input, attachments: new Map() } : input;
         const text = plainText(draft.text);
         if (this.switching) await this.switching.catch(() => undefined);
@@ -1593,8 +1603,10 @@ export class App {
             if (handled) return;
         }
         if (this.busy) {
-            this.queued.push(draft);
-            this.renderLive();
+            const q: QueuedDraft = { ...draft, mode: followUp ?? this.followUp() };
+            this.queued.push(q);
+            this.queueUpdated();
+            if (q.mode === "steer" && steers(q)) this.agent?.queueChanged?.();
             return;
         }
         await this.startTurn(text, { draft });
@@ -1629,7 +1641,7 @@ export class App {
             if (ac.signal.aborted) {
                 // Nothing was sent: hand the message back rather than dropping it.
                 this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
-                this.queued.unshift(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() });
+                this.queued.unshift({ ...(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() }), mode: "queue" });
             } else {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
@@ -1658,8 +1670,90 @@ export class App {
         }
         if (reason) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
         if (ac.signal.aborted) return this.returnQueued();
-        const next = this.queued.shift();
-        if (next !== undefined) await this.submitText(next);
+        const next = this.nextQueued();
+        if (next === undefined) return;
+        this.queued.shift();
+        this.queueUpdated();
+        await this.submitText(next);
+    }
+
+    /** What runs when the turn ends: the first message still waiting. */
+    nextQueued(): Draft | undefined {
+        return this.queued[0];
+    }
+
+    /** Shown, and saved beside the transcript so quitting mid-turn doesn't lose it. */
+    private queueUpdated() {
+        this.renderLive();
+        if (!this.session?.persisted) return;
+        saveQueue(this.session.path, this.session.meta.id, this.queued.map((d) => {
+            const images = imagesIn(d.text, d.attachments).map((im) => im.part);
+            return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}) };
+        }));
+    }
+
+    /**
+     * Messages that were waiting when Harness last closed on this session (it quit mid-turn) come
+     * back into the prompt, images too, as an interrupt would have handed them back.
+     */
+    private restoreSavedQueue() {
+        if (!this.session.persisted) return;
+        const saved = loadQueue(this.session.path, this.session.meta.id);
+        if (!saved.length) return;
+        const e = this.editor;
+        const typed = e.text ? e.capture() : undefined;
+        e.set("");
+        saved.forEach((q, i) => {
+            if (i) e.insert("\n");
+            const images = (q.attachments ?? []).filter((a): a is ImagePart => a.type === "image");
+            let n = 0;
+            // Each [Image #k] label gets its image again, in order (the editor numbers them afresh).
+            for (const piece of q.text.split(/(\[Image #\d+\])/)) {
+                const image = /^\[Image #\d+\]$/.test(piece) ? images[n] : undefined;
+                if (image) e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
+                else if (piece) e.insert(piece);
+            }
+        });
+        if (typed) e.restore([typed]);
+        saveQueue(this.session.path, this.session.meta.id, []);
+        this.notice(saved.length === 1 ? "A message that was waiting when Harness closed is back in the prompt." : `${saved.length} messages that were waiting when Harness closed are back in the prompt.`);
+        this.renderLive();
+    }
+
+    // ---- /queue: what's waiting, with send now, reorder and remove
+
+    /** The queue as it is now (oldest first), and what each will do. */
+    queueEntries(): { draft: QueuedDraft; text: string; steering: boolean; canSteer: boolean }[] {
+        return this.queued.map((d) => ({ draft: d, text: plainText(d.text), steering: d.mode === "steer" && steers(d), canSteer: steers(d) }));
+    }
+
+    /** "Send now": it steers the running turn instead of waiting for its end. False when it's gone, or can't (images, commands). */
+    sendQueuedNow(d: QueuedDraft): "sent" | "gone" | "cant" {
+        if (!this.queued.includes(d)) return "gone";
+        if (!steers(d)) return "cant";
+        d.mode = "steer";
+        this.queueUpdated();
+        this.agent?.queueChanged?.();
+        return "sent";
+    }
+
+    /** Move it to position `to` (0 runs next). False when it's gone. */
+    moveQueued(d: QueuedDraft, to: number): boolean {
+        const i = this.queued.indexOf(d);
+        if (i < 0) return false;
+        this.queued.splice(i, 1);
+        this.queued.splice(Math.max(0, Math.min(this.queued.length, to)), 0, d);
+        this.queueUpdated();
+        return true;
+    }
+
+    /** Out of the queue; with `edit`, back into the prompt (ahead of what's typed). False when it's gone. */
+    takeOutQueued(d: QueuedDraft, edit: boolean): boolean {
+        if (!this.queued.includes(d)) return false;
+        this.queued = this.queued.filter((x) => x !== d);
+        if (edit) this.editor.restore([d]);
+        this.queueUpdated();
+        return true;
     }
 
     /** Run a non-chat task (like /compact) with the spinner and esc-to-cancel. */
@@ -1705,8 +1799,11 @@ export class App {
     private drainQueued(): string[] {
         const barrier = this.queued.findIndex((d) => imagesIn(d.text, d.attachments).length > 0);
         const head = barrier < 0 ? this.queued : this.queued.slice(0, barrier);
-        const take = head.filter((d) => !isCommand(plainText(d.text)));
+        // Those to steer with; the ones queued for the turn's end wait for it.
+        const take = head.filter((d) => d.mode === "steer" && steers(d));
+        if (!take.length) return [];
         this.queued = this.queued.filter((d) => !take.includes(d));
+        this.queueUpdated();
         const q = take.map((d) => plainText(d.text));
         for (const t of q) this.printUser(t);
         return q;
@@ -1717,6 +1814,7 @@ export class App {
         if (!this.queued.length) return;
         if (cancelled) return this.returnQueued();
         const next = this.queued.shift()!;
+        this.queueUpdated();
         // After the caller (a command like /compact) has finished.
         setTimeout(() => void this.submitText(next), 0);
     }
@@ -1738,6 +1836,7 @@ export class App {
             return this.renderLive();
         }
         this.queued.pop();
+        this.queueUpdated();
         const cursor = e.cursor;
         if (draft && prefix) e.set(draft);
         // The queued message's images come back with it, ahead of the draft; the cursor stays where it was in the draft.
@@ -1762,6 +1861,7 @@ export class App {
         // The queue owns its images, so they come back whatever the editor's undo history has dropped.
         const queued = this.queued;
         this.queued = [];
+        this.queueUpdated();
         this.inputMode = "prompt";
         // Each draft in full (paste placeholders expanded) decides whether it's a command; the prompt
         // keeps showing what's in it as it was (a long paste stays a placeholder) unless it's one.
@@ -1931,7 +2031,12 @@ export class App {
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
-        for (const q of this.queued) status.push(theme.muted(`  ⏵ queued: ${truncate(plainText(q.text).replace(/\s+/g, " "), cols - 16)}`));
+        for (const q of this.queued) {
+            const steering = q.mode === "steer" && steers(q);
+            const label = steering ? `${theme.accent("↳")} steering: ` : "⏵ queued: ";
+            status.push(theme.muted(`  ${label}${truncate(plainText(q.text).replace(/\s+/g, " "), cols - 18)}`));
+        }
+        if (this.queued.length) status.push(theme.subtle(`    /queue to send now, reorder or remove`));
         return { flow: out, status };
     }
 
@@ -1939,7 +2044,7 @@ export class App {
         const color = this.inputMode === "bash" ? theme.bashMode : this.inputMode === "memory" ? theme.memoryMode : this.mode === "plan" ? theme.planMode : theme.subtle;
         const symbol = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : ">";
         const rule = color("─".repeat(Math.max(10, cols - 1)));
-        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? "Type a message to queue it for the next step" : 'Try "explain this codebase" or "fix the failing test"';
+        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? (this.followUp() === "steer" ? "Steer the current turn (enter) · tab to queue it for after" : "Queue a message for after this turn (enter) · tab to steer now") : 'Try "explain this codebase" or "fix the failing test"';
         const r = this.editor.render(cols - 2, color(symbol) + " ", "  ", { showCursor: true, placeholder });
         const maxInput = Math.max(3, termRows() - 12);
         let inputLines = r.lines;
@@ -2064,6 +2169,18 @@ export function renderTodos(todos: TodoItem[], cols: number): string[] {
     });
 }
 
+/** A message typed while working: the images behind it, and whether it steers the turn or waits for its end. */
+export interface QueuedDraft extends Draft {
+    mode: FollowUp;
+}
+
+const otherFollowUp = (m: FollowUp): FollowUp => (m === "steer" ? "queue" : "steer");
+
+/** One the running turn can take: not a command (it runs after), and without images (they get a turn of their own). */
+function steers(d: Draft): boolean {
+    return !isCommand(plainText(d.text)) && !imagesIn(d.text, d.attachments).length;
+}
+
 /** A slash command, as submitting reads it (`//` is plain text). */
 function isCommand(text: string): boolean {
     return text.startsWith("/") && !text.startsWith("//");
@@ -2075,6 +2192,7 @@ function shortcutHelp(cols: number): string[] {
         ["/ for commands", "ctrl+g to edit in $EDITOR", "ctrl+o for verbose output"],
         ["@ for file paths", "\\⏎ or ctrl+j for newline", "ctrl+t to toggle todos"],
         ["# to memorize", "esc to interrupt (queued first)", "ctrl+c twice to exit"],
+        ["tab: steer or queue the other way", "/queue to manage queued messages", ""],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [

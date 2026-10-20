@@ -226,6 +226,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     // ---- sending
     /** What a message sent now does while a turn runs: the setting, or with `opposite` (mod+shift+enter, mod-click) the other. */
     const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite);
+    /** mod+shift held in the box: the send button shows the other. */
+    const [flipped, setFlipped] = createSignal(false);
+    const shown = () => followUp(flipped());
     const submit = async (opposite = false) => {
         if (app.conn !== "open") return toast("Not sent: not connected");
         const t = text();
@@ -509,10 +512,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             resize();
                             updateMenu();
                         }}
-                        onKeyDown={onKeyDown}
+                        onKeyDown={(e) => {
+                            setFlipped(isMod(e) && e.shiftKey);
+                            onKeyDown(e);
+                        }}
                         onKeyUp={(e) => {
+                            setFlipped(isMod(e) && e.shiftKey);
                             if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) && !composingKey(e)) updateMenu();
                         }}
+                        onBlur={() => setFlipped(false)}
                         onPaste={onPaste}
                         onClick={() => updateMenu()}
                         aria-label="Message"
@@ -550,16 +558,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         when={busy() && !hasContent()}
                         fallback={
                             <button
-                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${followUp()}` : ""}`}
+                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
                                 disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
                                 title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? sendTitle() : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
                                 aria-description={app.conn !== "open" ? "Not connected" : undefined}
-                                aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (followUp() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
+                                aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>
                                 <Show when={busy()} fallback={<ArrowUp size={17} stroke-width={2.4} />}>
-                                    {followUp() === "steer" ? <CornerDownRight size={16} stroke-width={2.4} /> : <ListEnd size={16} stroke-width={2.4} />}
+                                    {shown() === "steer" ? <CornerDownRight size={16} stroke-width={2.4} /> : <ListEnd size={16} stroke-width={2.4} />}
                                 </Show>
                             </button>
                         }

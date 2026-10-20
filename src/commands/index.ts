@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { spawnSync } from "bun";
-import type { App } from "../ui/app";
+import type { App, QueuedDraft } from "../ui/app";
 import type { Draft } from "../ui/editor";
 import { renderTodos } from "../ui/app";
 import { InputDialog, MessageDialog, SelectDialog } from "../ui/dialogs";
@@ -1234,10 +1234,74 @@ async function effortCommand(app: App, args: string) {
     set(v === "default" ? undefined : v);
 }
 
+/**
+ * The messages sent while a turn runs. Enter sends the selected one now (it steers the turn
+ * instead of waiting for its end); shift or alt with ↑↓ moves it; e takes it back to edit;
+ * x or delete removes it. The list stays open until esc, or the queue empties.
+ */
+async function queueCommand(app: App) {
+    if (!app.queueEntries().length) return app.notice("Nothing is queued. Messages you send while a turn runs wait here.");
+    const items = () =>
+        app.queueEntries().map((q): SelectItem<QueuedDraft> => ({
+            label: truncate(q.text.replace(/\s+/g, " ") || "(images)", 70),
+            value: q.draft,
+            detail: q.steering ? theme.accent("next step") : theme.muted("after this turn"),
+            description: q.steering ? undefined : q.canSteer ? undefined : "images and commands can't join a running turn",
+        }));
+    const hint = "enter send now · shift+↑↓ move · e edit · x remove · esc close";
+    const d = new SelectDialog<QueuedDraft>({
+        title: "Queued messages",
+        header: [theme.muted("Next step: joins the running turn. After this turn: runs once it ends.")],
+        items: items(),
+        numbers: false,
+        hint,
+        onExtraKey: (k, dlg) => {
+            const cur = dlg.list.current()?.value;
+            const refresh = (select?: QueuedDraft) => {
+                const next = items();
+                if (!next.length) return dlg.choose(undefined);
+                dlg.list.items = next;
+                dlg.list.index = Math.max(0, select ? next.findIndex((i) => i.value === select) : Math.min(dlg.list.index, next.length - 1));
+                app.renderLive();
+            };
+            const gone = () => {
+                dlg.header[0] = theme.warning("That one has already been sent.");
+                refresh();
+            };
+            if (!cur) return k.name === "enter";
+            if (k.name === "enter") {
+                const r = app.sendQueuedNow(cur);
+                if (r === "gone") gone();
+                else if (r === "cant") dlg.header[0] = theme.warning("Images and commands can't join a running turn: it runs after it.");
+                else {
+                    dlg.header[0] = theme.muted("Sent: it joins the turn at its next step.");
+                    refresh(cur);
+                }
+                return true;
+            }
+            if ((k.name === "up" || k.name === "down") && (k.shift || k.meta)) {
+                const i = app.queueEntries().findIndex((q) => q.draft === cur);
+                if (i < 0) gone();
+                else if (app.moveQueued(cur, i + (k.name === "up" ? -1 : 1))) refresh(cur);
+                return true;
+            }
+            const text = k.name === "text" ? k.text : undefined;
+            if (text === "e" || text === "x" || k.name === "delete" || k.name === "backspace") {
+                if (!app.takeOutQueued(cur, text === "e")) gone();
+                else if (text === "e") dlg.choose(undefined);
+                else refresh();
+                return true;
+            }
+            return false;
+        },
+    });
+    await app.showDialog(d);
+}
+
 async function configCommand(app: App) {
     let index = 0;
     for (;;) {
-        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
+        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "followUpBehavior" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
         const s = app.settings;
         const onOff = (b: boolean | undefined) => (b ? theme.success("on") : theme.muted("off"));
         const items: SelectItem<K>[] = [
@@ -1245,6 +1309,7 @@ async function configCommand(app: App) {
             { label: "Auto-compact", value: "autoCompact", detail: onOff(s.autoCompact !== false), description: "summarize the conversation near the context limit" },
             { label: "Web search backend", value: "webSearch", detail: s.webSearch ?? "auto", description: "auto · anthropic · brave · tavily · duckduckgo · off" },
             { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
+            { label: "Messages sent while working", value: "followUpBehavior", detail: s.followUpBehavior === "queue" ? "queue" : "steer", description: "steer joins the turn at its next step · queue waits for it to end (tab does the other)" },
             { label: "Default permission mode", value: "defaultMode", detail: MODE_INFO[s.permissions?.defaultMode ?? "default"].label, description: "mode at startup" },
             { label: "Bypass in shift+tab cycle", value: "allowBypass", detail: onOff(s.permissions?.allowBypass), description: "lets shift+tab reach bypass permissions" },
             { label: "Small model", value: "smallModel", detail: s.smallModel ?? "auto", description: "for session titles and summaries" },
@@ -1288,6 +1353,9 @@ async function configCommand(app: App) {
             }
             case "allowBypass":
                 save((x) => ((x.permissions ??= {}).allowBypass = !s.permissions?.allowBypass));
+                break;
+            case "followUpBehavior":
+                save((x) => (x.followUpBehavior = s.followUpBehavior === "queue" ? undefined : "queue"));
                 break;
             case "smallModel": {
                 const items2: SelectItem<string>[] = [{ label: "Auto", value: "", description: "the cheapest model from the current provider" }, ...(await modelItems(app)).filter((i) => !i.value.startsWith("login:") && !i.disabled)];
@@ -1745,6 +1813,7 @@ const BUILTIN: Command[] = [
         },
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
+    { name: "queue", description: "Messages waiting for the turn: send one now, reorder, edit or remove", whileBusy: true, run: (app) => queueCommand(app) },
     { name: "tasks", description: "Background sub-agents, and tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
