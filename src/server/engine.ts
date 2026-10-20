@@ -21,6 +21,7 @@ import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSe
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
 import { forkSession } from "../agent/fork";
+import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager } from "../mcp/manager";
@@ -1470,8 +1471,8 @@ export class Engine {
             if ("followUpBehavior" in patch) {
                 const v: unknown = patch.followUpBehavior;
                 // null or "" clears it (the default, steer).
-                if (v !== null && v !== "" && v !== undefined && v !== "steer" && v !== "queue") throw new RpcError("followUpBehavior must be steer or queue", "invalid");
-                s.followUpBehavior = v === "steer" || v === "queue" ? v : undefined;
+                if (v !== null && v !== "" && v !== undefined && !isFollowUp(v)) throw new RpcError("followUpBehavior must be steer or queue", "invalid");
+                s.followUpBehavior = isFollowUp(v) ? v : undefined;
             }
             if ("editor" in patch) {
                 if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
@@ -1805,7 +1806,7 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                if (p.mode !== undefined && p.mode !== "steer" && p.mode !== "queue") throw new RpcError("mode must be steer or queue", "invalid");
+                if (p.mode !== undefined && !isFollowUp(p.mode)) throw new RpcError("mode must be steer or queue", "invalid");
                 return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true, p.mode);
             }
             case "session.interrupt":

@@ -291,9 +291,11 @@ export class CodexBackend implements AgentBackendClient {
     private turns = new Set<CodexTurn>();
     /** Codex's own sub-agents' labels, by thread: one resumed in a later turn is shown by the name it had. */
     private labels = new Map<string, string>();
+    /** Messages the user steered with that a turn ended (failed, stopped) before Codex took, by thread: they start its next turn. */
+    private undelivered = new Map<string, string[]>();
 
     async runTurn(t: BackendTurn): Promise<BackendResult> {
-        const turn = new CodexTurn(this.def, t, this.labels, this.limitOrdering(t.accountId));
+        const turn = new CodexTurn(this.def, t, this.labels, this.limitOrdering(t.accountId), this.undelivered);
         this.turns.add(turn);
         try {
             return await turn.run();
@@ -437,6 +439,8 @@ class CodexTurn {
         /** Sub-agents' labels by thread, kept across turns (the client's). */
         private labels = new Map<string, string>(),
         private limitUpdates: LimitOrdering = { revision: 0, reads: 0, acceptedRead: 0 },
+        /** The client's: steered messages an earlier turn of a thread ended before taking. */
+        private undelivered = new Map<string, string[]>(),
     ) {}
 
     modeChanged(m: PermissionMode) {
@@ -546,6 +550,12 @@ class CodexTurn {
             } else {
                 let text = t.prompt;
                 let images = t.images;
+                // Already in the transcript, ahead of this prompt, but Codex never had them.
+                const left = this.undelivered.get(this.threadId!);
+                if (left) {
+                    this.undelivered.delete(this.threadId!);
+                    text = [...left, text].join("\n\n");
+                }
                 while (true) {
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.host.mode();
@@ -574,6 +584,9 @@ class CodexTurn {
                     this.restartFor = undefined;
                     if (restart) {
                         text = `<system-reminder>\nThe user switched the permission mode to ${restart === "plan" ? "plan mode" : `"${restart}"`} while you were working, so your turn was stopped and resumes under it. Continue from where you were, within the new mode.\n</system-reminder>`;
+                        // A steer the interrupt beat goes in with it, not after the restarted turn.
+                        await this.steering;
+                        if (this.unsteered.length) text = [text, ...this.unsteered.splice(0)].join("\n\n");
                         continue;
                     }
                     // A steer on its way when the turn ended: whether Codex took it decides what's next.
@@ -597,6 +610,8 @@ class CodexTurn {
             await this.rpc.proc.stop(1000);
             // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
             await this.steering;
+            // Recorded as sent but never taken (the turn failed or was stopped): the thread's next turn starts with them.
+            if (this.unsteered.length && this.threadId) this.undelivered.set(this.threadId, [...(this.undelivered.get(this.threadId) ?? []), ...this.unsteered.splice(0)]);
         }
         for (const [id, it] of this.items) this.endItem(id, it, this.aborted ? "Interrupted by user" : it.sub ? "Stopped with the sub-agent." : "Codex stopped before this finished.", true);
         // Sub-agents still working stopped with Codex.
@@ -1344,7 +1359,8 @@ class CodexTurn {
     /**
      * The user's messages to steer with, into the running turn. Taken from the
      * queue only while a turn is running (else its end takes them), and once
-     * recorded; one Codex refuses (its turn had just ended) starts the next turn.
+     * recorded; one Codex refuses (its turn had just ended, failed or was
+     * stopped) starts the next turn.
      */
     private steerQueued() {
         this.steering = this.steering.then(async () => {
@@ -1357,7 +1373,7 @@ class CodexTurn {
             try {
                 await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(text, []) });
             } catch {
-                if (!this.aborted) this.unsteered.push(text);
+                this.unsteered.push(text);
             }
         }).catch(() => {});
     }

@@ -6,13 +6,16 @@
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { AttachedPart } from "../providers/types";
+import type { FollowUpMode } from "../server/protocol";
 import { ensureDir } from "../config/paths";
 import { redactedJson } from "../util/redact";
 
 /** What a message sent mid-turn does: join the running turn at its next step, or wait for it to end. */
-export type FollowUp = "steer" | "queue";
+export type FollowUp = FollowUpMode;
 
 export const FOLLOW_UPS: readonly FollowUp[] = ["steer", "queue"];
+
+export const isFollowUp = (v: unknown): v is FollowUp => FOLLOW_UPS.includes(v as FollowUp);
 
 export interface StoredQueued {
     text: string;

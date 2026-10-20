@@ -3987,12 +3987,23 @@ describe("steering and the queue", () => {
         const [later, image] = c.view(id).state.queueIds;
         expect(await c.call("session.sendQueuedNow", { id, queueId: later })).toEqual({ sent: true });
         await c.until(id, (v) => v.state.queuedModes?.[0] === "steer");
-        await expect(c.call("session.sendQueuedNow", { id, queueId: image })).rejects.toThrow(/can't join a running turn/);
+        await expect(c.call("session.sendQueuedNow", { id, queueId: image })).rejects.toThrow(/can.t join a running turn/);
         expect(await c.call("session.sendQueuedNow", { id, queueId: 99_999 })).toEqual({ sent: false });
         // Taken at the next step.
         await c.answer(id, { kind: "permission", choice: "yes" });
         await c.until(id, (v) => v.state.queued.length === 1);
         expect(prompts(c.view(id))).toContain("later");
+        await c.call("session.interrupt", { id });
+        await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("what can steer is read as a sent message is: a spaced-out command or !command can't, a //line can", async () => {
+        const c = await client();
+        const id = await working(c);
+        for (const text of [" /review", "  !ls", "//not a command"]) await c.call("session.send", { id, text, mode: "queue" });
+        await c.until(id, (v) => v.state.queued.length === 3);
+        expect(c.view(id).state.queuedModes).toEqual(["turn", "turn", "queue"]);
         await c.call("session.interrupt", { id });
         await c.until(id, done);
         c.close();

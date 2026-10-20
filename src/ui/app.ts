@@ -7,7 +7,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
-import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
+import { followUpDefault, loadQueue, saveQueue, type FollowUp, type StoredQueued } from "../agent/queue-store";
 import type { Key } from "./keys";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
@@ -1686,11 +1686,16 @@ export class App {
     private queueUpdated() {
         this.renderLive();
         if (!this.session?.persisted) return;
-        saveQueue(this.session.path, this.session.meta.id, this.queued.map((d) => {
+        const mine = this.queued.map((d): StoredQueued => {
             const images = imagesIn(d.text, d.attachments).map((im) => im.part);
             return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}) };
-        }));
+        });
+        const kept = this.keptQueue?.id === this.session.meta.id ? this.keptQueue.items : [];
+        saveQueue(this.session.path, this.session.meta.id, [...mine, ...kept]);
     }
+
+    /** A session's saved messages with files the terminal can't attach: kept in its file for the app. */
+    private keptQueue?: { id: string; items: StoredQueued[] };
 
     /**
      * Messages that were waiting when Harness last closed on this session (it quit mid-turn) come
@@ -1698,8 +1703,15 @@ export class App {
      */
     private restoreSavedQueue() {
         if (!this.session.persisted) return;
-        const saved = loadQueue(this.session.path, this.session.meta.id);
-        if (!saved.length) return;
+        const all = loadQueue(this.session.path, this.session.meta.id);
+        // The terminal attaches images only: one with a file (a PDF) stays saved for the app, rather than lose it.
+        const saved = all.filter((q) => !q.attachments?.some((a) => a.type !== "image"));
+        const kept = all.filter((q) => !saved.includes(q));
+        this.keptQueue = { id: this.session.meta.id, items: kept };
+        if (!saved.length) {
+            if (kept.length) this.notice(kept.length === 1 ? "A message with a file that was waiting when Harness closed is still saved: open this session in the app to send it." : `${kept.length} messages with files that were waiting when Harness closed are still saved: open this session in the app to send them.`);
+            return;
+        }
         const e = this.editor;
         const typed = e.text ? e.capture() : undefined;
         e.set("");
@@ -1715,8 +1727,9 @@ export class App {
             }
         });
         if (typed) e.restore([typed]);
-        saveQueue(this.session.path, this.session.meta.id, []);
-        this.notice(saved.length === 1 ? "A message that was waiting when Harness closed is back in the prompt." : `${saved.length} messages that were waiting when Harness closed are back in the prompt.`);
+        saveQueue(this.session.path, this.session.meta.id, kept);
+        const back = saved.length === 1 ? "A message that was waiting when Harness closed is back in the prompt." : `${saved.length} messages that were waiting when Harness closed are back in the prompt.`;
+        this.notice(kept.length ? `${back} ${kept.length === 1 ? "One with a file is" : `${kept.length} with files are`} still saved: open this session in the app to send ${kept.length === 1 ? "it" : "them"}.` : back);
         this.renderLive();
     }
 
@@ -1792,15 +1805,13 @@ export class App {
     }
 
     /**
-     * Queued messages that join the running turn: plain ones (slash commands wait
-     * for it to end). The host takes text only, so a message with images gets a
-     * turn of its own, and what was queued after it waits behind it.
+     * Queued messages that join the running turn: those sent to steer it, if they
+     * can (the host takes text only, so a message with images or a slash command
+     * gets a turn of its own). Like a message queued for the turn's end, one of
+     * those doesn't hold a steer back: steering is joining the turn now.
      */
     private drainQueued(): string[] {
-        const barrier = this.queued.findIndex((d) => imagesIn(d.text, d.attachments).length > 0);
-        const head = barrier < 0 ? this.queued : this.queued.slice(0, barrier);
-        // Those to steer with; the ones queued for the turn's end wait for it.
-        const take = head.filter((d) => d.mode === "steer" && steers(d));
+        const take = this.queued.filter((d) => d.mode === "steer" && steers(d));
         if (!take.length) return [];
         this.queued = this.queued.filter((d) => !take.includes(d));
         this.queueUpdated();

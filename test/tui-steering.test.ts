@@ -130,6 +130,25 @@ describe("steer or queue", () => {
     });
 });
 
+describe("a message with an image waiting for the turn's end", () => {
+    test("doesn't hold back a steer sent after it", async () => {
+        const { app } = testApp();
+        const { agent, end } = workingAgent(app);
+        const turn = app.submitText("first");
+        await Bun.sleep(10);
+        app.editor.attachImage(image("a.png"));
+        await app.submitText(app.editor.capture());
+        app.editor.clear();
+        await app.submitText("steer past it");
+        expect(agent.nudges).toBe(1);
+        expect(drain(app)).toEqual(["steer past it"]);
+        expect(queued(app).map((q: string[]) => q[0].replace(/[\u{100000}-\u{10fffd}]/gu, ""))).toEqual(["[Image #1]"]);
+        (app as any).interrupt();
+        end();
+        await turn;
+    });
+});
+
 describe("/queue", () => {
     test("send now steers a waiting message; one with an image can't; shift+↑↓ reorders; x removes; e takes it back", async () => {
         const { app } = testApp({ settings: { followUpBehavior: "queue" } });
@@ -215,6 +234,34 @@ describe("a queue that outlives the TUI", () => {
         expect(printed.join("\n")).toContain("2 messages that were waiting when Harness closed are back in the prompt.");
         expect(loadQueue(path, app.session.meta.id)).toEqual([]);
         expect(existsSync(queueFile(path, app.session.meta.id))).toBe(false);
+    });
+
+    test("resumed in the terminal, a message with a file (which it can't attach) stays saved for the app, through later saves too", async () => {
+        const { app: before } = testApp({ persist: true });
+        before.session.push({ role: "user", content: [{ type: "text", text: "hello" }], meta: { kind: "prompt" } });
+        const path = before.session.path;
+        const pdf = { type: "file" as const, kind: "pdf", name: "report.pdf", mediaType: "application/pdf", data: "JVBE" } as any;
+        saveQueue(path, before.session.meta.id, [
+            { text: "plain one", mode: "queue" },
+            { text: "read this", mode: "queue", attachments: [pdf] },
+        ]);
+        before.session.release();
+        const { app, printed } = testApp({ settings: { followUpBehavior: "queue" } });
+        app.resume(path);
+        expect(app.editor.text).toBe("plain one");
+        expect(printed.join(" ").replace(/\s+/g, " ")).toContain("One with a file is still saved: open this session in the app to send it.");
+        expect(loadQueue(path, app.session.meta.id)).toEqual([{ text: "read this", mode: "queue", attachments: [pdf] }]);
+        // Something queued in the terminal is saved beside it, not over it.
+        app.editor.set("");
+        const { end } = workingAgent(app);
+        const turn = app.submitText("go");
+        await Bun.sleep(10);
+        await app.submitText("later");
+        expect(loadQueue(path, app.session.meta.id).map((q) => q.text)).toEqual(["later", "read this"]);
+        (app as any).interrupt();
+        end();
+        await turn;
+        expect(loadQueue(path, app.session.meta.id).map((q) => q.text)).toEqual(["read this"]);
     });
 
     test("a torn or foreign queue file is ignored", () => {

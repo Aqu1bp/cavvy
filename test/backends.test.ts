@@ -2511,6 +2511,29 @@ describe("Codex mid-turn steering", () => {
         expect(transcript(a.session).filter((l) => l === "user: late words")).toHaveLength(1);
     });
 
+    test("a steer Codex refused before the turn was stopped isn't lost: the thread's next turn starts with it", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const host: string[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push("refused words");
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        await Bun.sleep(20);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(turnStarts()).toHaveLength(1);
+        delete process.env.FAKE_SCENARIO;
+        expect(await a.run("next")).toBe("done");
+        expect(turnStarts()).toHaveLength(2);
+        expect(turnStarts()[1].input.at(-1).text).toEndWith("refused words\n\nnext");
+        expect(transcript(a.session).filter((l) => l === "user: refused words")).toHaveLength(1);
+    });
+
     test("a message taken when the turn ends is recorded after that turn's words, not before them", async () => {
         const waiting = [["and then this"]];
         const a = await makeAgent({ provider: "codex", drainQueued: () => waiting.shift() ?? [] });

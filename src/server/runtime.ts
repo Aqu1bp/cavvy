@@ -102,8 +102,13 @@ interface Queued {
     held?: boolean;
 }
 
-/** A message the running turn can take: text only (images, files, commands and `!commands` get a turn of their own). */
-const steerable = (q: Queued) => !q.attachments?.length && (q.literal || !q.text.startsWith("/")) && !q.text.startsWith("!");
+/** A message the running turn can take: text only (images, files, commands and `!commands` get a turn of their own), read as dispatch reads it. */
+function steerable(q: Queued): boolean {
+    if (q.attachments?.length) return false;
+    if (q.literal) return true;
+    const t = q.text.trim();
+    return !t.startsWith("!") && (!t.startsWith("/") || t.startsWith("//"));
+}
 
 /** The slash commands the server runs itself (the GUI runs the others). */
 const SERVER_COMMANDS = new Set(["compact", "init", "review"]);
@@ -1774,8 +1779,7 @@ export class Runtime {
         this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
         // No await between this check and queueing/dispatch: a switch must not change the model we checked.
-        const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
-        if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
+        this.checkPdfs(attachments);
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
         if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
@@ -1791,6 +1795,12 @@ export class Runtime {
         }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
+    }
+
+    /** A PDF the session's model can't read is refused before it's sent. */
+    private checkPdfs(attachments: AttachedPart[] | undefined) {
+        const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
+        if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
     }
 
     /** The /name a message starts with when it names no command this server or the project has. */
@@ -1977,10 +1987,16 @@ export class Runtime {
      * for its end; one held since a restart runs now (or, while a turn runs,
      * steers it or waits for it). False when it isn't in the queue any more.
      */
-    sendQueuedNow(queueId: number): { sent: boolean; started?: boolean } {
+    sendQueuedNow(queueId: number): { sent: boolean; started?: boolean } | Promise<{ sent: boolean; started?: boolean }> {
+        // After a model switch, as send() waits for one.
+        if (this.switching) return this.switching.catch(() => undefined).then(() => this.sendQueuedNow(queueId));
         const q = this.queued.find((x) => x.id === queueId);
         if (!q) return { sent: false };
         if (!this.busy) {
+            // What send() checks, before it leaves the queue: a refused one stays there.
+            this.checkCommitting();
+            if (this.closed) throw new Error("This session was closed.");
+            this.checkPdfs(q.attachments);
             this.queued = this.queued.filter((x) => x !== q);
             this.queueUpdated();
             void this.dispatch(q.text, q.attachments, q.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
