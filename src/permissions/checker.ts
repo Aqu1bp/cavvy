@@ -366,8 +366,10 @@ function networkAdvice(what: string, cmd: string): string {
 /** Hosts a command probably needs: the ones in its URLs, and the default registries of the package managers in it. */
 export function likelyHosts(cmd: string): string[] {
     const out = new Set<string>();
-    for (const m of cmd.matchAll(/\bhttps?:\/\/(?:[^/\s@'"]*@)?(\[[^\]\s]+\]|[^/\s:'"?#]+)/g)) {
-        const h = m[1]!.toLowerCase();
+    // Userinfo may hold shell punctuation inside quotes (`'https://u:p;w@host'`); the host can't.
+    for (const m of cmd.matchAll(/\bhttps?:\/\/(?:[^/\s@'"]*@)?(\[[^\]\s]+\]|[^/\s:'"`;&|()<>$\\,{}?#]+)/g)) {
+        const h = m[1]!.toLowerCase().replace(/\.+$/, "");
+        if (!h) continue;
         if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(h)) out.add(h);
     }
     for (const c of analyzeCommand(cmd).commands) {

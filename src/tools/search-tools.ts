@@ -43,24 +43,39 @@ export const GlobTool: Tool<{ pattern: string; path?: string }> = {
         const glob = new Bun.Glob(input.pattern);
         const hide = searchFilter(ctx, "Glob", root);
         const explicit = DEFAULT_IGNORES.filter((d) => input.pattern.includes(d));
-        const results: { path: string; mtime: number }[] = [];
-        const LIMIT = 2000;
+        const SHOW = 200;
+        // Bun.Glob can't prune directories, so every match it yields counts (ignored ones too), and time is bounded as well.
+        const SCAN_CAP = 100_000;
+        const deadline = Date.now() + 10_000;
+        // Newest SHOW files so far, newest first; the scan keeps going so a large tree can't hide them.
+        const newest: { path: string; mtime: number }[] = [];
+        let total = 0;
+        let scanned = 0;
+        let capped = false;
         for await (const file of glob.scan({ cwd: root, onlyFiles: true, dot: input.pattern.includes("/.") || input.pattern.startsWith("."), followSymlinks: false })) {
             if (ctx.signal.aborted) break;
+            if (++scanned > SCAN_CAP || (scanned % 256 === 0 && Date.now() > deadline)) {
+                capped = true;
+                break;
+            }
             const parts = file.split("/");
             if (parts.some((p) => DEFAULT_IGNORES.includes(p) && !explicit.includes(p))) continue;
             const abs = join(root, file);
             if (hide?.("Glob", abs)) continue;
+            total++;
             const s = await stat(abs).catch(() => undefined);
-            results.push({ path: abs, mtime: s?.mtimeMs ?? 0 });
-            if (results.length >= LIMIT) break;
+            const mtime = s?.mtimeMs ?? 0;
+            if (newest.length >= SHOW && mtime <= newest[SHOW - 1]!.mtime) continue;
+            let i = newest.length;
+            while (i > 0 && newest[i - 1]!.mtime < mtime) i--;
+            newest.splice(i, 0, { path: abs, mtime });
+            if (newest.length > SHOW) newest.pop();
         }
-        results.sort((a, b) => b.mtime - a.mtime);
-        const shown = results.slice(0, 200);
-        if (!shown.length) return { content: "No files found", display: { summary: "No files found" } };
-        let content = shown.map((r) => r.path).join("\n");
-        if (results.length > shown.length) content += `\n(Results truncated: showing ${shown.length} of ${results.length >= LIMIT ? `${LIMIT}+` : results.length}. Use a more specific pattern.)`;
-        return { content, display: { summary: `Found ${results.length >= LIMIT ? `${LIMIT}+` : results.length} file${results.length === 1 ? "" : "s"}` } };
+        const count = capped ? `${total}+` : `${total}`;
+        if (!newest.length) return { content: "No files found", display: { summary: "No files found" } };
+        let content = newest.map((r) => r.path).join("\n");
+        if (total > newest.length) content += `\n(Results truncated: showing ${newest.length} of ${count}. Use a more specific pattern.)`;
+        return { content, display: { summary: `Found ${count} file${total === 1 ? "" : "s"}` } };
     },
 };
 

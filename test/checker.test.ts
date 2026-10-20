@@ -13,7 +13,7 @@ const prevHarnessHome = process.env.HARNESS_HOME;
 const H = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-")));
 process.env.HARNESS_HOME = H;
 
-const { PermissionChecker } = await import("../src/permissions/checker");
+const { PermissionChecker, likelyHosts } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { paths } = await import("../src/config/paths");
 const { caselessFold, spellings, CASE_INSENSITIVE_FS } = await import("../src/util/files");
@@ -1013,5 +1013,29 @@ describe("caselessFold", () => {
     test("spellings: lower-cased and folded where the volume ignores case, as given elsewhere", () => {
         expect(spellings(".Harne\u017F\u017F")).toEqual(CASE_INSENSITIVE_FS ? [".harne\u017F\u017F", ".harness"] : [".Harne\u017F\u017F"]);
         expect(spellings("src/a.ts")).toEqual(["src/a.ts"]);
+    });
+});
+
+describe("likelyHosts", () => {
+    test("a host stops at shell punctuation and a trailing dot", () => {
+        expect(likelyHosts("curl https://example.com; echo x")).toEqual(["example.com"]);
+        expect(likelyHosts("curl https://example.com&& ls")).toEqual(["example.com"]);
+        expect(likelyHosts("curl https://example.com|jq .")).toEqual(["example.com"]);
+        expect(likelyHosts("echo $(curl https://example.com)")).toEqual(["example.com"]);
+        expect(likelyHosts("curl https://example.com>out")).toEqual(["example.com"]);
+        expect(likelyHosts("echo see https://example.com.")).toEqual(["example.com"]);
+        expect(likelyHosts("curl https://a.com,https://b.org")).toEqual(["a.com", "b.org"]);
+    });
+
+    test("userinfo, ports, IPv6 and localhost", () => {
+        expect(likelyHosts("curl https://user:pw@Example.com:8443/x; ls")).toEqual(["example.com"]);
+        expect(likelyHosts("curl https://example.com; echo me@x.org")).toEqual(["example.com"]);
+        expect(likelyHosts("curl 'https://[2001:db8::1]:80/x'")).toEqual(["[2001:db8::1]"]);
+        expect(likelyHosts("curl http://localhost:3000; curl http://[::1]/")).toEqual([]);
+    });
+
+    test("userinfo may hold shell punctuation", () => {
+        expect(likelyHosts("curl 'https://user:p;ss@example.com/'")).toEqual(["example.com"]);
+        expect(likelyHosts(`curl "https://u:a&b|c(d)@Example.com:8443/x"`)).toEqual(["example.com"]);
     });
 });
