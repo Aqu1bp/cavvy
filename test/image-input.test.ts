@@ -345,7 +345,7 @@ describe("permissions", () => {
         paste(app, link);
         await settle(app);
         expect(app.editor.attachedImages()).toEqual([]);
-        expect(value(app)).toBe(link + " ");
+        expect(value(app)).toBe(link);
         expect(notices.join()).toContain("denied by permission rule Read(secrets/**)");
     });
     test("a denied path isn't opened at all, not even to tell whether it's an image", async () => {
@@ -375,12 +375,15 @@ describe("permissions", () => {
         writeFileSync(join(cwd, "b.png"), "not an image");
         const { app, notices } = newApp(cwd);
         app.settings = { ...app.settings, permissions: { deny: ["Read(*.png)"] } };
-        const text = "  a.png\n\n  b.png\n";
-        paste(app, text);
-        await settle(app);
-        expect(app.editor.attachedImages()).toEqual([]);
-        expect(value(app)).toBe(text);
-        expect(notices.join("\n")).toContain("Can't attach a.png");
+        for (const text of ["  a.png\n\n  b.png\n", `  ${cwd}/a.png\n`, `'${cwd}/a.png'`]) {
+            app.editor.set("");
+            notices.length = 0;
+            paste(app, text);
+            await settle(app);
+            expect(app.editor.attachedImages()).toEqual([]);
+            expect([text, value(app)]).toEqual([text, text]);
+            expect(notices.join("\n")).toContain("Can't attach a.png");
+        }
     });
     test("a mentioned symlink into a denied folder isn't read", async () => {
         const { cwd, link } = project();

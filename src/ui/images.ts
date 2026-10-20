@@ -354,6 +354,8 @@ export function planPaste(paste: string, cwd: string, guard?: ReadGuard): PasteP
     // A lone absolute path is unambiguous: what's in it is checked (and reported) when it's read.
     if (single && imageMediaType(wordPath(single)) && /^(\/|~\/|file:\/\/)/i.test(single.value)) {
         const f = fileOf(single);
+        const refused = f && guard?.(f);
+        if (refused) return { files: [], notices: [`Can't attach ${basename(f)}: ${refused}.`] };
         if (f) return { files: [{ path: f, raw: single.raw }], notices: [] };
         return { files: [], notices: [`Couldn't read ${basename(wordPath(single))} (macOS deletes dragged screenshot thumbnails quickly; save the screenshot to a folder or copy it and paste with Ctrl+V)`] };
     }
