@@ -97,6 +97,8 @@ export interface Settings {
     notifications?: NotificationMode;
     /** A finished turn alerts only when it took at least this long (default 30). */
     notifyAfterSeconds?: number;
+    /** A message sent while a turn runs: "steer" joins it at its next step (default), "queue" waits for it to end. Tab (TUI) or mod+shift+enter (GUI) does the other. */
+    followUpBehavior?: "steer" | "queue";
     /** Claude Code and Codex get tools to hand tasks to other providers' models (default true). */
     delegation?: boolean;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */

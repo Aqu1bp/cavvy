@@ -69,7 +69,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -2429,5 +2429,112 @@ describe("Claude Code reviewed grace fixes", () => {
             const stops = received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
             expect(stops).toEqual(scenario === "shell-grace-overlap" ? ["A"] : []);
         } finally { Object.assign(backgroundTiming, saved); }
+    });
+});
+
+// A message to steer with goes into Codex's running turn as it's sent (turn/steer), not at the turn's end.
+describe("Codex mid-turn steering", () => {
+    const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
+    const steers = () => received().filter((m) => m.method === "turn/steer").map((m) => m.params);
+    const until = async (ok: () => boolean, ms = 4000) => {
+        for (const end = Date.now() + ms; !ok(); ) {
+            if (Date.now() > end) throw new Error("timed out");
+            await Bun.sleep(5);
+        }
+    };
+    /** What the session holds, as role: text. */
+    const transcript = (session: InstanceType<typeof Session>) => session.messages.map((m) => `${m.role}: ${m.content.map((c) => (c as any).text ?? "").join(" ").replace(/<system-reminder>[\s\S]*?<\/system-reminder>\s*/g, "").trim()}`);
+
+    test("steered while the turn runs: turn/steer to that turn, recorded after what it said so far, and no second turn", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const host: string[] = [];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push("also check y");
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(steers()[0]).toMatchObject({ threadId: "thr-new", expectedTurnId: "turn-1", input: [{ type: "text", text: "also check y" }] });
+        expect(turnStarts()).toHaveLength(1);
+        expect(transcript(a.session)).toEqual(["user: start", "assistant: Running it.", "user: also check y", "assistant: Heard: also check y"]);
+        expect(a.session.messages[2]!.meta?.kind).toBe("prompt");
+    });
+
+    test("nothing waiting: a nudge takes nothing and sends nothing", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const a = await makeAgent({ provider: "codex", drainQueued: () => [] });
+        const ac = new AbortController();
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        a.agent.queueChanged();
+        await Bun.sleep(50);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(steers()).toEqual([]);
+    });
+
+    test("sent while the turn is starting: steered once Codex says which turn it is", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        process.env.FAKE_SLOW_TURN_START = "300";
+        const host: string[] = [];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        host.push("early words");
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers().map((s) => s.expectedTurnId)).toEqual(["turn-1"]);
+        expect(turnStarts()).toHaveLength(1);
+    });
+
+    test("a steer Codex refuses (its turn just ended) starts the next turn, once", async () => {
+        process.env.FAKE_SCENARIO = "steps";
+        process.env.FAKE_STEER_FAIL = "1";
+        process.env.FAKE_SLOW_TURN_START = "200";
+        const host: string[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        host.push("late words");
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(turnStarts()).toHaveLength(2);
+        expect(turnStarts()[1].input.at(-1).text).toEndWith("late words");
+        // Recorded once, as the prompt it was.
+        expect(transcript(a.session).filter((l) => l === "user: late words")).toHaveLength(1);
+    });
+
+    test("a message taken when the turn ends is recorded after that turn's words, not before them", async () => {
+        const waiting = [["and then this"]];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => waiting.shift() ?? [] });
+        expect(await a.run("first")).toBe("done");
+        const t = transcript(a.session);
+        expect(t[0]).toBe("user: first");
+        expect(t.indexOf("user: and then this")).toBeGreaterThan(t.findIndex((l) => l.startsWith("assistant: Running it.")));
+        expect(t.at(-1)).toStartWith("assistant: Running it.");
+        expect(turnStarts()).toHaveLength(2);
+    });
+
+    test("after an interrupt nothing is steered", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const host: string[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        ac.abort();
+        host.push("too late");
+        a.agent.queueChanged();
+        expect(await done).toBe("aborted");
+        expect(steers()).toEqual([]);
+        expect(host).toEqual(["too late"]);
     });
 });

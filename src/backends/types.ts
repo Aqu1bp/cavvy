@@ -84,6 +84,8 @@ export interface BackendHost {
     /** Messages the user typed while the backend was working. If any are drained,
      * consume and record preceding output before recording the queued prompt. */
     drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
+    /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
+    onQueued?(listener: () => void): () => void;
 }
 
 export interface BackendTurn {

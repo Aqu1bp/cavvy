@@ -146,7 +146,7 @@ export interface AgentHost {
     /** Persist "don't ask again" rules. */
     saveRules?(rules: string[], scope: "local" | "project" | "user"): void;
     ui: UiBridge;
-    /** Messages the user typed while the agent was busy. */
+    /** Messages the user typed while the agent was busy, to steer the running turn with. */
     drainQueued?(): string[];
 }
 
@@ -338,6 +338,8 @@ export class Agent {
     private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
+    /** A backend turn that takes steering at once (Codex), told when a message to steer with arrives. */
+    private queueListeners = new Set<() => void>();
     private running = false;
     /** The session is being let go; awaited checkpoints must not append another prompt or tool result. */
     private cutOff = false;
@@ -374,6 +376,11 @@ export class Agent {
 
     get tools(): Tool<any>[] {
         return typeof this.o.tools === "function" ? this.o.tools() : this.o.tools;
+    }
+
+    /** The host has a message to steer the running turn with. API models take it at their next step; a backend that can, now. */
+    queueChanged() {
+        for (const l of [...this.queueListeners]) l();
     }
 
     get busy(): boolean {
@@ -1185,6 +1192,10 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
+            onQueued: (listener) => {
+                this.queueListeners.add(listener);
+                return () => this.queueListeners.delete(listener);
+            },
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
