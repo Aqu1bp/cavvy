@@ -91,7 +91,9 @@ export interface ToolContext {
     onProgress?: (text: string) => void;
     ui: UiBridge;
     /** Runs a sub-agent (Task tool), on `model` (provider:model) when given. */
-    runSubagent?: (opts: { description: string; prompt: string; agentType?: string; model?: string }, signal: AbortSignal) => Promise<{ report: string; isError?: boolean; model?: string }>;
+    runSubagent?: (opts: { description: string; prompt: string; agentType?: string; model?: string; background?: boolean }, signal: AbortSignal) => Promise<{ report: string; isError?: boolean; model?: string; background?: boolean }>;
+    /** A background sub-agent's result or state, or all of them (TaskStatus tool), waiting up to `waitMs` for it to finish. */
+    taskStatus?: (taskId: string | undefined, waitMs: number, signal: AbortSignal) => Promise<{ text: string; isError?: boolean }>;
     /** The agent types and models a sub-agent can run on (ListModels tool). */
     listModels?: (opts: { provider?: string; query?: string }, signal: AbortSignal) => Promise<string>;
     /** Model-facing web search (WebSearch tool). */

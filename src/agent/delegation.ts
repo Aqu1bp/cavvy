@@ -73,8 +73,21 @@ function modelLine(m: ModelInfo): string {
     return `  ${modelRef(m)}${bits.length ? ` (${bits.join(", ")})` : ""}`;
 }
 
+/** What sets an agent type apart, in a few words each. */
+export function agentTraits(a: AgentDef): string[] {
+    return [
+        a.readOnly ? "read-only" : "",
+        a.model ? `runs on ${a.model}` : "",
+        a.effort ? `${a.effort} effort` : "",
+        a.permissionMode ? `${a.permissionMode} mode` : "",
+        a.isolation === "worktree" ? "in its own git worktree" : "",
+        a.background ? "always in the background" : "",
+        a.memory ? `${a.memory} memory` : "",
+    ].filter(Boolean);
+}
+
 function agentLine(a: AgentDef): string {
-    return `  ${a.name}: ${a.description || "(no description)"}${a.readOnly ? " (read-only)" : ""}${a.model ? ` (runs on ${a.model})` : ""}`;
+    return `  ${a.name}: ${a.description || "(no description)"}${agentTraits(a).map((t) => ` (${t})`).join("")}`;
 }
 
 export interface CatalogOptions {
@@ -356,7 +369,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                     model: { type: "string", description: "provider:model from the models tool (needed unless the agent type has its own model)" },
                     effort: { type: "string", description: "Reasoning effort, one the model supports (default: the session's, where the model has it)" },
                     agent: { type: "string", description: 'Agent type from the models tool: "general-purpose" (default), "explore" (read-only: it can\'t run tests, builds or scripts either), or a custom one' },
-                    wait: { type: "boolean", description: "Wait for the result (default true)" },
+                    wait: { type: "boolean", description: "Wait for the result (default true; agent types that always run in the background don't wait)" },
                     timeout_minutes: { type: "number", description: `How long to wait for the result (default ${DELEGATION_LIMITS.defaultWaitMs / 60_000}, at most ${DELEGATION_LIMITS.maxWaitMs / 60_000})` },
                 },
                 required: ["task", "description"],
@@ -380,12 +393,14 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                 if (typeof checked === "string") return { text: checked, isError: true };
                 const levels = checked.effortLevels ?? EFFORT_LEVELS;
                 if (args.effort !== undefined && (typeof args.effort !== "string" || !levels.includes(args.effort as Effort))) return { text: `Unsupported effort "${String(args.effort)}" for ${model}. Valid levels: ${levels.join(", ") || "none"}.`, isError: true };
-                const effort = (args.effort as Effort | undefined) ?? checked.effort;
+                // Asked for, else the agent type's (where the model has it), else the session's.
+                const effort = (args.effort as Effort | undefined) ?? (def.effort && levels.includes(def.effort) ? def.effort : checked.effort);
                 const callId = await h.claimCall(args, ctx.meta);
                 if (ctx.signal.aborted) return { text: "The call was cancelled before the task started.", isError: true };
-                const t = h.tasks.start({ description, prompt, agent: def.name, model, effort, callId, writes: !def.readOnly, generation });
+                // One in a worktree of its own doesn't change this folder's files.
+                const t = h.tasks.start({ description, prompt, agent: def.name, model, effort, callId, writes: !def.readOnly && def.isolation !== "worktree", generation });
                 if (typeof t === "string") return { text: t, isError: true };
-                if (args.wait === false) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
+                if (args.wait === false || def.background) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
                 const limit = waitMs(args.timeout_minutes, DELEGATION_LIMITS.defaultWaitMs);
                 await h.tasks.wait([t], limit, ctx.signal);
                 if (t.status === "running") return { text: `${taskReport(t)} It keeps running: get its result with task_status (it can wait), or cancel it with task_cancel.` };

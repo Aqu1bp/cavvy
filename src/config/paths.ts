@@ -30,6 +30,8 @@ export const paths = {
     projectCommands: (cwd: string) => join(cwd, ".harness", "commands"),
     projectAgents: (cwd: string) => join(cwd, ".harness", "agents"),
     projectMcp: (cwd: string) => join(cwd, ".mcp.json"),
+    /** Where sub-agents with `memory` keep it (src/agent/agents.ts): user, project and local. */
+    agentMemoryRoots: (projectRoot: string) => [join(harnessHome(), "agent-memory"), join(projectRoot, ".harness", "agent-memory"), join(projectRoot, ".harness", "agent-memory-local")],
 };
 
 /** Directory for a project's sessions: ~/.harness/projects/<slug>/ */

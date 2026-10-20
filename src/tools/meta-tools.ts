@@ -163,7 +163,7 @@ export const RequestSecretTool: Tool<{ name: string; purpose: string }> = {
     },
 };
 
-export const TaskTool: Tool<{ description: string; prompt: string; subagent_type?: string; model?: string }> = {
+export const TaskTool: Tool<{ description: string; prompt: string; subagent_type?: string; model?: string; run_in_background?: boolean }> = {
     name: "Task",
     category: "meta",
     readOnly: false,
@@ -176,6 +176,8 @@ Agent types:
 
 Models: a sub-agent runs on your model unless its agent type sets one or you pass model. That can be any model set up in this harness, from any provider (API models, and Claude Code or Codex when they're turned on): for a second opinion, a review, or a task another model is better at. Call ListModels to see the agent types and models.
 
+Background: with run_in_background (or an agent type that always runs in the background) it returns a task id at once and the sub-agent keeps working while you do. Its result comes to you automatically when it finishes; TaskStatus shows how it's going, or waits for it.
+
 Use it to keep large searches or independent subtasks out of the main context, and launch several in parallel (in one response) when tasks are independent. Don't use it for a simple lookup you can do with one or two tool calls.`,
     parameters: {
         type: "object",
@@ -184,14 +186,36 @@ Use it to keep large searches or independent subtasks out of the main context, a
             prompt: { type: "string", description: "Complete instructions for the sub-agent" },
             subagent_type: { type: "string", description: 'Agent type: "general-purpose" (default), "explore", or a custom agent name' },
             model: { type: "string", description: "Run it on this model, as provider:model from ListModels (default: the agent type's model, else yours)" },
+            run_in_background: { type: "boolean", description: "Return at once and run it in the background (default false, unless the agent type always runs in the background)" },
         },
         required: ["description", "prompt"],
     },
     title: (i) => `Task(${[i.description ?? "", i.model ?? ""].filter(Boolean).join(" · ")})`,
     async run(input, ctx) {
         if (!ctx.runSubagent) return { content: "Sub-agents are not available here.", isError: true };
-        const r = await ctx.runSubagent({ description: input.description, prompt: input.prompt, agentType: input.subagent_type, model: input.model?.trim() || undefined }, ctx.signal);
-        return { content: r.report, isError: r.isError, display: { summary: r.isError ? "Failed" : "Done" } };
+        const r = await ctx.runSubagent({ description: input.description, prompt: input.prompt, agentType: input.subagent_type, model: input.model?.trim() || undefined, background: input.run_in_background === true }, ctx.signal);
+        return { content: r.report, isError: r.isError, display: { summary: r.isError ? "Failed" : r.background ? "Started in the background" : "Done" } };
+    },
+};
+
+export const TaskStatusTool: Tool<{ task_id?: string; wait_seconds?: number }> = {
+    name: "TaskStatus",
+    category: "meta",
+    readOnly: true,
+    description: "Gets the result of a sub-agent started in the background (Task with run_in_background), or whether it's still running. Without task_id, lists all of them. With wait_seconds, waits up to that long for it (or, without task_id, for one of the running ones) to finish first. Results also come to you on their own when a task finishes, so only wait when you have nothing else to do.",
+    parameters: {
+        type: "object",
+        properties: {
+            task_id: { type: "string", description: "The id Task returned (task-1, …)" },
+            wait_seconds: { type: "number", description: "Wait up to this long for it to finish (at most 3600)" },
+        },
+    },
+    title: (i) => `TaskStatus(${i.task_id ?? "all"})`,
+    async run(input, ctx) {
+        if (!ctx.taskStatus) return { content: "Background tasks are not available here.", isError: true };
+        const ms = Math.min(Math.max(0, Number(input.wait_seconds) || 0), 3600) * 1000;
+        const r = await ctx.taskStatus(typeof input.task_id === "string" && input.task_id.trim() ? input.task_id.trim() : undefined, ms, ctx.signal);
+        return { content: r.text, isError: r.isError, display: { summary: r.isError ? "Failed" : "Checked" } };
     },
 };
 

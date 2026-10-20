@@ -22,7 +22,7 @@
 
 import { existsSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
@@ -585,6 +585,8 @@ export class PermissionChecker {
     }
 
     private isHarnessConfig(p: string): boolean {
+        // A sub-agent's memory is notes it keeps, not configuration: nothing reads it but that agent's prompt.
+        if (this.inAgentMemory(p)) return false;
         const forms = pathForms(p);
         const home = pathForms(harnessHome());
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
@@ -593,6 +595,13 @@ export class PermissionChecker {
         // .claude/ and .codex/ configure the agent CLIs the harness can run (hooks, skills, rules).
         const judged = new Set([p, canonical(p)].map(withoutWorktrees).flatMap(spellings));
         return [...judged].some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
+    }
+
+    /** Inside an agent's memory folder (not the folder that holds them), as written and where its symlinks lead. */
+    private inAgentMemory(p: string): boolean {
+        const roots = paths.agentMemoryRoots(this.root).flatMap((r) => [r, canonical(r)]);
+        const inside = (x: string) => roots.some((r) => x !== r && isInside(x, r) && dirname(x) !== r);
+        return inside(resolve(p)) && inside(canonical(p)) && !/(^|\/)\.git(\/|$)/.test(p);
     }
 
     private isSensitive(p: string): boolean {
