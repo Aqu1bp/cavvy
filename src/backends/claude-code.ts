@@ -82,9 +82,10 @@ export function claudeBackgroundWaitMs(seconds: unknown): number {
 }
 
 /**
- * A background Bash command's own timeout (ms), as Claude Code applies it:
- * how long the command may run in the background, at most its maximum.
- * Undefined when the call passed none (then the grace above applies).
+ * A background Bash call's own timeout (ms): in Claude Code, how long the
+ * command may run in the background (capped at commandMaxTimeoutMs where
+ * it's used). Undefined when the call passed none or doesn't run in the
+ * background (then the grace above applies).
  */
 export function claudeCommandTimeoutMs(input: Record<string, unknown>): number | undefined {
     const t = input.timeout;
@@ -1448,12 +1449,12 @@ class ClaudeTurn {
     }
 }
 
-/** "2 background sub-agents (Map auth, Check tests)". */
 /** When a background command with a timeout of its own is up: its timeout (at most Claude Code's maximum) from its start. */
 function ownDeadline(t: BackgroundWork): number | undefined {
     return t.timeoutMs !== undefined && t.started !== undefined ? t.started + Math.min(t.timeoutMs, backgroundTiming.commandMaxTimeoutMs) : undefined;
 }
 
+/** "2 background sub-agents (Map auth, Check tests)". */
 function describeBackground(list: { agent: boolean; label: string }[]): string {
     const kind = list.length && list.every((x) => x.agent) ? "background sub-agent" : "background task";
     const shown = list.slice(0, 3).map((x) => x.label);
