@@ -2,7 +2,7 @@
 // `claude` and `codex` programs that speak the same protocols (test/fixtures).
 // Nothing here runs the real CLIs or touches the network.
 
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
@@ -69,7 +69,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -2588,5 +2588,72 @@ describe("Codex mid-turn steering", () => {
         expect(await done).toBe("aborted");
         expect(steers()).toEqual([]);
         expect(host).toEqual(["too late"]);
+    });
+});
+
+const { paths } = await import("../src/config/paths");
+describe("the harness's agents on Claude Code", () => {
+    const agentLogs = () => logLines().filter((l) => "agents" in l);
+    function writeAgents() {
+        mkdirSync(paths.userAgents(), { recursive: true });
+        writeFileSync(join(paths.userAgents(), "mine.md"), "---\nname: mine\ndescription: Mine\nmaxTurns: 3\n---\nBe brief.\n");
+        writeFileSync(join(paths.userAgents(), "gpt.md"), "---\nname: gpt\ndescription: On GPT\nmodel: openai:gpt-5\n---\nx\n");
+        mkdirSync(join(cwd, ".harness", "agents"), { recursive: true });
+        writeFileSync(join(cwd, ".harness", "agents", "repo.md"), "---\nname: repo\ndescription: The repo's\n---\ny\n");
+    }
+    afterEach(() => rmSync(paths.userAgents(), { recursive: true, force: true }));
+
+    test("go to its own Agent tool through --agents: user ones always, the repo's once the user trusts it", async () => {
+        writeAgents();
+        const a = await makeAgent({ provider: "claude-code" });
+        await a.run("go");
+        const [first] = agentLogs();
+        expect(first.agents).toEqual({ mine: { description: "Mine", prompt: "Be brief.", model: "inherit", maxTurns: 3 } });
+        // Read from a file only for the run: it's gone once Claude Code exits.
+        expect(existsSync(first.agentsFile)).toBe(false);
+        trust.trustFolder(cwd);
+        rmSync(LOG, { force: true });
+        await a.run("again");
+        expect(Object.keys(agentLogs()[0].agents).sort()).toEqual(["mine", "repo"]);
+    });
+
+    test("not for read-only sub-agents, or when there are none to pass", async () => {
+        writeAgents();
+        await (await makeAgent({ provider: "claude-code", readOnly: true })).run("go");
+        expect(starts()[0].argv).not.toContain("--agents");
+        rmSync(paths.userAgents(), { recursive: true, force: true });
+        rmSync(LOG, { force: true });
+        await (await makeAgent({ provider: "claude-code" })).run("go");
+        expect(starts()[0].argv).not.toContain("--agents");
+    });
+
+    test("each agent's own permissionMode decides its asks, as when the harness runs it", async () => {
+        mkdirSync(paths.userAgents(), { recursive: true });
+        writeFileSync(join(paths.userAgents(), "writer.md"), "---\nname: writer\ndescription: Writes\npermissionMode: acceptEdits\n---\nWrite.\n");
+        writeFileSync(join(paths.userAgents(), "careful.md"), "---\nname: careful\ndescription: Asks\npermissionMode: default\n---\nWrite.\n");
+        process.env.FAKE_SCENARIO = "native-agent-write";
+        const answers = () => logLines().flatMap((l) => (l.agentWrite ? [l.agentWrite] : []));
+        const run = async (type: string, mode: PermissionMode) => {
+            process.env.FAKE_AGENT_TYPE = type;
+            rmSync(LOG, { force: true });
+            const a = await makeAgent({ provider: "claude-code", mode, ask: () => ({ allow: false }) });
+            await a.run("go");
+            return { asked: a.asked.length, answer: answers()[0] };
+        };
+        // An acceptEdits agent in a default session: its edit in the workspace goes through, as the harness's own run would.
+        expect(await run("writer", "default")).toEqual({ asked: 0, answer: "allow" });
+        // The reverse: a default agent in an acceptEdits session is asked.
+        expect(await run("careful", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
+        // Claude Code's own agents (and any it doesn't name) are under the session's mode.
+        expect(await run("general-purpose", "default")).toEqual({ asked: 1, answer: "deny" });
+        expect(await run("general-purpose", "acceptEdits")).toEqual({ asked: 0, answer: "allow" });
+        // Plan mode in the session wins over the agent's own.
+        expect((await run("writer", "plan")).answer).toBe("deny");
+    });
+
+    test("Codex isn't given them", async () => {
+        writeAgents();
+        await (await makeAgent({ provider: "codex" })).run("go");
+        expect(agentLogs()).toEqual([]);
     });
 });

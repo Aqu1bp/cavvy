@@ -11,6 +11,7 @@ import type { Effort } from "../config/settings";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { ToolDisplay } from "../tools/types";
 import type { Skill } from "../agent/skills";
+import type { ClaudeAgentDefinition } from "./claude-agents";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
@@ -44,6 +45,8 @@ export interface BackendPermission {
     agentLabel?: string;
     /** The call it asks about, as its tool_start names it: its row waits while it asks. */
     callId?: string;
+    /** The backend's sub-agent asking, by its type (a harness agent Claude Code runs natively): its own mode applies. */
+    agentType?: string;
 }
 
 export type PermissionAnswer =
@@ -147,6 +150,11 @@ export interface BackendTurn {
      * sandbox auto-approval for commands, MCP servers from its own config).
      */
     readOnly?: boolean;
+    /**
+     * The harness's agent definitions for Claude Code to run with its own
+     * Agent tool (src/backends/claude-agents.ts). Codex ignores them.
+     */
+    agents?: Record<string, ClaudeAgentDefinition>;
     signal: AbortSignal;
     host: BackendHost;
 }
