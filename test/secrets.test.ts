@@ -188,7 +188,8 @@ describe("RequestSecret and Bash", () => {
         // The cap is 600,000 characters: filler up to just under it, then the value's start in the chunk that crosses it,
         // and its rest a moment later (in a chunk that isn't kept).
         const straddle = (filler: string) => `${filler}; printf %s "$(printf %s "$CAP_TOKEN" | cut -c1-6)"; sleep 0.3; printf '%s\n' "$(printf %s "$CAP_TOKEN" | cut -c7-)"`;
-        for (const filler of ["yes aaaaaaaaa | head -c 599997", "head -c 599997 /dev/zero | tr '\\0' a"]) {
+        // Filler in 1,000-character lines, so the last line break is near the cap (shorter lines only add redaction work), and with none.
+        for (const filler of [`yes "$(head -c 999 /dev/zero | tr '\\0' a)" | head -c 599997`, "head -c 599997 /dev/zero | tr '\\0' a"]) {
             const r = await bash(ctx, straddle(filler));
             expect(r.content).toContain(filler.startsWith("yes ") ? "aaaaaaaaa" : "[Output line omitted");
             noFragments(r.content, v);
