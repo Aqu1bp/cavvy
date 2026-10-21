@@ -460,6 +460,37 @@ describe("Codex", () => {
         expect(restart.input[0].text).toContain("go on");
     });
 
+    test("a goal turn Codex starts under the thread's old policy is stopped as it starts, not when it's taken up", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "150";
+        const queue: string[] = [];
+        const a = await makeAgent("codex", undefined, queue);
+        // Taking up Codex's next turn is slow (a long queue drain, say): longer than that turn runs.
+        const proto = CodexTurn.prototype as any;
+        const original = proto.nextGoalTurn;
+        proto.nextGoalTurn = async function (...args: unknown[]) {
+            await Bun.sleep(400);
+            return original.apply(this, args);
+        };
+        try {
+            const done = a.run("/goal the docs build");
+            const until = Date.now() + 5000;
+            while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+            await Bun.sleep(30);
+            queue.push("also fix the links");
+            a.setMode("plan");
+            expect(await done).toBe("done");
+        } finally {
+            proto.nextGoalTurn = original;
+        }
+        // Codex's own turn-2 (under bypass) was stopped, and the goal went on under plan mode with the message.
+        expect(received().find((m) => m.method === "turn/interrupt")?.params.turnId).toBe("turn-2");
+        const restart = received().filter((m) => m.method === "turn/start").at(-1)!.params;
+        expect(restart.sandboxPolicy.type).toBe("readOnly");
+        expect(restart.input[0].text).toContain("also fix the links");
+        expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+    });
+
     test("leaving plan mode between the goal's turns applies to the next one Codex starts too", async () => {
         process.env.FAKE_GOAL_TURNS = "3";
         process.env.FAKE_TURN_MS = "80";

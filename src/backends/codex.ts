@@ -448,6 +448,10 @@ export class CodexTurn {
     private goalWake?: () => void;
     /** The turn being waited on was started by Codex itself (adopted), under the thread's policy. */
     private adopted = false;
+    /** A turn/start is on its way: a turn that starts meanwhile may be that one. */
+    private starting = false;
+    /** Turns Codex started itself that were stopped as they started, for a mode other than the thread's: restarted under it when adopted. */
+    private stoppedForMode = new Set<string>();
 
     constructor(
         private def: ProviderDef,
@@ -464,11 +468,14 @@ export class CodexTurn {
      * else would apply it.
      */
     private stale(m: PermissionMode): boolean {
-        if (this.turnMode === undefined) return false;
-        const ro = Boolean(this.t.readOnly);
-        const differs = codexPolicyKey(m, ro) !== codexPolicyKey(this.turnMode, ro) || (m === "plan") !== (this.turnMode === "plan");
-        if (!differs) return false;
+        if (this.turnMode === undefined || !this.differs(m, this.turnMode)) return false;
         return this.adopted || STRICTNESS[m] > STRICTNESS[this.turnMode] || m === "plan";
+    }
+
+    /** Whether modes `a` and `b` make different policies (or one of them is plan mode). */
+    private differs(a: PermissionMode, b: PermissionMode): boolean {
+        const ro = Boolean(this.t.readOnly);
+        return codexPolicyKey(a, ro) !== codexPolicyKey(b, ro) || (a === "plan") !== (b === "plan");
     }
 
     /**
@@ -644,8 +651,9 @@ export class CodexTurn {
                             return;
                         }
                         let r: any;
+                        this.starting = true;
                         try {
-                            r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+                            r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                         } catch (e) {
                             // Codex started the goal's next turn first (and so refused this one): the user's messages go into that one.
                             const id = this.goal?.status === "active" && !activate ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
@@ -789,6 +797,16 @@ export class CodexTurn {
     private async adoptTurn(id: string, text?: string) {
         this.turnId = id;
         const ended = this.completedTurns.get(id);
+        const stopped = this.stoppedForMode.delete(id);
+        if (ended !== undefined && stopped) {
+            // Stopped as it started, for the mode: restarted under it, with the messages.
+            this.status = ended.status;
+            this.restartFor = this.host.mode();
+            this.goalOnRestart = this.goal?.status === "active";
+            if (text) this.unsteered.push(text);
+            this.turnDone?.();
+            return;
+        }
         if (ended !== undefined) {
             this.status = ended.status;
             if (ended.status === "failed") this.fail(ended.error, "Codex reported a failed turn");
@@ -811,7 +829,7 @@ export class CodexTurn {
         const deadline = Date.now() + waitMs;
         while (!this.aborted && this.goal?.status === "active") {
             // The newest Codex started that wasn't started here, still going (or failed: that's said).
-            const id = this.startedTurns.filter((t) => !this.ownTurns.has(t) && (!this.completedTurns.has(t) || this.completedTurns.get(t)!.status === "failed")).at(-1);
+            const id = this.startedTurns.filter((t) => !this.ownTurns.has(t) && (!this.completedTurns.has(t) || this.completedTurns.get(t)!.status === "failed" || this.stoppedForMode.has(t))).at(-1);
             this.startedTurns = [];
             if (id) return id;
             const left = deadline - Date.now();
@@ -932,6 +950,13 @@ export class CodexTurn {
                 if (typeof p.turn?.id === "string" && p.turn.id !== this.turnId) {
                     this.startedTurns.push(p.turn.id);
                     if (this.startedTurns.length > 16) this.startedTurns.shift();
+                    // Codex's own, under the thread's policy, and the mode has changed since: stopped at once, before
+                    // it does anything (not when it's adopted), and restarted under the mode then.
+                    const m = this.host.mode();
+                    if (!this.starting && !this.aborted && this.threadMode !== undefined && this.differs(m, this.threadMode)) {
+                        this.stoppedForMode.add(p.turn.id);
+                        void this.rpc.request("turn/interrupt", { threadId: this.threadId, turnId: p.turn.id }).catch(() => {});
+                    }
                     this.goalWake?.();
                 }
                 break;
