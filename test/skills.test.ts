@@ -213,6 +213,14 @@ describe("$name mentions", () => {
         for (const text of ["costs $5", "$10k budget", "echo $HOME", "$PDF is shouted like a variable", "`$pdf` in code", "a$pdf", "$nope", "${pdf}", "$(pdf)", "$hidden"]) expect(skillMentions(text, s)).toEqual([]);
     });
 
+    test("a $name in a review comment's quoted diff isn't a mention; one the user wrote is", async () => {
+        const s = skills();
+        const { buildComment, withComments } = await import("../gui/src/lib/review-comments");
+        const quoted = (text: string, code: string) => buildComment({ id: "c", path: "deploy.sh", lines: [{ t: "add", text: code, b: 2 }], text, now: 1 });
+        expect(skillMentions(withComments("Look at this", [quoted("Why here?", "run $pdf now")]), s)).toEqual([]);
+        expect(skillMentions(withComments("Use $home", [quoted("And $pdf", "echo $hidden $home")]), s).map((x) => x.name)).toEqual(["home", "pdf"]);
+    });
+
     test("the skills come after the prompt as typed", () => {
         const s = skills();
         const out = withSkills("fill this in with $pdf", skillMentions("fill this in with $pdf", s));

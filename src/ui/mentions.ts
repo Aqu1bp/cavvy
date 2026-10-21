@@ -8,6 +8,7 @@ import type { ToolState } from "../tools/types";
 import { imageMediaType, looksBinary, isInside, canonical } from "../util/files";
 import { fuzzyScore } from "./components";
 import { redact } from "../util/redact";
+import { withoutReviewQuotes } from "../util/review-quotes";
 import { gitArgv, gitEnv } from "../util/git";
 import { isImageFile, lexWords, loadImageFile, normalizePath, resolveUserPath, type PrepareOptions } from "./images";
 
@@ -146,24 +147,6 @@ export function findMentions(text: string, cwd: string): Mention[] {
     return out;
 }
 
-const REVIEW_BLOCK = /<review_comment file="[^"]*" lines="[^"]*">\n([\s\S]*?)\n<\/review_comment>/g;
-/**
- * The text without each review comment's quoted diff lines (gui/src/lib/review-comments): the
- * repository's code, not something the user named. What the user wrote above it still counts,
- * a diff of their own in it too. The quote is found from the block's end, as the GUI reads it:
- * its fence is longer than any run of backticks inside it, and a closing tag inside is escaped.
- */
-function typedText(text: string): string {
-    if (!text.includes("<review_comment ")) return text;
-    return text.replace(REVIEW_BLOCK, (block, body: string) => {
-        const closing = body.lastIndexOf("\n");
-        const fence = body.slice(closing + 1);
-        if (!/^`{3,}$/.test(fence)) return block;
-        const open = body.lastIndexOf(`\n\n${fence}diff\n`, closing);
-        return open < 0 ? block : block.slice(0, block.indexOf(">\n") + 2) + body.slice(0, open) + "\n</review_comment>";
-    });
-}
-
 /**
  * Turn "@path" mentions into attached file contents (like a Read), images
  * into image parts. Records read state so the model can edit right away.
@@ -176,7 +159,7 @@ export async function expandMentions(text: string, state: ToolState, allowedRoot
     const attached: string[] = [];
     const notices: string[] = [];
     const seen = new Set<string>();
-    for (const { raw, abs } of findMentions(typedText(text), state.cwd)) {
+    for (const { raw, abs } of findMentions(withoutReviewQuotes(text), state.cwd)) {
         if (seen.has(abs) || !existsSync(abs)) continue;
         seen.add(abs);
         let st;

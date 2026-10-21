@@ -23,6 +23,7 @@ import { basename, dirname, join } from "path";
 import { harnessHome } from "../config/paths";
 import { expandCommand } from "../commands/custom";
 import { loadPlugins } from "../plugins/loader";
+import { withoutReviewQuotes } from "../util/review-quotes";
 
 export interface Skill {
     name: string;
@@ -242,7 +243,7 @@ export function skillMentions(text: string, skills: readonly Skill[]): Skill[] {
 /** The names `text` mentions as $name, lowercased, in order. */
 export function mentionNames(text: string): string[] {
     const out: string[] = [];
-    for (const m of text.matchAll(/(^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s.,;:!?)]|$)/g)) {
+    for (const m of withoutReviewQuotes(text).matchAll(/(^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s.,;:!?)]|$)/g)) {
         const raw = m[2]!.replace(/:+$/, "");
         // $HOME and $5 are a shell variable and a price.
         if (/[a-z]/.test(raw)) out.push(raw.toLowerCase());
