@@ -203,13 +203,32 @@ export class TurnSnapshots {
     begin(id: number, prompt: string): Promise<void> {
         return this.record(async () => {
             if (this.stopped) return;
-            const captured = await this.capture();
-            if (!captured || this.stopped) return; // Not a repository, or this session was let go.
-            if (this.active) await this.finish(structuredClone(captured));
-            if (this.stopped) return;
-            this.active = { version: 2, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
-            this.persist(this.active);
+            await this.open(id, prompt, await this.capture());
         });
+    }
+
+    /**
+     * The capture `begin` would take, without starting anything: the turn that's open stays open. For a
+     * prompt that may yet not go (its CLI could stop first); `beginWith` starts its turn from it once it goes.
+     */
+    prepare(): Promise<TurnCapture | undefined> {
+        let captured: TurnCapture | undefined;
+        return this.record(async () => {
+            if (!this.stopped) captured = await this.capture();
+        }).then(() => captured);
+    }
+
+    /** As `begin`, from what `prepare` captured. */
+    beginWith(id: number, prompt: string, captured: TurnCapture | undefined): Promise<void> {
+        return this.record(() => this.open(id, prompt, captured));
+    }
+
+    private async open(id: number, prompt: string, captured: TurnCapture | undefined) {
+        if (!captured || this.stopped) return; // Not a repository, or this session was let go.
+        if (this.active) await this.finish(structuredClone(captured));
+        if (this.stopped) return;
+        this.active = { version: 2, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
+        this.persist(this.active);
     }
 
     end(): Promise<void> {

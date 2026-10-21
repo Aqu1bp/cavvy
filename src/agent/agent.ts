@@ -52,7 +52,7 @@ import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAg
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
-import { TurnSnapshots } from "./turn-snapshots";
+import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import type { Skill } from "./skills";
 import { claudeAgents } from "../backends/claude-agents";
@@ -1635,6 +1635,7 @@ export class Agent {
             drainWaiting: async (progress, live) => {
                 if (this.cutOff || !this.o.host.drainWaiting) return undefined;
                 let context: string | undefined;
+                let start: TurnCapture | undefined;
                 let taken: { parts: UserContent[]; display: string } | undefined;
                 // One its hooks block doesn't go; the next does, in order and through its own hooks.
                 for (let blocked = true; blocked && !taken; ) {
@@ -1643,7 +1644,9 @@ export class Agent {
                         record: () => {
                             if (progress) this.recordBackendTurn(provider, name, progress());
                         },
-                        // Its hooks, as for a prompt sent on its own (runInner): one can block it.
+                        // Its hooks, as for a prompt sent on its own (runInner): one can block it. Then what its
+                        // start snapshot will be, taken before it goes but used only once it does: a stop
+                        // meanwhile leaves the open turn's snapshot as it was.
                         admit: async (parts) => {
                             const h = await this.promptHooks(promptTextOf(parts), signal);
                             context = h.context;
@@ -1651,7 +1654,10 @@ export class Agent {
                                 blocked = true;
                                 return "blocked";
                             }
-                            return this.cutOff || signal.aborted || live?.() === false ? "stopped" : "go";
+                            const stopped = () => this.cutOff || signal.aborted || live?.() === false;
+                            if (stopped()) return "stopped";
+                            start = !this.o.isSubagent && this.o.trusted?.() ? await this.turnSnapshots?.prepare() : undefined;
+                            return stopped() ? "stopped" : "go";
                         },
                     });
                     if (this.cutOff || signal.aborted) blocked = false;
@@ -1662,9 +1668,9 @@ export class Agent {
                 const history = this.o.isSubagent ? undefined : this.state.fileHistory;
                 const checkpoint = history?.begin();
                 const content = this.session.push({ role: "user", content: [...taken.parts, ...(context ? [reminder(context)] : [])], meta: { kind: "prompt", display: taken.display, checkpoint } }).content;
-                // Its start snapshot once it's on its way, not before: one taken first could be cut off by a
-                // stop, leaving a turn boundary with no prompt. Snapshots run in order, so the turn's end waits for it.
-                if (checkpoint !== undefined && this.o.trusted?.()) void this.turnSnapshots?.begin(checkpoint, redact(taken.display));
+                // Its turn's snapshot starts from what was captured before it went (above); snapshots run in
+                // order, so the turn's end waits for it.
+                if (checkpoint !== undefined && start) void this.turnSnapshots?.beginWith(checkpoint, redact(taken.display), start).catch(() => undefined);
                 const prompt = forBackend(content, readsPdf(this.model));
                 // The user's own words, for the skills they name ($name), as for a turn's prompt (runBackendTurn).
                 const first = content[0]?.type === "text" && prompt.text.startsWith(content[0].text) ? content[0].text : undefined;

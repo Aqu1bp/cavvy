@@ -830,11 +830,11 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(q.items).toEqual([]);
         }, 20_000);
 
-        test("its start snapshot is taken once it's on its way: an interrupt during it loses nothing, and the snapshot starts after the prompt is stored", async () => {
+        test("one interrupted while its start snapshot is captured stays queued, image and all: nothing stored or sent, and the open turn's snapshot isn't cut", async () => {
             const session = Session.create(cwd, { system: "test" });
             const ac = new AbortController();
             let capturing = false;
-            let storedFirst: boolean | undefined;
+            const opened: string[] = [];
             let release!: () => void;
             const capture = new Promise<void>((r) => (release = r));
             const { a, q, done } = await waiting({
@@ -842,30 +842,54 @@ describe("Claude Code's background work (live test findings)", () => {
                 signal: ac.signal,
                 prepare: (a) => {
                     a.agent.options.trusted = () => true;
-                    a.agent.turnSnapshots!.begin = async (_id, prompt) => {
-                        if (!prompt.includes("look at this")) return;
-                        storedFirst = JSON.stringify(a.session.messages).includes("look at this");
+                    const snaps = a.agent.turnSnapshots!;
+                    snaps.prepare = async () => {
                         capturing = true;
                         await capture;
+                        return { files: {} } as never;
                     };
+                    snaps.beginWith = async (_id, prompt) => void opened.push(prompt);
                 },
             });
             try {
                 const image = { type: "image" as const, mediaType: "image/png", data: PNG };
                 q.items.push({ text: "look at this", mode: "queue", images: [image] });
                 while (!capturing) await Bun.sleep(10);
-                expect(storedFirst).toBe(true);
-                // On its way to Claude Code, image and all, while the snapshot is still being taken.
-                expect(await before(() => Boolean(userSent("look at this")), done)).toBe(true);
-                expect(JSON.stringify(userSent("look at this")!.message.content)).toContain('"type":"image"');
                 ac.abort();
+                await Bun.sleep(50);
                 release();
                 expect(await done).toBe("aborted");
-                expect(q.items).toEqual([]);
+                expect(q.items).toEqual([{ text: "look at this", mode: "queue", images: [image] }]);
+                expect(JSON.stringify(a.session.messages)).not.toContain("look at this");
+                expect(userSent("look at this")).toBeUndefined();
+                expect(opened).toEqual([]);
             } finally {
                 release();
                 ac.abort();
                 await done;
+                session.release();
+            }
+        }, 20_000);
+
+        test("one that goes opens its turn's snapshot from what was captured before it went, once it's stored", async () => {
+            const session = Session.create(cwd, { system: "test" });
+            const opened: { prompt: string; stored: boolean; captured: unknown }[] = [];
+            const captured = { files: { marker: true } };
+            const { a, q, done } = await waiting({
+                session,
+                prepare: (a) => {
+                    a.agent.options.trusted = () => true;
+                    const snaps = a.agent.turnSnapshots!;
+                    snaps.prepare = async () => captured as never;
+                    snaps.beginWith = async (_id, prompt, c) => void opened.push({ prompt, stored: JSON.stringify(a.session.messages).includes("look at this"), captured: c });
+                },
+            });
+            try {
+                q.items.push({ text: "look at this", mode: "queue" });
+                expect(await before(() => Boolean(userSent("look at this")), done)).toBe(true);
+                expect(opened).toEqual([{ prompt: "look at this", stored: true, captured }]);
+                await done;
+            } finally {
                 session.release();
             }
         }, 20_000);
