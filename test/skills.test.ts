@@ -329,15 +329,16 @@ describe("in the TUI", () => {
         expect(restored).toHaveLength(1);
     });
 
-    test("on Claude Code's first turn, a skill in its own folders goes to it; one only the harness has is expanded", async () => {
+    test("on Claude Code and Codex, every skill's /name goes to the CLI as typed (the backend runs it natively)", async () => {
         skill(claudeSkills, "cc-skill", "description: Claude Code has it", "CC body");
         skill(userSkills, "harness-skill", "description: Only here", "Harness only");
-        const { app, turns } = testApp();
-        app.model = { id: "default", provider: "claude-code" } as any;
-        await runCommand(app, "/cc-skill a");
-        await runCommand(app, "/harness-skill b");
-        expect(turns[0]!.text).toBe("/cc-skill a");
-        expect(turns[1]!.text).toContain("Harness only");
+        for (const provider of ["claude-code", "codex"]) {
+            const { app, turns } = testApp();
+            app.model = { id: "default", provider } as any;
+            await runCommand(app, "/cc-skill a");
+            await runCommand(app, "/harness-skill b");
+            expect(turns.map((t) => t.text)).toEqual(["/cc-skill a", "/harness-skill b"]);
+        }
     });
 
     test("on Claude Code, its own commands and skills go to it instead of being refused", async () => {

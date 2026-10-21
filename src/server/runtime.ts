@@ -23,7 +23,8 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "..
 import { toolPath } from "../permissions/rules";
 import { BUILTIN_TOOLS } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
-import { claudeCodeRuns, formatSkill, skillMentions, withSkills } from "../agent/skills";
+import { formatSkill, skillMentions, withSkills } from "../agent/skills";
+import { cliRunsSkills } from "../backends/native-skills";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
@@ -889,6 +890,7 @@ export class Runtime {
         this.agent = new Agent({
             session: this.session,
             trusted: () => this.ws.trusted,
+            skills: () => this.ws.freshSkills(),
             model: this.model,
             client: this.client,
             settings: () => this.settings(),
@@ -1876,12 +1878,13 @@ export class Runtime {
             const custom = this.ws.commands.find((c) => c.name === cmd);
             if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
             const skill = this.ws.skills.find((s) => s.userInvocable && s.name === cmd);
-            // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
-            const provider = this.agent?.model.provider;
-            if (skill && !(provider === "claude-code" && claudeCodeRuns(cmd, skill, this.engine.cliCommands(provider, this.ws.cwd)))) {
+            const about = skill && `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}`;
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
+            if (skill && cliRunsSkills(this.agent?.model.provider)) return this.startTurn(trimmed, { attachments, about });
+            if (skill) {
                 const body = formatSkill(skill, args.trim());
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
-                return this.startTurn(body, { display: trimmed, kind: "command", attachments, mentionsIn: args.trim(), about: `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}` });
+                return this.startTurn(body, { display: trimmed, kind: "command", attachments, mentionsIn: args.trim(), about });
             }
         }
         return this.startTurn(text, { attachments });
@@ -1951,7 +1954,8 @@ export class Runtime {
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
                 const skills = opts.kind === "command" ? [] : skillMentions(text, this.ws.skills);
                 const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker);
-                parts[0] = { type: "text", text: skills.length ? withSkills(text, skills) : text };
+                // Claude Code and Codex are sent the $name, and load the skill themselves.
+                parts[0] = { type: "text", text: skills.length && !cliRunsSkills(this.agent?.model.provider) ? withSkills(text, skills) : text };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);

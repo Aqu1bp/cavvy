@@ -10,6 +10,7 @@ import type { PermissionMode } from "../permissions/modes";
 import type { Effort } from "../config/settings";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { ToolDisplay } from "../tools/types";
+import type { Skill } from "../agent/skills";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
@@ -112,6 +113,13 @@ export interface BackendTurn {
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
+    /**
+     * The harness's skills (src/agent/skills.ts), for the backend to hand its
+     * CLI so the CLI runs them itself (src/backends/native-skills.ts).
+     */
+    skills?: readonly Skill[];
+    /** The user's message as typed, which `prompt` ends with: its /name or $name are read from this. */
+    request?: string;
     /** Snapshot of the MCP manager’s folder and approved definitions; absent means strict MCP isolation. */
     approvedMcpServers?: ApprovedMcpServers;
     /** The harness's deny and ask rules, and the root their paths are relative to. */
