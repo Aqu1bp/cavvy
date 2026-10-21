@@ -570,6 +570,11 @@ describe("the GUI server, against a cached Anthropic API", () => {
             rt.queued.push({ id: 99, text: "waiting" });
             fire(rt);
             rt.queued.length = 0;
+            // A /goal between its turns goes on by itself: not now.
+            const pending = rt.goal.pending;
+            rt.goal.pending = () => true;
+            fire(rt);
+            rt.goal.pending = pending;
             // One held since a restart, waiting for the user to send it, too.
             rt.queued.push({ id: 98, text: "held", held: true });
             fire(rt);
@@ -884,6 +889,18 @@ describe("the TUI", () => {
         const { app, requests } = testApp();
         await app.startTurn("review everything");
         app.editor.insert("half a thought");
+        const n = requests.length;
+        fire(app);
+        await Bun.sleep(20);
+        expect(requests.length).toBe(n);
+        expect(app.busy).toBe(false);
+    });
+
+    test("not while a /goal is between its turns (checking, retrying, waiting on background work)", async () => {
+        const { app, requests } = testApp();
+        await app.startTurn("review everything");
+        const goal = (app as any).goal;
+        (app as any).goal = { ...goal, pending: () => true };
         const n = requests.length;
         fire(app);
         await Bun.sleep(20);

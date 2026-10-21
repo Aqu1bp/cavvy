@@ -150,7 +150,7 @@ export class App {
     readonly idleCompact = new IdleCompactTimer({
         plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
         // Not while anything waits on the user, or they're typing: they're back.
-        ready: () => !this.busy && !this.exiting && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit,
+        ready: () => !this.busy && !this.exiting && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit && !this.goal?.pending(),
         run: () => void this.compactIdle(),
     });
     /** The task running is an idle compaction: a message sent meanwhile cancels it and runs. */
