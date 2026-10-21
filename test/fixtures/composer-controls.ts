@@ -15,7 +15,7 @@ import { splitComments, takesComments, withComments } from "../../gui/src/lib/re
 import { plural } from "../../gui/src/lib/format";
 import { aroundOf, createReviewCommentStore } from "../../gui/src/state/review-comments";
 import type { RunResult } from "../../src/server/protocol";
-import { applyKeybindingsFile, keymap, matchKey, shortcut, withShortcut } from "../../gui/src/state/keybindings";
+import { applyKeybindingsFile, keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
 import { os } from "../../gui/src/lib/platform";
 /** The keybindings follow the OS the tests run on (Mod is Ctrl off a Mac); the steer-or-queue key is Mod+Shift+Enter. */
@@ -77,7 +77,7 @@ const sent: { text: string; followUp?: string }[] = [];
 const sentAttachments: unknown[][] = [];
 const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, eventStrokes,
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
@@ -202,7 +202,12 @@ assert.equal(ta.props.value, "");
 assert.equal(sent.at(-1)!.followUp, undefined);
 setWorking(true);
 assert.match(ta.props.placeholder, /^Steer/);
+// Writing while it runs: the key that sends it the other way shows by the send button.
+const altHints = () => nodes.filter((n) => n.props.class === "c-alt").length;
+const hintsBefore = altHints();
 input("steer this");
+assert.equal(altHints(), hintsBefore + 1, "the other way's key shows once something is written");
+assert.ok(renderedText.includes("queue"), "it names the other way: queue");
 key("Enter");
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "steer this", followUp: "steer" });

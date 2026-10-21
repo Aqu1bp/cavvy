@@ -11,7 +11,7 @@ const DRAG_TYPE = "application/x-harness-queued";
 /**
  * Messages sent while a turn runs, as rows inside the composer card: what each will
  * do (join the turn at its next step, run after it, or wait for you after a
- * restart), with Send now, Edit and Remove. With more than one, the grip
+ * restart), with Steer (while it runs) or Send now, Edit and Remove. With more than one, the grip
  * reorders them: drag it, or focus it and press ↑/↓.
  */
 export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (i: number, edit: boolean) => void }) {
@@ -126,13 +126,19 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                                 )}
                             </Show>
                             <span class="queue-hint" title={info().detail}>
+                                <Show when={info().joining}>
+                                    <span class="queue-joining" aria-hidden="true" />
+                                </Show>
                                 {info().hint}
                                 <span class="sr-only">: {info().detail}</span>
                             </span>
-                            <Show when={info().sendNow}>
-                                {(title) => (
-                                    <button class="queue-send" title={title()} onClick={() => void sendNow(i())}>
-                                        Send now
+                            <Show when={info().action}>
+                                {(action) => (
+                                    <button class={`queue-send ${action().label === "Steer" ? "steer" : ""}`} title={action().title} onClick={() => void sendNow(i())}>
+                                        <Show when={action().label === "Steer"}>
+                                            <CornerDownRight size={13} stroke-width={2.25} aria-hidden="true" />
+                                        </Show>
+                                        {action().label}
                                     </button>
                                 )}
                             </Show>

@@ -6,7 +6,7 @@ import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/ap
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview } from "../state/ui";
-import { keymap, matchKey, shortcut, withShortcut } from "../state/keybindings";
+import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
 import { EffortPicker, ModelPicker, type CompareOption } from "./ModelPicker";
@@ -695,6 +695,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
+                    {/* Writing while a turn runs: the key that sends it the other way, by the button that sends it this way. */}
+                    <Show when={busy() && hasContent() && !runPicks() && shortcutHint("chat:submitOtherWay")}>
+                        {(key) => (
+                            <kbd class="c-alt" title={sendTitle()}>
+                                {key()} {otherFollowUp(shown())}
+                            </kbd>
+                        )}
+                    </Show>
                     <Show
                         when={canStop(st()) && !hasContent()}
                         fallback={

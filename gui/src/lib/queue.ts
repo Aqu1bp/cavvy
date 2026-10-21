@@ -12,26 +12,43 @@ export function followUpFor(setting: FollowUpMode | null | undefined, opposite: 
 
 export const otherFollowUp = (m: FollowUpMode): FollowUpMode => (m === "steer" ? "queue" : "steer");
 
+/** What a queued message's button does: steer it into the running turn, or (idle) send it now. */
+export interface QueueAction {
+    label: "Steer" | "Send now";
+    title: string;
+}
+
 export interface QueueRowInfo {
     /** One or two words, beside the message. */
     hint: string;
     /** Its tooltip: why, in a sentence. */
     detail: string;
-    /** "Send now"'s tooltip when it's offered. */
-    sendNow?: string;
+    /** The button on the row, where it does something. */
+    action?: QueueAction;
+    /** Waiting for the running turn's next step: the row shows it's on its way. */
+    joining?: boolean;
 }
+
+const STEER: QueueAction = { label: "Steer", title: "Add to the current turn at its next step" };
+const SEND_NOW: QueueAction = { label: "Send now", title: "Send now" };
+/** Where every backend puts it (the agent loop, Claude Code, Codex): at a tool step, or else after the reply being written. */
+const JOINS = "Joins the current turn at its next step. If the model is already writing its last reply, it goes in right after that reply";
 
 /** A row of the queue, by what the message will do and whether a turn is running. */
 export function queueRow(mode: QueuedMode | undefined, busy: boolean): QueueRowInfo {
     switch (mode ?? "steer") {
         case "steer":
-            return { hint: "Next step", detail: "Joins the current turn at its next step" };
+            return { hint: busy ? "Joins at the next step" : "Next step", detail: JOINS, joining: busy };
         case "queue":
-            return { hint: "After this turn", detail: "Runs as a turn of its own once this one ends", sendNow: busy ? "Send now: join the current turn at its next step" : "Send now" };
+            return { hint: "After this turn", detail: "Runs as a turn of its own once this one ends", action: busy ? STEER : SEND_NOW };
         case "turn":
-            return { hint: "After this turn", detail: "Images, files and commands can't join a running turn: this runs once it ends", ...(busy ? {} : { sendNow: "Send now" }) };
+            return { hint: "After this turn", detail: "Images, files and commands can't join a running turn: this runs once it ends", ...(busy ? {} : { action: SEND_NOW }) };
         case "held":
-            return { hint: "Held", detail: "Not sent before Harness restarted. It waits for you: send it, edit it or remove it", sendNow: busy ? "Send now: join the current turn, or run right after it" : "Send now: run it as a new turn" };
+            return {
+                hint: "Held",
+                detail: "Not sent before Harness restarted. It waits for you: send it, edit it or remove it",
+                action: busy ? { label: "Steer", title: "Add to the current turn at its next step (with images, files or a command, it runs right after the turn)" } : { label: "Send now", title: "Send now: run it as a new turn" },
+            };
     }
 }
 
@@ -47,7 +64,7 @@ export function dropTarget(from: number, before: number): number | undefined {
     return to === from ? undefined : to;
 }
 
-/** The first message "Send now" (mod+shift+enter in an empty composer) takes. */
+/** The first message its button (Steer, or Send now) applies to: what mod+shift+enter in an empty composer takes. */
 export function firstSendable(modes: readonly (QueuedMode | undefined)[], busy: boolean): number {
-    return modes.findIndex((m) => queueRow(m, busy).sendNow !== undefined);
+    return modes.findIndex((m) => queueRow(m, busy).action !== undefined);
 }

@@ -122,6 +122,18 @@
     background: var(--hover);
 }
 
+/* While a turn runs: the other way to send what's written (steer or queue), beside the send button. */
+.composer kbd.c-alt {
+    flex: none;
+    height: auto;
+    margin-right: 2px;
+    padding: 3px 6px;
+    font-size: 0.786rem;
+    color: var(--fg-3);
+    background: var(--hover);
+    white-space: nowrap;
+}
+
 .composer .grow {
     flex: 1;
     min-width: 0;
@@ -243,6 +255,44 @@
 
 .queue-send:hover {
     background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* Steer: the way into the running turn, a pill with its glyph. */
+.queue-send.steer {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 10px 0 8px;
+}
+
+.queue-hint:has(.queue-joining) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg-2);
+}
+
+/* On its way: waiting for the turn's next step. */
+.queue-joining {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: queue-joining 1.4s var(--ease) infinite;
+}
+
+@keyframes queue-joining {
+    50% {
+        opacity: 0.3;
+        transform: scale(0.7);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .queue-joining {
+        animation: none;
+    }
 }
 
 .queue-send:focus-visible,
@@ -2019,6 +2069,7 @@
     }
 
     .composer kbd.c-stop,
+    .composer kbd.c-alt,
     .ask .pbtn kbd {
         display: none;
     }
