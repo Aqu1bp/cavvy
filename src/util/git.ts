@@ -17,14 +17,23 @@ export function gitEnv(): Record<string, string> {
     return childEnv({ GIT_OPTIONAL_LOCKS: "0" });
 }
 
+/** Variables that name a repository, its work tree or its parts: inherited, they'd point git somewhere other than cwd's repository. */
+export const REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"];
+
+/** gitEnv() without REPO_VARS: git finds the repository from cwd alone. */
+export function cwdGitEnv(): Record<string, string> {
+    const env = gitEnv();
+    for (const key of REPO_VARS) delete env[key];
+    return env;
+}
+
 function untrustedGitEnv(): Record<string, string> {
     // Git before 2.45 ignores GIT_NO_LAZY_FETCH. As in git-changes, deny every
     // real protocol too, so missing objects cannot invoke a promisor transport.
     // A relative PATH entry ("." or empty) would let the repo supply the program a
     // bare driver name (git-lfs) or git itself resolves to; only absolute ones stay.
-    const env = gitEnv();
     // Audit and discovery must inspect cwd's repository, not an inherited one.
-    for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) delete env[key];
+    const env = cwdGitEnv();
     if (env.PATH !== undefined) env.PATH = env.PATH.split(delimiter).filter((d) => isAbsolute(d)).join(delimiter);
     return { ...env, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "harness-none" };
 }

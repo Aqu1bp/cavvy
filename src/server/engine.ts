@@ -41,6 +41,7 @@ import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, ma
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
+import { agentsByWorktree } from "./worktree-agents";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
 import { expandPath, isInside, sniffImage } from "../util/files";
@@ -2108,7 +2109,14 @@ export class Engine {
                 // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
-                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId });
+                if (p.worktree !== undefined && (typeof p.worktree !== "string" || !p.worktree || p.worktree.length > 4096 || p.worktree.includes("\0"))) throw new RpcError("worktree must be a folder path", "invalid");
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId, worktree: p.worktree });
+            }
+            case "session.worktrees": {
+                const list = await this.runtime(p.id).worktrees();
+                // Every loaded session's sub-agents, not only this one's: what works where, whoever started it.
+                const found = agentsByWorktree(list.map((w) => w.path), [...this.runtimes.values()].flatMap((rt) => rt.agentRuns.map((agent) => ({ sessionId: rt.id, agent }))), homedir());
+                return list.map((w) => (found.has(w.path) ? { ...w, agents: found.get(w.path) } : w));
             }
             case "session.gitPublishInfo":
                 return this.runtime(p.id).gitPublishInfo();

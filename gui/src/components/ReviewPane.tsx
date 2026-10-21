@@ -5,11 +5,14 @@
 // message; Commit and Push at the foot. Opened from the side panel, the title
 // bar's changes chip or a turn's Review changes. Git's views show every change
 // in the folder, whoever made it; Harness edits shows only what the edit tools
-// did, and is all there is outside a Git repository.
+// did, and is all there is outside a Git repository. A picker beside the views
+// looks at another worktree of the repository instead (where an agent works):
+// its branch and uncommitted changes only, to read; commenting, committing,
+// pushing and opening in the editor stay with the session's own folder.
 
-import { batch, createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { batch, createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show, untrack } from "solid-js";
 import { ChevronLeft, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
-import type { FileDiff, GitFileDiff, GitScope } from "@shared/protocol";
+import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
@@ -25,6 +28,8 @@ import { buildComment } from "../lib/review-comments";
 import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
+import { ReviewWorktreePicker } from "./ReviewWorktreePicker";
+import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../lib/worktree-work";
 import { Segmented, Spinner } from "./ui/bits";
 
 type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter">>;
@@ -162,27 +167,86 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const [publishRequest, setPublishRequest] = createSignal<string>();
     createEffect(on(id, () => setPublishRequest(undefined)));
     const saved = lastView.get(p.handle.id);
-    const [scope, setScope] = createSignal<ReviewScope>(review()?.scope ?? saved?.scope ?? "uncommitted");
+    /** A request for a file or a view (a turn's Review changes, the side panel's files) is about the session's own folder. */
+    const asksOwn = (r: ReturnType<typeof review>) => Boolean(r && (r.scope || r.turnId !== undefined || r.path));
+    const opened = (c: ReviewPlace, r: ReturnType<typeof review>): ReviewPlace => {
+        const here = asksOwn(r) ? pickWorktree(c, undefined) : c;
+        return r?.scope ? pickScope(here, r.scope) : here;
+    };
+    // Which folder, view and base: the session's own, or another worktree's (lib/worktree-work.ts); kept per session while the app runs.
+    const [place, setPlace] = createSignal<ReviewPlace>(opened({ worktree: saved?.worktree, scope: saved?.scope ?? "uncommitted", base: saved?.base, own: saved?.own }, review()));
+    const scope = () => place().scope;
+    const base = () => place().base;
+    /** Another worktree being looked at; undefined for the session's own folder. */
+    const worktree = () => place().worktree;
+    const away = () => worktree() !== undefined;
+    const setScope = (v: ReviewScope) => setPlace((c) => pickScope(c, v));
+    const setBase = (b: string | undefined) => setPlace((c) => ({ ...c, base: b }));
     const [turnId, setTurnId] = createSignal<number | undefined>(review()?.turnId ?? saved?.turnId);
-    const [base, setBase] = createSignal<string | undefined>(saved?.base);
     const [picked, setPicked] = createSignal<string>();
     const [unchecked, setUnchecked] = createSignal(new Set<string>());
     createEffect(on(id, () => setUnchecked(new Set<string>())));
     // Start on the file and view it was opened for; a new request moves there.
     createEffect(
-        on(review, (r) => {
-            if (r?.scope) setScope(r.scope);
-            if (r?.turnId !== undefined) setTurnId(r.turnId);
-            setPicked(r?.path);
-        }),
+        on(
+            review,
+            (r) => {
+                setPlace((c) => opened(c, r));
+                if (r?.turnId !== undefined) setTurnId(r.turnId);
+                setPicked(r?.path);
+            },
+            { defer: true },
+        ),
     );
-    createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId() }));
+    setPicked(review()?.path);
+    createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), own: place().own }));
 
     const gitScope = (): GitScope => (scope() === "harness" ? "uncommitted" : (scope() as GitScope));
-    const [git, { refetch: refetchGit }] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined));
+    const [git, { refetch: refetchGit }] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree);
+
+    // The repository's worktrees: listed once, and again each time the picker opens, on Refresh, and when the
+    // worktree looked at fails to load, so one that's been removed falls back to the session's folder.
+    // (Not with each refresh of the diff: the list counts commits in every worktree.)
+    const [listing, { refetch: refetchWorktrees }] = createResource(
+        () => sessionReadReady(p.handle) && { id: id() },
+        async ({ id }): Promise<{ list?: SessionWorktreeInfo[]; error?: string }> => {
+            try {
+                return { list: await rpc.call("session.worktrees", { id }) };
+            } catch (e) {
+                return { error: e instanceof Error ? e.message : String(e) };
+            }
+        },
+    );
+    /** The worktree looked at that went away, named until another is picked. */
+    const [gone, setGone] = createSignal<string>();
+    createEffect(() => {
+        const list = listing()?.list;
+        const was = untrack(worktree);
+        if (!list || was === undefined) return;
+        const next = keepWorktree(untrack(place), list);
+        if (next.worktree === was) return;
+        setGone(was);
+        setPlace(next);
+        setPicked(undefined);
+    });
+    // Its diff failing (the folder deleted, say): check whether it's still there.
+    createEffect(on(() => away() && git()?.error, (e) => e && void refetchWorktrees(), { defer: true }));
+    const chooseWorktree = (w: string | undefined) => {
+        if (w === worktree()) return;
+        setGone(undefined);
+        setPicked(undefined);
+        setUnchecked(new Set<string>());
+        setPlace((c) => pickWorktree(c, w));
+    };
+    /** What works in each worktree: the sessions in it, and the sub-agents the server found there. */
+    const work = () => worktreeWork(listing()?.list ?? [], app.sessions, { home: app.hello?.homeDir, self: id() });
     /** Outside a Git repository, Harness's own record is all there is. */
     const noRepo = () => git()?.repo === false;
-    const shownScope = (): ReviewScope => (noRepo() ? "harness" : scope());
+    const shownScope = (): ReviewScope => (noRepo() && !away() ? "harness" : scope());
+    /** The diff on screen is the session's own folder's (not the answer for another worktree, still shown while the session's loads). */
+    const own = () => ownOnScreen(worktree(), shownScope(), git());
+    /** The folder the files on screen are relative to. */
+    const shownRoot = () => (own() ? p.handle.view.state.cwd : (git()?.worktree ?? worktree() ?? p.handle.view.state.cwd));
     const [harness, { refetch: refetchHarness }] = createResource(
         () => sessionReadReady(p.handle) && shownScope() === "harness" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
         ({ id }) =>
@@ -206,7 +270,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     });
 
     const absolute = (path: string) => {
-        const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${p.handle.view.state.cwd}/${path}`;
+        const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${shownRoot()}/${path}`;
         // Files elsewhere in the repository come as ../path.
         const parts: string[] = [];
         for (const part of full.split("/")) {
@@ -225,16 +289,16 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // counts only for the view, base and path it was asked for; the resource keeps its last.
     const unlistedKey = () => {
         const want = picked();
-        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), want]) : undefined;
+        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), want]) : undefined;
     };
     const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
             if (!sessionReadReady(p.handle)) return false;
             const key = unlistedKey();
-            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), path: picked()! } : false;
+            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), path: picked()! } : false;
         },
         async (k) => {
-            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId);
+            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId, k.worktree);
             const f = r.files[0];
             return { key: k.key, file: f, error: r.error ?? (f ? undefined : "This file has no changes in this view.") };
         },
@@ -250,16 +314,16 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // Like the unlisted file, its answer counts only for the session, view, base and path it was asked for.
     const fullKey = () => {
         const f = file();
-        return shownScope() !== "harness" && f?.deferred ? JSON.stringify([id(), gitScope(), base(), turnId(), f.path]) : undefined;
+        return shownScope() !== "harness" && f?.deferred ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), f.path]) : undefined;
     };
     const [full, { refetch: refetchFull }] = createResource(
         () => {
             if (!sessionReadReady(p.handle)) return false;
             const key = fullKey();
-            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), path: file()!.path } : false;
+            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), path: file()!.path } : false;
         },
         async (k) => {
-            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId);
+            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId, k.worktree);
             const f = r.files[0];
             return { key: k.key, file: f && !f.deferred ? f : undefined, error: r.error ?? (f ? "Couldn't load this diff." : "This file no longer has changes. Refresh the list.") };
         },
@@ -271,13 +335,14 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const shownFile = (): Row | undefined => (file()?.deferred ? (loaded()?.file ?? file()) : file());
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
     const [fallback] = createResource(
-        () => sessionReadReady(p.handle) && gitScope() === "branch" && git()?.error && !git()?.bases.length && id(),
-        (id) => fetchGitChanges(id, "uncommitted"),
+        () => (sessionReadReady(p.handle) && gitScope() === "branch" && git()?.error && !git()?.bases.length ? { id: id(), worktree: worktree() } : false),
+        (k) => fetchGitChanges(k.id, "uncommitted", undefined, undefined, undefined, k.worktree),
     );
     const bases = () => (git()?.bases.length ? git()!.bases : (fallback()?.bases ?? []));
 
     const refresh = () => {
         void refetchGit();
+        if (away()) void refetchWorktrees();
         if (shownScope() === "harness") void refetchHarness();
     };
 
@@ -296,6 +361,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     /** How many comments each listed file has. */
     const commentCounts = createMemo(() => {
         const out = new Map<string, number>();
+        // Another worktree's files take no comments, and the session's don't belong on them.
+        if (!own()) return out;
         for (const c of reviewComments.list(id())) out.set(absolute(c.path), (out.get(absolute(c.path)) ?? 0) + 1);
         return out;
     });
@@ -329,10 +396,17 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         const dir = dirOf(path);
         return [dir, tag].filter(Boolean).join(" · ");
     };
+    // The editor opens files in the session's folders only (fs.open confines it); another worktree's file can be revealed in Finder.
     const canOpen = () => {
         const f = shownFile();
-        return Boolean(f && changeOf(f) !== "deleted" && f.kind !== "repo" && f.kind !== "submodule");
+        return Boolean(own() && f && changeOf(f) !== "deleted" && f.kind !== "repo" && f.kind !== "submodule");
     };
+    /** The diff shown is redrawn for a new file, or the same file in another worktree (which takes no comments). */
+    const viewKey = createMemo(() => {
+        const path = shownFile()?.path;
+        return path ? JSON.stringify([own() ? null : shownRoot(), path]) : undefined;
+    });
+    const awayNote = "Looking at another worktree: comments, Commit and Push are for this session's own folder.";
 
     return (
         <section class="review" aria-label="Review changes">
@@ -381,7 +455,17 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             </div>
             {/* Which changes. Refresh travels with "Earlier turns" (rv-tools), so a wrap never leaves it on a row alone. */}
             <div class="rv-bar">
-                <Show when={!noRepo()} fallback={<span class="rv-reason selectable">{git()?.reason}</span>}>
+                <Show when={!noRepo() || away()} fallback={<span class="rv-reason selectable">{git()?.reason}</span>}>
+                    <ReviewWorktreePicker
+                        value={worktree()}
+                        fallbackLabel={git()?.head ? branchLabel() : "This folder"}
+                        worktrees={listing()?.list}
+                        loading={listing.loading}
+                        error={listing()?.error}
+                        work={work}
+                        onOpen={() => void refetchWorktrees()}
+                        onPick={chooseWorktree}
+                    />
                     <Segmented
                         label="Changes scope"
                         size="sm"
@@ -390,8 +474,18 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         options={[
                             { value: "uncommitted", label: "Uncommitted", title: "The working tree against the last commit" },
                             { value: "branch", label: "Branch", title: "Everything since this branch left its base" },
-                            { value: "last-turn", label: "Last turn", title: "Changes during the last recorded turn" },
-                            { value: "harness", label: "Harness edits", title: "Only what Harness's edit tools changed in this session" },
+                            {
+                                value: "last-turn",
+                                label: "Last turn",
+                                title: away() ? "Turns are recorded in this session's own folder only. Choose This session in the worktree picker to see them." : "Changes during the last recorded turn",
+                                disabled: away(),
+                            },
+                            {
+                                value: "harness",
+                                label: "Harness edits",
+                                title: away() ? "Harness edits are this session's own, in its own folder. Choose This session in the worktree picker to see them." : "Only what Harness's edit tools changed in this session",
+                                disabled: away(),
+                            },
                         ]}
                     />
                     <Show when={scope() === "branch"}>
@@ -404,7 +498,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </Show>
                 </Show>
                 <span class="rv-tools">
-                    <Show when={!noRepo() && git()?.turns?.length}>
+                    <Show when={!noRepo() && !away() && git()?.turns?.length}>
                         <select
                             class="select review-turn"
                             aria-label="Review a recorded turn"
@@ -429,7 +523,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             </div>
             <Show when={files().length}>
                 <nav class="rv-files" aria-label="Changed files" aria-busy={loading()}>
-                    <For each={files()}>{(f) => <FilePill file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted"} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
+                    <For each={files()}>{(f) => <FilePill file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted" && own()} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
                     <Show when={more()}>
                         <span class="rv-more">
                             {more().toLocaleString()}
@@ -439,10 +533,17 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                 </nav>
             </Show>
             <div class="insp-body rv-body" aria-busy={loading()}>
-                <Show when={git()?.repo}>
+                <Show when={git()?.repo && own()}>
                     <div class="rv-pr selectable">
                         <PublishStatus handle={p.handle} request={publishRequest()} onClose={() => setPublishRequest(undefined)} />
                     </div>
+                </Show>
+                <Show when={gone()}>
+                    {(w) => (
+                        <div class="rv-warn selectable" role="status">
+                            The worktree {w()} is gone, so this shows this session's folder.
+                        </div>
+                    )}
                 </Show>
                 <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}>
                     <div class="rv-warn selectable" role="status" title={`${git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}${git()?.notes?.join(" ") ?? ""}`}>
@@ -474,9 +575,10 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </Show>
                     {/* By path, not by the file's object: a refresh (an edit landing, a turn ending) updates the
                         diff in place, so a comment being written, the scroll and the focus all stay. */}
-                    <Show when={shownFile()?.path} keyed>
-                        {(path) => {
-                            const comments = commentsFor(path);
+                    <Show when={viewKey()} keyed>
+                        {(key) => {
+                            const [wt, path] = JSON.parse(key) as [string | null, string];
+                            const comments = wt === null ? commentsFor(path) : undefined;
                             let last = shownFile()!;
                             const f = () => (last = shownFile() ?? last);
                             return (
@@ -502,10 +604,11 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                 <p class="rv-note">
                     <Show when={files().length}>{where()} </Show>
                     {SCOPE_NOTE[shownScope()]}
-                    <Show when={shownFile()}> Click a line number, or drag across several, to comment; comments go with your next message.</Show>
+                    <Show when={shownFile() && own()}> Click a line number, or drag across several, to comment; comments go with your next message.</Show>
+                    <Show when={!own()}> {awayNote}</Show>
                 </p>
             </div>
-            <Show when={!noRepo()}>
+            <Show when={!noRepo() && own()}>
                 <div class="insp-foot">
                     <Show when={shownScope() === "uncommitted"}>
                         <span class="grow" title={commitDisabled() ?? "Commit the checked files"}>
