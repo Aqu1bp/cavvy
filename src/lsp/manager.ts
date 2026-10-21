@@ -11,7 +11,7 @@ import { fileURLToPath } from "url";
 import { canonical, displayPath, isInside } from "../util/files";
 import type { Settings } from "../config/settings";
 import { fileUri, LspClient, type LspDiagnostic } from "./client";
-import { lspEnabled, lspServers, resolveCommand, serverFor, type LspServer } from "./config";
+import { lspEnabled, lspServers, resolveCommand, serverFor, type LspServer, type LspServerConfig } from "./config";
 import { buildReport, compare, type DiagnosticReport, type FileReport } from "./diagnostics";
 
 type Notice = (level: "info" | "warn", message: string) => void;
@@ -97,6 +97,12 @@ function mtimeOf(path: string): number | undefined {
     } catch {
         return undefined;
     }
+}
+
+/** Whether a running server was started the way `b` says to start it. */
+function sameLaunch(a: LspServerConfig, b: LspServerConfig): boolean {
+    const launch = (c: LspServerConfig) => JSON.stringify([c.command, c.args, c.env, c.extensionToLanguage, c.initializationOptions, c.settings]);
+    return launch(a) === launch(b);
 }
 
 /** The servers of one project folder and what they last published. */
@@ -357,7 +363,9 @@ export class LspPool {
 
     private start(server: LspServer, trusted: boolean): Running | undefined {
         const have = this.running.get(server.name);
-        if (have) return have;
+        if (have && sameLaunch(have.server, server)) return have;
+        // Set up differently since it started (settings edited, a plugin updated or swapped): the old one goes.
+        if (have) this.retire(have);
         const exe = this.resolved.get(`${server.name}\u0000${server.command}\u0000${trusted}`)?.exe;
         if (!exe) return undefined;
         let r: Running;
@@ -416,6 +424,13 @@ export class LspPool {
             msg = `Language server ${what}. It stopped ${n} times, so its diagnostics are off until the harness restarts.`;
         } else if (n === 1) msg = `Language server ${what}. It restarts on the next edit.`;
         if (msg) for (const l of this.listeners) l("warn", msg);
+    }
+
+    private retire(r: Running) {
+        this.running.delete(r.server.name);
+        if (r.idle) clearTimeout(r.idle);
+        this.forget(r);
+        void r.client.stop();
     }
 
     /** Stop a server nothing has edited for a while (it starts again on the next edit). */
@@ -481,6 +496,7 @@ async function releasePool(p: LspPool) {
  * One agent's use of its project's servers: what it has edited, and what it
  * has told its model. A sub-agent gets its own (fork), over the same pool.
  */
+
 export class LspManager {
     private pool?: LspPool;
     /** What the last report on each file said. */

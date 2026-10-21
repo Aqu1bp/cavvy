@@ -281,6 +281,40 @@ describe("install, scopes and settings", () => {
         expect(loadSettings(cwd, { trusted: false }).mcpServers?.["plugin:fmt:echo"]?.command).toBe("mine");
     });
 
+    test("a plugin's language servers join lsp.servers, after the user's own and never over them", async () => {
+        const { lspServers, serverFor } = await import("../src/lsp/config");
+        const cwd = dir("proj");
+        const mk = makeMarket("demo", [{ name: "lsp", extra: { strict: false, lspServers: { gopls: { command: "${CLAUDE_PLUGIN_ROOT}/bin/gopls", extensionToLanguage: { ".go": "go" } }, deno: { command: "deno", args: ["lsp"], extensionToLanguage: { ".ts": "typescript" } } } } }], { make: false });
+        mkdirSync(join(mk, "plugins", "lsp"), { recursive: true });
+        await addMarketplace(mk, cwd);
+        await installPlugin("lsp", "user", cwd);
+        const root = readInstalled()["lsp@demo"]!.installPath;
+        const u = readJ(paths.userSettings());
+        write(paths.userSettings(), { ...u, lsp: { servers: { mine: { command: "mine", extensionToLanguage: { ".x": "x" } }, "plugin:lsp@demo:deno": { command: "deno", disabled: true, extensionToLanguage: { ".ts": "typescript" } } } } });
+        const s = loadSettings(cwd, { trusted: false });
+        expect(Object.keys((s.lsp as any).servers)).toEqual(["mine", "plugin:lsp@demo:deno", "plugin:lsp@demo:gopls"]);
+        const servers = lspServers(s);
+        expect(servers.find((x) => x.name === "plugin:lsp@demo:gopls")).toMatchObject({ command: `${root}/bin/gopls`, builtin: false });
+        // The user's entry under that name wins (here: turning it off), and the built-in gopls stays behind the plugin's.
+        expect(servers.some((x) => x.name === "plugin:lsp@demo:deno")).toBe(false);
+        expect(serverFor(join(cwd, "a.go"), servers, () => true)?.server.name).toBe("plugin:lsp@demo:gopls");
+        write(paths.userSettings(), { ...u, lsp: false });
+        expect(loadSettings(cwd, { trusted: false }).lsp).toBe(false);
+    });
+
+    test("same-named plugins from two marketplaces each get their language server", async () => {
+        const { lspServers } = await import("../src/lsp/config");
+        const cwd = dir("proj");
+        for (const market of ["a", "b"]) {
+            const mk = makeMarket(market, [{ name: "fmt", extra: { strict: false, lspServers: { lang: { command: `${market}-ls`, extensionToLanguage: { ".go": "go" } } } } }], { make: false });
+            mkdirSync(join(mk, "plugins", "fmt"), { recursive: true });
+            await addMarketplace(mk, cwd);
+            await installPlugin(`fmt@${market}`, "user", cwd);
+        }
+        const servers = lspServers(loadSettings(cwd, { trusted: false })).filter((x) => x.name.startsWith("plugin:"));
+        expect(servers.map((x) => [x.name, x.command])).toEqual([["plugin:fmt@a:lang", "a-ls"], ["plugin:fmt@b:lang", "b-ls"]]);
+    });
+
     test("project and local scopes: only in trusted folders; later scope wins", async () => {
         const cwd = dir("proj");
         await addMarketplace(makeMarket("demo", [{ name: "fmt" }]), cwd);
@@ -458,7 +492,7 @@ describe("install, scopes and settings", () => {
         // The harness runs them too (src/config/hook-config.ts).
         const hooks = loadSettings(cwd, { trusted: false }).hooks ?? {};
         expect([hooks.Stop?.[0]?.type, hooks.PreToolUse?.[0]?.type]).toEqual(["prompt", "http"]);
-        expect(countsText({ commands: 1, agents: 0, skills: 0, hooks: 3, mcpServers: 0, lspServers: 1 })).toBe("1 command, 3 hooks, 1 language server (language servers run on Claude Code only)");
+        expect(countsText({ commands: 1, agents: 0, skills: 0, hooks: 3, mcpServers: 0, lspServers: 1 })).toBe("1 command, 3 hooks, 1 language server");
     });
 
     test("a broken settings file at the target scope stops the install before anything is fetched", async () => {

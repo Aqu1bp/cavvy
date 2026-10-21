@@ -31,9 +31,7 @@ export function countsText(c: NonNullable<PluginInfo["installed"]>["counts"]): s
     add(c.hooks, "hook");
     add(c.mcpServers, "MCP server");
     add(c.lspServers, "language server");
-    // Language servers are counted, but only Claude Code runs them (it loads the plugin itself).
-    const pending = c.lspServers ? " (language servers run on Claude Code only)" : "";
-    return parts.join(" · ") + pending;
+    return parts.join(" · ");
 }
 
 const projectName = (cwd?: string) => (cwd ? (cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? cwd) : undefined);

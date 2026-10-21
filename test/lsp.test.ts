@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -254,6 +254,27 @@ describe("diagnostics after an edit", () => {
         expect(await m.afterEdit("/tmp/elsewhere/a.ts", "ERROR: x")).toBeUndefined();
         expect(await m.afterEdit(join(root, "big.ts"), "ERROR: x\n" + "x".repeat(3 * 1024 * 1024))).toBeUndefined();
         expect(m.status()).toEqual([]);
+    });
+
+    test("a server set up differently since it started (settings edited, a plugin updated) is restarted, not reused", async () => {
+        const root = project();
+        const [one, two] = [join(root, "one.log"), join(root, "two.log")];
+        const settings: any = { lsp: { servers: { ...NO_BUILTINS, fake: fakeServer({ FAKE_LSP_LOG: one }) } } };
+        const m = new LspManager({ root, settings: () => settings, warmTimeoutMs: 1500, coldTimeoutMs: 6000, settleMs: 60 });
+        managers.push(m);
+        const file = join(root, "a.ts");
+        expect((await m.afterEdit(file, "ERROR: one\n"))?.files[0]?.newErrors).toBe(1);
+        const methods = (log: string) => (existsSync(log) ? readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l).method) : []);
+        // Unchanged: the same process answers.
+        await m.afterEdit(file, "ERROR: one\nERROR: again\n");
+        expect(methods(one).filter((x) => x === "initialize")).toHaveLength(1);
+        settings.lsp.servers.fake = fakeServer({ FAKE_LSP_LOG: two });
+        expect((await m.afterEdit(file, "ERROR: two\n"))?.files[0]?.newErrors).toBe(1);
+        expect(methods(two)).toContain("initialize");
+        expect(methods(two)).toContain("textDocument/didOpen");
+        await Bun.sleep(300);
+        expect(methods(one)).toContain("shutdown");
+        expect(m.status()).toHaveLength(1);
     });
 
     test("turned off in settings: nothing runs", async () => {
