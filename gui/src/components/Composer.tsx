@@ -103,9 +103,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, ...aroundOf(h()!.id, c), id: newCommentId(), created: Date.now() })));
         if (back.text) setText((t) => (t.trim() ? `${back.text}\n${t}` : back.text));
         if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
+        // Restored without focus while Settings covers it: that would take focus from what's typed there.
         requestAnimationFrame(() => {
             resize();
-            ta?.focus();
+            if (!settingsTab()) ta?.focus();
         });
     });
     // Not while Settings covers it (App.tsx keeps it mounted there).
@@ -114,7 +115,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     /** Takes focus on the next frame, as on opening, unless something else is being typed in or a dialog is open. */
     const focusSoon = () => {
         const frame = requestAnimationFrame(() => {
-            if (window.matchMedia("(max-width: 760px)").matches) return;
+            if (settingsTab() || window.matchMedia("(max-width: 760px)").matches) return;
             const active = document.activeElement;
             if (active !== ta && active?.matches("input, textarea, select, [contenteditable='true']")) return;
             if (document.querySelector('[role="dialog"]')) return;

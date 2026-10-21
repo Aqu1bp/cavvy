@@ -16,3 +16,16 @@ test("nothing in the covered session paints over the settings page", async () =>
     expect(decl(".main > .keep", "isolation")).toBe("isolate");
     expect(decl(".main > .settings-host", "z-index")).toBe("6");
 });
+
+test("nothing in the covered session takes focus on its own while Settings is up", async () => {
+    // Focus going there would be moved on (lib/cover.ts), out of what's being typed in Settings.
+    const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
+    const composer = await read("Composer.tsx");
+    const restore = composer.slice(composer.indexOf("What the server hands back"), composer.indexOf("createEffect(on(focusComposer"));
+    expect(restore).toContain("if (!settingsTab()) ta?.focus();");
+    expect(restore).not.toMatch(/^\s*ta\?\.focus\(\);/m);
+    expect(composer).toMatch(/const focusSoon = [\s\S]{0,120}if \(settingsTab\(\) \|\|/);
+    const dock = await read("InteractionDock.tsx");
+    expect(dock).toContain("const mayFocus = () => !typing() && !settingsTab();");
+    expect(dock).not.toMatch(/!typing\(\) && el\.focus\(\)|typing\(\) \|\| input\.focus\(\)/);
+});

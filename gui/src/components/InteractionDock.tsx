@@ -10,7 +10,7 @@ import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Gl
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { rpc } from "../state/app";
-import { setPlanDialog } from "../state/ui";
+import { setPlanDialog, settingsTab } from "../state/ui";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
@@ -19,6 +19,9 @@ function typing(): boolean {
     // The find bar's buttons too: its Esc closes it, and it has no use for the number keys.
     return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar")));
 }
+
+/** A card arriving takes focus only when it's in sight and nothing is typed elsewhere (Settings covers it, kept mounted). */
+const mayFocus = () => !typing() && !settingsTab();
 
 /** A key pressed this soon after a card appears was meant for something else. */
 const SETTLE_MS = 400;
@@ -316,7 +319,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                     class="itab-input"
                     ref={(el) => {
                         // Nothing to pick: the answer is typed, so the cursor goes there (unless it's in another field).
-                        if (!p.it.options.length) queueMicrotask(() => !typing() && el.focus());
+                        if (!p.it.options.length) queueMicrotask(() => mayFocus() && el.focus());
                     }}
                     value={other()}
                     placeholder={p.it.options.length ? "Something else…" : "Your answer"}
@@ -379,7 +382,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
         return true;
     });
     // Not while typing elsewhere: what was meant for the message box would land in here.
-    onMount(() => typing() || input.focus());
+    onMount(() => mayFocus() && input.focus());
     onCleanup(() => {
         if (input) input.value = "";
     });
