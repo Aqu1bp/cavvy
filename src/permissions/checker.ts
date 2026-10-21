@@ -504,6 +504,8 @@ export class PermissionChecker {
                 }
                 // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
                 const suggestions = [tool.name];
+                // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.
+                if (tool.name === "GitPush" || tool.name === "CreatePullRequest") return { behavior: "ask", suggestions, ...(mode === "auto" ? { reason: "Pushing to the remote always asks in auto mode." } : {}) };
                 return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };
             }
             case "network": {

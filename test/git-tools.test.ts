@@ -415,11 +415,15 @@ describe("permissions", () => {
         return new PermissionChecker(() => ({}) as any, cwd).check(tool(name), input, mode, cwd);
     };
 
-    test("committing, pushing and opening a pull request ask, offer 'don't ask again', go to the reviewer in auto, and are refused in plan mode", () => {
+    test("committing, pushing and opening a pull request ask, offer 'don't ask again', and are refused in plan mode; in auto a commit goes to the reviewer, publishing asks the user", () => {
         for (const name of ["GitCommit", "GitPush", "CreatePullRequest"]) {
             expect(decide(name, "default")).toMatchObject({ behavior: "ask", suggestions: [name] });
             expect(decide(name, "acceptEdits")).toMatchObject({ behavior: "ask" });
-            expect(decide(name, "auto")).toMatchObject({ behavior: "ask", needsClassifier: true });
+            if (name === "GitCommit") expect(decide(name, "auto")).toMatchObject({ behavior: "ask", needsClassifier: true });
+            else {
+                expect(decide(name, "auto")).toMatchObject({ behavior: "ask", suggestions: [name] });
+                expect(decide(name, "auto").needsClassifier).toBeUndefined();
+            }
             expect(decide(name, "plan").behavior).toBe("deny");
             expect(decide(name, "bypassPermissions").behavior).toBe("allow");
         }
