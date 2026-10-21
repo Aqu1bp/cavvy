@@ -1092,7 +1092,8 @@
 }
 
 /* The plan's first row (keep planning, save, worktree) starts at the leading edge. */
-.ask-row.plan-row:first-of-type {
+/* The plan card's first row: the three quiet actions, at the leading edge. */
+.ask-row.plan-row.quiet-row {
     justify-content: flex-start;
 }
 
@@ -1134,7 +1135,7 @@
     transform: scale(0.96);
 }
 
-.ask-row.plan-row:first-of-type .pbtn {
+.ask-row.plan-row.quiet-row .pbtn {
     height: 28px;
 }
 
@@ -2033,8 +2034,21 @@
         display: none;
     }
 
+    /* Full width, and a long answer wraps rather than losing its end. */
     .ask-row .pbtn {
         width: 100%;
+        height: auto;
+        min-height: 30px;
+        padding-block: 5px;
+        line-height: 1.25;
+        white-space: normal;
+        text-align: center;
+    }
+
+    .ask-row .pbtn .truncate {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
     }
 
     .ask-row .pbtn.primary {

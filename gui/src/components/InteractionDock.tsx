@@ -481,7 +481,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                     />
                 </Show>
             </div>
-            <div class="itab-actions ask-row plan-row">
+            <div class="itab-actions ask-row plan-row quiet-row">
                 <button class="pbtn quiet" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
                     {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
                 </button>
