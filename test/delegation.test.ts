@@ -1483,6 +1483,27 @@ describe("Monitor for Codex (it has none of its own)", () => {
         }
     });
 
+    test("a Codex sub-agent gets no Monitor, and its call can't end the main turn", async () => {
+        process.env.FAKE_SCENARIO = "subagent";
+        process.env.FAKE_CHILD_MCP = JSON.stringify({ tool: "monitor", args: { command: "touch started; sleep 30", description: "child's" } });
+        try {
+            const { run, agent, asked } = await makeAgent({ provider: "codex", wakes: true });
+            try {
+                expect(await run("count files")).toBe("done");
+                const [r] = mcpResults();
+                expect(r).toMatchObject({ tool: "monitor", isError: true });
+                expect(r.text).toContain("isn't available to sub-agents");
+                // Refused before any check: not asked about (the sub-agent's own command is).
+                expect(asked.map((a) => a.tool.name)).not.toContain("Monitor");
+                expect(monitors(agent)).toHaveLength(0);
+            } finally {
+                stopWatchers(agent.state);
+            }
+        } finally {
+            delete process.env.FAKE_CHILD_MCP;
+        }
+    });
+
     test("monitor_output and monitor_stop act on monitors only", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([

@@ -1721,6 +1721,7 @@ export class Agent {
      */
     private emitFromBackend(e: AgentEvent) {
         e = redactBackendEvent(e);
+        this.noteServedCall(e, this.servedMain);
         // Harness's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const native = nativeMonitorCall(e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length), (e.call.input ?? {}) as Record<string, unknown>);
@@ -1799,6 +1800,26 @@ export class Agent {
     }
 
     private servedCalls = 0;
+    /** The backend's calls of the tools Harness serves it, by whose they are: its main thread's, or a sub-agent's. */
+    private servedMain = new Set<string>();
+    private servedSub = new Set<string>();
+
+    private noteServedCall(e: AgentEvent, into: Set<string>): void {
+        if (e.type === "subagent") return this.noteServedCall(e.event, this.servedSub);
+        if ((e.type !== "tool_start" && e.type !== "tool_end") || !e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`)) return;
+        if (e.type === "tool_start") into.add(e.call.id);
+        else into.delete(e.call.id);
+    }
+
+    /** A served call one of the backend's sub-agents made. Its event may come just after the call, so this waits a moment for it. */
+    private async fromBackendSubagent(callId: string): Promise<boolean> {
+        for (let i = 0; i < 40; i++) {
+            if (this.servedMain.has(callId)) return false;
+            if (this.servedSub.has(callId)) return true;
+            await Bun.sleep(50);
+        }
+        return false;
+    }
     /** Ends the backend's running turn: a served call's checks said stop. */
     private stopServedTurn?: () => void;
 
@@ -1809,6 +1830,8 @@ export class Agent {
      * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
      */
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
+        // Only the main agent can be woken, so a sub-agent gets no Monitor (Harness's sub-agents don't either). Nor can its stop end the main turn.
+        if (callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
         const prep = await this.prepare(call, signal, tool);
         if ("result" in prep) {

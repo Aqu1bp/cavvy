@@ -390,6 +390,16 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("turn/started", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "inProgress" } });
             notify("item/agentMessage/delta", { threadId: child, turnId: childTurn, itemId: "c-msg1", delta: "Looking around." });
             notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg1", text: "Looking around.", phase: "commentary" } });
+            // FAKE_CHILD_MCP={tool,args}: the sub-agent calls one of the harness's MCP tools.
+            if (process.env.FAKE_CHILD_MCP) {
+                const c = JSON.parse(process.env.FAKE_CHILD_MCP);
+                const server = [...mcpServers.keys()][0] ?? "none";
+                const item = { type: "mcpToolCall", id: `c-mcp-${turnId}`, server, tool: c.tool, arguments: c.args, status: "inProgress", result: null, error: null };
+                notify("item/started", { threadId: child, turnId: childTurn, item });
+                const r = await callTool(mcpServers.get(server)!, c.tool, c.args, { callId: item.id });
+                log({ mcpResult: { tool: c.tool, ...r } });
+                notify("item/completed", { threadId: child, turnId: childTurn, item: { ...item, status: r.isError ? "failed" : "completed", result: { content: [{ type: "text", text: r.text }], isError: r.isError } } });
+            }
         };
         // FAKE_CHILD_EARLY=1: its first events come before the spawn says whose thread it is; =all: all of them.
         const early = process.env.FAKE_CHILD_EARLY;
