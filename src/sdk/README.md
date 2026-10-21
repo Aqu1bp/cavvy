@@ -44,7 +44,7 @@ Returns a `Query`, an async generator of `SDKMessage`. Nothing runs until you st
 | `resume` | A session id, or the start of one, in `cwd`. |
 | `continue` | Continue the latest session in `cwd`. |
 | `persistSession` | Default `true`: saved like the CLI's sessions, so `harness -r <id>` and the GUI open it. |
-| `trusted` | Load the project's `.harness/settings.json`, `.mcp.json` and memory files. Default: as `harness -p`, which trusts folders you trusted and folders with no project configuration. |
+| `trusted` | Load the project's `.harness/settings.json`, `.mcp.json`, memory files, agents and skills. `true` trusts the folder until the process exits, as answering yes to the trust prompt does (not saved), so Claude Code and Codex get the project's own configuration too. `false` keeps all of it out, even in a folder you trusted, and a resumed session is sent without the memory files its saved prompt was made with. Default: as `harness -p`, which trusts folders you trusted and, for that query only, folders with no project configuration. |
 | `settings` | Settings over those loaded from disk: `hooks`, `mcpServers`, `env`, `permissions`, … Rule lists and hooks add up; maps merge by key. |
 | `abortController` | Aborting it ends the query. |
 | `includePartialMessages` | Also yield `stream_event` messages as text streams in. |
@@ -54,8 +54,8 @@ Returns a `Query`, an async generator of `SDKMessage`. Nothing runs until you st
 | | |
 |---|---|
 | `interrupt()` | Stop the running turn. Its result has subtype `error_aborted`. A conversation goes on with the next message. |
-| `steer(text)` | Send a message to the running turn: the model gets it between steps, as when you type while the agent works. With no turn running, it becomes the next turn. Resolves `false` when the query is over. |
-| `setPermissionMode(mode)` | For the rest of the query. |
+| `steer(text)` | Send a message to the running turn: the model gets it between steps (Codex takes it into its running turn at once), as when you type while the agent works. With no turn running, it becomes the next turn. Resolves `false` when the query is over. |
+| `setPermissionMode(mode)` | For the rest of the query, the running turn included (Claude Code and Codex turns too). The model is told with its next message, as in the terminal. |
 | `close()` | End the query: stop the turn, run SessionEnd hooks, stop background shells and MCP servers, let go of the session. `break` out of `for await` does the same, and so does `await using q = query(…)`. |
 | `sessionId` | A promise of the session's id. |
 
@@ -103,7 +103,7 @@ const lookup = tool(
 );
 ```
 
-The input schema is JSON Schema. The handler returns a string, or `{ content, isError }`; a thrown error becomes an error result the model sees, and the turn goes on. Your tools run without a permission prompt (you wrote them), but deny rules and ask rules on their names still apply, and in plan mode only those marked `readOnly` run. Names can't clash with the built-in tools. Claude Code and Codex models run their own tools, so they aren't offered yours; the query says so in a notice.
+The input schema is JSON Schema. The handler returns a string, or `{ content, isError }`; a thrown error becomes an error result the model sees, and the turn goes on. Your tools run without a permission prompt (you wrote them), but deny rules and ask rules on their names still apply, and in plan mode only those marked `readOnly` run. Names can't clash with the built-in tools, `Skill` included. Claude Code and Codex models run their own tools, so they aren't offered yours; the query says so in a notice.
 
 ## Errors
 

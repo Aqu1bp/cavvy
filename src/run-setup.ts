@@ -55,6 +55,8 @@ export interface RunSetupOptions {
 export interface RunSetup {
     cwd: string;
     trusted: boolean;
+    /** The system prompt this run sends in place of the session's (see AgentOptions.systemPrompt). */
+    system?: string;
     settings: Settings;
     session: Session;
     resumed: boolean;
@@ -220,9 +222,13 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
         return opts?.review ? reviewText(res) : textOf(res);
     };
 
-    if (!session.meta.system) session.setSystem(buildSystemPrompt({ cwd: o.cwd, model, append: mcp.instructions() || undefined, projectFiles: o.trusted }));
+    const prompt = () => buildSystemPrompt({ cwd: o.cwd, model, append: mcp.instructions() || undefined, projectFiles: o.trusted });
+    if (!session.meta.system) session.setSystem(prompt());
+    // A resumed session's prompt was frozen with the project's memory files when it was trusted; a run
+    // that doesn't trust the folder sends one without them, and leaves the saved one as it was.
+    const system = resumed && !o.trusted ? prompt() : undefined;
 
-    return { cwd: o.cwd, trusted: o.trusted, settings, session, resumed: Boolean(resumed), ref, model, client, provider, toolState, checker, mcp, nativeWebSearch, skills, listings, tools, complete };
+    return { cwd: o.cwd, trusted: o.trusted, system, settings, session, resumed: Boolean(resumed), ref, model, client, provider, toolState, checker, mcp, nativeWebSearch, skills, listings, tools, complete };
 }
 
 export interface RunAgentOptions {
@@ -254,6 +260,7 @@ export function createRunAgent(s: RunSetup, o: RunAgentOptions): Agent {
         listings: () => s.listings,
         maxTurns: o.maxTurns,
         appendSystemPrompt: o.appendSystemPrompt,
+        systemPrompt: s.system,
         host: o.host,
         helpers: {
             complete: s.complete,

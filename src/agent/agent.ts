@@ -215,6 +215,11 @@ export interface AgentOptions {
      * resumed session and isn't kept by later runs without the flag.
      */
     appendSystemPrompt?: string;
+    /**
+     * The system prompt for this run in place of the session's frozen one, not saved: a resumed session
+     * the run doesn't trust, whose prompt was frozen with the project's memory files in it.
+     */
+    systemPrompt?: string;
     /** Use the provider's server-side web search when available. */
     nativeWebSearch?: boolean;
     /**
@@ -476,7 +481,7 @@ export class Agent {
 
     /** The system prompt as sent: the session's, plus --append-system-prompt. */
     systemPrompt(): string {
-        const base = this.session.meta.system ?? "";
+        const base = this.o.systemPrompt ?? this.session.meta.system ?? "";
         const append = this.o.appendSystemPrompt;
         // Sessions frozen by older versions may end with it already, as its own paragraph.
         if (!append || base === append || base.endsWith(`\n\n${append}`)) return base;
@@ -2594,6 +2599,7 @@ export class Agent {
             client,
             tools,
             isSubagent: true,
+            systemPrompt: undefined,
             settings: () => {
                 const parent = this.o.settings();
                 return { ...parent, effort, hooks: withAgentHooks(parent.hooks, def.hooks) };

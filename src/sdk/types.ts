@@ -70,9 +70,13 @@ export interface Options {
     /** Save the session like the CLI does, so `harness -r <id>` opens it. Default true. */
     persistSession?: boolean;
     /**
-     * Load the project's own settings, .mcp.json and memory files. Default: as
-     * `harness -p`, true for folders the user trusted and for folders without
-     * project configuration.
+     * Load the project's own settings, .mcp.json, memory files, agents and
+     * skills. True trusts the folder until the process exits (not saved), as
+     * the trust prompt's yes does, so agent CLIs get the project's own
+     * configuration too. False keeps it all out, even in a folder the user
+     * trusted, and a resumed session goes without the memory files frozen into
+     * its prompt. Default: as `harness -p`, true for folders the user trusted
+     * and, for this query only, for folders without project configuration.
      */
     trusted?: boolean;
     /** Settings over those loaded from disk: hooks, mcpServers, env, permissions, … Rule lists add up. */

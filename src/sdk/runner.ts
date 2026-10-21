@@ -8,7 +8,7 @@ import type { Agent, AgentEvent, PermissionRequest, PermissionResponse, TurnEndR
 import { findSession, listSessions } from "../agent/session";
 import { loadHarnessEnv, preloadKeys } from "../auth/credentials";
 import { harnessHome } from "../config/paths";
-import { isTrusted, projectConfigSummary, trustForSession } from "../config/trust";
+import { isTrusted, projectConfigSummary, trustUntilExit } from "../config/trust";
 import { PERMISSION_MODES, startMode, type PermissionMode } from "../permissions/modes";
 import { BUILTIN_TOOLS } from "../tools/index";
 import type { Tool } from "../tools/types";
@@ -54,6 +54,9 @@ function loadEnv(): Promise<{ legacyModel?: string; notes: string[] }> {
     })());
 }
 
+/** Tools the run adds besides the built-ins, in any folder (the Skill tool, when it has skills). */
+const RESERVED_TOOLS = ["Skill"];
+
 function checkOptions(o: Options): void {
     const fail = (m: string): never => {
         throw new HarnessSdkError(m);
@@ -65,7 +68,7 @@ function checkOptions(o: Options): void {
     const names = new Set<string>();
     for (const t of o.tools ?? []) {
         if ((t as SdkTool)?.kind !== "sdk-tool") fail("tools: make each tool with tool().");
-        if (BUILTIN_TOOLS.some((b) => b.name === t.name)) fail(`tools: "${t.name}" is the name of a built-in tool. Pick another name.`);
+        if (BUILTIN_TOOLS.some((b) => b.name === t.name) || RESERVED_TOOLS.includes(t.name)) fail(`tools: "${t.name}" is the name of a built-in tool. Pick another name.`);
         if (names.has(t.name)) fail(`tools: two tools are named "${t.name}".`);
         names.add(t.name);
     }
@@ -127,6 +130,8 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
         w?.();
     };
     let setMode: ((m: PermissionMode) => void) | undefined;
+    /** The run's agent, once it has one. */
+    let agentRef: Agent | undefined;
     let resolveId!: (id: string) => void;
     let rejectId!: (e: unknown) => void;
     const sessionId = new Promise<string>((res, rej) => ((resolveId = res), (rejectId = rej)));
@@ -203,7 +208,8 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             // Trust, as `harness -p`, but a folder trusted for having nothing to protect is trusted for
             // this query only: one that has project configuration by the next query is judged again.
             let trusted = o.trusted;
-            if (trusted) trustForSession(cwd);
+            // Said by the caller, as the user saying yes to the trust prompt: agent CLIs get the project's configuration too.
+            if (trusted) trustUntilExit(cwd);
             else if (trusted === undefined) {
                 const found = projectConfigSummary(cwd);
                 trusted = isTrusted(cwd) || !found.length;
@@ -216,7 +222,10 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 if (!resumeFile) throw new HarnessSdkError(`No session matching "${o.resume}" in ${cwd}.`);
             } else if (o.continue) resumeFile = listSessions(cwd, 1)[0]?.file;
             if (resumeFile && openSessions.has(resumeFile)) throw new HarnessSdkError(`Session ${o.resume ?? resumeFile} is open in another query in this process. Close that one first.`);
-            if (closed.signal.aborted) return;
+            if (closed.signal.aborted) {
+                if (inputError) throw inputError;
+                return;
+            }
 
             try {
                 setup = await setupRun({
@@ -251,7 +260,12 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             const start = startMode(pendingMode ?? o.permissionMode, s.settings, cwd, o.settings?.permissions?.defaultMode === "bypassPermissions");
             let mode = start.mode;
             if (start.ignoredBypass) warn("Ignored defaultMode bypassPermissions from project settings; only your user settings or the permissionMode option can enable it.");
-            setMode = (m) => (mode = m);
+            setMode = (m) => {
+                const from = mode;
+                mode = m;
+                // As the terminal does: a backend's running turn takes it, and the model hears of it.
+                agent?.noteModeChange(from, m);
+            };
 
             const custom = (o.tools ?? []).map(toAgentTool);
             const backend = isAgentBackend(s.client);
@@ -281,6 +295,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 },
             });
 
+            agentRef = agent;
             sink.push({
                 type: "system",
                 subtype: "init",
@@ -346,7 +361,11 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
         interrupt: () => turn?.abort(),
         steer: (text) => {
             if (!accepting || closed.signal.aborted) return false;
-            if (turn) steering.push(text);
+            if (turn) {
+                steering.push(text);
+                // A backend that can (Codex) takes it into the running turn now.
+                agentRef?.queueChanged();
+            }
             else {
                 pending.push(text);
                 poke();

@@ -824,6 +824,130 @@ describe("SDK integration with skills and subagent definitions", () => {
     });
 });
 
+describe("found in the Codex review", () => {
+    /** A fake agent CLI (test/fixtures/fake-*.ts) in place of the real one, logging what it gets. */
+    async function fakeCli(provider: "claude-code" | "codex", env: Record<string, string>) {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        const { forgetClient } = await import("../src/providers/models");
+        const bin = tempDir("harness-sdk-bin-");
+        const exe = join(bin, provider === "codex" ? "codex" : "claude");
+        const log = join(bin, "log.jsonl");
+        writeFileSync(exe, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts")}" "$@"\n`);
+        chmodSync(exe, 0o755);
+        saveAgentConfig(provider, { path: exe });
+        forgetClient(provider);
+        const all = { FAKE_LOG: log, ...env };
+        for (const [k, v] of Object.entries(all)) process.env[k] = v;
+        return {
+            lines: () => (existsSync(log) ? readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l)) : []),
+            restore: () => {
+                for (const k of Object.keys(all)) delete process.env[k];
+            },
+        };
+    }
+
+    test("setPermissionMode() mid-turn reaches Claude Code's running turn", async () => {
+        const cli = await fakeCli("claude-code", { FAKE_SCENARIO: "bash" });
+        try {
+            const cwd = project();
+            const q = query({ prompt: "run the tests", options: { cwd, model: "claude-code:default", persistSession: false, permissionMode: "bypassPermissions", canUseTool: () => ({ behavior: "allow" }) } });
+            for await (const m of q) if (m.type === "system" && m.subtype === "init") await q.setPermissionMode("plan");
+            const sent = cli.lines().filter((l) => l.received?.request?.subtype === "set_permission_mode").map((l) => l.received.request.mode);
+            expect(sent).toContain("plan");
+        } finally {
+            cli.restore();
+        }
+    });
+
+    test("setPermissionMode() tells an API model with its next message, as the terminal does", async () => {
+        const input = channel();
+        const q = query({ prompt: input, options: { cwd: project(), model: MODEL, persistSession: false } });
+        input.send("one");
+        for await (const m of q) {
+            if (m.type !== "result") continue;
+            if (requests.length === 1) {
+                await q.setPermissionMode("acceptEdits");
+                input.send("two");
+            } else input.end();
+        }
+        expect(JSON.stringify(requests[0]!.messages)).not.toContain("switched the permission mode");
+        expect(JSON.stringify(requests[1]!.messages)).toContain("switched the permission mode");
+    });
+
+    test("steer() goes into Codex's running turn (turn/steer), not after it", async () => {
+        const cli = await fakeCli("codex", { FAKE_SCENARIO: "slow", FAKE_STEER_WAKES: "1" });
+        try {
+            const cwd = project();
+            const q = query({ prompt: "start", options: { cwd, model: "codex:default", persistSession: false, permissionMode: "bypassPermissions" } });
+            const out: SDKMessage[] = [];
+            const t = Date.now();
+            for await (const m of q) {
+                out.push(m);
+                if (m.type === "system" && m.subtype === "init") {
+                    void until(() => cli.lines().some((l) => l.received?.method === "turn/start"), 4000).then(() => q.steer("also check the docs"));
+                }
+            }
+            expect(cli.lines().some((l) => l.received?.method === "turn/steer")).toBe(true);
+            expect(results(out)).toHaveLength(1);
+            expect(results(out)[0]!.result).toContain("Heard: also check the docs");
+            expect(Date.now() - t).toBeLessThan(4500);
+        } finally {
+            cli.restore();
+        }
+    });
+
+    test("trusted: true lets Claude Code load the project's settings", async () => {
+        const cli = await fakeCli("claude-code", { FAKE_SCENARIO: "silent" });
+        try {
+            const cwd = project();
+            mkdirSync(join(cwd, ".claude"), { recursive: true });
+            writeFileSync(join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch ${join(cwd, "hook-ran")}` }] }] } }));
+            await collect(query({ prompt: "hello", options: { cwd, model: "claude-code:default", trusted: true, persistSession: false, canUseTool: () => ({ behavior: "deny" }) } }));
+            // The turn's launches, in the project (side requests run from the home folder with no settings at all).
+            const launches = cli.lines().filter((l) => Array.isArray(l.argv) && l.cwd === cwd).map((l) => l.argv as string[]);
+            expect(launches.length).toBeGreaterThan(0);
+            for (const argv of launches) {
+                const i = argv.indexOf("--setting-sources");
+                if (i >= 0) expect(argv[i + 1]).toContain("project");
+            }
+            expect(existsSync(join(cwd, "hook-ran"))).toBe(true);
+        } finally {
+            cli.restore();
+        }
+    });
+
+    test("an input iterable that throws before the first message ends the query with its error", async () => {
+        async function* input(): AsyncGenerator<string> {
+            throw new Error("input broke");
+        }
+        await expect(collect(query({ prompt: input(), options: { cwd: project(), model: MODEL, persistSession: false } }))).rejects.toThrow("input broke");
+    });
+
+    test("trusted: false on resume leaves out the memory frozen into the saved system prompt, without changing the session", async () => {
+        const cwd = project();
+        writeFileSync(join(cwd, "AGENTS.md"), "RESUME-MEMORY-MARKER");
+        const first = query({ prompt: "one", options: { cwd, model: MODEL } });
+        await collect(first);
+        const id = await first.sessionId;
+        expect(JSON.stringify(requests[0]!.messages)).toContain("RESUME-MEMORY-MARKER");
+
+        requests.length = 0;
+        await collect(query({ prompt: "two", options: { cwd, model: MODEL, resume: id, trusted: false } }));
+        expect(JSON.stringify(requests[0]!.messages)).not.toContain("RESUME-MEMORY-MARKER");
+        expect(lastSent()).toContain("one");
+
+        // The saved session keeps its prompt: resumed again with trust, the memory is back.
+        requests.length = 0;
+        await collect(query({ prompt: "three", options: { cwd, model: MODEL, resume: id } }));
+        expect(JSON.stringify(requests[0]!.messages)).toContain("RESUME-MEMORY-MARKER");
+    });
+
+    test("a tool can't be named Skill, even where no skills are loaded", async () => {
+        const skill = tool("Skill", "mine", { type: "object", properties: {} }, () => "mine");
+        await expect(collect(query({ prompt: "x", options: { cwd: project(), model: MODEL, tools: [skill] } }))).rejects.toThrow(/built-in tool/);
+    });
+});
+
 describe("harness -p --output-format stream-json", () => {
     test("prints the SDK's message shapes", async () => {
         const cwd = project();
