@@ -38,6 +38,9 @@ body {
 }
 
 .selectable,
+.transcript,
+.prompt-comment-text,
+.dc-text,
 .user-text,
 .md,
 .md-block,
@@ -69,6 +72,12 @@ textarea,
 [contenteditable="true"] {
     user-select: text;
     -webkit-user-select: text;
+}
+
+/* The conversation reads as a document: all of it is selectable, its buttons aren't. */
+.transcript button {
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 /* The window: its tint over the native material in the macOS app (Liquid
