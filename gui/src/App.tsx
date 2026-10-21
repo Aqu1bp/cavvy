@@ -293,7 +293,8 @@ export function App() {
             "chat:modelPicker": () => void (!settingsTab() && setModelPickerOpen(true)),
             "chat:focusInput": () => void (!settingsTab() && requestComposerFocus()),
             // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
-            "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
+            // Nothing under Settings: the page's own find would match the conversation it covers (kept mounted).
+            "app:find": () => (settingsTab() ? undefined : active() && !agent() ? void openFind() : false),
             "app:previousSession": () => void cycleSession(-1),
             "app:nextSession": () => void cycleSession(1),
         };

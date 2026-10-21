@@ -82,3 +82,38 @@ test("a menu of the covered session opened while Settings is up (a shortcut, say
         expect(closes).toBe(2);
     } finally { dispose(); }
 });
+
+test("⌘F under Settings does nothing: neither the conversation's find nor the page's own (which would match the covered transcript)", () => {
+    const appSource = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "utf8");
+    const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
+    const tags = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
+    const [settingsTab, setSettingsTab] = solid.createSignal<string | undefined>("general");
+    const keys: ((e: any) => void)[] = [];
+    let finds = 0;
+    const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
+        RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => ({ view: { state: { cwd: "/project" }, agents: [] } }),
+        prefs: { sidebar: true }, isTauri: false, document: { activeElement: null, querySelector: () => null }, setEnterSends() {}, skipCovered() {}, warmUp() {}, setTimeout() {},
+        window: { addEventListener: (type: string, fn: (e: any) => void) => type === "keydown" && keys.push(fn), removeEventListener() {} },
+        actionOf: (e: any) => (e.key === "f" && e.metaKey ? "app:find" : undefined), openFind: () => { finds++; }, blocked: () => false, railOpen: () => false,
+        railDrag: () => undefined, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }),
+        settingsTab, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
+        ...Object.fromEntries(tags.map((tag) => [tag, () => node(tag)])),
+    });
+    const root = node("root");
+    const dispose = renderer.render(App, root);
+    const press = () => {
+        const e = { key: "f", metaKey: true, ctrlKey: false, altKey: false, target: null, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
+        for (const fn of keys) fn(e);
+        return e.defaultPrevented;
+    };
+    try {
+        expect(keys.length).toBeGreaterThan(0);
+        // Under Settings: the key is taken (no page find), and the conversation's find doesn't open.
+        expect(press()).toBe(true);
+        expect(finds).toBe(0);
+        // Back in the session: the conversation's find.
+        setSettingsTab(undefined);
+        expect(press()).toBe(true);
+        expect(finds).toBe(1);
+    } finally { dispose(); }
+});
