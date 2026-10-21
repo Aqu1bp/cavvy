@@ -8,7 +8,7 @@ import { readFileSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
+const { applyOp, coalesce, fromWireState, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
 const { agentHead, agentStep, agentsFromTurns, cutOffPrompt, promptKey, replay, runsAgent, shownStep, toolBlockFromCall, UiLog, withoutActionsNote } = await import("../src/server/history");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
@@ -176,6 +176,21 @@ describe("timeline ops", () => {
         applyOp(v, wire);
         expect(v.state.activity).toBeUndefined();
         expect("activity" in v.state).toBe(true);
+    });
+
+    // Issue #190: a snapshot's unset fields arrive as null too, and the GUI's Stop check read `.judge` of a null goal.
+    test("a snapshot's unset fields are unset in the GUI, so a session without a goal can be read (#190)", async () => {
+        const { canStop } = await import("../gui/src/lib/session-status");
+        const snap = { state: { id: "s", busy: false, goal: undefined, activity: undefined, queued: [] } as unknown as SessionState, turns: [] as Turn[], agents: [] as AgentRun[], seq: 1 };
+        const wire = JSON.parse(JSON.stringify(snap, wireReplacer));
+        expect(wire.state.goal).toBeNull();
+        const state = fromWireState(wire.state);
+        expect(state.goal).toBeUndefined();
+        expect(state.activity).toBeUndefined();
+        expect(state.queued).toEqual([]);
+        expect(canStop(state)).toBe(false);
+        expect(canStop({ ...state, busy: true })).toBe(true);
+        expect(canStop({ ...state, goal: { condition: "c", state: "active", since: 1, turns: 0, tokens: 0, judge: "model" } })).toBe(true);
     });
 
     test("live output keeps only its tail", () => {

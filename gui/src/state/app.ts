@@ -6,7 +6,7 @@ import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
-import { applyOp, type SessionView } from "@shared/timeline";
+import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
 import { prefs } from "./prefs";
@@ -281,6 +281,8 @@ export function handleFor(id: string | undefined): SessionHandle | undefined {
 
 function adopt(snap: SessionSnapshot): SessionHandle {
     const id = snap.state.id;
+    // Its unset fields come as null (an unset goal would be read as one).
+    const state = fromWireState(snap.state);
     // Ops missed while it wasn't open (or the connection was down) may have created files.
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
@@ -290,13 +292,13 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         existing.seq = snap.seq;
         existing.queue = [];
         batch(() => {
-            existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
+            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
             existing.setReady(true);
         });
         return existing;
     }
     const h = createRoot(() => {
-        const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
+        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [] });
         const [draft, setDraft] = createSignal<Draft | undefined>();
         const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
