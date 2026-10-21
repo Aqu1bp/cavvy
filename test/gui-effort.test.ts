@@ -67,3 +67,4 @@ const fixture = (name: string) =>
 
 fixture("EffortBars: fills to the value, previews on hover, applies on click, drag and keys");
 fixture("EffortBars: a secondary or middle press changes nothing and starts no drag");
+fixture("EffortPicker: a change the server refuses goes back to the level in force, and picking it again sends again (in a session and on Home)");

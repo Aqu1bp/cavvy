@@ -314,13 +314,17 @@ export async function setFastMode(enabled: boolean) {
     } catch (e) { reportError(e); }
 }
 
-export async function setEffort(effort: EffortLevel) {
+/** Whether the server took it (a failure is reported here). */
+export async function setEffort(effort: EffortLevel): Promise<boolean> {
     const id = app.activeId;
-    if (id) await rpc.call("session.setEffort", { id, effort }).catch(reportError);
-    else {
-        await rpc.call("settings.update", { patch: { effort } }).catch(reportError);
-        setApp("settings", "effort", effort);
-    }
+    const failed = (e: unknown) => {
+        reportError(e);
+        return false;
+    };
+    if (id) return rpc.call("session.setEffort", { id, effort }).then(() => true, failed);
+    const ok = await rpc.call("settings.update", { patch: { effort } }).then(() => true, failed);
+    if (ok) setApp("settings", "effort", effort);
+    return ok;
 }
 
 export async function rename(id: string, title: string) {

@@ -412,9 +412,14 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
     // Shown at once while the server takes it, so a drag across the bars doesn't lag behind the pointer.
     const [shown, setShown] = createSignal(p.effort);
     createEffect(on(() => p.effort, (e) => setShown(() => e)));
+    let picks = 0;
     const pick = (id: EffortLevel) => {
         setShown(() => id);
-        void setEffort(id);
+        const n = ++picks;
+        // Refused (disconnected, say): back to the level the session has, so picking it again sends again.
+        void setEffort(id).then((ok) => {
+            if (!ok && n === picks) setShown(() => p.effort);
+        });
     };
     const label = () => (reasoning() ? (effortOf(shown())?.label ?? "Default") : fastOn() ? "Fast" : "Standard");
     return (
