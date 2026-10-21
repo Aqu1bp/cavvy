@@ -524,6 +524,44 @@ describe("nothing gets lost", () => {
         }
     });
 
+    // #202: Claude Code between its turns, waiting only on background work, takes any of them as a prompt of its own.
+    test("while the agent CLI only waits on background work, queued messages go one at a time, in order, with their attachments; commands and held ones stay", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            const image = { mediaType: "image/png", data: PNG };
+            await engine.handle(c, "session.send", { id, text: "/review", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "held one", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "look at this", images: [image], mode: "steer" });
+            await engine.handle(c, "session.send", { id, text: "later", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "steer text", mode: "steer" });
+            await engine.handle(c, "session.send", { id, text: "!ls", mode: "steer" });
+            (rt as unknown as { queued: { text: string; held?: boolean }[] }).queued.find((q) => q.text === "held one")!.held = true;
+            const inner = rt as unknown as { drainQueued(): string[]; drainWaiting(record: () => void): { text: string; attachments?: unknown[] } | undefined };
+            // Mid-step, as before: only steer-mode text.
+            expect(inner.drainQueued()).toEqual(["steer text"]);
+            let recorded = 0;
+            const record = () => void recorded++;
+            const first = inner.drainWaiting(record);
+            expect(first?.text).toBe("look at this");
+            expect(first?.attachments).toEqual([{ type: "image", ...image }]);
+            expect(recorded).toBe(1);
+            // The turn it starts shows the image on its prompt, where the prompt will be.
+            const turn = rt.snapshot().turns.at(-1)!;
+            expect(turn.prompt).toMatchObject({ text: "look at this", images: 1, index: rt.session.messages.length });
+            expect(turn.prompt!.imagesKey).toBe(attachedPrompt([{ type: "image", ...image }]).imagesKey!);
+            expect(turn.pos).toEqual({ seg: 0, index: rt.session.messages.length });
+            expect(rt.snapshot().state.queued).toEqual(["/review", "held one", "later", "!ls"]);
+            expect(inner.drainWaiting(record)).toEqual({ text: "later" });
+            expect(inner.drainWaiting(record)).toBeUndefined();
+            expect(recorded).toBe(2);
+            expect(rt.snapshot().state.queued).toEqual(["/review", "held one", "!ls"]);
+            expect(rt.snapshot().state.queuedModes).toEqual(["turn", "held", "turn"]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
     test("a rewind hands the prompt's files back to the box with its text, a pasted text included", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         try {

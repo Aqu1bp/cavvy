@@ -98,6 +98,8 @@ interface Opts {
     queued?: string[][];
     /** In place of queued: the messages waiting when the turn ends. */
     drainQueued?: () => string[];
+    /** What the runtime hands over while a CLI only waits on background work (AgentHost.drainWaiting). */
+    drainWaiting?: import("../src/agent/agent").AgentHost["drainWaiting"];
     /** A wake queue, as the TUI and the app give a session. */
     wakes?: InstanceType<typeof WakeQueue>;
 }
@@ -126,6 +128,7 @@ async function makeAgent(o: Opts) {
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), ...(o.wakes ? { wakes: o.wakes, watchers: new Map() } : {}) },
         host: {
             drainQueued: o.drainQueued ?? (() => queued.shift() ?? []),
+            drainWaiting: o.drainWaiting,
             emit: (e) => events.push(e),
             ui: o.ui ?? {},
             askPermission: o.ask
@@ -700,6 +703,110 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(subEnds(a.events)).toEqual(["done"]);
         expect(texts(a.events)).toContain("The explorer reported back");
     }, 20_000);
+
+    // #202: between Claude Code's turns, waiting only on background work, nothing is mid-step to protect.
+    describe("messages queued while it only waits on background work", () => {
+        const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        type Item = { text: string; mode: "steer" | "queue"; images?: import("../src/providers/types").ImagePart[]; held?: boolean };
+        /** The runtime's queue, by its rules: steer-mode text joins a running step; while Claude Code only waits, any message but a command or a held one goes, one at a time. */
+        function queue(items: Item[] = []) {
+            const command = (t: string) => /^\s*(!|\/(?!\/))/.test(t);
+            const take = (pick: (q: Item) => boolean) => {
+                const taken = items.filter(pick);
+                for (const q of taken) items.splice(items.indexOf(q), 1);
+                return taken;
+            };
+            const waits: string[] = [];
+            return {
+                items,
+                waits,
+                drainQueued: () => take((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text)).map((q) => q.text),
+                drainWaiting: (record: () => void) => {
+                    const q = items.find((x) => !x.held && !command(x.text));
+                    if (!q) return undefined;
+                    take((x) => x === q);
+                    record();
+                    waits.push(q.text);
+                    return { text: q.text, ...(q.images ? { attachments: q.images } : {}) };
+                },
+            };
+        }
+        const userSent = (text: string) => received().find((m) => m.type === "user" && JSON.stringify(m.message.content).includes(text));
+        /** Until `ok`, or the run is over (`done` settles): whether `ok` came first. */
+        async function before(ok: () => boolean, done: Promise<unknown>): Promise<boolean> {
+            let over = false;
+            void done.finally(() => (over = true));
+            while (!ok() && !over) await Bun.sleep(10);
+            return ok();
+        }
+        async function waiting(o: { items?: Item[] } = {}) {
+            process.env.FAKE_SCENARIO = "agent-background";
+            process.env.FAKE_SECOND_SCENARIO = "none";
+            process.env.FAKE_BACKGROUND_MS = "2000";
+            const q = queue(o.items);
+            const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            const done = a.run("map the auth module");
+            while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            return { a, q, done };
+        }
+
+        test("an image goes to Claude Code at once, with its image, before the background work ends", async () => {
+            const { a, q, done } = await waiting();
+            const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+            q.items.push({ text: "what's wrong in this screenshot?", mode: "steer", images: [image] });
+            expect(await before(() => Boolean(userSent("what's wrong in this screenshot?")), done)).toBe(true);
+            // The sub-agent is still at work: it didn't wait for it.
+            expect(subEnds(a.events)).toEqual([]);
+            expect(await done).toBe("done");
+            expect(starts()).toHaveLength(1);
+            expect(userSent("what's wrong in this screenshot?").message.content).toEqual([
+                { type: "text", text: "what's wrong in this screenshot?" },
+                { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+            ]);
+            // Recorded as a prompt of its own, after the answer before it, with its image.
+            const i = a.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as any).text === "what's wrong in this screenshot?"));
+            expect(a.session.messages[i]!.meta?.kind).toBe("prompt");
+            expect(a.session.messages[i]!.content).toContainEqual(image);
+            expect(a.session.messages[i - 1]!.role).toBe("assistant");
+            expect(q.items).toEqual([]);
+            expect(subEnds(a.events)).toEqual(["done"]);
+        }, 20_000);
+
+        test("a message in queue mode goes at once too; then the next, once Claude Code has answered it", async () => {
+            const { a, q, done } = await waiting();
+            q.items.push({ text: "and the tests?", mode: "queue" }, { text: "and the docs?", mode: "queue" });
+            expect(await before(() => Boolean(userSent("and the docs?")), done)).toBe(true);
+            expect(subEnds(a.events)).toEqual([]);
+            expect(await done).toBe("done");
+            // In the order sent, each a prompt of its own.
+            expect(userTexts().slice(-2)).toEqual(["and the tests?", "and the docs?"]);
+            expect(q.waits).toEqual(["and the tests?", "and the docs?"]);
+            expect(starts()).toHaveLength(1);
+        }, 20_000);
+
+        test("held messages stay held, and commands wait for the run's end", async () => {
+            const { a, q, done } = await waiting({ items: [{ text: "held since a restart", mode: "queue", held: true }, { text: "/compact", mode: "queue" }, { text: "!ls", mode: "steer" }] });
+            q.items.push({ text: "but this goes", mode: "queue" });
+            expect(await before(() => Boolean(userSent("but this goes")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(q.items.map((x) => x.text)).toEqual(["held since a restart", "/compact", "!ls"]);
+            expect(userTexts()).not.toContain("held since a restart");
+            expect(userTexts()).not.toContain("/compact");
+            expect(subEnds(a.events)).toEqual(["done"]);
+        }, 20_000);
+
+        test("during a step, a queue-mode message still waits for the run's end and a steer message joins at the tool result", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const q = queue([{ text: "after the turn", mode: "queue" }, { text: "with a picture", mode: "steer", images: [{ type: "image", mediaType: "image/png", data: PNG }] }, { text: "steer now", mode: "steer" }]);
+            const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            expect(await a.run("start")).toBe("done");
+            expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual(["steer now"]);
+            expect(userTexts()).toEqual(["start", "steer now"]);
+            // No background work: nothing went as a prompt of its own; the runtime runs them after the run.
+            expect(q.waits).toEqual([]);
+            expect(q.items.map((x) => x.text)).toEqual(["after the turn", "with a picture"]);
+        });
+    });
 
     test("with an API key, Claude Code's own turn with the report doesn't count the run's spend twice", async () => {
         process.env.FAKE_SCENARIO = "agent-background";

@@ -2093,15 +2093,18 @@ export class Runtime {
         this.queueUpdated();
         // What the CLI said before it goes first, so the prompt's place in the session is where it lands.
         record();
-        this.drainedTurn(q.text, q.attachments);
+        this.drainedTurn(q.text, q.attachments, true);
         return { text: q.text, ...(q.attachments?.length ? { attachments: q.attachments } : {}) };
     }
 
-    /** Drained messages start a turn in the UI: the open one ends, and this one shows `text` as its prompt, with what's attached. */
-    private drainedTurn(text: string, attachments?: AttachedPart[]) {
+    /**
+     * Drained messages start a turn in the UI: the open one ends, and this one shows `text` as its prompt,
+     * with what's attached. `own`: a prompt of its own whatever came before it (never with tool results).
+     */
+    private drainedTurn(text: string, attachments?: AttachedPart[], own = false) {
         // After tool calls they ride along with the results; otherwise they're a prompt of their own.
         const last = this.session.messages[this.session.messages.length - 1];
-        const steering = last?.role === "assistant" && toolCallsOf(last).length > 0;
+        const steering = !own && last?.role === "assistant" && toolCallsOf(last).length > 0;
         this.closeOpen();
         const prev = this.turnId;
         if (prev) {
