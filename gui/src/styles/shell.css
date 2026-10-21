@@ -121,6 +121,12 @@
     min-height: 0;
 }
 
+/* Its own stacking context, so nothing in the session (the composer dock at z-index 30, the
+   "Latest" pill at 25) paints over the settings page (z-index 6) while it's covered. */
+.main > .keep {
+    isolation: isolate;
+}
+
 /* The rail shows through the settings sections (both are on the window's glass): hidden outright. It's small. */
 .win-rail > .keep.covered {
     visibility: hidden;
