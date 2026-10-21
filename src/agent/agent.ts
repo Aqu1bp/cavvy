@@ -1076,17 +1076,24 @@ export class Agent {
     // -----------------------------------------------------------------------
     // Model calls with retries
 
-    private async callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
+    private callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
+        return this.withRetries(signal, () => {
+            this.emit({ type: "request_start" });
+            // After any retries: the cache dates from the request that was answered.
+            this.sentAt = Date.now();
+            this.idleTried = false;
+            return this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+        });
+    }
+
+    /** A request (a turn's, a compaction's), sent again after a transient error: with backoff, or when the provider says to. */
+    private async withRetries(signal: AbortSignal, send: () => Promise<AssistantMessage>): Promise<AssistantMessage> {
         let stalls = 0;
         this.retrying = undefined;
         try {
             for (let attempt = 1; ; attempt++) {
-                this.emit({ type: "request_start" });
                 try {
-                    // After any retries: the cache dates from the request that was answered.
-                    this.sentAt = Date.now();
-                    this.idleTried = false;
-                    return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+                    return await send();
                 } catch (e) {
                     if (isAbort(e, signal)) throw new ProviderError("aborted");
                     const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
@@ -1140,10 +1147,12 @@ export class Agent {
         if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const req = [...history, compactRequestMessage(opts.instructions)];
+        // Retried like a turn's request; an idle compaction is worth it only before the cache expires, so it gets one try.
+        const send = (r: ChatRequest) => (opts.idle ? this.client.stream(r, () => {}) : this.withRetries(opts.signal, () => this.client.stream(r, () => {})));
         let summary = "";
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
-            const res = await this.client.stream(this.request(req, opts.signal, { maxTokens: 16_000 }), () => {});
+            const res = await send(this.request(req, opts.signal, { maxTokens: 16_000 }));
             summary = textOf(res);
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
@@ -1168,7 +1177,7 @@ export class Agent {
                 maxTokens: maxOut,
                 lightweight: true,
             });
-            const res = await this.client.stream(req, () => {});
+            const res = await send(req);
             summary = textOf(res);
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");

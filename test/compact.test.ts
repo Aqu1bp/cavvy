@@ -1,10 +1,15 @@
-import { afterAll, expect, test } from "bun:test";
-import { isolate } from "./helpers/isolate";
-import type { Message } from "../src/providers/types";
+import { afterAll, describe, expect, test } from "bun:test";
+import { isolate, tempDir } from "./helpers/isolate";
+import type { AgentEvent } from "../src/agent/agent";
+import type { AssistantMessage, ChatRequest, Message, Usage } from "../src/providers/types";
 
 const iso = isolate();
 const { compactTranscriptText, handoffTranscript } = await import("../src/agent/compact");
 const { Agent } = await import("../src/agent/agent");
+const { Session } = await import("../src/agent/session");
+const { PermissionChecker } = await import("../src/permissions/checker");
+const { ProviderError } = await import("../src/providers/types");
+const { TodoWriteTool } = await import("../src/tools/meta-tools");
 afterAll(() => iso.cleanup());
 
 const user = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
@@ -158,4 +163,98 @@ test("a later message too big for what's left is cut to it, keeping its head and
         expect(r.text).toContain("HEAD ");
         expect(r.text).toContain(" TAIL");
     }
+});
+
+// The agent's own compaction (API providers), against a scripted fake client.
+describe("the agent loop's compaction", () => {
+    type Script = (req: ChatRequest, n: number) => AssistantMessage;
+    const MODEL = { provider: "anthropic", id: "claude-x", contextWindow: 200_000, maxOutput: 32_000, pricing: { input: 3, output: 15 } };
+
+    function setup(script: Script, o: { model?: Record<string, unknown>; subagent?: boolean; settings?: Record<string, unknown> } = {}) {
+        const proj = tempDir("compact-agent-");
+        const session = Session.create(proj, { system: "sys" });
+        const settings = { ...o.settings } as any;
+        const events: AgentEvent[] = [];
+        const requests: ChatRequest[] = [];
+        const agent = new Agent({
+            session,
+            model: (o.model ?? MODEL) as any,
+            client: {
+                async stream(req: ChatRequest) {
+                    requests.push({ ...req, messages: structuredClone(req.messages) });
+                    return script(req, requests.length);
+                },
+                async listModels() {
+                    return [];
+                },
+            } as any,
+            settings: () => settings,
+            checker: new PermissionChecker(() => settings, proj),
+            tools: [TodoWriteTool],
+            mode: { get: () => "bypassPermissions", set: () => {} },
+            toolState: { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() } as any,
+            isSubagent: o.subagent,
+            host: { emit: (e: AgentEvent) => void events.push(e), ui: {} } as any,
+        });
+        const run = (content: any[], signal = new AbortController().signal) => agent.run(content, { signal, display: "p" });
+        const compactions = () => events.filter((e) => e.type === "compact_start").length;
+        return { agent, session, events, requests, run, compactions };
+    }
+
+    const usage = (inputTokens: number, outputTokens = 10): Usage => ({ inputTokens, outputTokens });
+    const say = (text: string, u = usage(100)): AssistantMessage => ({ role: "assistant", content: text ? [{ type: "text", text }] : [], provider: "anthropic", model: "claude-x", stopReason: "end_turn", usage: u });
+    const todo = (id: string, u = usage(100)): AssistantMessage => ({ role: "assistant", content: [{ type: "tool_call", id, name: "TodoWrite", input: { todos: [{ content: id, status: "pending", activeForm: id }] } }], provider: "anthropic", model: "claude-x", stopReason: "tool_use", usage: u });
+    const isSummary = (req: ChatRequest) => JSON.stringify(req.messages.at(-1)).includes("write a detailed summary");
+    const twoMessages = (session: InstanceType<typeof Session>) => {
+        session.push({ role: "user", content: [{ type: "text", text: "hello" }] });
+        session.push(say("hi"));
+    };
+
+    test("a compaction request is retried after a transient error, as the provider's retry-after says", async () => {
+        const { agent, session, requests, events } = setup((_req, n) => {
+            if (n === 1) throw new ProviderError("Anthropic API is overloaded", 529, true, 1);
+            return say("SUMMARY");
+        });
+        twoMessages(session);
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(requests.length).toBe(2);
+        expect(events.filter((e) => e.type === "retry")).toMatchObject([{ attempt: 1, delayMs: 1 }]);
+        expect(session.summary).toBe("SUMMARY");
+    });
+
+    test("the fallback (transcript) compaction request is retried too", async () => {
+        const { agent, session, requests } = setup((_req, n) => {
+            // The first summary answers with tool calls only: the transcript fallback runs.
+            if (n === 1) return todo("t1");
+            if (n === 2) throw new ProviderError("rate limited", 429, true, 1);
+            return say("SUMMARY");
+        });
+        twoMessages(session);
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(requests.length).toBe(3);
+        expect(requests[2]!.tools).toEqual([]);
+    });
+
+    test("a compaction stops retrying when it's interrupted", async () => {
+        const ctrl = new AbortController();
+        const { agent, session, requests } = setup(() => {
+            setTimeout(() => ctrl.abort(), 10);
+            throw new ProviderError("Anthropic API is overloaded", 529, true, 60_000);
+        });
+        twoMessages(session);
+        const started = Date.now();
+        await expect(agent.compact({ auto: false, signal: ctrl.signal })).rejects.toThrow("aborted");
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(requests.length).toBe(1);
+        expect(session.messages.length).toBe(2);
+    });
+
+    test("an error that isn't transient isn't retried", async () => {
+        const { agent, session, requests } = setup(() => {
+            throw new ProviderError("invalid x-api-key", 401, false);
+        });
+        twoMessages(session);
+        await expect(agent.compact({ auto: false, signal: new AbortController().signal })).rejects.toThrow("invalid x-api-key");
+        expect(requests.length).toBe(1);
+    });
 });
