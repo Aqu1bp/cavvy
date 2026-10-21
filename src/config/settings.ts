@@ -125,6 +125,24 @@ export interface Settings {
     delegation?: boolean;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
     editor?: string;
+    /** `harness --worktree`: the new branch's name prefix (default "harness/"), where it starts, and what happens to it on exit. */
+    worktree?: {
+        branchPrefix?: string;
+        /** head (default): the current HEAD. fresh: origin/HEAD as last fetched. */
+        baseRef?: "head" | "fresh";
+        /** auto (default): remove a worktree nothing was done in, ask when there are commits. ask: always ask. keep: never remove. Uncommitted changes always keep it. */
+        cleanup?: "auto" | "ask" | "keep";
+    };
+}
+
+/** The worktree settings, with anything malformed (a hand edit) replaced by its default. */
+export function worktreeSettings(s: Settings): { branchPrefix: string; baseRef: "head" | "fresh"; cleanup: "auto" | "ask" | "keep" } {
+    const w = typeof s.worktree === "object" && s.worktree !== null ? s.worktree : {};
+    return {
+        branchPrefix: typeof w.branchPrefix === "string" ? w.branchPrefix.trim() : "harness/",
+        baseRef: w.baseRef === "fresh" ? "fresh" : "head",
+        cleanup: w.cleanup === "ask" || w.cleanup === "keep" ? w.cleanup : "auto",
+    };
 }
 
 export interface SandboxSettings {
@@ -297,7 +315,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     const merged: Settings = {};
     const warnings = new Set<string>();
     for (const s of layers) {
-        const { permissions, env, mcpServers, hooks, ...rest } = s;
+        const { permissions, env, mcpServers, hooks, worktree, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
         for (const [k, v] of Object.entries(rest)) if (k !== "__proto__") (merged as Record<string, unknown>)[k] = v;
         if (permissions) {
@@ -309,6 +327,8 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
             if (permissions.allowBypass !== undefined) p.allowBypass = permissions.allowBypass;
         }
         if (env) merged.env = { ...merged.env, ...env };
+        // Field by field: a project's baseRef mustn't drop the user's own cleanup or prefix.
+        if (worktree && typeof worktree === "object") merged.worktree = { ...merged.worktree, ...worktree };
         if (mcpServers) merged.mcpServers = { ...merged.mcpServers, ...mcpServers };
         const flat = normalizeHooks(hooks, (msg) => warnings.add(msg));
         if (flat) {

@@ -36,7 +36,7 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
+import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
@@ -585,15 +585,17 @@ export class Engine {
 
     /**
      * Refused while a session is open inside it: one here (or still closing),
-     * or one in another process (a terminal) once it has sent a message and
-     * so holds its lock. From the check until Git is done no session can
-     * open there from this server, nor can another removal of it start; its
-     * idle workspaces (picked while their paths still resolve) close after.
+     * or one in another process (a terminal) once it holds its lock, or a
+     * `harness -w` there that marked itself present before that. From the
+     * check until Git is done no session can open there from this server,
+     * nor can another removal of it start; its idle workspaces (picked while
+     * their paths still resolve) close after.
      */
     private async removeWorktree(path: string, worktree: string, deleteIgnored?: string, check?: (plan: Removal) => Promise<void>): Promise<RemoveWorktreeResult> {
-        const held = heldSessionFolders();
-        const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...held];
-        const plan = planRemoval({ path, worktree, inUse: (dir) => open().some(within(dir)) });
+        const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...heldSessionFolders()];
+        // A terminal's `harness -w` is marked present there from its start, before it has a lock.
+        const inUse = (dir: string) => othersPresent(dir) || open().some(within(dir));
+        const plan = planRemoval({ path, worktree, inUse });
         const reserved = realPath(plan.path);
         if ([...this.removing].some((dir) => within(dir)(reserved) || within(reserved)(dir))) throw new RpcError(`${plan.path} is already being removed.`, "busy");
         this.removing.add(reserved);
@@ -602,7 +604,8 @@ export class Engine {
         try {
             // Last checks of the caller's own, with the folder reserved: nothing can open there meanwhile.
             await check?.(plan);
-            result = await runRemoval(plan, { deleteIgnored }, this.o.log);
+            // Asked again just before Git removes it: one in another process may have opened there since.
+            result = await runRemoval(plan, { deleteIgnored, inUse }, this.o.log);
         } finally {
             this.removing.delete(reserved);
         }
