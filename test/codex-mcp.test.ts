@@ -85,3 +85,21 @@ test("a plugin a project layer turns on is turned off, like the project's own se
     expect(result.missingProvenance).toBe(false);
     expect(result.config).toEqual({ plugins: { "theirs@local": { enabled: false } } });
 });
+
+test("an enabled plugin needs provenance like a server: missing, partial, unknown or disabled layers turn everything off", () => {
+    const config = { mcp_servers: { personal: {} }, plugins: { "fmt@local": { enabled: true } } };
+    const user = { name: { type: "user" }, config: { mcp_servers: { personal: {} } } };
+    for (const layers of [
+        [],
+        [user],
+        [user, { name: { type: "unknown" }, config: { plugins: { "fmt@local": { enabled: true } } } }],
+        [user, { name: { type: "user" }, config: { plugins: { "fmt@local": { enabled: true } } }, disabledReason: "disabled" }],
+    ]) {
+        const result = codexMcpOverrides({ config, layers }, false);
+        expect(result.missingProvenance).toBe(true);
+        expect(result.config).toEqual({ mcp_servers: { personal: { enabled: false } }, plugins: { "fmt@local": { enabled: false } } });
+    }
+    const explained = codexMcpOverrides({ config, layers: [{ name: { type: "user" }, config }] }, false);
+    expect(explained.missingProvenance).toBe(false);
+    expect(explained.config).toBeUndefined();
+});

@@ -290,16 +290,29 @@ describe("install, scopes and settings", () => {
         await installPlugin("lsp", "user", cwd);
         const root = readInstalled()["lsp@demo"]!.installPath;
         const u = readJ(paths.userSettings());
-        write(paths.userSettings(), { ...u, lsp: { servers: { mine: { command: "mine", extensionToLanguage: { ".x": "x" } }, "plugin:lsp:deno": { command: "deno", disabled: true, extensionToLanguage: { ".ts": "typescript" } } } } });
+        write(paths.userSettings(), { ...u, lsp: { servers: { mine: { command: "mine", extensionToLanguage: { ".x": "x" } }, "plugin:lsp@demo:deno": { command: "deno", disabled: true, extensionToLanguage: { ".ts": "typescript" } } } } });
         const s = loadSettings(cwd, { trusted: false });
-        expect(Object.keys((s.lsp as any).servers)).toEqual(["mine", "plugin:lsp:deno", "plugin:lsp:gopls"]);
+        expect(Object.keys((s.lsp as any).servers)).toEqual(["mine", "plugin:lsp@demo:deno", "plugin:lsp@demo:gopls"]);
         const servers = lspServers(s);
-        expect(servers.find((x) => x.name === "plugin:lsp:gopls")).toMatchObject({ command: `${root}/bin/gopls`, builtin: false });
+        expect(servers.find((x) => x.name === "plugin:lsp@demo:gopls")).toMatchObject({ command: `${root}/bin/gopls`, builtin: false });
         // The user's entry under that name wins (here: turning it off), and the built-in gopls stays behind the plugin's.
-        expect(servers.some((x) => x.name === "plugin:lsp:deno")).toBe(false);
-        expect(serverFor(join(cwd, "a.go"), servers, () => true)?.server.name).toBe("plugin:lsp:gopls");
+        expect(servers.some((x) => x.name === "plugin:lsp@demo:deno")).toBe(false);
+        expect(serverFor(join(cwd, "a.go"), servers, () => true)?.server.name).toBe("plugin:lsp@demo:gopls");
         write(paths.userSettings(), { ...u, lsp: false });
         expect(loadSettings(cwd, { trusted: false }).lsp).toBe(false);
+    });
+
+    test("same-named plugins from two marketplaces each get their language server", async () => {
+        const { lspServers } = await import("../src/lsp/config");
+        const cwd = dir("proj");
+        for (const market of ["a", "b"]) {
+            const mk = makeMarket(market, [{ name: "fmt", extra: { strict: false, lspServers: { lang: { command: `${market}-ls`, extensionToLanguage: { ".go": "go" } } } } }], { make: false });
+            mkdirSync(join(mk, "plugins", "fmt"), { recursive: true });
+            await addMarketplace(mk, cwd);
+            await installPlugin(`fmt@${market}`, "user", cwd);
+        }
+        const servers = lspServers(loadSettings(cwd, { trusted: false })).filter((x) => x.name.startsWith("plugin:"));
+        expect(servers.map((x) => [x.name, x.command])).toEqual([["plugin:fmt@a:lang", "a-ls"], ["plugin:fmt@b:lang", "b-ls"]]);
     });
 
     test("project and local scopes: only in trusted folders; later scope wins", async () => {

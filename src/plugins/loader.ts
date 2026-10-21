@@ -311,12 +311,13 @@ export function applyPlugins(merged: Settings, plugins: LoadedPlugin[]) {
             merged.mcpServers ??= {};
             if (!Object.hasOwn(merged.mcpServers, name)) merged.mcpServers[name] = config;
         }
-        // Named like its MCP servers, so it adds to the built-ins rather than replacing one; `"lsp": false` keeps them off.
+        // Named by the plugin's full id (two marketplaces can have a plugin of the same name), so it adds to
+        // the built-ins rather than replacing one; `"lsp": false` keeps them off.
         const lsp = Object.entries(p.lspServers);
         if (lsp.length && merged.lsp !== false) {
             const base = merged.lsp ?? {};
             const servers: Record<string, LspServerConfig> = { ...base.servers };
-            for (const [name, config] of lsp) if (!Object.hasOwn(servers, pluginServerName(p.name, name))) servers[pluginServerName(p.name, name)] = config as LspServerConfig;
+            for (const [name, config] of lsp) if (!Object.hasOwn(servers, pluginServerName(p.id, name))) servers[pluginServerName(p.id, name)] = config as LspServerConfig;
             merged.lsp = { ...base, servers };
         }
     }
