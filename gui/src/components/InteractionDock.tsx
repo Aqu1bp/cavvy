@@ -285,7 +285,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
     });
     return (
         <>
-            <Head icon={<MessageCircleQuestion size={14} />} title={p.it.question} aside={p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <Head icon={<MessageCircleQuestion size={14} />} title={p.it.question} aside={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
             <div class="itab-body">
                 <div class="q-options">
                     <For each={p.it.options}>
@@ -304,12 +304,17 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                 </div>
                 <input
                     class="itab-input"
+                    ref={(el) => {
+                        // Nothing to pick: the answer is typed, so the cursor goes there (unless it's in another field).
+                        if (!p.it.options.length) queueMicrotask(() => !typing() && el.focus());
+                    }}
                     value={other()}
-                    placeholder="Something else…"
+                    placeholder={p.it.options.length ? "Something else…" : "Your answer"}
                     aria-label="Your own answer"
                     onInput={(e) => setOther(e.currentTarget.value)}
                     onKeyDown={(e) => {
                         if (e.key === "Enter" && other().trim()) void submit([...picked(), other().trim()]);
+                        else if (e.key === "Escape" && !other()) void submit(undefined);
                     }}
                 />
             </div>

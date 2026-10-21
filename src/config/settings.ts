@@ -14,14 +14,22 @@ export type NotificationMode = "auto" | "terminal" | "bell" | "system" | "off";
 export const NOTIFICATION_MODES: NotificationMode[] = ["auto", "terminal", "bell", "system", "off"];
 
 export interface McpServerConfig {
+    /**
+     * The transport. Unset: stdio with a command; with a url, Streamable
+     * HTTP, or WebSocket for a ws:// or wss:// one. "sse" is the older
+     * HTTP+SSE transport.
+     */
+    type?: "stdio" | "http" | "streamable-http" | "sse" | "ws";
     /** stdio transport */
     command?: string;
     args?: string[];
     env?: Record<string, string>;
     cwd?: string;
-    /** http transport (streamable HTTP) */
+    /** http, sse and ws transports */
     url?: string;
     headers?: Record<string, string>;
+    /** OAuth sign-in for a remote server: a client registered by hand, a fixed callback port, scopes. */
+    oauth?: { clientId?: string; clientSecret?: string; callbackPort?: number; scopes?: string[] };
     disabled?: boolean;
     /** Set on servers a plugin adds: its id (name@marketplace). */
     plugin?: string;

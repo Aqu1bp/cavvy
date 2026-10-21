@@ -374,10 +374,23 @@ export interface TodoEntry {
 
 export type SessionStatus = "idle" | "running" | "waiting" | "error";
 
+/** One MCP resource as the composer's @ menu shows it; `mention` is what goes after the @. */
+export interface McpResourceInfo {
+    server: string;
+    uri: string;
+    name: string;
+    title?: string;
+    description?: string;
+    mention: string;
+}
+
 export interface McpStatus {
     name: string;
     status: McpServerStatus;
     tools: number;
+    /** Resources (and templates) and prompts it offers, when it offers any. */
+    resources?: number;
+    prompts?: number;
     error?: string;
     source: "settings" | "project";
     /** A project server's approval (no fingerprint: session.mcp has that). */
@@ -1423,6 +1436,16 @@ export interface Methods {
     "session.mcpRevoke": { params: { id: string; name: string }; result: McpListInfo };
     /** Read its configuration again and start it afresh, if it may run (a changed .mcp.json server asks again instead). */
     "session.mcpReconnect": { params: { id: string; name: string }; result: McpListInfo };
+    /**
+     * Start signing in to a remote server (OAuth): answers with the link to
+     * open once it's ready. The sign-in finishes in the browser; the server's
+     * status follows in session events, and a failure comes as a notice.
+     */
+    "session.mcpSignIn": { params: { id: string; name: string }; result: { url: string } };
+    /** Forget a remote server's stored sign-in; it asks to sign in again. */
+    "session.mcpSignOut": { params: { id: string; name: string }; result: McpListInfo };
+    /** Connected servers' resources matching `query`, for the composer's @ menu. */
+    "session.mcpResources": { params: { id: string; query: string }; result: McpResourceInfo[] };
 }
 
 export type Method = keyof Methods;

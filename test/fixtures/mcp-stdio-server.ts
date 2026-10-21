@@ -35,6 +35,8 @@ const LEGACY = ERA === "unsupported" ? "2025-11-25" : "2025-06-18";
 const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 const modern = ERA === "modern";
 
+// MCP_FIXTURE_TOOLS_ONLY=1: offers only tools. MCP_FIXTURE_NO_TOOLS=1: only resources and prompts (tools/list then fails).
+const CAPS: Json = process.env.MCP_FIXTURE_TOOLS_ONLY ? { tools: { listChanged: true } } : { ...(process.env.MCP_FIXTURE_NO_TOOLS ? {} : { tools: { listChanged: true } }), resources: { listChanged: true }, prompts: { listChanged: true } };
 let initialized = false;
 let serverReqId = 0;
 const waiting = new Map<string, (msg: Json) => void>();
@@ -53,6 +55,23 @@ const TOOLS: Json[] = [
     { name: "slow", description: "Answers after ms milliseconds", inputSchema: { type: "object", properties: { ms: { type: "number" } } } },
     { name: "needs_input", description: "Returns an input_required result", inputSchema: { type: "object", properties: {} } },
     { name: "list_changed", description: "Sends notifications/tools/list_changed", inputSchema: { type: "object", properties: {} } },
+    { name: "ask_name", description: "Asks the user for a name (elicitation)", inputSchema: { type: "object", properties: { url: { type: "boolean" } } } },
+    { name: "sample", description: "Asks the client's model (sampling)", inputSchema: { type: "object", properties: { q: { type: "string" } } } },
+    { name: "roots", description: "Asks the client for its roots", inputSchema: { type: "object", properties: {} } },
+    { name: "notify_lists", description: "Sends resources and prompts list_changed", inputSchema: { type: "object", properties: {} } },
+];
+
+const RESOURCES: Json[] = [
+    { uri: "fixture://readme", name: "readme", title: "Read me", description: "A short text", mimeType: "text/markdown" },
+    { uri: "fixture://big", name: "big", description: "100 KB of text", mimeType: "text/plain" },
+    { uri: "fixture://pixel", name: "pixel", description: "A PNG", mimeType: "image/png" },
+    { uri: "fixture://slow", name: "slow", description: "Takes 2s", mimeType: "text/plain" },
+    { uri: "fixture://secret", name: "secret", description: "Asks first (modern: MRTR)", mimeType: "text/plain" },
+];
+const TEMPLATES: Json[] = [{ uriTemplate: "fixture://items/{id}", name: "item", description: "An item by id" }];
+const PROMPTS: Json[] = [
+    { name: "greet", title: "Greet someone", description: "Says hello", arguments: [{ name: "name", description: "Who", required: true }, { name: "tone", description: "How" }] },
+    { name: "rich", description: "Text, an embedded resource and an image", arguments: [] },
 ];
 const PAGE = 4;
 
@@ -71,7 +90,7 @@ function error(id: unknown, code: number, message: string, data?: unknown) {
     send({ jsonrpc: "2.0", id, error: { code, message, ...(data !== undefined ? { data } : {}) } });
 }
 
-function askClient(method: string, timeoutMs: number): Promise<Json | "no-response"> {
+function askClient(method: string, timeoutMs: number, params?: Json): Promise<Json | "no-response"> {
     const id = `srv-${++serverReqId}`;
     return new Promise((resolve) => {
         const timer = setTimeout(() => {
@@ -82,8 +101,29 @@ function askClient(method: string, timeoutMs: number): Promise<Json | "no-respon
             clearTimeout(timer);
             resolve(msg);
         });
-        send({ jsonrpc: "2.0", id, method });
+        send({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) });
     });
+}
+
+const NAME_FORM = { mode: "form", message: "What's your name?", requestedSchema: { type: "object", properties: { name: { type: "string", title: "Name" } }, required: ["name"] } };
+const URL_FORM = { mode: "url", message: "Sign in to continue", url: "https://example.com/connect" };
+const SAMPLE = (q: string) => ({ messages: [{ role: "user", content: { type: "text", text: q } }], systemPrompt: "Answer briefly.", maxTokens: 50 });
+
+/**
+ * What a server asks of the client, both ways: a modern server answers with
+ * input_required (and checks the retry), a legacy one sends a request.
+ */
+async function ask(id: unknown, params: Json, key: string, method: string, askParams: Json | undefined, done: (answer: Json) => Json) {
+    if (modern) {
+        const got = params.inputResponses?.[key];
+        if (got === undefined) return send({ jsonrpc: "2.0", id, result: { resultType: "input_required", inputRequests: { [key]: { method, ...(askParams ? { params: askParams } : {}) } }, requestState: `state-${key}` } });
+        if (params.requestState !== `state-${key}`) return error(id, -32602, "requestState was not echoed");
+        return result(id, done(got));
+    }
+    const r = await askClient(method, Number(process.env.MCP_FIXTURE_ASK_TIMEOUT_MS) || 5000, askParams);
+    if (r === "no-response") return result(id, { content: [{ type: "text", text: "no-response" }], isError: true });
+    if (r.error) return result(id, { content: [{ type: "text", text: `client error ${r.error.code}: ${r.error.message}` }], isError: true });
+    return result(id, done(r.result));
 }
 
 async function callTool(id: unknown, params: Json) {
@@ -119,6 +159,16 @@ async function callTool(id: unknown, params: Json) {
         case "list_changed":
             send({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
             return result(id, text("sent"));
+        case "ask_name":
+            return ask(id, params, "name", "elicitation/create", args.url ? URL_FORM : NAME_FORM, (a) => text(JSON.stringify(a)));
+        case "sample":
+            return ask(id, params, "llm", "sampling/createMessage", SAMPLE(String(args.q ?? "2+2?")), (a) => text(JSON.stringify(a)));
+        case "roots":
+            return ask(id, params, "roots", "roots/list", undefined, (a) => text(JSON.stringify(a)));
+        case "notify_lists":
+            send({ jsonrpc: "2.0", method: "notifications/resources/list_changed" });
+            send({ jsonrpc: "2.0", method: "notifications/prompts/list_changed" });
+            return result(id, text("sent"));
         default:
             return error(id, -32602, `Unknown tool: ${params.name}`);
     }
@@ -132,18 +182,19 @@ function handleRequest(id: unknown, method: string, params: Json) {
             case "server/discover":
                 return result(id, {
                     supportedVersions: [MODERN],
-                    capabilities: { tools: { listChanged: true } },
+                    capabilities: CAPS,
                     instructions: "Modern fixture instructions",
                     _meta: { "io.modelcontextprotocol/serverInfo": { name: "fixture-modern", version: "0.2.0" } },
                     ttlMs: 60_000,
                     cacheScope: "private",
                 });
             case "tools/list":
+                if (process.env.MCP_FIXTURE_NO_TOOLS) return error(id, -32601, "Method not found: tools/list");
                 return listTools(id, params);
             case "tools/call":
                 return void callTool(id, params);
             default:
-                return error(id, -32601, `Method not found: ${method}`);
+                return other(id, method, params);
         }
     }
 
@@ -158,7 +209,7 @@ function handleRequest(id: unknown, method: string, params: Json) {
     if (method === "initialize") {
         return result(id, {
             protocolVersion: LEGACY,
-            capabilities: { tools: { listChanged: true } },
+            capabilities: CAPS,
             serverInfo: { name: "fixture-legacy", version: "0.1.0" },
             instructions: "Legacy fixture instructions",
         });
@@ -167,12 +218,71 @@ function handleRequest(id: unknown, method: string, params: Json) {
     if (!initialized) return error(id, -32600, "Server not initialized: notifications/initialized was not received");
     switch (method) {
         case "tools/list":
+            if (process.env.MCP_FIXTURE_NO_TOOLS) return error(id, -32601, "Method not found: tools/list");
             return listTools(id, params);
         case "tools/call":
             return void callTool(id, params);
         default:
+            return other(id, method, params);
+    }
+}
+
+/** Resources and prompts, the same in both eras. */
+function other(id: unknown, method: string, params: Json) {
+    switch (method) {
+        case "resources/list":
+            return page(id, params, RESOURCES, "resources");
+        case "resources/templates/list":
+            return result(id, { resourceTemplates: TEMPLATES });
+        case "resources/read":
+            return void readResource(id, params);
+        case "prompts/list":
+            return result(id, { prompts: PROMPTS });
+        case "prompts/get":
+            return getPrompt(id, params);
+        default:
             return error(id, -32601, `Method not found: ${method}`);
     }
+}
+
+async function readResource(id: unknown, params: Json) {
+    const uri = String(params.uri ?? "");
+    const one = (c: Json) => result(id, { contents: [{ uri, ...c }] });
+    if (uri === "fixture://readme") return one({ mimeType: "text/markdown", text: "# Fixture\nHello from a resource." });
+    if (uri === "fixture://big") return one({ mimeType: "text/plain", text: "x".repeat(100_000) });
+    if (uri === "fixture://pixel") return one({ mimeType: "image/png", blob: PNG });
+    if (uri === "fixture://slow") {
+        await new Promise((r) => setTimeout(r, 2000));
+        return one({ mimeType: "text/plain", text: "slow resource" });
+    }
+    if (uri === "fixture://secret") return ask(id, params, "ok", "elicitation/create", { mode: "form", message: "Show the secret?", requestedSchema: { type: "object", properties: {} } }, (a) => ({ contents: [{ uri, mimeType: "text/plain", text: a.action === "accept" ? "the secret" : "declined" }] }));
+    const item = uri.match(/^fixture:\/\/items\/(.+)$/);
+    if (item) return one({ mimeType: "text/plain", text: `item ${item[1]}` });
+    return error(id, -32602, `Resource not found: ${uri}`);
+}
+
+function getPrompt(id: unknown, params: Json) {
+    const args = params.arguments ?? {};
+    if (params.name === "greet") {
+        if (!args.name) return error(id, -32602, "Missing required argument: name");
+        return result(id, { description: "A greeting", messages: [{ role: "user", content: { type: "text", text: `Say hello to ${args.name}${args.tone ? `, ${args.tone}` : ""}.${Buffer.from(process.env.MCP_FIXTURE_GREET_SUFFIX_B64 ?? "", "base64").toString()}` } }] });
+    }
+    if (params.name === "rich") {
+        return result(id, {
+            messages: [
+                { role: "user", content: { type: "text", text: "Look at these." } },
+                { role: "user", content: { type: "resource", resource: { uri: "fixture://readme", mimeType: "text/markdown", text: "# Fixture" } } },
+                { role: "user", content: { type: "image", data: PNG, mimeType: "image/png" } },
+            ],
+        });
+    }
+    return error(id, -32602, `Unknown prompt: ${params.name}`);
+}
+
+function page(id: unknown, params: Json, all: Json[], key: string) {
+    const start = params?.cursor !== undefined ? Number(params.cursor) : 0;
+    const next = start + PAGE < all.length ? String(start + PAGE) : undefined;
+    return result(id, { [key]: all.slice(start, start + PAGE), ...(next ? { nextCursor: next } : {}) });
 }
 
 function listTools(id: unknown, params: Json) {

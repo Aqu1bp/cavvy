@@ -346,7 +346,7 @@ export class PermissionChecker {
     private searchesStore(cmd: string, cwd: string): string | undefined {
         const a = analyzeCommand(cmd);
         if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return undefined;
-        const store = [paths.credentialsFile(), paths.providers(), harnessAccounts(), ...accountCredentialFiles()].flatMap(pathForms);
+        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), harnessAccounts(), ...accountCredentialFiles()].flatMap(pathForms);
         for (const c of a.commands) {
             const argv = effectiveArgv(c.argv);
             const prog = (argv[0] ?? "").split("/").pop()!;
@@ -595,7 +595,7 @@ export class PermissionChecker {
     /** A folder that is, or holds, the harness's credential store (for grants of whole folders). */
     isProtectedArea(dir: string): boolean {
         const forms = pathForms(dir);
-        const store = [paths.credentialsFile(), paths.providers(), ...accountCredentialFiles()].flatMap(pathForms);
+        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...accountCredentialFiles()].flatMap(pathForms);
         const accounts = [harnessAccounts(), ...accountFolders()].flatMap(pathForms);
         return store.some((f) => forms.some((d) => isInside(f, d))) || accounts.some((f) => forms.some((d) => isInside(f, d) || isInside(d, f)));
     }
@@ -617,7 +617,7 @@ export class PermissionChecker {
         const search = toolName === "Grep" || toolName === "Glob" || toolName === "LS";
         if (forms.some((f) => accounts.some((a) => isInside(f, a) || (search && !root && isInside(a, f))))) return true;
         if (forms.some((f) => pathForms(harnessAccounts()).some((a) => isInside(f, a)))) return true;
-        const store = [paths.credentialsFile(), paths.providers(), ...(READ_TOOLS.has(toolName) ? [paths.userSettings()] : [])].flatMap(pathForms);
+        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...(READ_TOOLS.has(toolName) ? [paths.userSettings()] : [])].flatMap(pathForms);
         return forms.some((f) => store.includes(f));
     }
 

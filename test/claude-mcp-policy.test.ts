@@ -103,8 +103,8 @@ describe("Claude native project MCP policy", () => {
         manager.load();
         write({ mixed: { ...mixed, type: "stdio" } });
         manager.load();
-        // The fingerprint has no type, so the approval holds; Claude Code would run the command.
-        expect(manager.approvedServers().servers.mixed).toBeDefined();
+        // The type is part of the fingerprint: the approval no longer holds (Claude Code would run the command).
+        expect(manager.approvedServers().servers.mixed).toBeUndefined();
         expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.disabledMcpjsonServers).toContain("mixed");
     });
 

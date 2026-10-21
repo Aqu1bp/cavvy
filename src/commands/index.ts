@@ -78,6 +78,7 @@ import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS } from "../keybindings/core";
 import { ensureKeybindingsFile } from "../keybindings/file";
+import { isWebUrl } from "../mcp/oauth";
 
 export interface Command {
     name: string;
@@ -94,6 +95,8 @@ export interface Command {
     skill?: Skill;
     /** Starts a model turn, which takes the images typed with the command (`draft`). Other commands refuse images. */
     images?: boolean;
+    /** An MCP server's prompt (mcp__server__prompt): fetched, then sent as the prompt. */
+    mcpPrompt?: boolean;
     run(app: App, args: string, draft?: Draft): Promise<void> | void;
 }
 
@@ -1393,8 +1396,8 @@ function mcpCardLines(app: App, info: McpServerInfo): string[] {
     const out: string[] = [theme.warning("MCP servers run with your user permissions. Only approve servers you trust.")];
     if (info.why) out.push(theme.warning(info.why));
     out.push("");
-    if (info.transport === "http") {
-        out.push(row("URL", info.url ?? ""));
+    if (info.transport !== "stdio") {
+        out.push(row("URL", `${info.url ?? ""}${info.transport !== "http" ? theme.muted(` (${info.transport === "sse" ? "SSE" : "WebSocket"})`) : ""}`));
         out.push(row("Headers", info.headerNames?.length ? `${info.headerNames.join(", ")} ${theme.muted("(values not shown)")}` : theme.muted("none")));
     } else {
         out.push(row("Command", info.command ?? ""));
@@ -1472,6 +1475,28 @@ async function approveMcp(app: App, name: string): Promise<boolean> {
     }
 }
 
+/** What a connected server offers, in a few words. */
+function offered(s: { tools: unknown[]; resources?: unknown[]; templates?: unknown[]; prompts?: unknown[] }): string {
+    const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+    const parts = [n(s.tools.length, "tool")];
+    const res = (s.resources?.length ?? 0) + (s.templates?.length ?? 0);
+    if (res) parts.push(n(res, "resource"));
+    if (s.prompts?.length) parts.push(n(s.prompts.length, "prompt"));
+    return parts.join(" · ");
+}
+
+/** Open a link in the user's browser; the link is printed too, for when this can't. */
+function openInBrowser(url: string) {
+    if (!isWebUrl(url)) return;
+    // Not cmd /c start: cmd would take the URL's & as a command separator.
+    const argv = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["rundll32", "url.dll,FileProtocolHandler", url] : ["xdg-open", url];
+    try {
+        Bun.spawn(argv, { stdout: "ignore", stderr: "ignore", stdin: "ignore", env: childEnv() }).exited.catch(() => undefined);
+    } catch {
+        // printed above
+    }
+}
+
 async function mcpCommand(app: App, args: string) {
     const [sub, name] = args.split(/\s+/);
     const guarded = async (fn: () => Promise<unknown>) => {
@@ -1507,7 +1532,9 @@ async function mcpCommand(app: App, args: string) {
         const statusText = (s: (typeof servers)[number]) => {
             switch (s.status) {
                 case "connected":
-                    return theme.success(`✔ connected · ${s.tools.length} tools${s.era ? ` · ${s.era}` : ""}`);
+                    return theme.success(`✔ connected · ${offered(s)}${s.era ? ` · ${s.era}` : ""}`);
+                case "needs-auth":
+                    return theme.warning("needs sign-in");
                 case "failed":
                     return theme.error(`✘ failed: ${truncate(visible((s.error ?? "").split("\n")[0]!).text, 60)}`);
                 case "needs-approval":
@@ -1532,21 +1559,29 @@ async function mcpCommand(app: App, args: string) {
         const st = app.mcp.servers.get(pick);
         const info = app.mcp.describe(pick);
         if (!st || !info) continue;
-        type A = "approve" | "reject" | "revoke" | "reconnect" | "tools" | "error" | "disable" | "enable";
+        type A = "approve" | "reject" | "revoke" | "reconnect" | "tools" | "resources" | "prompts" | "error" | "disable" | "enable" | "signin" | "signout";
         const actions: SelectItem<A>[] = [];
         const project = st.source === "project";
         const approval = st.approval?.state;
         const offInFile = st.config.disabled === true;
         if (project && !offInFile && (approval === "needs-approval" || approval === "rejected")) actions.push({ label: approval === "rejected" ? "Enable (review and approve)…" : "Review and approve…", value: "approve", description: "saved to this folder's local settings" });
         if (project && (approval === "needs-approval" || approval === "approved")) actions.push({ label: "Reject", value: "reject", description: "keeps it off until you approve it again" });
-        if (st.status === "connected") actions.push({ label: "Show tools", value: "tools" }, { label: "Reconnect", value: "reconnect" }, { label: "Disable for this session", value: "disable" });
+        if (st.status === "needs-auth") actions.push({ label: "Sign in…", value: "signin", description: "opens your browser" });
+        if (st.status === "connected") {
+            actions.push({ label: "Show tools", value: "tools" });
+            if (st.resources?.length || st.templates?.length) actions.push({ label: "Show resources", value: "resources", description: "attach one with @" });
+            if (st.prompts?.length) actions.push({ label: "Show prompts", value: "prompts", description: "run one as /mcp__…" });
+            actions.push({ label: "Reconnect", value: "reconnect" }, { label: "Disable for this session", value: "disable" });
+        }
+        if (info.transport !== "stdio" && app.mcp.signedIn(st.name)) actions.push({ label: "Sign out", value: "signout", description: "forgets the stored token" });
         if (st.status === "failed") actions.push({ label: "Show error", value: "error" }, { label: "Reconnect", value: "reconnect" });
         // A rejected project server is enabled through the card above, never straight away.
         if (st.status === "disabled" && (!project || mayStart(st))) actions.push({ label: "Enable", value: "enable", description: "for this session" });
         if (project && approval === "approved" && !st.approval?.viaAll) actions.push({ label: "Revoke approval", value: "revoke", description: "stops it; it asks again" });
         const header = project
             ? mcpCardLines(app, info)
-            : [theme.muted(info.transport === "http" ? (info.url ?? "") : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted(st.config.plugin ? `source: plugin ${st.config.plugin}` : "source: settings")];
+            : [theme.muted(info.transport !== "stdio" ? `${info.url ?? ""}${info.transport !== "http" ? ` (${info.transport === "sse" ? "SSE" : "WebSocket"})` : ""}` : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted(st.config.plugin ? `source: plugin ${st.config.plugin}` : "source: settings")];
+        if (st.status === "needs-auth") header.unshift(theme.warning("This server needs you to sign in. Choose Sign in to open the sign-in page in your browser."));
         if (project && offInFile) header.unshift(theme.muted('Turned off in .mcp.json ("disabled": true).'));
         if (approval === "rejected") header.unshift(theme.muted("You rejected this server."));
         const a = (await app.showDialog(new SelectDialog<A>({ title: info.label, header, items: actions, numbers: true }))) as A | undefined;
@@ -1565,6 +1600,33 @@ async function mcpCommand(app: App, args: string) {
             await st.client?.close();
             st.client = undefined;
             st.status = "disabled";
+        } else if (a === "signin") {
+            const shown = { url: "" };
+            const r = await withProgress(
+                app,
+                [theme.permission(bold(`Signing in to ${info.label}…`)), "", theme.muted("Finish signing in in your browser. If it didn't open, open the link printed above.")],
+                (signal) =>
+                    app.mcp.signIn(st.name, (url) => {
+                        shown.url = url;
+                        app.print(["", theme.muted(`  Sign-in link for ${info.label}:`), `  ${url}`]);
+                        openInBrowser(url);
+                    }, signal),
+            ).catch((e: Error) => {
+                app.notice(`Sign-in to ${info.label} didn't finish: ${redact(e.message)}`, "error");
+                return null;
+            });
+            if (r === undefined) app.notice(`Sign-in to ${info.label} cancelled.`, "warn");
+            else if (r) app.notice(r.status === "connected" ? `Signed in to ${info.label}: connected.` : `Signed in to ${info.label}, but it didn't connect: ${redact((r.error ?? r.status).split("\n")[0]!)}`, r.status === "connected" ? "info" : "warn");
+        } else if (a === "signout") {
+            await app.mcp.signOut(st.name);
+            app.notice(`Signed out of ${info.label}.`);
+        } else if (a === "resources") {
+            app.print(["", heading(`${info.label} resources`), ...(st.resources ?? []).slice(0, 200).map((r) => `  ${bold(`@${visible(st.name).text}:${visible(maskConfigValues(r.uri, st.config)).text}`)} ${theme.muted(truncate(visible(maskConfigValues(r.title ?? r.description ?? r.name ?? "", st.config).split("\n")[0]!).text, Math.max(10, termCols() - r.uri.length - st.name.length - 10)))}`), ...((st.resources?.length ?? 0) > 200 ? [theme.muted(`  … and ${st.resources!.length - 200} more (type @${visible(st.name).text}: to search them)`)] : []), ...(st.templates ?? []).map((t) => `  ${theme.muted("template")} ${bold(visible(maskConfigValues(t.uriTemplate, st.config)).text)} ${theme.muted(truncate(visible(maskConfigValues(t.description ?? t.name ?? "", st.config).split("\n")[0]!).text, 60))}`)]);
+            return;
+        } else if (a === "prompts") {
+            const cmds = app.mcp.promptCommands().filter((p) => p.server === st.name);
+            app.print(["", heading(`${info.label} prompts`), ...cmds.map((p) => `  ${bold(`/${p.command}`)}${p.args ? " " + theme.subtle(p.args) : ""} ${theme.muted(truncate(visible(p.description).text, 70))}`)]);
+            return;
         } else if (a === "tools") {
             app.print(["", heading(`${info.label} tools`), ...st.tools.map((t) => `  ${bold(visible(t.name).text)}${t.annotations?.readOnlyHint ? theme.muted(" (read-only)") : ""} ${theme.muted(truncate(visible(maskConfigValues((t.description ?? "").split("\n")[0]!, st.config)).text, termCols() - t.name.length - 20))}`)]);
             return;
@@ -2050,13 +2112,44 @@ function skillToCommand(s: Skill): Command {
     };
 }
 
-/** Built-ins, then custom commands, then skills: a name the one before has is taken. */
+/** An MCP prompt as a command: its arguments in order, fetched when run, then sent like a typed prompt. */
+function promptToCommand(p: ReturnType<App["mcp"]["promptCommands"]>[number]): Command {
+    return {
+        name: p.command,
+        description: p.description,
+        args: p.args,
+        noEcho: true,
+        images: true,
+        mcpPrompt: true,
+        run: async (app, args, draft) => {
+            const display = `/${p.command}${args ? " " + args : ""}`;
+            let r: Awaited<ReturnType<App["mcp"]["runPrompt"]>> | undefined;
+            try {
+                r = await withProgress(app, [theme.permission(bold(`Getting ${visible(p.prompt.name).text} from ${visible(p.server).text}…`))], (signal) => app.mcp.runPrompt(p.command, args, app.mcpAsker(), signal));
+            } catch (e) {
+                app.notice(redact((e as Error).message), "error");
+                if (draft) app.editor.restore([draft]);
+                return;
+            }
+            if (!r) {
+                if (draft) app.editor.restore([draft]);
+                return;
+            }
+            // What the server wrote isn't the user's: only the arguments they typed attach files or resources.
+            await app.startTurn(r.text, { display, kind: "command", draft, extra: r.images, mentionsIn: args });
+        },
+    };
+}
+
+/** Built-ins, then custom commands, then skills, then MCP prompts: a name the one before has is taken. */
 function allCommands(app: App): Command[] {
     const names = new Set(BUILTIN.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
     const custom = app.customCommands.filter((c) => !names.has(c.name));
     for (const c of custom) names.add(c.name);
     const skills = (app.skills ?? []).filter((s) => s.userInvocable && !names.has(s.name));
-    return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand)];
+    for (const sk of skills) names.add(sk.name);
+    const prompts = app.mcp.promptCommands().filter((p) => !names.has(p.command));
+    return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand), ...prompts.map(promptToCommand)];
 }
 
 export function commandList(app: App): Command[] {
@@ -2120,7 +2213,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     if (app.busy && cmd.name === "goal" && parseGoalCommand(args).kind === "set") return false;
     if (app.busy && !cmd.whileBusy) {
         // Turn-starting commands queue like a prompt (by the caller); a bare /plan only switches mode, so it can't wait.
-        if (cmd.custom || cmd.skill || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
+        if (cmd.custom || cmd.skill || cmd.mcpPrompt || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
         app.notice(`/${cmd.name} isn't available while ${APP_TITLE} is working. Press esc to interrupt first.`, "warn");
         if (draft) app.editor.restore([draft]);
         return true;

@@ -47,7 +47,7 @@ ${bold("Usage")}
   ${APP_NAME} models [--refresh] [--json]  list every model you can use, across providers
   ${APP_NAME} mcp list                     show MCP servers and connect to each
   ${APP_NAME} mcp add [opts] <name> -- <command> [args…]
-  ${APP_NAME} mcp add --transport http [opts] <name> <url>
+  ${APP_NAME} mcp add --transport http|sse|ws [opts] <name> <url>
   ${APP_NAME} mcp remove <name> [--scope s]
   ${APP_NAME} plugin install <name>[@marketplace] [--scope user|project|local]
   ${APP_NAME} plugin list | uninstall | enable | disable | update | validate   (plugin help)
@@ -530,7 +530,7 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
     }
     if (sub === "add") {
         let scope: SettingsScope = "user";
-        let transport: "stdio" | "http" = "stdio";
+        let transport: "stdio" | "http" | "sse" | "ws" = "stdio";
         const env: Record<string, string> = {};
         const headers: Record<string, string> = {};
         const pos: string[] = [];
@@ -542,7 +542,11 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
                 break;
             }
             if (a === "--scope" || a === "-s") scope = (args[++i] ?? "user") as SettingsScope;
-            else if (a === "--transport" || a === "-t") transport = (args[++i] ?? "stdio") === "http" ? "http" : "stdio";
+            else if (a === "--transport" || a === "-t") {
+                const t = args[++i] ?? "stdio";
+                if (!["stdio", "http", "sse", "ws"].includes(t)) die("--transport must be stdio, http, sse or ws");
+                transport = t as typeof transport;
+            }
             else if (a === "-e" || a === "--env") {
                 const kv = args[++i] ?? "";
                 const idx = kv.indexOf("=");
@@ -559,10 +563,12 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
         const name = pos[0];
         if (!name || !/^[A-Za-z0-9_-]+$/.test(name)) die("give the server a name (letters, digits, _ and -)");
         let cfg: McpServerConfig;
-        if (transport === "http") {
+        if (transport !== "stdio") {
             const url = pos[1];
-            if (!url) die(`usage: ${APP_NAME} mcp add --transport http <name> <url>`);
-            cfg = { url, ...(Object.keys(headers).length ? { headers } : {}) };
+            if (!url) die(`usage: ${APP_NAME} mcp add --transport ${transport} <name> <url>`);
+            if (transport === "ws" ? !/^wss?:\/\//i.test(url) : !/^https?:\/\//i.test(url)) die(transport === "ws" ? "a WebSocket URL starts with ws:// or wss://" : "the URL must start with http:// or https://");
+            // The URL says HTTP or WebSocket on its own; only SSE needs saying.
+            cfg = { ...(transport === "sse" ? { type: "sse" as const } : {}), url, ...(Object.keys(headers).length ? { headers } : {}) };
         } else {
             const cmd = tail.length ? tail : pos.slice(1);
             if (!cmd.length) die(`usage: ${APP_NAME} mcp add <name> -- <command> [args…]`);

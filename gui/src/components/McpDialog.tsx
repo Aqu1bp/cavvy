@@ -5,7 +5,7 @@
 // showed). Statuses follow the session's state live.
 
 import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
-import { AlertTriangle, Plug, ShieldAlert } from "lucide-solid";
+import { AlertTriangle, ExternalLink, KeyRound, Plug, ShieldAlert } from "lucide-solid";
 import type { McpListInfo, McpServerInfo } from "@shared/protocol";
 import { app, handleFor, reportError, requestTrust, rpc, toast } from "../state/app";
 import { sessionReadReady } from "../state/changes";
@@ -84,7 +84,8 @@ export function McpDialog() {
         ),
     );
     // Statuses come live with the session's state. A server added or gone, or approved elsewhere (another session, the terminal), means a fresh list.
-    const shape = createMemo(() => JSON.stringify((handle()?.view.state.mcp ?? []).map((m) => [m.name, m.approval?.state, m.approval?.reason])));
+    // A sign-in finishing (needs-auth to connected) reads it again too: whether there's a sign-in to sign out of.
+    const shape = createMemo(() => JSON.stringify((handle()?.view.state.mcp ?? []).map((m) => [m.name, m.approval?.state, m.approval?.reason, m.status === "needs-auth"])));
     createEffect(
         on(
             shape,
@@ -151,7 +152,7 @@ export function McpDialog() {
                 if (!r.approved) toast(`What ${s.label} runs changed since it was shown. Nothing was approved: look at it again.`, "warn");
             };
         });
-    const change = (method: "session.mcpReject" | "session.mcpRevoke" | "session.mcpReconnect", s: McpServerInfo) =>
+    const change = (method: "session.mcpReject" | "session.mcpRevoke" | "session.mcpReconnect" | "session.mcpSignOut", s: McpServerInfo) =>
         act(async (sid) => {
             const result = await rpc.call(method, { id: sid, name: s.name });
             return () => setList(result);
@@ -159,6 +160,31 @@ export function McpDialog() {
     const reject = (s: McpServerInfo) => change("session.mcpReject", s);
     const revoke = (s: McpServerInfo) => change("session.mcpRevoke", s);
     const reconnect = (s: McpServerInfo) => change("session.mcpReconnect", s);
+    /** The sign-in link, shown in case the browser didn't open it (a blocked pop-up). */
+    const [signInLink, setSignInLink] = createSignal<{ name: string; url: string }>();
+    const signIn = (s: McpServerInfo) => {
+        // Opened now, while this is still the click: a window opened after the answer would be a blocked pop-up.
+        const win = window.open("", "_blank");
+        void act(async (sid) => {
+            try {
+                const { url } = await rpc.call("session.mcpSignIn", { id: sid, name: s.name });
+                // The window shares this page's origin until it navigates: only ever to a web page.
+                if (!/^https?:\/\//i.test(url)) throw new Error("The sign-in link isn't a web page.");
+                if (win && !win.closed) {
+                    win.opener = null;
+                    win.location.href = url;
+                }
+                return () => {
+                    setSignInLink({ name: s.name, url });
+                    toast(`Finish signing in to ${s.label} in your browser.`);
+                };
+            } catch (e) {
+                win?.close();
+                throw e;
+            }
+        });
+    };
+    const signOut = (s: McpServerInfo) => change("session.mcpSignOut", s);
     // The existing trust flow; the list is read again after it (the folder's servers may be approved by then).
     const trust = () => {
         const cwd = handle()?.view.state.cwd;
@@ -206,7 +232,7 @@ export function McpDialog() {
                         <div class="muted small">{list()!.omitted} more servers aren't listed.</div>
                     </Show>
                 </Show>
-                <Show when={selected()}>{(s) => <Detail s={s()} list={list()!} busy={busy()} approve={approve} reject={reject} revoke={revoke} reconnect={reconnect} trust={trust} />}</Show>
+                <Show when={selected()}>{(s) => <Detail s={s()} list={list()!} busy={busy()} approve={approve} reject={reject} revoke={revoke} reconnect={reconnect} trust={trust} signIn={signIn} signOut={signOut} signInLink={signInLink()?.name === s().name ? signInLink()!.url : undefined} />}</Show>
             </Show>
             <div class="dialog-actions">
                 <span class="grow" />
@@ -227,6 +253,10 @@ interface DetailProps {
     revoke: (s: McpServerInfo) => void;
     reconnect: (s: McpServerInfo) => void;
     trust: () => void;
+    signIn: (s: McpServerInfo) => void;
+    signOut: (s: McpServerInfo) => void;
+    /** The link of a sign-in under way, in case the browser didn't open it. */
+    signInLink?: string;
 }
 
 function Detail(p: DetailProps) {
@@ -297,10 +327,25 @@ function Info(p: DetailProps) {
     const approved = () => p.s.source === "project" && p.s.approval?.state === "approved";
     const revocable = () => approved() && !p.s.approval?.viaAll;
     const reconnectable = () => p.s.status === "failed" || p.s.status === "connected";
+    const needsAuth = () => p.s.status === "needs-auth";
     return (
         <div class="rw-plan">
             <Facts s={p.s} />
-            <Show when={p.s.error}>
+            <Show when={needsAuth()}>
+                <div class="mcp-note warn" role="status">
+                    <KeyRound size={13} />
+                    <span>This server needs you to sign in. Sign in opens its sign-in page in your browser; it connects once you're done.</span>
+                </div>
+                <Show when={p.signInLink}>
+                    <div class="muted small">
+                        Didn't open?{" "}
+                        <a href={p.signInLink} target="_blank" rel="noopener noreferrer">
+                            Open the sign-in page <ExternalLink size={11} />
+                        </a>
+                    </div>
+                </Show>
+            </Show>
+            <Show when={p.s.error && !needsAuth()}>
                 <div class="mcp-error mono small">{p.s.error}</div>
             </Show>
             <Show when={p.s.approval?.viaAll}>
@@ -310,8 +355,13 @@ function Info(p: DetailProps) {
                 <div class="muted small">Turned off in .mcp.json ("disabled": true).</div>
             </Show>
             <Notes s={p.s} />
-            <Show when={approved() || reconnectable()}>
+            <Show when={approved() || reconnectable() || needsAuth() || p.s.signedIn}>
                 <div class="dialog-actions">
+                    <Show when={p.s.signedIn}>
+                        <button class="btn ghost" disabled={p.busy} title="Forgets the stored sign-in; it asks you to sign in again" onClick={() => p.signOut(p.s)}>
+                            Sign out
+                        </button>
+                    </Show>
                     <Show when={revocable()}>
                         <button class="btn ghost" disabled={p.busy} title="It stops, and asks for approval again" onClick={() => p.revoke(p.s)}>
                             Revoke approval
@@ -326,6 +376,11 @@ function Info(p: DetailProps) {
                     <Show when={reconnectable()}>
                         <button class="btn secondary" disabled={p.busy} onClick={() => p.reconnect(p.s)}>
                             Reconnect
+                        </button>
+                    </Show>
+                    <Show when={needsAuth()}>
+                        <button class="btn primary" disabled={p.busy} onClick={() => p.signIn(p.s)}>
+                            {p.signInLink ? "Sign in again…" : "Sign in…"}
                         </button>
                     </Show>
                 </div>
@@ -358,7 +413,7 @@ function Facts(p: { s: McpServerInfo }) {
     return (
         <div class="mcp-facts">
             <Show
-                when={p.s.transport === "http"}
+                when={p.s.transport !== "stdio"}
                 fallback={
                     <>
                         <Fact label="Command">
@@ -388,9 +443,19 @@ function Facts(p: { s: McpServerInfo }) {
             >
                 <Fact label="URL">
                     <code class="mcp-val">{p.s.url}</code>
+                    <Show when={p.s.transport === "sse" || p.s.transport === "ws"}>
+                        <span class="muted small"> {p.s.transport === "sse" ? "SSE" : "WebSocket"}</span>
+                    </Show>
                 </Fact>
                 <Fact label="Headers">
                     <Names names={p.s.headerNames} />
+                </Fact>
+            </Show>
+            <Show when={p.s.status === "connected"}>
+                <Fact label="Offers">
+                    <span>
+                        {[`${p.s.tools} ${p.s.tools === 1 ? "tool" : "tools"}`, ...(p.s.resources ? [`${p.s.resources} ${p.s.resources === 1 ? "resource" : "resources"} (attach with @)`] : []), ...(p.s.prompts ? [`${p.s.prompts} ${p.s.prompts === 1 ? "prompt" : "prompts"} (run as /mcp__…)`] : [])].join(" · ")}
+                    </span>
                 </Fact>
             </Show>
             <Fact label="From">

@@ -42,6 +42,8 @@ import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
+import { expandMcpMentions } from "../mcp/mentions";
+import type { McpAsker } from "../mcp/elicitation";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitBranch } from "../util/git";
@@ -1127,6 +1129,7 @@ export class Runtime {
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
+                sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
                 webSearch: async (query, signal) => {
                     const backend = await availableSearchBackend(this.settings().webSearch);
                     if (!backend) throw new Error("Web search is turned off (settings.webSearch = off)");
@@ -1213,7 +1216,7 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Timeline building
 
-    private notice(text: string, level: "info" | "warn" | "error" = "info") {
+    notice(text: string, level: "info" | "warn" | "error" = "info") {
         const turn = this.currentTurn();
         this.closeOpen();
         this.op({ op: "block", turnId: turn.id, block: { t: "notice", id: this.newId(), level, text: redact(text) } });
@@ -1887,6 +1890,15 @@ export class Runtime {
         return [...(turn?.blocks ?? [])].reverse().find((b) => b.t === "tool" && b.name === name && b.status === "running")?.id;
     }
 
+    /** How what MCP servers ask for (forms, sampling) reaches the user outside a tool call: @-mentions, prompts. */
+    mcpAsker(): McpAsker {
+        return {
+            askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
+            sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
+            warn: (m) => this.notice(m, "warn"),
+        };
+    }
+
     private async askQuestion(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined> {
         const toolId = this.runningTool("AskUserQuestion");
         if (toolId) this.patchBlock(toolId, { status: "awaiting" });
@@ -2073,6 +2085,8 @@ export class Runtime {
     unknownCommand(text: string): string | undefined {
         const c = slashCommand(text);
         if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name) || pluginCommandFor(this.ws.commands, c.name) || this.ws.freshSkills().some((s) => s.userInvocable && s.name === c.name)) return undefined;
+        // An MCP server's prompt.
+        if (c.name.startsWith("mcp__") && this.ws.mcp.promptCommands().some((p) => p.command === c.name)) return undefined;
         // One the session's agent CLI runs itself (Claude Code's /code-review, a skill).
         const provider = this.agent?.model.provider;
         const commands = this.engine.cliCommands(provider, this.ws.cwd);
@@ -2124,12 +2138,31 @@ export class Runtime {
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
                 return this.startTurn(body, { display: trimmed, kind: "command", attachments, mentionsIn: args.trim(), about });
             }
+            if (cmd.startsWith("mcp__") && this.ws.mcp.promptCommands().some((p) => p.command === cmd)) return this.runMcpPrompt(cmd, args, trimmed, attachments);
         }
         return this.startTurn(text, { attachments });
     }
 
+    /** An MCP server's prompt as a slash command: fetched (it may ask the user something first), then sent as the prompt. */
+    private async runMcpPrompt(command: string, args: string, display: string, attachments?: AttachedPart[]) {
+        this.setState({ activity: { label: `Getting /${command}`, since: Date.now() } });
+        let r: { text: string; images: AttachedPart[] };
+        try {
+            r = await this.ws.mcp.runPrompt(command, args.trim(), this.mcpAsker());
+        } catch (e) {
+            this.notice(redact((e as Error).message), "error");
+            // The message goes back to the composer, as an interrupted one does.
+            this.engine.draft(this, display, attachments);
+            return;
+        } finally {
+            if (!this.busy) this.setState({ activity: undefined });
+        }
+        // What the server wrote isn't the user's: only the arguments they typed attach files or resources.
+        return this.startTurn(r.text, { display, kind: "command", attachments: [...(attachments ?? []), ...r.images], mentionsIn: args });
+    }
+
     /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
-    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
     async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
@@ -2201,11 +2234,16 @@ export class Runtime {
                 const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
                 const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.ws.skills);
-                // A wake quotes outside text (PR comments): its @words are not files to attach.
-                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker);
+                // A wake quotes outside text (PR comments): its @words are not files or MCP resources to attach.
+                const scan = opts.kind === "wake" ? "" : (opts.mentionsIn ?? text);
+                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(scan, this.toolState, roots, this.checker);
                 // Claude Code and Codex are sent the $name, and load the skill themselves.
                 parts[0] = { type: "text", text: skills.length && !cliRunsSkills(this.agent?.model.provider) ? withSkills(text, skills) : text };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
+                const res = await expandMcpMentions(scan, this.ws.mcp, this.mcpAsker(), ac.signal);
+                parts.push(...res.parts);
+                attached.push(...res.attached);
+                notices.push(...res.notices);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
                 if (opts.attachments?.length) {

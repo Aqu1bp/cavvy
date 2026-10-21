@@ -129,6 +129,8 @@ export interface ToolContext {
     listModels?: (opts: { provider?: string; query?: string }, signal: AbortSignal) => Promise<string>;
     /** Model-facing web search (WebSearch tool). */
     webSearch?: (query: string, signal: AbortSignal) => Promise<string>;
+    /** One completion on the session's model, for an MCP server's sampling request (after the user allowed it). */
+    sample?: (system: string, prompt: string, signal: AbortSignal) => Promise<{ text: string; model: string }>;
     /** Small-model helper for WebFetch prompts. */
     summarize?: (content: string, prompt: string, signal: AbortSignal) => Promise<string>;
     /**

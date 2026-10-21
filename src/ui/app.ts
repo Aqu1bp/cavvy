@@ -19,6 +19,8 @@ import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs
 import type { Ask as WorktreeAsk } from "./worktree";
 import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiagnostics, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
+import { expandMcpMentions, searchResources } from "../mcp/mentions";
+import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
@@ -51,7 +53,7 @@ import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveMode
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
-import { modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart } from "../providers/types";
+import { modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
@@ -222,7 +224,7 @@ export class App {
         this.allowBypass = init.allowBypass;
         this.checker = new PermissionChecker(() => this.settings, init.cwd);
         this.classifier = new AutoClassifier(undefined);
-        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings());
+        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings(), true);
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
         this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap() };
@@ -699,6 +701,7 @@ export class App {
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
+                sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
                 webSearch: async (query, signal) => {
                     const backend = await availableSearchBackend(this.settings.webSearch);
                     if (!backend) throw new Error("Web search is turned off (settings.webSearch = off)");
@@ -1484,17 +1487,34 @@ export class App {
         return signal.aborted ? undefined : value;
     }
 
+    /** How what MCP servers ask for (forms, sampling) reaches the user outside a tool call: @-mentions, prompts. */
+    mcpAsker(): McpAsker {
+        return {
+            askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
+            sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
+            warn: (m) => this.notice(m, "warn"),
+        };
+    }
+
     private async askQuestion(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined> {
         const OTHER = "\u0000other";
+        // A title is one line: the rest (an MCP server's form puts its message and the field on separate lines) goes under it.
+        const [title = "", ...more] = question.split("\n");
+        const header = more.length ? more.map((l) => theme.muted(l)) : undefined;
+        void this.notifier.notify("question");
+        if (!options.length) {
+            // Nothing to pick from: straight to typing the answer.
+            const text = await this.showDialog(new InputDialog({ title, header, placeholder: "Your answer", color: theme.info }));
+            return text === undefined ? undefined : [text];
+        }
         const items: SelectItem<string>[] = options.map((o) => ({ label: o.label, value: o.label, description: o.description }));
         items.push({ label: theme.muted("Type something else…"), value: OTHER });
-        const d = new SelectDialog<string>({ title: question, items, multi, numbers: true, color: theme.info });
-        void this.notifier.notify("question");
+        const d = new SelectDialog<string>({ title, header, items, multi, numbers: true, color: theme.info });
         const r = await this.showDialog(d);
         if (r === undefined) return undefined;
         const arr = Array.isArray(r) ? r : [r];
         if (arr.includes(OTHER)) {
-            const text = await this.showDialog(new InputDialog({ title: question, placeholder: "Your answer", color: theme.info }));
+            const text = await this.showDialog(new InputDialog({ title, header, placeholder: "Your answer", color: theme.info }));
             if (text === undefined) return undefined;
             return [...arr.filter((x) => x !== OTHER), text];
         }
@@ -1968,9 +1988,12 @@ export class App {
         }
         if (tok.text.startsWith("@") && tok.text.length >= 1) {
             const q = tok.text.slice(1).replace(/^"/, "");
-            const found = this.files.search(q, 8);
-            if (this.menuIndex >= found.length) this.menuIndex = 0;
-            return { items: found.map((p) => ({ label: "@" + p, insert: "@" + (p.includes(" ") ? `"${p}"` : p) + (p.endsWith("/") ? "" : " "), start: tok.start, end: e.cursor })) };
+            // MCP resources first when the query names a server ("github:"), else after a few files.
+            const resources = searchResources(this.mcp.resourceList(), q, 8).map((r) => ({ label: `@${r.server}:${r.uri}`, description: r.title ?? (r.name !== r.uri ? r.name : r.description), insert: `@${r.mention} `, start: tok.start, end: e.cursor }));
+            const files = this.files.search(q, 8).map((p) => ({ label: "@" + p, insert: "@" + (p.includes(" ") ? `"${p}"` : p) + (p.endsWith("/") ? "" : " "), start: tok.start, end: e.cursor }));
+            const items = (q.includes(":") ? [...resources, ...files] : [...files.slice(0, Math.max(4, 8 - resources.length)), ...resources]).slice(0, 8);
+            if (this.menuIndex >= items.length) this.menuIndex = 0;
+            return { items };
         }
         return undefined;
     }
@@ -2046,9 +2069,10 @@ export class App {
     }
 
     /** `draft` carries the images typed with the prompt (or with the command that built it). */
-    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
+    /** `extra`: parts that go with the prompt as they are (an MCP prompt's images). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; mentionsIn?: string; wakes?: Wake[]; goal?: boolean } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; extra?: UserContent[]; mentionsIn?: string; wakes?: Wake[]; goal?: boolean } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
@@ -2095,11 +2119,15 @@ export class App {
                 const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.skills);
                 // Claude Code and Codex are sent the $name, and load the skill themselves.
                 const sent = skills.length && !cliRunsSkills(agent.model.provider) ? withSkills(text, skills) : text;
-                // A wake quotes outside text (PR comments): its @words are not files to attach.
-                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                // A wake quotes outside text (PR comments): its @words are not files or MCP resources to attach.
+                const scan = opts.kind === "wake" ? "" : (opts.mentionsIn ?? text);
+                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(scan, this.toolState, roots, this.checker, { prepare: this.imagePrep });
                 parts[0] = { type: "text", text: sent };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((sk) => sk.name).join(", ")}`);
-                parts.push(...images.map((im) => im.part));
+                const res = await expandMcpMentions(scan, this.mcp, this.mcpAsker(), ac.signal);
+                parts.push(...res.parts, ...images.map((im) => im.part), ...(opts.extra ?? []));
+                attached.push(...res.attached);
+                notices.push(...res.notices);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
                 reason = await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind });

@@ -170,6 +170,8 @@ export interface Helpers {
     /** One-shot completion on a cheap model (classifier, summaries). */
     complete?(system: string, prompt: string, signal?: AbortSignal): Promise<string>;
     webSearch?(query: string, signal: AbortSignal): Promise<string>;
+    /** One completion on the session's own model (an MCP server's sampling request): its text and the model. */
+    sample?(system: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string }>;
     /** Resolve "provider:model" into a client (custom agents with their own model). */
     resolveModel?(ref: string): Promise<{ model: ModelInfo; client: ProviderClient } | undefined>;
 }
@@ -1971,6 +1973,7 @@ export class Agent {
             taskStatus: this.o.isSubagent ? undefined : (id, ms, sig) => this.taskStatus(id, ms, sig),
             listModels: this.o.isSubagent ? undefined : (opts, sig) => catalog(this.state.projectRoot, { ...opts, listings: this.o.listings?.(), current: modelRef(this.model), signal: sig }),
             webSearch: this.o.helpers?.webSearch,
+            sample: this.o.helpers?.sample,
             summarize: this.o.helpers?.complete
                 ? (content, prompt, sig) =>
                       this.o.helpers!.complete!(

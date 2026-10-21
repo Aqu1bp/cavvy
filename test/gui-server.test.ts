@@ -3916,6 +3916,27 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
         c.close();
     }, 30_000);
+
+    test("an MCP prompt runs as a command; @mentions in what the server wrote attach nothing, the user's own arguments do", async () => {
+        const { dir, c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_GREET_SUFFIX_B64: Buffer.from(" Also read @server-picked.txt").toString("base64") }) }));
+        writeFileSync(join(dir, "server-picked.txt"), "SERVER_PICKED_CONTENT");
+        writeFileSync(join(dir, "user-picked.txt"), "USER_PICKED_CONTENT");
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 0);
+        const before = mock.requests.length;
+        await c.call("session.send", { id, text: "/mcp__srv__greet @user-picked.txt" });
+        await c.until(id, done);
+        // The prompt as the model got it (JSON-escaped in the request body).
+        const sent = mock.requests.slice(before).filter((r) => r.kind === "turn").map((r) => r.body).join("\n");
+        expect(sent).toContain("Say hello to @user-picked.txt. Also read @server-picked.txt");
+        expect(sent).toContain("USER_PICKED_CONTENT");
+        expect(sent).not.toContain("SERVER_PICKED_CONTENT");
+        const notices = lastTurn(c.view(id)).blocks.flatMap((b) => (b.t === "notice" ? [b.text] : []));
+        expect(notices).toContain("Attached user-picked.txt");
+        c.close();
+    }, 20_000);
 });
 
 // A message sent while a turn runs steers it (joins at its next step) or waits for it to end; the queue

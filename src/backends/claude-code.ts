@@ -1460,7 +1460,7 @@ export function claudeRule(raw: string, root: string): string[] {
 
 /** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
 export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
-    const store = [paths.credentialsFile(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
     const accounts = accountProtectionFolders().flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
     return { deny: [...map(r.deny), ...store, ...accounts], ask: map(r.ask) };

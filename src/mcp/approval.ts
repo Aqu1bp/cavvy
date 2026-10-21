@@ -23,7 +23,7 @@ import type { McpApprovalInfo, McpServerInfo, McpServerStatus } from "./info";
 export class McpApprovalError extends Error {
     constructor(
         message: string,
-        readonly code: "untrusted" | "needs_trust" | "unknown" | "not_project" | "not_needed" | "changed" | "blocked",
+        readonly code: "untrusted" | "needs_trust" | "unknown" | "not_project" | "not_needed" | "changed" | "blocked" | "not_remote",
     ) {
         super(message);
     }
@@ -105,6 +105,10 @@ export function mcpFingerprint(config: McpServerConfig, projectCwd: string, runC
         env: entries(config.env),
         url: config.url ?? null,
         headers: entries(config.headers),
+        // Only when set, so approvals from before these existed still match. Which transport, and
+        // which OAuth client, port and scopes a sign-in uses, are part of what was approved.
+        ...(config.type !== undefined ? { type: config.type } : {}),
+        ...(config.oauth !== undefined ? { oauth: config.oauth } : {}),
     };
     return "v1:" + createHmac("sha256", approvalKey()).update(JSON.stringify(what)).digest("hex");
 }
@@ -331,6 +335,9 @@ export interface DescribeInput {
     source: "settings" | "project";
     status: McpServerStatus;
     tools: unknown[];
+    resources?: unknown[];
+    templates?: unknown[];
+    prompts?: unknown[];
     error?: string;
     approval?: Approval;
 }
@@ -365,7 +372,9 @@ export function describeServer(st: DescribeInput, projectCwd: string): McpServer
         source: st.source,
         status: st.status,
         tools: st.tools.length,
-        transport: remote ? "http" : "stdio",
+        ...((st.resources?.length ?? 0) + (st.templates?.length ?? 0) ? { resources: (st.resources?.length ?? 0) + (st.templates?.length ?? 0) } : {}),
+        ...(st.prompts?.length ? { prompts: st.prompts.length } : {}),
+        transport: !remote ? "stdio" : c.type === "sse" ? "sse" : c.type === "ws" || /^wss?:\/\//i.test(String(c.url)) ? "ws" : "http",
     };
     // Masked where it was made (McpManager.start), so not twice.
     if (st.error) info.error = show(st.error, LIMITS.error, "the error", false, true);
