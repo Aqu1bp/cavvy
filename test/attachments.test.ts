@@ -374,6 +374,35 @@ describe("edge cases", () => {
     });
 });
 
+describe("review comments and @mentions", () => {
+    test("an @path in quoted diff code isn't attached; one the user typed, in the message or the comment, is", async () => {
+        const { buildComment, withComments } = await import("../gui/src/lib/review-comments");
+        const cwd = tempDir();
+        writeFileSync(join(cwd, "private.txt"), "PRIVATE CONTENTS");
+        writeFileSync(join(cwd, "wanted.txt"), "WANTED CONTENTS");
+        writeFileSync(join(cwd, "noted.txt"), "NOTED CONTENTS");
+        const comment = (text: string, code: string) => buildComment({ id: "c", path: "src/a.ts", lines: [{ t: "add", text: code, b: 3 }], text, now: 1 });
+        const state = () => ({ cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() });
+        const expand = (text: string) => expandMentions(text, state(), [cwd], new PermissionChecker(() => ({}), cwd));
+        const quoted = withComments("Please address my comment", [comment("Fix this line", "// documentation mentions @private.txt")]);
+        const { parts, attached } = await expand(quoted);
+        expect(attached).toEqual([]);
+        expect(JSON.stringify(parts)).not.toContain("PRIVATE CONTENTS");
+        // The full message, quote and all, is still what's sent.
+        expect(parts[0]).toEqual({ type: "text", text: quoted });
+        // Typed by the user, they attach as always.
+        const typed = await expand(withComments("See @wanted.txt", [comment("Like @noted.txt says", "x @private.txt")]));
+        expect(typed.attached.sort()).toEqual(["noted.txt", "wanted.txt"]);
+        // A diff the user wrote in their comment doesn't hide a mention after it; the quoted code is still skipped.
+        const example = "Compare this example:\n\n```diff\n-old\n+new\n```\n\nPlease read @wanted.txt";
+        const fenced = await expand(withComments("Look", [comment(example, "see @private.txt"), comment("And @noted.txt $& $1", "``` @private.txt")]));
+        expect(fenced.attached.sort()).toEqual(["noted.txt", "wanted.txt"]);
+        expect(JSON.stringify(fenced.parts)).not.toContain("PRIVATE CONTENTS");
+        // A message that only looks like one is read as typed.
+        expect((await expand("<review_comment> @wanted.txt")).attached).toEqual(["wanted.txt"]);
+    });
+});
+
 describe("the composer's sorting (gui/src/lib/attachments)", () => {
     const file = (bytes: string | Uint8Array, name: string, type = "") => new File([bytes], name, { type });
 

@@ -1376,3 +1376,72 @@
     white-space: nowrap;
 }
 .plan-account-hint { color: var(--fg-muted); font-size: 11px; }
+
+/* Review comments going with the next message. */
+.rc-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px 2px;
+}
+
+.rc-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 92px;
+    overflow-y: auto;
+}
+
+.rc-chip {
+    display: flex;
+    align-items: center;
+    max-width: 320px;
+    min-width: 0;
+    border-radius: var(--radius-md);
+    box-shadow: inset 0 0 0 1px var(--border);
+    background: var(--bg-hover);
+    padding-right: 2px;
+}
+
+.rc-open {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 4px 4px 4px 8px;
+    border: 0;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.82rem;
+    cursor: pointer;
+    border-radius: var(--radius-md);
+}
+
+.rc-open:hover .rc-where {
+    color: var(--accent-text);
+}
+
+.rc-icon {
+    flex: none;
+    color: var(--accent-text);
+}
+
+.rc-where {
+    flex: none;
+    color: var(--fg-muted);
+    font-size: 0.78rem;
+}
+
+.rc-text {
+    min-width: 0;
+}
+
+.rc-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+}

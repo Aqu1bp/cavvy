@@ -8,6 +8,7 @@ import { setFindReveal } from "../src/state/ui";
 import { checkEditorFind } from "./editor-find";
 import { checkTranscriptScroll } from "./transcript-scroll";
 import { checkPaletteDelete } from "./palette-delete";
+import { checkDiffComments } from "./diff-comments";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
 import "../src/styles/transcript.css";
@@ -82,8 +83,8 @@ async function run() {
         dispose();
     }
 }
-run().then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => {
-    result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll";
+run().then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
+    result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);

@@ -5,7 +5,7 @@ import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } fro
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
+import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview } from "../state/ui";
 import { keymap, matchKey, shortcut, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
@@ -17,6 +17,10 @@ import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
 import { AttachmentChips } from "./AttachmentChips";
+import { ReviewCommentChips } from "./ReviewCommentChips";
+import { splitComments, takesComments, withComments } from "../lib/review-comments";
+import { plural } from "../lib/format";
+import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
@@ -65,6 +69,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const mode = (): PermissionModeId => st()?.mode ?? app.homeMode ?? app.settings.defaultMode ?? "default";
     const bypassAllowed = () => Boolean(st()?.bypassAllowed || app.settings.allowBypass);
     const shell = () => text().startsWith("!");
+    /** Review comments left in this session's diff; they go with the next message. */
+    const comments = () => (p.sessionId && !wasDeleted(p.sessionId) ? reviewComments.list(p.sessionId) : []);
+    /** A command or a shell line doesn't take them: they wait for the next message. */
+    const holdsComments = () => !takesComments(text());
     /** Compare is only available on Home in a Git project. */
     const runPicks = () => (!p.sessionId && p.compare?.available ? comparePicks() : undefined);
     const resize = () => {
@@ -79,7 +87,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const d = h()?.draft();
         if (d === undefined) return;
         h()!.setDraft(undefined);
-        if (d.text) setText((t) => (t.trim() ? `${d.text}\n${t}` : d.text));
+        // Comments sent with it come back as comments, not as their markup.
+        const back = splitComments(d.text);
+        if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, ...aroundOf(h()!.id, c), id: newCommentId(), created: Date.now() })));
+        if (back.text) setText((t) => (t.trim() ? `${back.text}\n${t}` : back.text));
         if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
         requestAnimationFrame(() => {
             resize();
@@ -257,6 +268,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setSending(true);
         const submitted = draft.capture();
         const { attachments: atts } = submitted.draft;
+        const sessionId = p.sessionId;
+        const sentComments = sessionId && !holdsComments() ? [...comments()] : [];
+        const message = withComments(t, sentComments);
         // A toast retry may finish after Home has unmounted too.
         const resizeAfterSend = whileMounted(() => requestAnimationFrame(resize));
         const sent = () => {
@@ -270,8 +284,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             dismissMenu();
             requestAnimationFrame(resize);
         });
-        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
-            if (!wasDeleted(id)) composerStorage.remember(id, t);
+        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(message, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
+            if (!wasDeleted(id) && t.trim()) composerStorage.remember(id, t);
+            // Sent: out of the box and the diff. Ones added meanwhile stay for the next message.
+            if (sentComments.length) reviewComments.removeSent(id, sentComments);
         } });
         if (ok) {
             if (picks) {
@@ -439,7 +455,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (busy()) return followUp() === "steer" ? "Steer: add to the current turn at its next step…" : "Queue a message for after this turn…";
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
     };
-    const hasContent = () => Boolean(text().trim() || attachments().length);
+    const hasContent = () => Boolean(text().trim() || attachments().length || comments().length);
     const sendTitle = () => {
         const key = prefs.enterSends ? "Enter" : `${mod}+Enter`;
         const other = otherFollowUp(followUp());
@@ -555,6 +571,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 </div>
             </Show>
             <div class="composer-box" ref={box}>
+                <Show when={comments().length}>
+                    <ReviewCommentChips
+                        items={comments()}
+                        held={holdsComments() ? "Review comments wait for your next message: commands and shell lines don't take them" : undefined}
+                        onOpen={(c) => setReview({ path: c.path })}
+                        onRemove={(c) => reviewComments.remove(p.sessionId!, [c.id])}
+                        onClear={() => reviewComments.remove(p.sessionId!, comments().map((c) => c.id))}
+                    />
+                </Show>
                 <Show when={attachments().length}>
                     <AttachmentChips items={attachments()} readsPdf={readsPdf()} blocked={blocked()} onRemove={(i) => setAttachments((list) => list.filter((_, j) => j !== i))} onToText={toText} />
                 </Show>
@@ -651,3 +676,4 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         </div>
     );
 }
+

@@ -15,11 +15,13 @@ import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
 import { withShortcut } from "../state/keybindings";
+import { promptPreview } from "../lib/review-comments";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
 
 export function sessionTitle(h?: SessionHandle): string {
-    return h?.view.state.title ?? h?.view.turns.find((t) => t.prompt)?.prompt?.text.slice(0, 80) ?? "New session";
+    const first = h?.view.turns.find((t) => t.prompt)?.prompt?.text;
+    return h?.view.state.title ?? (first !== undefined ? promptPreview(first).slice(0, 80) : undefined) ?? "New session";
 }
 
 /** Open the delete dialog for a session that's open (nothing to delete before its first prompt). */

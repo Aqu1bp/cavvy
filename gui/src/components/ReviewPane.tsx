@@ -5,7 +5,7 @@
 // edit tools did, and is all there is outside a Git repository.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
-import { FolderOpen, GitBranch, RefreshCw, X } from "lucide-solid";
+import { FolderOpen, GitBranch, MessageSquare, RefreshCw, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
@@ -14,7 +14,9 @@ import { review, setReview, setCommitRequest } from "../state/ui";
 import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural } from "../lib/format";
-import { DiffView } from "./blocks/DiffView";
+import { DiffView, type DiffComments } from "./blocks/DiffView";
+import { buildComment } from "../lib/review-comments";
+import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
 import { Segmented, Spinner } from "./ui/bits";
@@ -47,7 +49,7 @@ const SCOPE_NOTE: Record<ReviewScope, string> = {
 };
 
 /** One file in the list. Kept on its own so rows can grow actions. */
-function FileRow(p: { file: Row; on: boolean; onSelect: () => void; commit?: boolean; checked?: boolean; onCheck?: (checked: boolean) => void }) {
+function FileRow(p: { file: Row; on: boolean; onSelect: () => void; commit?: boolean; checked?: boolean; onCheck?: (checked: boolean) => void; comments?: number }) {
     const c = () => CHANGE[changeOf(p.file)];
     return (
         <div class={`rf-row ${p.on ? "on" : ""}`}>
@@ -66,6 +68,12 @@ function FileRow(p: { file: Row; on: boolean; onSelect: () => void; commit?: boo
                         <span class="rf-dir mono truncate">{dirOf(p.file.path)}</span>
                     </Show>
                 </span>
+                <Show when={p.comments}>
+                    <span class="rf-comments" title={plural(p.comments!, "comment")} aria-label={plural(p.comments!, "comment")}>
+                        <MessageSquare size={11} aria-hidden="true" />
+                        {p.comments}
+                    </span>
+                </Show>
                 <Show when={p.file.added || p.file.removed}>
                     <span class="stat rf-stat">
                         <span class="add">+{p.file.added}</span>
@@ -229,6 +237,25 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         if (shownScope() === "harness") void refetchHarness();
     };
 
+    /** Comments on the shown file: they wait in this session's composer until the next message. */
+    const commentsFor = (path: string): DiffComments => ({
+        get list() {
+            return reviewComments.list(id()).filter((c) => same(c.path, path));
+        },
+        add: (lines, text, around) => {
+            const c = buildComment({ id: newCommentId(), path, lines, text, ...around });
+            if (c) reviewComments.add(id(), c);
+        },
+        edit: (commentId, text) => reviewComments.edit(id(), commentId, text),
+        remove: (commentId) => reviewComments.remove(id(), [commentId]),
+    });
+    /** How many comments each listed file has. */
+    const commentCounts = createMemo(() => {
+        const out = new Map<string, number>();
+        for (const c of reviewComments.list(id())) out.set(absolute(c.path), (out.get(absolute(c.path)) ?? 0) + 1);
+        return out;
+    });
+
     let dragStart = 0;
     let widthStart = 0;
     const onResize = (e: PointerEvent) => {
@@ -359,7 +386,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             >
                 <div class="review-body" aria-busy={loading()}>
                     <nav class="review-files" aria-label="Changed files">
-                        <For each={files()}>{(f) => <FileRow file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted"} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} />}</For>
+                        <For each={files()}>{(f) => <FileRow file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted"} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
                         <Show when={more()}>
                             <div class="rf-more">
                                 {more().toLocaleString()}
@@ -381,12 +408,18 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                                 </Show>
                             </div>
                         </Show>
-                        <Show when={shownFile()} keyed>
-                            {(f) => (
+                        {/* By path, not by the file's object: a refresh (an edit landing, a turn ending) updates the
+                            diff in place, so a comment being written, the scroll and the focus all stay. */}
+                        <Show when={shownFile()?.path} keyed>
+                            {(path) => {
+                                const comments = commentsFor(path);
+                                let last = shownFile()!;
+                                const f = () => (last = shownFile() ?? last);
+                                return (
                                 <>
-                                    <FileHead file={f} />
+                                    <FileHead file={f()} />
                                     <Show
-                                        when={!f.deferred}
+                                        when={!f().deferred}
                                         fallback={
                                             <div class="review-empty">
                                                 <Show when={!full.loading && loaded()} fallback={<Spinner size={16} />}>
@@ -398,10 +431,11 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                                             </div>
                                         }
                                     >
-                                        <DiffView diff={f} split={split()} />
+                                        <DiffView diff={f()} split={split()} comments={comments} />
                                     </Show>
                                 </>
-                            )}
+                                );
+                            }}
                         </Show>
                     </div>
                 </div>

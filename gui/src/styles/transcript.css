@@ -1658,3 +1658,280 @@ button.wrow:hover {
 .split-path .name {
     color: var(--fg-prose);
 }
+
+/* ---- Review comments on diff lines (the review pane's diffs only) */
+.diff-rows.commentable:focus {
+    outline: none;
+}
+
+.diff-rows.commentable:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--accent-border);
+}
+
+.commentable .dl:not(.sep) .ln:first-child,
+.commentable .sl .ln:not(.none) {
+    cursor: pointer;
+}
+
+/* The gutter's +, drawn only on the row under the pointer: no element per row. */
+.commentable .dl:not(.sep):hover .ln:first-child::before,
+.commentable .sl .ln:not(.none):hover::before,
+.commentable .ccur > .ln:first-child::before {
+    content: "+";
+    position: absolute;
+    left: 3px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1.25em;
+    height: 1.25em;
+    border-radius: 4px;
+    display: grid;
+    place-items: center;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-weight: 700;
+    line-height: 1;
+}
+
+.commentable .sl .ln {
+    position: relative;
+}
+
+.commentable .csel > span {
+    --dc-sel: color-mix(in srgb, var(--accent) 18%, transparent);
+    background-image: linear-gradient(var(--dc-sel), var(--dc-sel));
+}
+
+.commentable .csel > .ln {
+    color: var(--accent-text);
+}
+
+.commentable .dl.csel > .ln:first-child,
+.commentable .sl.csel > .ln.l {
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Only on the cursor's row, set from script: a rule on the diff's own focus would restyle every row. */
+.commentable .ccur > span {
+    background-image: linear-gradient(var(--accent-softer), var(--accent-softer));
+}
+
+.commentable .ccur > .ln:first-child {
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Under the line, at the width in view rather than the longest line's (cqi: the scroller's own width, no script). */
+.diff-scroll.has-comments {
+    container-type: inline-size;
+}
+
+.dc-slot {
+    position: sticky;
+    left: 0;
+    width: 100cqi;
+    box-sizing: border-box;
+    padding: 6px 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--bg-subtle);
+    border-block: 1px solid var(--border);
+    font-family: var(--font-ui);
+    line-height: 1.45;
+    white-space: normal;
+}
+
+.diff-rows.split .dc-slot {
+    width: auto;
+}
+
+.dc-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 8px 8px 10px;
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--accent);
+    font-size: 0.88rem;
+}
+
+.dc-card.outdated {
+    box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--fg-subtle);
+}
+
+.dc-icon {
+    flex: none;
+    margin-top: 2px;
+    color: var(--accent-text);
+}
+
+.dc-card.outdated .dc-icon {
+    color: var(--fg-muted);
+}
+
+.dc-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.dc-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+}
+
+.dc-label {
+    font-weight: 600;
+    color: var(--fg);
+}
+
+.dc-tag {
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--warning-soft);
+    color: var(--fg);
+    font-size: 0.75rem;
+}
+
+.dc-text {
+    margin: 0;
+    color: var(--fg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.dc-snippet {
+    margin: 4px 0 0;
+    padding: 6px 8px;
+    max-height: 9em;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--bg-code);
+    color: var(--fg-muted);
+    font-size: 0.8rem;
+    white-space: pre;
+}
+
+.dc-tools {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.12s;
+}
+
+.dc-card:hover .dc-tools,
+.dc-card:focus-within .dc-tools {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .dc-tools {
+        opacity: 1;
+    }
+}
+
+.dc-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
+.dc-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 3.2em;
+    resize: none;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.9rem;
+}
+
+.dc-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: var(--ring);
+}
+
+.dc-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.dc-hint {
+    margin-right: auto;
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+}
+
+.dc-outdated {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--bg-subtle);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-ui);
+}
+
+.dc-outdated-head {
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+}
+
+/* Sent with a prompt: under its text, in the bubble. */
+.prompt-comments {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.prompt-comment {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-card) 60%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent);
+    font-size: 0.9rem;
+}
+
+.prompt-comment-where {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    align-self: flex-start;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg-muted);
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.prompt-comment-where:hover {
+    color: var(--accent-text);
+    text-decoration: underline;
+}
+
+.prompt-comment-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
