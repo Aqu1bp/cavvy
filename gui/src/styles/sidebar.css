@@ -261,6 +261,11 @@
     margin-left: 2px;
 }
 
+/* Folded projects one after another read as a list of folders. */
+.project-head.folded + .project-head {
+    margin-top: 2px;
+}
+
 /* ---- A session in play: glyph | title, when | branch ------------------- */
 
 .card {
