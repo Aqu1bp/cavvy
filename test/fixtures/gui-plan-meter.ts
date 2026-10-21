@@ -67,7 +67,10 @@ test("API context-only control, compaction, spend, busy state, and usage navigat
         expect(text(m.root)).toContain("$1.25");
         m.setState({ ...m.state(), busy: true });
         expect(m.button("Compact now").props.disabled).toBe(true);
-        m.setState({ ...m.state(), busy: false });
+        // Busy only with an idle compaction: the user's own takes over from it.
+        m.setState({ ...m.state(), busy: true, activity: { label: "Compacting while idle", since: 0, idle: true } });
+        expect(m.button("Compact now").props.disabled).toBe(false);
+        m.setState({ ...m.state(), busy: false, activity: undefined });
         m.button("Compact now").props.onClick();
         expect(m.calls).toEqual([["session.compact", { id: "session" }]]);
         expect(m.open()).toBe(false);

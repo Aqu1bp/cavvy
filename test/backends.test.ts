@@ -70,7 +70,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -465,6 +465,58 @@ describe("Claude Code backend", () => {
         expect(await agent.compact({ auto: false, signal: new AbortController().signal, instructions: "keep the plan" })).toBe(true);
         expect(userTexts().at(-1)).toBe("/compact keep the plan");
         expect(events.some((e) => e.type === "compact_end")).toBe(true);
+    });
+
+    test("idle compaction: a subscription's one-hour cache plans one at 54 minutes; it runs Claude Code's /compact, once", async () => {
+        process.env.FAKE_CACHE_1H = "250000";
+        const { run, agent, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        const before = Date.now();
+        await run("go");
+        const plan = agent.idleCompactPlan()!;
+        expect(plan).not.toBeNull();
+        expect(plan.expiresAt - plan.fireAt).toBe(6 * 60_000);
+        expect(plan.expiresAt - 60 * 60_000).toBeGreaterThanOrEqual(before);
+        expect(plan.expiresAt - 60 * 60_000).toBeLessThanOrEqual(Date.now());
+        expect(await agent.compact({ auto: true, idle: true, signal: new AbortController().signal })).toBe(true);
+        expect(userTexts().at(-1)).toBe("/compact");
+        expect(events.filter((e) => e.type === "compact_start" || e.type === "compact_end").map((e) => ("idle" in e ? e.idle : undefined))).toEqual([true, true]);
+        expect(agent.idleCompactPlan()).toBeNull();
+    });
+
+    test("idle compaction: the cache dates from the last request, not from when a long reply ended", async () => {
+        process.env.FAKE_CACHE_1H = "250000";
+        process.env.FAKE_GROWING_CONTEXT = "1";
+        const { run, agent, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        const realNow = Date.now;
+        let shift = 0;
+        let sent = Date.now();
+        // Each reply takes ten minutes to stream; tool results go back (a new request) at once.
+        const push = events.push.bind(events);
+        events.push = (...es: AgentEvent[]) => {
+            for (const e of es) {
+                if (e.type === "text") shift += 10 * 60_000;
+                if (e.type === "tool_end") sent = Date.now();
+            }
+            return push(...es);
+        };
+        Date.now = () => realNow() + shift;
+        try {
+            await run("go");
+            const plan = agent.idleCompactPlan(sent)!;
+            expect(shift).toBeGreaterThan(0);
+            expect(plan).not.toBeNull();
+            // From the request: 54 minutes after it, not 54 after the reply ended (past the cache's life).
+            expect(plan.expiresAt - 60 * 60_000).toBeLessThanOrEqual(sent);
+            expect(plan.expiresAt - 60 * 60_000).toBeGreaterThan(sent - 60_000);
+        } finally {
+            Date.now = realNow;
+        }
+    });
+
+    test("idle compaction: with no one-hour cache reported, nothing is planned by default", async () => {
+        const { run, agent } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("go");
+        expect(agent.idleCompactPlan()).toBeNull();
     });
 });
 

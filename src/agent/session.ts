@@ -91,7 +91,7 @@ export type Line =
     | { t: "account"; provider: string; id: string }
     | { t: "fastMode"; enabled: boolean }
     | { t: "title"; title: string }
-    | { t: "compact"; summary: string }
+    | { t: "compact"; summary: string; /** Compacted while idle, before the prompt cache expired. */ idle?: true }
     | { t: "rewind"; count: number }
     /** unknown: no price was known; at: when spent (ms), absent in older records. */
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
@@ -521,13 +521,13 @@ export class Session {
     }
 
     /** Replace history with a compacted version. Backend sessions start over from the summary. */
-    compact(summary: string, messages: Message[]) {
+    compact(summary: string, messages: Message[], idle = false) {
         this.messages = [];
         this.notices = [];
         this.backends.clear();
         this.backendFolders.clear();
         this.summary = summary;
-        this.write({ t: "compact", summary });
+        this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}) });
         for (const m of messages) this.push(m);
     }
 

@@ -61,6 +61,7 @@ import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
+import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
     AgentRun,
     Block,
@@ -228,6 +229,37 @@ export class Runtime {
     private abort?: AbortController;
     private queued: Queued[] = [];
     private queueSeq = 0;
+    /** Compacts a long conversation left idle before its prompt cache expires (src/agent/idle-compact.ts). */
+    readonly idleCompact = new IdleCompactTimer({
+        plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
+        ready: () => this.idle && !this.closed && !this.drafting.size && !this.queued.length,
+        run: () => void this.compact(undefined, { idle: true }).catch((e) => this.engine.log(`session ${this.id}: idle compaction: ${(e as Error).message}`)),
+    });
+    /** The compaction running is an idle one: a message sent meanwhile cancels it and runs. */
+    private idleCompacting = false;
+    /** Settles when the idle compaction running has ended. */
+    private idleDone?: Promise<void>;
+    /** Windows with a message being written here: the user is back, so it doesn't compact while idle. */
+    private drafting = new Set<object>();
+
+    /** A window has an unsent message in this session's input box, or no longer has one. */
+    setDrafting(window: object, present: boolean) {
+        if (present) return void this.drafting.add(window);
+        if (!this.drafting.delete(window) || this.drafting.size) return;
+        // Cleared (or the window went away) without sending: compact as planned, if it's still in time.
+        if (this.idle && !this.closed) this.idleCompact.arm();
+    }
+
+    /** The user is back (a rewind, a switch, a commit): an idle compaction stops, and what they asked for goes ahead. */
+    /** An idle compaction is running: what the user does next takes over from it. */
+    get compactingWhileIdle(): boolean {
+        return this.idleCompacting;
+    }
+    async yieldIdleCompaction() {
+        if (!this.idleCompacting) return;
+        this.abort?.abort();
+        await this.idleDone;
+    }
     private pending = new Map<string, Pending>();
     /** Plan requests answered by taking the plan to another session. */
     private handoffs = new Set<string>();
@@ -478,17 +510,21 @@ export class Runtime {
         };
     }
 
-    /** A scheduled prompt may start now: nothing running, waiting on the user, or being set up. */
+    /** A scheduled prompt may start now: nothing running (an idle compaction gives way), waiting on the user, or being set up. */
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
-        return !this.closed && !this.busy && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent);
+        return !this.closed && (!this.busy || this.idleCompacting) && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent);
     }
 
     private runScheduled(prompt: string, job: ScheduledJob, label: string): Promise<unknown> {
-        this.scheduledLabel = label;
-        this.scheduledResume = job.kind === "resume";
-        // Codex stopped its goal at the limit: the resume makes it active again, for Codex to go on with.
-        return this.dispatch(job.kind === "resume" && limitedCodexGoal(this.nativeGoal) ? "/goal resume" : prompt)
+        const start = () => {
+            this.scheduledLabel = label;
+            this.scheduledResume = job.kind === "resume";
+            // Codex stopped its goal at the limit: the resume makes it active again, for Codex to go on with.
+            return this.dispatch(job.kind === "resume" && limitedCodexGoal(this.nativeGoal) ? "/goal resume" : prompt);
+        };
+        // An idle compaction stops: the prompt runs on the cache that's still warm, not alongside it.
+        return (this.idleCompacting ? this.yieldIdleCompaction().then(start) : start())
             .catch((e) => this.notice(redact((e as Error).message), "error"))
             .finally(() => {
                 this.scheduledLabel = undefined;
@@ -750,7 +786,8 @@ export class Runtime {
     private activity(label: string, detail?: string) {
         const cur = this.view.state.activity;
         if (cur?.label === label && cur.detail === detail) return;
-        this.setState({ activity: { label, since: cur?.label === label ? cur.since : Date.now(), detail } });
+        // A retry during an idle compaction is still one: the GUI keeps what takes over from it enabled.
+        this.setState({ activity: { label, since: cur?.label === label ? cur.since : Date.now(), detail, ...(this.idleCompacting ? { idle: true } : {}) } });
     }
 
     // -----------------------------------------------------------------------
@@ -1280,7 +1317,8 @@ export class Runtime {
     }
 
     private onEvent(e: AgentEvent) {
-        this.lastActive = Date.now();
+        // An idle compaction isn't the user's doing: the session doesn't move up the sidebar for it.
+        if (!this.idleCompacting) this.lastActive = Date.now();
         switch (e.type) {
             case "activity":
                 if (e.text) this.activity(e.text);
@@ -1397,10 +1435,10 @@ export class Runtime {
                 break;
             }
             case "compact_start":
-                this.activity("Compacting conversation");
+                if (!e.idle) this.activity("Compacting conversation");
                 break;
             case "compact_end":
-                this.compacted(e.summary);
+                this.compacted(e.summary, e.idle);
                 break;
             case "limits":
                 this.engine.limitsReported(e.limits, e.partial);
@@ -1505,7 +1543,7 @@ export class Runtime {
         this.syncShells();
     }
 
-    private compacted(summary: string) {
+    private compacted(summary: string, idle?: boolean) {
         const current = this.turnId;
         // Claude Code or Codex compacting its own context leaves this session's history as it is.
         if (!this.backendModel()) {
@@ -1524,7 +1562,7 @@ export class Runtime {
         else {
             // A backend-only marker has no place in the unchanged transcript;
             // giving it this segment's position would intercept earlier search hits.
-            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false }], status: "done", startedAt: Date.now(), ...(!this.backendModel() ? { pos: { seg: this.segment, index: -1 } } : {}) };
+            const turn: Turn = { id: this.newId(), blocks: [{ t: "compact", id: this.newId(), summary: redact(summary), auto: false, ...(idle ? { idle: true } : {}) }], status: "done", startedAt: Date.now(), ...(!this.backendModel() ? { pos: { seg: this.segment, index: -1 } } : {}) };
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });
@@ -2090,6 +2128,8 @@ export class Runtime {
             this.queued.push(q);
             this.queueUpdated();
             if (q.mode === "steer" && steerable(q)) this.agent?.queueChanged();
+            // Back before an idle compaction is done: it stops, and this runs on the cache that's still warm.
+            if (this.idleCompacting) this.abort?.abort();
             return { queued: true };
         }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
@@ -2215,6 +2255,7 @@ export class Runtime {
         this.checkCommitting();
         const agent = this.agent;
         this.busy = true;
+        this.idleCompact.disarm();
         const scheduled = this.scheduledLabel;
         this.scheduledLabel = undefined;
         // The user's own turn: a resume waiting for the usage limit isn't needed.
@@ -2330,6 +2371,8 @@ export class Runtime {
         // Nothing the user sent is waiting: the goal decides whether another turn starts.
         if (!ac.signal.aborted && !queued && reason && !this.closed) await this.goal.afterTurn(reason, index, Boolean(opts.goal), this.turnStartedAt);
         this.schedules.poke();
+        // Nothing followed it: from here the conversation is idle.
+        if (!this.busy && !this.closed) this.idleCompact.arm();
     }
 
     /** The queue ran dry without starting a turn: the goal goes on from the turn that ended before it (or pauses, if it was stopped). */
@@ -2456,6 +2499,8 @@ export class Runtime {
 
     /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
     private wake() {
+        // An idle compaction stops: the wake runs on the cache that's still warm, not after a summary nobody asked for.
+        if (this.idleCompacting) return void this.yieldIdleCompaction().then(() => this.toolState.wakes?.poke());
         // Busy or with messages queued, the turn's end looks again (runQueued).
         if (this.closed || this.busy || this.queued.length) return;
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
@@ -2543,6 +2588,7 @@ export class Runtime {
     private async runUserShell(command: string) {
         if (!command) return;
         this.busy = true;
+        this.idleCompact.disarm();
         const ac = (this.abort = new AbortController());
         const turn: Turn = { id: this.newId(), prompt: { text: `!${command}` }, blocks: [], status: "running", startedAt: Date.now() };
         this.op({ op: "turn", turn });
@@ -2590,33 +2636,51 @@ export class Runtime {
             this.flush();
         }
         await this.runQueued(ac.signal.aborted);
+        if (!this.busy && !this.closed) this.idleCompact.arm();
     }
 
-    async compact(instructions?: string) {
+    async compact(instructions?: string, opts: { idle?: boolean } = {}) {
+        const idle = Boolean(opts.idle);
         // On the model being switched to, as a prompt would be.
         while (this.switching) await this.switching.catch(() => undefined);
         this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
+        // A /compact of the user's own takes over from an idle one.
+        if (!idle) await this.yieldIdleCompaction();
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         if (!this.agent) throw new Error("No model is selected.");
         if (this.session.messages.length < 2) throw new Error("Nothing to compact yet.");
+        this.idleCompact.disarm();
         this.busy = true;
+        this.idleCompacting = idle;
+        let done!: () => void;
+        if (idle) this.idleDone = new Promise<void>((r) => (done = r));
         const ac = (this.abort = new AbortController());
-        this.setState({ busy: true, status: "running", activity: { label: "Compacting conversation", since: Date.now() } });
-        this.lastActive = Date.now();
+        const activity = idle ? { label: "Compacting while idle", since: Date.now(), detail: "The prompt cache is about to expire. Send a message to cancel.", idle: true } : { label: "Compacting conversation", since: Date.now() };
+        // Idle, it isn't "working" in the sidebar: nothing the user started.
+        this.setState(idle ? { busy: true, activity } : { busy: true, status: "running", activity });
+        // Not the user's doing: the session doesn't move up the sidebar for it.
+        if (!idle) this.lastActive = Date.now();
         this.engine.sessionChanged(this);
         try {
-            await this.agent.compact({ auto: false, signal: ac.signal, instructions });
+            await this.agent.compact({ auto: idle, signal: ac.signal, instructions, idle });
         } catch (e) {
-            if (!ac.signal.aborted) this.notice(`Compaction failed: ${redact((e as Error).message)}`, "error");
+            if (!ac.signal.aborted) {
+                // An idle one leaves the conversation as it was: worth a word, not an alarm.
+                if (idle) this.notice(`Couldn't compact while idle: ${redact((e as Error).message)}. The conversation is unchanged.`, "warn");
+                else this.notice(`Compaction failed: ${redact((e as Error).message)}`, "error");
+            }
         } finally {
             this.busy = false;
+            this.idleCompacting = false;
             this.abort = undefined;
             this.setState({ busy: false, activity: undefined });
-            this.setStatus("idle");
+            if (!idle) this.setStatus("idle");
+            done?.();
         }
         // Not awaited: session.compact answers once the compaction is done, not after the next turn.
-        void this.runQueued(ac.signal.aborted);
+        // An idle compaction a message cancelled runs that message rather than handing it back.
+        void this.runQueued(ac.signal.aborted && !(idle && this.queued.length));
     }
 
     // -----------------------------------------------------------------------
@@ -2785,6 +2849,7 @@ export class Runtime {
     }
 
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
+        await this.yieldIdleCompaction();
         this.checkGitCommit();
         this.committing = true;
         this.commitAbort = new AbortController();
@@ -2816,6 +2881,7 @@ export class Runtime {
     }
 
     async gitPublish(request: GitPublishRequest) {
+        await this.yieldIdleCompaction();
         this.checkGitCommit("publishing");
         this.committing = true;
         this.commitAbort = new AbortController();
@@ -3004,6 +3070,7 @@ export class Runtime {
     async close() {
         this.schedules.dispose();
         this.goal.dispose();
+        this.idleCompact.disarm();
         this.abort?.abort();
         this.commitAbort?.abort();
         this.cancelInteractions();

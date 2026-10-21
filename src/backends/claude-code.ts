@@ -1289,6 +1289,8 @@ class ClaudeTurn {
             outputTokens: Number(u.output_tokens ?? 0),
             cacheReadTokens: Number(u.cache_read_input_tokens ?? 0),
             cacheWriteTokens: Number(u.cache_creation_input_tokens ?? 0),
+            // How long its cache lasts (an hour on a subscription): idle compaction goes by it.
+            ...(u.cache_creation && typeof u.cache_creation === "object" ? { cacheWrite1hTokens: Number(u.cache_creation.ephemeral_1h_input_tokens ?? 0) } : {}),
             // Fast service uses paid credits even on a subscription. A final cooldown
             // must not erase earlier fast spend; the CLI only gives a whole-turn total.
             cost: this.billedToPlan && !this.fastModeObserved ? 0 : spent,

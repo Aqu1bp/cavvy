@@ -262,7 +262,9 @@ export function respond(id: string, interactionId: string, response: Interaction
 
 export async function setModel(ref: string) {
     const id = app.activeId;
-    if (id && handleFor(id)?.view.state.busy) {
+    const st = id ? handleFor(id)?.view.state : undefined;
+    // An idle compaction stops for a model switch.
+    if (st?.busy && !st.activity?.idle) {
         toast("Switch models once this response is done, or interrupt it first.", "warn");
         return;
     }

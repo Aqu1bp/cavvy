@@ -57,6 +57,14 @@ export function RewindDialog() {
             void refetch();
         }),
     );
+    // Open, the user is back: the session doesn't compact while idle under it (that would change what can be rewound to).
+    createEffect(
+        on([id, rewindOpen, () => app.conn === "open"], ([sid, open, connected]) => {
+            if (!sid || !open || !connected) return;
+            void rpc.call("session.draft", { id: sid, present: true, dialog: true }).catch(() => undefined);
+            onCleanup(() => void rpc.call("session.draft", { id: sid, present: false, dialog: true }).catch(() => undefined));
+        }),
+    );
     createEffect(
         on(
             () => app.activeId,
@@ -110,7 +118,8 @@ export function RewindDialog() {
             setBusy(false);
         }
     };
-    const busySession = () => Boolean(handleFor(id())?.view.state.busy);
+    // An idle compaction stops for a rewind.
+    const busySession = () => Boolean(handleFor(id())?.view.state.busy && !handleFor(id())?.view.state.activity?.idle);
     return (
         <Dialog open={rewindOpen()} onClose={close} title="Rewind" subtitle="Go back to before one of your prompts" width={620}>
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the current response to finish (or interrupt it) before rewinding.</div>}>

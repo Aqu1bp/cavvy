@@ -205,6 +205,8 @@ export interface CompactBlock {
     id: string;
     summary: string;
     auto: boolean;
+    /** Compacted while idle, before the prompt cache expired. */
+    idle?: boolean;
 }
 
 /** Heads a conversation brought in from a Claude Code or Codex session. */
@@ -494,7 +496,7 @@ export interface SessionState {
     status: SessionStatus;
     busy: boolean;
     /** The spinner line: what it's doing right now. */
-    activity?: { label: string; since: number; detail?: string };
+    activity?: { label: string; since: number; detail?: string; /** An idle compaction: what the user does next takes over from it. */ idle?: boolean };
     contextTokens: number;
     cost: number;
     /** Some usage had no known price: `cost` leaves it out (it isn't free). */
@@ -1133,6 +1135,8 @@ export interface GuiSettings {
     defaultMode?: PermissionModeId;
     showThinking?: boolean;
     autoCompact?: boolean;
+    /** Compact long conversations left idle (true, the default: one-hour caches; "always": five-minute ones too). */
+    idleCompaction?: boolean | "always";
     webSearch?: string;
     allowBypass?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
@@ -1312,6 +1316,8 @@ export interface Methods {
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
     "session.setMode": { params: { id: string; mode: PermissionModeId }; result: null };
     "session.setFastMode": { params: { id: string; enabled: boolean }; result: null };
+    /** The window's input box for the session has an unsent message (`present`), or no longer has: one being written holds off compacting while idle. */
+    "session.draft": { params: { id: string; present: boolean; /** The Rewind dialog open on it, rather than a message being written. */ dialog?: boolean }; result: null };
     "session.setEffort": { params: { id: string; effort: EffortLevel }; result: null };
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };

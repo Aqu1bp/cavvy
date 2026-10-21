@@ -232,8 +232,13 @@ function Compacted(p: { block: CompactBlock }) {
         <div class="compacted" data-find={p.block.id}>
             <div class="compacted-rule" data-find-skip>
                 <span />
-                <button class="link-btn" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                    Conversation compacted · {open() ? "hide summary" : "view summary"}
+                <button
+                    class="link-btn"
+                    aria-expanded={open()}
+                    title={p.block.idle ? "Summarized before the prompt cache expired, so the next message doesn't re-read the whole conversation" : undefined}
+                    onClick={() => setOpen(!open())}
+                >
+                    {p.block.idle ? "Compacted while idle" : "Conversation compacted"} · {open() ? "hide summary" : "view summary"}
                 </button>
                 <span />
             </div>
@@ -263,11 +268,16 @@ function Shell(p: { block: ShellBlock }) {
     );
 }
 
+/** An activity shown even when no turn is running: a retry, a compaction, a reconnect. */
+export function specialActivity(label: string): boolean {
+    return SPECIAL.test(label);
+}
+
 /** Labels that say more than "Working": the turn is in a special state. */
 const SPECIAL = /^(Retrying|Compacting|Interrupting|Connecting|Waiting for background)/;
 
 /** One live head: above streaming output, or compactly at the tail during pauses. */
-export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean; tail?: boolean }) {
+export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean; tail?: boolean; /** Said beside it: what the user can do. */ hint?: string }) {
     const elapsed = () => duration(Math.max(0, now() - (p.since ?? p.state.activity?.since ?? now()))).replace(/^(\d+)ms$/, "0s");
     const activity = () => (p.state.activity && (p.tail || SPECIAL.test(p.state.activity.label)) ? p.state.activity : undefined);
     return (
@@ -286,6 +296,9 @@ export function LiveHead(p: { state: SessionState; since?: number; waiting?: boo
                             <span class="live-label" title={a().detail}>
                                 <span class="shimmer">{a().label}</span>
                                 <span class="muted num"> · {elapsed()}</span>
+                                <Show when={p.hint}>
+                                    <span class="muted"> · {p.hint}</span>
+                                </Show>
                             </span>
                         )}
                     </Show>

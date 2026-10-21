@@ -199,6 +199,28 @@ function General() {
                     <option value="queue">Queue for after it</option>
                 </select>
             </Row>
+            <Row
+                title="Compact while idle"
+                desc="Summarize a long conversation (200K tokens or more) just before its prompt cache expires, so coming back costs less and answers sooner. Sending a message cancels it."
+                changed={s().idleCompaction !== undefined && s().idleCompaction !== true}
+                reset={() => void update({ idleCompaction: true })}
+            >
+                <select
+                    class="select"
+                    aria-label="Compact while idle"
+                    disabled={s().autoCompact === false}
+                    title={s().autoCompact === false ? "Turn on Compact automatically to use this" : undefined}
+                    value={s().autoCompact === false || s().idleCompaction === false ? "off" : s().idleCompaction === "always" ? "always" : "hour"}
+                    onChange={(e) => {
+                        const v = e.currentTarget.value;
+                        void update({ idleCompaction: v === "always" ? "always" : v === "off" ? false : true });
+                    }}
+                >
+                    <option value="hour">After an hour away</option>
+                    <option value="always">After five minutes too</option>
+                    <option value="off">Off</option>
+                </select>
+            </Row>
             <Row title="Web search">
                 <select class="select" aria-label="Web search" value={s().webSearch ?? "auto"} onChange={(e) => void update({ webSearch: e.currentTarget.value })}>
                     <option value="auto">Automatic</option>

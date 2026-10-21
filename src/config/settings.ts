@@ -95,6 +95,14 @@ export interface Settings {
     autoCompact?: boolean;
     /** Fraction of the context window at which to auto-compact (0-1). */
     autoCompactThreshold?: number;
+    /**
+     * Compact a long conversation left idle, shortly before its prompt cache
+     * expires (src/agent/idle-compact.ts). On (the default) for one-hour caches;
+     * "always" adds five-minute ones; false turns it off.
+     */
+    idleCompaction?: boolean | "always";
+    /** The context it takes for idle compaction, in tokens (default 200K, never under 100K). */
+    idleCompactionMinTokens?: number;
     /** Extra environment variables for Bash tool commands. */
     env?: Record<string, string>;
     mcpServers?: Record<string, McpServerConfig>;

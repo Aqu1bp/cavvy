@@ -135,13 +135,13 @@ export class AnthropicProvider implements ProviderClient {
                         const rejected = features.find((f) => featureMentioned(f, msg));
                         if (rejected) {
                             disabledFeatures.add(rejected);
-                            onEvent({ type: "notice", message: `Endpoint rejected optional feature "${rejected}"; continuing without it.` });
+                            onEvent({ type: "notice", message: `Endpoint rejected optional feature "${rejected}"; continuing without it.`, resent: true });
                             continue;
                         }
                         // Thinking blocks invalidated (history edited elsewhere): strip and retry once.
                         if (!bindingRetry && /signature|thinking/i.test(msg) && /block|bound|conversation|invalid/i.test(msg)) {
                             bindingRetry = true;
-                            onEvent({ type: "notice", message: "Earlier reasoning blocks were rejected by the API; retrying without them." });
+                            onEvent({ type: "notice", message: "Earlier reasoning blocks were rejected by the API; retrying without them.", resent: true });
                             continue;
                         }
                     }
@@ -151,7 +151,7 @@ export class AnthropicProvider implements ProviderClient {
                 if (isConnectionError(e)) throw toProviderError(e);
                 // Eager input streaming hands invalid tool JSON to us; re-issue the turn.
                 if (jsonRetries++ < 2 && e instanceof Error && /json/i.test(e.message)) {
-                    onEvent({ type: "notice", message: "Tool input arrived malformed; re-issuing the request." });
+                    onEvent({ type: "notice", message: "Tool input arrived malformed; re-issuing the request.", resent: true });
                     continue;
                 }
                 throw e;
@@ -298,6 +298,8 @@ export class AnthropicProvider implements ProviderClient {
             outputTokens: u.output_tokens ?? 0,
             cacheReadTokens: u.cache_read_input_tokens ?? 0,
             cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+            // A gateway may cache for an hour: priced (and kept warm) for that.
+            ...(u.cache_creation ? { cacheWrite1hTokens: u.cache_creation.ephemeral_1h_input_tokens ?? 0 } : {}),
             ...(u.speed ? { fastMode: u.speed === "fast" } : {}),
         };
         return {

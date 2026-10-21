@@ -137,7 +137,8 @@ export type StreamEvent =
     | { type: "tool_call_delta"; id: string; partial: string }
     | { type: "server_tool"; name: string; detail: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
-    | { type: "notice"; message: string }
+    /** `resent`: the request was sent again (a feature or reasoning dropped, tool JSON malformed). */
+    | { type: "notice"; message: string; resent?: true }
     | { type: "usage"; usage: Usage };
 
 export interface ModelInfo {
