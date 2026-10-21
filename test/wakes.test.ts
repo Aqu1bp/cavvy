@@ -197,6 +197,21 @@ describe("a running agent", () => {
         wakes.dispose();
     });
 
+    test("a wake and a message the user queued at the same tool boundary both reach the model", async () => {
+        const { agent, wakes, requests, session } = setup((_req, n) =>
+            n === 0 ? reply([{ type: "tool_call", id: "c1", name: "Poke", input: { label: "PR #3: new comment" } }], "tool_use") : reply([{ type: "text", text: "on it" }]),
+        );
+        let given = false;
+        (agent as any).o.host.drainQueued = () => (given ? [] : ((given = true), ["also check the docs"]));
+        await agent.run([{ type: "text", text: "watch it" }], { signal: new AbortController().signal });
+        const sent = lastText(requests[1]!.at(-1));
+        expect(sent).toContain("also check the docs");
+        expect(sent).toContain("event PR #3: new comment");
+        expect(JSON.stringify(session.messages)).toContain("event PR #3: new comment");
+        expect(wakes.size).toBe(0);
+        wakes.dispose();
+    });
+
     test("a wake that came in during the last request keeps the turn going instead of starting another", async () => {
         let wq!: InstanceType<typeof WakeQueue>;
         const { agent, wakes, requests, session } = setup((_req, n) => {

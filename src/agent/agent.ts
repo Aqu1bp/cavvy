@@ -674,13 +674,12 @@ export class Agent {
             };
             if (!signal.aborted) {
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (queued.length) {
-                    extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
-                    await this.checkpoint(queued.join("\n"), true, record);
-                }
                 // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
                 const woke = denied ? undefined : this.takeWakes();
+                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
                 if (woke) extra.push(reminder(woke));
+                // Steering's checkpoint records the results: everything to go with them is in by then.
+                if (queued.length) await this.checkpoint(queued.join("\n"), true, record);
             }
             if (this.cutOff) return "aborted";
             // Steering saved the completed results before its capture: an interrupt is a new message.
