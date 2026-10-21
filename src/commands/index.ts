@@ -59,7 +59,8 @@ import { displayPath, expandPath } from "../util/files";
 import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
-import { claudeCodeRuns, formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
+import { formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
+import { cliRunsSkills } from "../backends/native-skills";
 import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
@@ -1998,9 +1999,8 @@ function skillToCommand(s: Skill): Command {
         images: true,
         run: (app, args, draft) => {
             const display = `/${s.name}${args ? " " + args : ""}`;
-            // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
-            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
-            if (app.model?.provider === "claude-code" && claudeCodeRuns(s.name, s, listed)) return app.startTurn(display, { draft });
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
+            if (cliRunsSkills(app.model?.provider)) return app.startTurn(display, { draft });
             const text = formatSkill(s, args);
             if (text === undefined) {
                 app.notice(`The ${s.name} skill is gone: ${displayPath(s.file, app.cwd)} can't be read. Run /skills to read them again.`, "error");

@@ -26,6 +26,7 @@ import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
+import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
@@ -574,6 +575,8 @@ export class CodexTurn {
                     return r;
                 }
             };
+            // The harness's skills go to Codex as a skills root of its own, so it lists them to its model and runs them itself.
+            const skills = opts.compact ? [] : await this.nativeSkills(t);
             if (t.resumeId) {
                 try {
                     // Shared with a forked session: a copy of it goes on (a new thread), never the thread itself.
@@ -606,6 +609,9 @@ export class CodexTurn {
                 await this.waitFor(() => this.rpc.request("thread/compact/start", { threadId: this.threadId }));
             } else {
                 let text = goalTurn ? [t.goalContext, goalTurn.text].filter(Boolean).join("\n\n") : t.prompt;
+                /** What the user typed, which `text` ends with (then `after`): its /name and $name are skills to run (not a goal's condition). */
+                let request = goalTurn ? undefined : t.request;
+                let after = goalTurn ? "" : (t.requestAfter ?? "");
                 // A new goal's images go with its first turn (/goal resume takes none).
                 let images = t.images;
                 /** Make the goal active once its first turn has started (so Codex doesn't start one of its own first). */
@@ -619,7 +625,8 @@ export class CodexTurn {
                     const mode = this.host.mode();
                     const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly));
                     const note = modeNote(mode, Boolean(t.readOnly));
-                    const input = this.input(note && text ? `${note}\n\n${text}` : note || text, images);
+                    const asked = skills ? codexInput(text, request, skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
+                    const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, images), ...asked.items];
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
                     // The speed as it is now too: a sub-agent's session may have changed it since (its turn restarting, a queued message).
@@ -669,6 +676,8 @@ export class CodexTurn {
                     images = [];
                     const restart = this.restartFor;
                     this.restartFor = undefined;
+                    request = undefined;
+                    after = "";
                     if (restart) {
                         // Stopped for the mode, not by the user: the goal goes on once the restarted turn has started.
                         if (this.goalOnRestart) activate = true;
@@ -691,7 +700,7 @@ export class CodexTurn {
                         if (!adopt) break;
                         continue;
                     }
-                    text = next.join("\n\n");
+                    text = request = next.join("\n\n");
                     // The goal active: Codex starts its next turn as this one ends, and the messages go into that one
                     // (a turn started here as well would run beside it).
                     const own = this.goal?.status === "active" ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
@@ -846,6 +855,28 @@ export class CodexTurn {
         this.limitHit = true;
         this.limitUpdates.revision++;
         if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+    }
+
+    /**
+     * The harness's skills registered (skills/extraRoots/set), then all the
+     * skills Codex has; Codex's own are listed for the menus. Undefined when
+     * this Codex can't take them (they're pasted in instead).
+     */
+    private async nativeSkills(t: BackendTurn): Promise<CodexSkill[] | undefined> {
+        // A project's own skills only where the user trusted it (the session's list may come from implicit trust): those are pasted in.
+        const folder = skillFolder((t.skills ?? []).filter((s) => t.trusted || s.source !== "project"));
+        try {
+            // Every turn, an empty list too: the harness's skills are the session's as they are now.
+            await withTimeout(this.rpc.request("skills/extraRoots/set", { extraRoots: folder ? [join(folder, "skills")] : [] }), 10_000, "Codex didn't answer skills/extraRoots/set");
+            const r: any = await withTimeout(this.rpc.request("skills/list", { cwds: [t.cwd] }), 10_000, "Codex didn't answer skills/list");
+            const listed: CodexSkill[] = (Array.isArray(r?.data) ? r.data : []).flatMap((e: any) => (Array.isArray(e?.skills) ? e.skills : [])).filter((x: any) => typeof x?.name === "string" && typeof x?.path === "string");
+            const { skills, own } = codexSkills(listed, t.skills ?? [], folder);
+            this.host.emit({ type: "cli_commands", provider: this.def.id, names: own.map((n) => n.toLowerCase()) });
+            return skills;
+        } catch (e) {
+            if (this.aborted) throw e;
+            return t.skills?.length ? undefined : [];
+        }
     }
 
     private input(text: string, images: BackendTurn["images"]): unknown[] {

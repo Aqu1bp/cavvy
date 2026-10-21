@@ -48,6 +48,7 @@ import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-promp
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { TurnSnapshots } from "./turn-snapshots";
 import { redact } from "../util/redact";
+import type { Skill } from "./skills";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
@@ -185,6 +186,8 @@ export interface AgentOptions {
     isSubagent?: boolean;
     /** Current folder trust; private working-tree snapshots require it. */
     trusted?: () => boolean;
+    /** The session's skills, which Claude Code and Codex are given to run themselves. */
+    skills?: () => readonly Skill[];
     /** A sub-agent's type and task, for its SubagentStop hooks. */
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
@@ -950,6 +953,8 @@ export class Agent {
             backgroundWaitSec: s.claudeCode?.backgroundWaitSec,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             trusted,
+            // The backend registers a project's own only where the user trusted it (the list may come from implicit trust).
+            skills: this.o.skills?.() ?? [],
             approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
@@ -1236,6 +1241,10 @@ export class Agent {
         };
         const base = this.backendTurn(signal, host);
         let stopRounds = 0;
+        // The user's own message, for the skills it names: its first part, not the files and notes after it.
+        // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
+        const first = !this.o.isSubagent && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
+        const asked = { request: first, requestAfter: first === undefined ? undefined : text.slice(first.length) };
         let prompt = text;
         // The conversation so far goes beside a /goal (goalContext), so the command stays the whole prompt.
         const goalCommand = GOAL_COMMAND.test(text);
@@ -1249,12 +1258,12 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(resume), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);

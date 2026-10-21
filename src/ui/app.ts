@@ -55,6 +55,7 @@ import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
+import { cliRunsSkills } from "../backends/native-skills";
 import { skillTool } from "../tools/skill-tool";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
@@ -590,6 +591,7 @@ export class App {
         this.agent = new Agent({
             session: this.session,
             trusted: () => this.init.trusted,
+            skills: () => this.skills,
             model: this.model,
             client: this.client,
             settings: () => this.settings,
@@ -1843,7 +1845,9 @@ export class App {
         }
         if (/^\$[a-zA-Z0-9:_-]*$/.test(tok.text) && !/[A-Z]/.test(tok.text)) {
             const q = tok.text.slice(1);
-            const found = this.skills
+            // Codex's own skills too, once it has listed them.
+            const cli = this.cliCommands?.provider === "codex" && this.model?.provider === "codex" ? [...this.cliCommands.names].filter((n) => !this.skills.some((s) => s.name === n)).map((n) => ({ name: n, description: "Codex's own skill", userInvocable: true })) : [];
+            const found = [...this.skills, ...cli]
                 .filter((s) => s.userInvocable && (s.name.startsWith(q) || (q.length > 1 && s.name.includes(q))))
                 .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
                 .slice(0, 8);
@@ -1972,7 +1976,8 @@ export class App {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
                 const skills = opts.kind === "command" ? [] : skillMentions(text, this.skills);
-                const sent = skills.length ? withSkills(text, skills) : text;
+                // Claude Code and Codex are sent the $name, and load the skill themselves.
+                const sent = skills.length && !cliRunsSkills(agent.model.provider) ? withSkills(text, skills) : text;
                 const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
                 parts[0] = { type: "text", text: sent };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((sk) => sk.name).join(", ")}`);

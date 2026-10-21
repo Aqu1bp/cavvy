@@ -1673,7 +1673,9 @@ export class Engine {
             .map((s) => ({ name: s.name, description: s.description, args: s.argumentHint, skill: true }));
         const own = new Set([...taken, ...skills.map((s) => s.name)]);
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
-        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
+        // All Codex reports are its skills (skills/list), for the $ menu too.
+        const skill = provider === "codex";
+        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own ${skill ? "skill" : "command"}`, ...(skill ? { skill } : {}) }));
         return [...builtin, ...custom, ...skills, ...cli];
     }
 

@@ -48,7 +48,7 @@
 // CLAUDE_CODE_REMOTE; FAKE_GOAL_HOLD=1 waits for an interrupt after the first check, FAKE_GOAL_IMPOSSIBLE=1 ends
 // it judged impossible
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
@@ -57,6 +57,15 @@ const log = (o: unknown) => {
     if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
 };
 const argv = process.argv.slice(2);
+/** Each --plugin-dir's skills, as <plugin>:<folder>. */
+function pluginSkills(): string[] {
+    return argv.flatMap((a, i) => {
+        if (a !== "--plugin-dir") return [];
+        const dir = argv[i + 1]!;
+        const name = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf-8")).name;
+        return readdirSync(join(dir, "skills")).map((f) => `${name}:${f}`);
+    });
+}
 const cwd = process.cwd();
 log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
@@ -440,8 +449,8 @@ async function turn(content: any[], uuid?: string) {
     }
     answering = uuid;
     const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario;
-    // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill).
-    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"] });
+    // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill, as --plugin-dir's are).
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });

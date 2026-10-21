@@ -13,7 +13,8 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "./
 import { McpManager } from "./mcp/manager";
 import { BUILTIN_TOOLS } from "./tools/index";
 import { skillTool } from "./tools/skill-tool";
-import { claudeCodeRuns, formatSkill, loadSkills, skillMentions, withSkills } from "./agent/skills";
+import { formatSkill, loadSkills, skillMentions, withSkills } from "./agent/skills";
+import { cliRunsSkills } from "./backends/native-skills";
 import { slashCommand } from "./commands/custom";
 import type { Tool, ToolState } from "./tools/types";
 import { killAllShells } from "./tools/bash";
@@ -223,6 +224,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     const agent = new Agent({
         session,
         trusted: () => o.trusted,
+        skills: () => skills,
         model,
         client,
         settings: () => settings,
@@ -288,9 +290,11 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     try {
         // `-p "/name args"` runs a skill, and $name brings one along, as in the TUI; a skill's own text has no @mentions to attach.
         const slash = slashCommand(o.prompt);
-        const invoked = slash && skills.find((s) => s.userInvocable && s.name === slash.name && !(model.provider === "claude-code" && claudeCodeRuns(s.name, s, undefined)));
+        // Claude Code and Codex are sent the prompt as it is, and run the skills it names themselves.
+        const native = cliRunsSkills(model.provider);
+        const invoked = slash && !native ? skills.find((s) => s.userInvocable && s.name === slash.name) : undefined;
         const body = invoked ? formatSkill(invoked, slash!.args) : undefined;
-        const mentioned = invoked ? [] : skillMentions(o.prompt, skills);
+        const mentioned = invoked || native ? [] : skillMentions(o.prompt, skills);
         const { parts, notices } = await expandMentions(body !== undefined ? slash!.args : o.prompt, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])], checker);
         parts[0] = { type: "text", text: body ?? withSkills(o.prompt, mentioned) };
         for (const n of notices) stderr(`warning: ${n}`);
