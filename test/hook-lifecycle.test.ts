@@ -85,6 +85,16 @@ describe("hook answers the rest of the turn respects (review of #173)", () => {
         expect(existsSync(out)).toBe(true);
         expect(existsSync(join(proj, "rewritten-write"))).toBe(false);
     });
+    test("continue: false from a PermissionRequest hook refuses the call it approved and ends the turn", async () => {
+        const proj = tempDir();
+        const allow = `echo '${JSON.stringify({ continue: false, stopReason: "freeze", hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } })}'`;
+        const { agent, requests, notices, asked } = agentFor(proj, { autoCompact: false, hooks: { PermissionRequest: [{ command: allow }] } }, (req) => (afterTools(req) ? text("ok") : toolCall("c", "Bash", { command: "touch made" })), [BashTool], { mode: "default", ask: () => ({ allow: true }) });
+        expect(await run(agent, "go")).toBe("blocked");
+        expect(existsSync(join(proj, "made"))).toBe(false);
+        expect(asked).toEqual([]);
+        expect(requests).toHaveLength(1);
+        expect(notices).toContain("Stopped by a hook: freeze");
+    });
     test("continue: false stops the later calls of the same response, not just the next response", async () => {
         const proj = tempDir();
         const stop = { matcher: "Bash", command: `echo '{"continue":false,"stopReason":"enough"}'` };

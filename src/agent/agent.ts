@@ -1766,6 +1766,8 @@ export class Agent {
         if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
         if (this.o.settings().hooks?.PermissionRequest?.length) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
+            // continue: false ends the turn whatever the hook decided, as on every event.
+            if (h?.stop) return { allow: false, message: `Stopped by PermissionRequest hook: ${h.stop}`, stop: true };
             if (h?.permission?.behavior === "allow") return h.updatedInput ? this.rewrittenByHook(tool, h.updatedInput, mode, cwd) : { allow: true };
             if (h?.permission?.behavior === "deny") return { allow: false, message: h.permission.message || "Denied by a PermissionRequest hook.", stop: Boolean(h.permission.interrupt) };
         }
@@ -1988,6 +1990,8 @@ export class Agent {
 
         if (settings.hooks?.PermissionRequest?.length) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
+            // continue: false ends the turn whatever the hook decided, as on every event.
+            if (this.hookStop) return { result: this.errorResult(call, `Stopped by PermissionRequest hook: ${this.hookStop}`) };
             if (h?.permission?.behavior === "allow") {
                 const approvedInput = h.updatedInput ? coerceInput(tool, h.updatedInput) : input;
                 const err = h.updatedInput ? validateInput(tool, approvedInput) : undefined;

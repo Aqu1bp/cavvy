@@ -299,6 +299,16 @@ describe("Codex's items run the harness's hooks", () => {
         expect(a.asked).toEqual([]);
     });
 
+    test("continue:false from a PermissionRequest hook refuses the call it approved and stops the turn", async () => {
+        const allow = say({ continue: false, stopReason: "freeze", hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+        const a = await makeAgent("codex", { hooks: { PermissionRequest: [{ command: allow }] } }, "default", () => ({ allow: true }));
+        await a.run("make x");
+        // Codex's "cancel" refuses the call and ends its turn.
+        expect(decision()).toBe("cancel");
+        expect(ranLine()).toMatchObject({ ran: false });
+        expect(a.asked).toEqual([]);
+    });
+
     test("continue:false from a PreToolUse hook refuses the call and stops the turn", async () => {
         const stop = say({ continue: false, stopReason: "enough for today" });
         const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: stop }] } }, "bypassPermissions");
