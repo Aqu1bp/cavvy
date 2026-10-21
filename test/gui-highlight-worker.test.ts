@@ -133,6 +133,14 @@ test("actual worker streams a long diff side in parts: the first screenful first
         const partsAfterCancel = got.get(3)!.filter((d) => d.from !== undefined);
         expect(partsAfterCancel.length).toBeLessThanOrEqual(1);
         expect(got.get(3)!.at(-1)).toEqual({ id: 3, done: true, plain: true });
+        // A cancel that comes after its stream is over (the client hadn't heard yet) isn't kept: an id
+        // cancelled late, then used again, streams to the end.
+        await stream(4, `${code}\n// late`);
+        worker.postMessage({ id: 4, kind: "cancel" });
+        got.delete(4);
+        await stream(4, `${code}\n// late, again`);
+        expect(got.get(4)!.filter((d) => d.from !== undefined).reduce((n, d) => n + d.result.length, 0)).toBe(1001);
+        expect(got.get(4)!.at(-1)).toEqual({ id: 4, done: true, plain: false });
     } finally {
         worker.terminate();
     }

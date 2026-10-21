@@ -68,3 +68,16 @@ test("highlighting in parts gives the lines one pass would, the first part early
     expect(await highlightLineChunks(`${code}  `, "ts", () => n++, () => n >= 1)).toBe(false);
     expect(n).toBe(1);
 });
+
+test("highlighting in parts reads CRLF lines as one pass does: a heredoc closing at a part's last line closes", async () => {
+    // A Ruby heredoc opening on line 71 and closing on line 80, the first part's last line.
+    const lines = Array.from({ length: 100 }, (_, i) => (i === 70 ? "x = <<~EOF" : i > 70 && i < 79 ? `  text ${i}` : i === 79 ? "EOF" : `y${i} = ${i}`));
+    const code = lines.join("\r\n");
+    await highlightLines("warm = 1", "ruby");
+    const whole = await highlightLines(code, "ruby");
+    const got: string[] = [];
+    // A different last line, so the cache doesn't answer.
+    await highlightLineChunks(`${code} `, "ruby", (from, html) => got.splice(from, html.length, ...html), () => false);
+    expect(got).toHaveLength(100);
+    expect(got.slice(0, 99)).toEqual(whole!.slice(0, 99));
+});

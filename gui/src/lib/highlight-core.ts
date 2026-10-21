@@ -185,7 +185,8 @@ export async function highlightLineChunks(code: string, lang: string | undefined
     const id = await ensure(lang);
     if (!id || stopped()) return false;
     const h = await highlighter();
-    const lines = code.split("\n");
+    // Split as Shiki splits (a CRLF ends a line too), so a part's last line carries no stray \r into the grammar's state.
+    const lines = code.split(/\r?\n/);
     const out: string[] = [];
     let state: GrammarState | undefined;
     for (let i = 0; i < lines.length; ) {
