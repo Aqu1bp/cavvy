@@ -1249,6 +1249,11 @@ class CodexTurn {
                     widens: { read: want.read, write: want.write },
                     agentLabel,
                 });
+                // Codex grants exactly what it asked for, so a hook's rewrite of the request can't be granted; nothing is.
+                if (a.allow && a.updatedInput) {
+                    this.host.emit({ type: "notice", level: "warn", message: `Refused Codex's request for ${asks.join(", ")}: a hook rewrote the request, and Codex can only be granted what it asked for, so nothing was granted.` });
+                    return { permissions: {}, scope: "turn" };
+                }
                 // Granting nothing lets the turn go on without them; what the user said goes in with it.
                 if (!a.allow && a.fromUser) this.steer(a.message, true, from);
                 if (!a.allow && a.stop) this.interrupt(from);

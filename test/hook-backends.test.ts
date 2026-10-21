@@ -227,6 +227,16 @@ describe("Codex's items run the harness's hooks", () => {
         expect(toolEnds(b.events)[0]!.result).toMatchObject({ isError: true, content: expect.stringContaining("rewrite") });
     });
 
+    test("a PermissionRequest hook that rewrites Codex's permissions request grants nothing, not the original scope", async () => {
+        process.env.FAKE_SCENARIO = "perms";
+        const allowAs = say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { permissions: {} } } } });
+        const a = await makeAgent("codex", { hooks: { PermissionRequest: [{ command: allowAs }] } }, "default", () => ({ allow: true }));
+        expect(await a.run("write there")).toBe("done");
+        expect(logLines().find((l) => "granted" in l)?.granted).toEqual({ permissions: {}, scope: "turn" });
+        expect(a.asked).toEqual([]);
+        expect(a.events.some((e) => e.type === "notice" && e.message.includes("rewrite"))).toBe(true);
+    });
+
     test("PostToolUse runs after the command with its output, and its context is steered into the turn", async () => {
         const seen = join(cwd, "post.jsonl");
         const settings = { hooks: { PostToolUse: [{ matcher: "Bash", command: `${record(seen)}; ${say({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x is generated" } })}` }] } };
