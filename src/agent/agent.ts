@@ -1068,9 +1068,34 @@ export class Agent {
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
-        const reserve = Math.min(this.model.maxOutput ?? 32_000, 32_000);
         const threshold = s.autoCompactThreshold ?? 0.92;
-        return this.session.messages.length > 4 && this.estimatedContext() > (window - reserve) * threshold;
+        return this.session.messages.length > 4 && this.estimatedContext() > (window - this.outputReserve(window)) * threshold;
+    }
+
+    /**
+     * Room for the answer that auto-compaction keeps free below the window: the
+     * model's max output, at most 32K, and never more than a quarter of the window.
+     * A model that can write about its whole window would otherwise compact with
+     * next to nothing in it; its requests ask for less output instead (turnMaxTokens).
+     */
+    private outputReserve(window: number): number {
+        return Math.min(this.model.maxOutput ?? 32_000, 32_000, Math.floor(window / 4));
+    }
+
+    /**
+     * A turn request's max output: as set, unless the window cut the reserve
+     * short. Then it's what fits beside the context (an estimate, with a margin),
+     * never less than the reserve.
+     */
+    private turnMaxTokens(): number | undefined {
+        const asked = this.o.settings().maxOutputTokens;
+        const window = this.model.contextWindow;
+        // With no known output limit, a guessed one could exceed what the model allows.
+        const most = Math.min(asked ?? Infinity, this.model.maxOutput ?? Infinity);
+        if (!window || !Number.isFinite(most)) return asked;
+        const reserve = this.outputReserve(window);
+        if (most <= reserve || reserve === Math.min(this.model.maxOutput ?? 32_000, 32_000)) return asked;
+        return Math.min(most, Math.max(reserve, window - Math.ceil(this.estimatedContext() * 1.2)));
     }
 
     // -----------------------------------------------------------------------
@@ -1082,7 +1107,7 @@ export class Agent {
             // After any retries: the cache dates from the request that was answered.
             this.sentAt = Date.now();
             this.idleTried = false;
-            return this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+            return this.client.stream(this.request(messages ?? this.session.messages, signal, { maxTokens: this.turnMaxTokens(), ...extra }), (e: StreamEvent) => this.forward(e));
         });
     }
 
@@ -1157,10 +1182,13 @@ export class Agent {
             }
             return res;
         };
+        const window = this.model.contextWindow;
+        // A small window keeps room for the history beside the summary.
+        const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
         let summary = "";
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
-            summary = textOf(await send(this.request(req, opts.signal, { maxTokens: 16_000 })));
+            summary = textOf(await send(this.request(req, opts.signal, { maxTokens: maxOut })));
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
             if (!isContextOverflow(e)) throw e;
@@ -1168,8 +1196,6 @@ export class Agent {
         if (!summary.trim()) {
             // Too long even to summarize, or the model only called tools:
             // summarize a condensed text transcript instead, without tools.
-            const window = this.model.contextWindow;
-            const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
             // ~2.5 characters per token leaves room for code and JSON.
             const maxChars = window ? Math.max(2_000, Math.min(400_000, Math.floor((window - maxOut - 2_000) * 2.5))) : 100_000;
             const transcript = compactTranscriptText(history, maxChars);

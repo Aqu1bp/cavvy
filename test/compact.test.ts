@@ -263,6 +263,62 @@ describe("the agent loop's compaction", () => {
         expect(session.usageByModel.get("anthropic:claude-x")?.usage).toMatchObject({ inputTokens: 3000, outputTokens: 600 });
     });
 
+    test("a small window whose model can write about all of it keeps a sane input budget, and asks for what output fits", async () => {
+        const SMALL = { provider: "openrouter", id: "some/32k-model", contextWindow: 32_768, maxOutput: 32_768 };
+        let i = 0;
+        const { run, requests, compactions } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(3000, 50));
+                return ++i <= 6 ? todo(`c${i}`, usage(3000, 50)) : say("done", usage(3000, 50));
+            },
+            { model: SMALL },
+        );
+        // About 3K tokens in context, for seven requests: before, the threshold was about 700 tokens and this compacted three times.
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        expect(compactions()).toBe(0);
+        expect(requests.length).toBe(7);
+        // Each request asks for no more output than fits beside its context, and for more than the reserve (a quarter of the window) here.
+        for (const r of requests.slice(1)) {
+            expect(r.maxTokens).toBeGreaterThan(8192);
+            expect(r.maxTokens! + 3000).toBeLessThan(32_768);
+        }
+
+        // Past the threshold, (32768 - 8192) * 0.92 ≈ 22.6K, it compacts; until then, the output asked for shrinks, to no less than the reserve.
+        let j = 0;
+        const big = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+                j++;
+                return j <= 4 ? todo(`c${j}`, usage(8000 * j, 50)) : say("done", usage(1000, 50));
+            },
+            { model: SMALL },
+        );
+        expect(await big.run([{ type: "text", text: "go" }])).toBe("done");
+        expect(big.compactions()).toBe(1);
+        const turns = big.requests.filter((r) => !isSummary(r));
+        const asked = turns.map((r) => r.maxTokens!);
+        for (const n of asked) expect(n).toBeGreaterThanOrEqual(8192);
+        // 8K, then 16K tokens in context: what fits shrinks with it.
+        expect(asked[1]!).toBeLessThan(asked[0]!);
+        expect(asked[1]! + 8000).toBeLessThan(32_768);
+        expect(asked[2]!).toBeLessThan(asked[1]!);
+        expect(asked[2]! + 16_000).toBeLessThan(32_768);
+        // After the compaction, room again; a context that leaves less than the reserve still gets the reserve.
+        expect(asked[3]!).toBeGreaterThan(asked[2]!);
+        expect(asked.at(-1)).toBe(8192);
+        // The summary request leaves the history room too.
+        expect(big.requests.find(isSummary)!.maxTokens).toBe(8192);
+    });
+
+    test("a large window's requests ask for the output as set", async () => {
+        const { run, requests } = setup(() => say("done"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        expect(requests[0]!.maxTokens).toBeUndefined();
+        const set = setup(() => say("done"), { settings: { maxOutputTokens: 20_000 } });
+        expect(await set.run([{ type: "text", text: "go" }])).toBe("done");
+        expect(set.requests[0]!.maxTokens).toBe(20_000);
+    });
+
     test("an error that isn't transient isn't retried", async () => {
         const { agent, session, requests } = setup(() => {
             throw new ProviderError("invalid x-api-key", 401, false);
