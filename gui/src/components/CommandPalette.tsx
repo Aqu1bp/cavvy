@@ -274,7 +274,8 @@ export function CommandPalette() {
                             <button class={`pal-row ${sel() === i() ? "sel" : ""} ${e.desc ? "two" : ""}`} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
                                 <span class="pal-ic">{e.icon}</span>
                                 <span class="pal-text">
-                                    <span class="pal-l">
+                                    {/* A message hit's words are marked .pal-snippet (the palette fixture finds them by it). */}
+                                    <span class={`pal-l ${e.snippet ? "pal-snippet" : ""}`}>
                                         <Show when={e.snippet} fallback={e.label}>
                                             {(sn) => <Snippet text={sn().text} match={sn().match} />}
                                         </Show>

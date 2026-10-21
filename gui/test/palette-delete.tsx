@@ -73,7 +73,7 @@ export async function checkPaletteDelete(root: HTMLElement) {
     setApp("activeId", "palette-current");
     setPaletteOpen(true);
     const dispose = render(() => <CommandPalette />, root);
-    const rows = () => [...document.querySelectorAll<HTMLButtonElement>(".palette .pal-item")];
+    const rows = () => [...document.querySelectorAll<HTMLButtonElement>(".palette .pal-row")];
     const messageRows = () => rows().filter((r) => r.querySelector(".pal-snippet"));
     const type = (q: string) => {
         const input = document.querySelector<HTMLInputElement>(".palette input")!;
@@ -88,7 +88,7 @@ export async function checkPaletteDelete(root: HTMLElement) {
         check(rows().some((r) => r.textContent?.includes("Review changes")), "review and delete actions coexist");
         type("palettequokka");
         await until(() => messageRows().length === 3);
-        check(document.querySelector(".palette .pal-section")?.textContent === "Messages", "message hits retain their section");
+        check(document.querySelector(".palette .pal-h")?.textContent === "Messages", "message hits retain their section");
         setJumpTarget({ sessionId: hits[0]!.id, seg: 0, index: 1, role: "assistant", query: "palettequokka" });
         send({ type: "sessions.remove", id: hits[0]!.id });
         await until(() => messageRows().length === 2);
