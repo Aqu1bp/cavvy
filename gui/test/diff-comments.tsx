@@ -295,7 +295,7 @@ export async function checkDiffComments(root: HTMLElement) {
     // Far down, one line much wider than the rest: the diff scrolls sideways as far, wherever the view is.
     big.hunks[0]!.lines[9000] = { t: "add", b: 9000, text: `const wide = "${"w".repeat(400)}";` };
     const scroller = document.createElement("div");
-    scroller.style.cssText = "height: 600px; overflow: auto";
+    scroller.style.cssText = "height: 600px; overflow: auto; overflow-anchor: none";
     scroller.className = "dv-fixture";
     // As in the review pane (review.css): the page scrolls the diff, not a box of its own.
     const paneStyle = Object.assign(document.createElement("style"), { textContent: ".dv-fixture .diff-scroll { max-height: none; }" });
@@ -308,6 +308,7 @@ export async function checkDiffComments(root: HTMLElement) {
         await until(() => scroller.querySelector(`[data-i="${idx}"]`));
         await settle();
     };
+    const rowsBoxFocusOut = () => (document.activeElement as HTMLElement | null)?.blur();
     const t0 = performance.now();
     const [bigDiff] = createSignal(big);
     const b = setup(bigDiff, () => false);
@@ -381,6 +382,40 @@ export async function checkDiffComments(root: HTMLElement) {
         check(sel.toString().includes("const v5004 = old(5004);") && sel.toString().includes("const v5006 = old(5006);"), `a selection keeps its rows drawn (${JSON.stringify(sel.toString().slice(0, 80))})`);
         sel.removeAllRanges();
         await settle();
+
+        // A saved comment's button with the focus: its row stays drawn when the view leaves it.
+        await scrollTo(5010);
+        const editBtn = scroller.querySelector<HTMLButtonElement>('.dc-card [aria-label^="Edit comment"]')!;
+        editBtn.focus();
+        scroller.scrollTop = 0;
+        await until(() => scroller.querySelector(`[data-i="5"]`));
+        await settle();
+        check(editBtn.isConnected && document.activeElement === editBtn, `a focused button under a row keeps it drawn, and keeps the focus (${editBtn.isConnected}, ${document.activeElement?.className})`);
+        rowsBoxFocusOut();
+
+        // Scrolling up into rows not drawn yet, one of them with a tall comment: what's in view doesn't jump.
+        b.setList((l) => [...l, buildComment({ id: "tall", path: big.path, lines: [big.hunks[0]!.lines[3000]!], text: "A tall comment. ".repeat(400), before: [big.hunks[0]!.lines[2998]!, big.hunks[0]!.lines[2999]!], after: [big.hunks[0]!.lines[3001]!, big.hunks[0]!.lines[3002]!] })!]);
+        await scrollTo(3150);
+        check(!scroller.querySelector(`[data-i="3000"]`), "the tall comment's row isn't drawn yet");
+        let jumps = 0;
+        let worst = 0;
+        let sawTall = false;
+        for (let step = 0; step < 120 && scroller.scrollTop > 0; step++) {
+            const vb = scroller.getBoundingClientRect();
+            // A row in view (or the tall comment's, when that fills the view).
+            const ref = [...scroller.querySelectorAll<HTMLElement>(".dl[data-i]")].find((e) => e.getBoundingClientRect().bottom > vb.top + 50) ?? scroller.querySelector<HTMLElement>(".dl[data-i]")!;
+            const before = ref.getBoundingClientRect().top;
+            scroller.scrollTop -= 80;
+            await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+            sawTall ||= [...scroller.querySelectorAll(".dc-card")].some((c) => c.textContent?.includes("A tall comment.") && c.getBoundingClientRect().height > 200);
+            if (!ref.isConnected) continue;
+            // Moved by what was scrolled, whatever the page did to hold it there.
+            const off = Math.abs(ref.getBoundingClientRect().top - before - 80);
+            worst = Math.max(worst, off);
+            if (off > 2) jumps++;
+        }
+        check(sawTall, "the tall comment was drawn on the way up");
+        check(jumps === 0, `rows in view move only by the scroll as rows above are drawn (${jumps} jumps, worst ${worst.toFixed(1)}px)`);
 
         // The keyboard: Home goes to the first line, drawn and in view.
         const rows = scroller.querySelector<HTMLElement>(".diff-rows")!;

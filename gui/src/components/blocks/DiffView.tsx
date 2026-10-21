@@ -606,6 +606,8 @@ function DiffViewContent(p: DiffProps) {
                 changed = true;
             }
         }
+        const slots = { sum: 0, n: 0 };
+        let sep = 0;
         let open: number | undefined;
         let openTop = 0;
         let openSep = false;
@@ -627,7 +629,8 @@ function DiffViewContent(p: DiffProps) {
         for (const e of drawnRows()) {
             const b = e.getBoundingClientRect();
             if (e.dataset.slot !== undefined) {
-                typical.slot = b.height;
+                slots.sum += b.height;
+                slots.n++;
                 openSlots = true;
                 continue;
             }
@@ -638,7 +641,7 @@ function DiffViewContent(p: DiffProps) {
             openSep = e.classList.contains("sep");
             openSlots = false;
             openEmpty = !Array.from(e.querySelectorAll(".txt")).some((t) => t.textContent);
-            if (openSep) typical.sep ||= b.height;
+            if (openSep) sep ||= b.height;
         }
         close(rowsEl.getBoundingClientRect().bottom);
         // The guesses for rows not drawn yet, from what's drawn.
@@ -651,6 +654,16 @@ function DiffViewContent(p: DiffProps) {
         }
         if (measuredLines.empty !== typical.empty) {
             typical.empty = measuredLines.empty;
+            guesses = true;
+        }
+        // Any guess that changes changes the sums the spacers are drawn from.
+        const slot = slots.n ? slots.sum / slots.n : typical.slot;
+        if (Math.abs(slot - typical.slot) >= 0.01) {
+            typical.slot = slot;
+            guesses = true;
+        }
+        if (sep && !typical.sep) {
+            typical.sep = sep;
             guesses = true;
         }
         if (p.split && !typical.cols) {
@@ -688,14 +701,18 @@ function DiffViewContent(p: DiffProps) {
         try {
             // Side by side at a new width, every line wraps anew: like rows drawn for the first time.
             if (p.split && rowsEl.clientWidth !== width) guessed = true;
+            // The row in view, taken before anything changes and held where it is through every pass: rows drawn
+            // above it come in at their real heights (a tall comment under one), and the page moves to make up for it.
+            // Rows just drawn for the first time (another layout) are measured before anything is held in place:
+            // until then the spacers are guesses, and the page keeps its scroll position as it would drawn whole.
+            let anchor = guessed ? undefined : anchorRow();
             for (let pass = 0; pass < 4; pass++) {
-                // Rows just drawn for the first time (another layout) are measured before anything is held in place:
-                // until then the spacers are guesses, and the page keeps its scroll position as it would drawn whole.
-                const anchor = guessed ? undefined : anchorRow();
                 const changed = measure();
-                guessed = false;
                 if (changed) setMeasured();
-                if (anchor?.e.isConnected) {
+                if (guessed) {
+                    guessed = false;
+                    anchor = anchorRow();
+                } else if (anchor?.e.isConnected) {
                     const d = anchor.e.getBoundingClientRect().top - anchor.top;
                     const sc = Math.abs(d) >= 0.5 ? scroller() : undefined;
                     if (sc) sc.scrollTop += d;
@@ -746,6 +763,14 @@ function DiffViewContent(p: DiffProps) {
         const a = unitAt(s.anchorNode, s.anchorOffset);
         const b = unitAt(s.focusNode, s.focusOffset);
         setSelectionPin([Math.min(a, b), Math.max(a, b)]);
+    };
+    /** Focus on something under a row (a comment's button, its box): that row stays drawn while it has it. */
+    const onFocusIn = (e: FocusEvent) => {
+        if (windowed && rowsEl && e.target !== rowsEl) setFocusPin(unitAt(e.target as Node));
+    };
+    const onFocusOut = (e: FocusEvent) => {
+        const next = e.relatedTarget as Node | null;
+        if (windowed && !(next && next !== rowsEl && rowsEl?.contains(next))) setFocusPin(undefined);
     };
     if (windowed) {
         onMount(() => {
@@ -865,6 +890,8 @@ function DiffViewContent(p: DiffProps) {
                         onKeyDown={onRowsKey}
                         onFocus={(e) => setFocused(e.target === e.currentTarget)}
                         onBlur={() => setFocused(false)}
+                        onFocusIn={onFocusIn}
+                        onFocusOut={onFocusOut}
                     >
                         <For each={items()}>
                             {(r) =>
@@ -903,6 +930,8 @@ function DiffViewContent(p: DiffProps) {
                         onKeyDown={onRowsKey}
                         onFocus={(e) => setFocused(e.target === e.currentTarget)}
                         onBlur={() => setFocused(false)}
+                        onFocusIn={onFocusIn}
+                        onFocusOut={onFocusOut}
                     >
                         <For each={items()}>
                             {(r) =>
