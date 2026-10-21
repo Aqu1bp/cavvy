@@ -1,19 +1,24 @@
-// Reviewing what changed: docked on the right, files on its left, the chosen
-// file's diff beside them. Opened from the panel's Changes row or a turn's
-// Review changes. Git's view (uncommitted, or the whole branch) shows every
-// change in the folder, whoever made it; Harness edits shows only what the
-// edit tools did, and is all there is outside a Git repository.
+// The diff reader: the inspector widens into it (lib/layout.ts). Its head names
+// the file in view, with Unified | Split and Open in editor; under it, which
+// changes (uncommitted, the branch, a turn, or Harness's own edits) and the
+// files as pills; then the diff, where lines take comments for the next
+// message; Commit and Push at the foot. Opened from the side panel, the title
+// bar's changes chip or a turn's Review changes. Git's views show every change
+// in the folder, whoever made it; Harness edits shows only what the edit tools
+// did, and is all there is outside a Git repository.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
-import { FolderOpen, GitBranch, MessageSquare, RefreshCw, X } from "lucide-solid";
+import { ChevronLeft, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
-import { review, setReview, setCommitRequest } from "../state/ui";
+import { review, reviewSplit, setCommitRequest, setReview, setReviewSplit, shellLayout } from "../state/ui";
 import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
+import { editorName, openInEditor } from "../state/actions";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural } from "../lib/format";
+import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth } from "../lib/inspector";
 import { DiffView, type DiffComments } from "./blocks/DiffView";
 import { buildComment } from "../lib/review-comments";
 import { newCommentId, reviewComments } from "../state/review-comments";
@@ -21,23 +26,8 @@ import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
 import { Segmented, Spinner } from "./ui/bits";
 
-/** Kept while the app runs, so the pane opens the way you left it. */
-const [split, setSplit] = createSignal(false);
-
-const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "");
-const nameOf = (path: string) => path.split("/").pop() ?? path;
-
 type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter">>;
 
-/** git status's letters, spelled out on hover. */
-const CHANGE: Record<GitFileDiff["change"], { letter: string; label: string }> = {
-    added: { letter: "A", label: "Added" },
-    modified: { letter: "M", label: "Modified" },
-    deleted: { letter: "D", label: "Deleted" },
-    untracked: { letter: "U", label: "Untracked" },
-    renamed: { letter: "R", label: "Renamed" },
-    typechange: { letter: "T", label: "Type changed" },
-};
 const changeOf = (f: Row): GitFileDiff["change"] => f.change ?? f.status;
 
 const SCOPE_NOTE: Record<ReviewScope, string> = {
@@ -48,36 +38,26 @@ const SCOPE_NOTE: Record<ReviewScope, string> = {
     harness: "Only what Harness's own edit tools changed in this session. Shell commands and Claude Code or Codex edits aren't included.",
 };
 
-/** One file in the list. Kept on its own so rows can grow actions. */
-function FileRow(p: { file: Row; on: boolean; onSelect: () => void; commit?: boolean; checked?: boolean; onCheck?: (checked: boolean) => void; comments?: number }) {
+/** One file, as a pill: its git letter and name (the path on hover), a box to leave it out of a commit, its comments. */
+function FilePill(p: { file: Row; on: boolean; onSelect: () => void; commit?: boolean; checked?: boolean; onCheck?: (checked: boolean) => void; comments?: number }) {
     const c = () => CHANGE[changeOf(p.file)];
+    const stat = () => (p.file.added || p.file.removed ? ` · +${p.file.added} −${p.file.removed}` : "");
     return (
-        <div class={`rf-row ${p.on ? "on" : ""}`}>
+        <div class={`rv-file ${p.on ? "on" : ""}`}>
             <Show when={p.commit}>
-                <span title={p.file.kind === "folder" ? "This folder is collapsed; select individual files instead." : p.file.kind === "repo" ? "Nested repositories cannot be committed as files." : `Include ${p.file.path} in commit`}>
+                <span class="rv-check" title={p.file.kind === "folder" ? "This folder is collapsed; select individual files instead." : p.file.kind === "repo" ? "Nested repositories cannot be committed as files." : `Include ${p.file.path} in commit`}>
                     <input type="checkbox" aria-label={`Include ${p.file.path} in commit`} checked={p.checked} disabled={p.file.kind === "folder" || p.file.kind === "repo"} onChange={(e) => p.onCheck?.(e.currentTarget.checked)} />
                 </span>
             </Show>
-            <button class={`rf ${p.on ? "on" : ""}`} aria-current={p.on} title={p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path} onClick={() => p.onSelect()}>
-                <span class={`rf-change ${changeOf(p.file)}`} title={c().label} aria-label={c().label}>
+            <button aria-current={p.on} title={`${p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path}${stat()}`} onClick={() => p.onSelect()}>
+                <span class={`fs ${changeOf(p.file)}`} title={c().label} aria-label={c().label}>
                     {c().letter}
                 </span>
-                <span class="rf-text">
-                    <span class="rf-name mono truncate">{nameOf(p.file.path)}</span>
-                    <Show when={dirOf(p.file.path)}>
-                        <span class="rf-dir mono truncate">{dirOf(p.file.path)}</span>
-                    </Show>
-                </span>
+                <span class="truncate">{nameOf(p.file.path)}</span>
                 <Show when={p.comments}>
-                    <span class="rf-comments" title={plural(p.comments!, "comment")} aria-label={plural(p.comments!, "comment")}>
+                    <span class="rv-cmts" title={plural(p.comments!, "comment")} aria-label={plural(p.comments!, "comment")}>
                         <MessageSquare size={11} aria-hidden="true" />
                         {p.comments}
-                    </span>
-                </Show>
-                <Show when={p.file.added || p.file.removed}>
-                    <span class="stat rf-stat">
-                        <span class="add">+{p.file.added}</span>
-                        <span class="del">−{p.file.removed}</span>
                     </span>
                 </Show>
             </button>
@@ -85,31 +65,78 @@ function FileRow(p: { file: Row; on: boolean; onSelect: () => void; commit?: boo
     );
 }
 
-/** The chosen file's heading: its path, what happened to it, its counts. Actions go at the end. */
-function FileHead(p: { file: Row }) {
-    const tag = () => {
-        const ch = changeOf(p.file);
-        if (p.file.kind === "link") return "Symbolic link";
-        // Its diff, when there is one, is of what git stores (an LFS pointer, say), not the file on disk.
-        if (p.file.filter) return `Filter: ${p.file.filter}`;
-        if (p.file.kind === "submodule") return "Submodule";
-        if (ch === "modified") return undefined;
-        return ch === "added" ? "New file" : ch === "renamed" ? `Renamed from ${p.file.from}` : CHANGE[ch].label;
+/** What happened to the file, when it's more than an edit: "New file", "Renamed from …", "Symbolic link". */
+function fileTag(f: Row): string | undefined {
+    const ch = changeOf(f);
+    if (f.kind === "link") return "Symbolic link";
+    // Its diff, when there is one, is of what git stores (an LFS pointer, say), not the file on disk.
+    if (f.filter) return `Filter: ${f.filter}`;
+    if (f.kind === "submodule") return "Submodule";
+    if (ch === "modified") return undefined;
+    return ch === "added" ? "New file" : ch === "renamed" ? `Renamed from ${f.from}` : CHANGE[ch].label;
+}
+
+/** Unified, or side by side; side by side widens the inspector further (lib/layout.ts). Kept while the app runs. */
+function DiffLayout() {
+    return (
+        <Segmented
+            label="Diff layout"
+            size="sm"
+            value={reviewSplit() ? "split" : "unified"}
+            onChange={(v) => setReviewSplit(v === "split")}
+            options={[
+                { value: "unified", label: "Unified" },
+                { value: "split", label: "Split" },
+            ]}
+        />
+    );
+}
+
+/**
+ * The reader's left edge, while it docks: drag (or arrow keys) to widen it; double-click for
+ * the default. It starts from the width shown, which the layout may have widened past the saved one.
+ */
+function ReviewResizer() {
+    const [dragging, setDragging] = createSignal(false);
+    const shown = () => shellLayout().inspector.width;
+    const set = (w: number) => setPrefs("reviewWidth", w);
+    const start = (e: PointerEvent) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const target = e.currentTarget as HTMLElement;
+        target.setPointerCapture?.(e.pointerId);
+        const x = e.clientX;
+        const from = shown();
+        setDragging(true);
+        document.body.classList.add("resizing");
+        const move = (ev: PointerEvent) => set(reviewDragWidth(from, ev.clientX - x));
+        const end = () => {
+            setDragging(false);
+            document.body.classList.remove("resizing");
+            target.removeEventListener("pointermove", move);
+            target.removeEventListener("pointerup", end);
+            target.removeEventListener("lostpointercapture", end);
+        };
+        target.addEventListener("pointermove", move);
+        target.addEventListener("pointerup", end);
+        target.addEventListener("lostpointercapture", end);
     };
     return (
-        <div class="review-file-head">
-            <span class="path truncate" title={p.file.path}>
-                {p.file.path}
-            </span>
-            <Show when={tag()}>
-                <span class={`file-tag ${p.file.status}`}>{tag()}</span>
-            </Show>
-            <span class="grow" />
-            <span class="stat">
-                <span class="add">+{p.file.added}</span>
-                <span class="del">−{p.file.removed}</span>
-            </span>
-        </div>
+        <div
+            class={`insp-resizer rv-resizer ${dragging() ? "drag" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize the diff reader"
+            aria-valuenow={shown()}
+            tabIndex={0}
+            onPointerDown={start}
+            onDblClick={() => set(REVIEW_DEFAULT)}
+            onKeyDown={(e) => {
+                if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                e.preventDefault();
+                set(reviewDragWidth(shown(), e.key === "ArrowLeft" ? -REVIEW_STEP : REVIEW_STEP));
+            }}
+        />
     );
 }
 
@@ -256,22 +283,6 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         return out;
     });
 
-    let dragStart = 0;
-    let widthStart = 0;
-    const onResize = (e: PointerEvent) => {
-        dragStart = e.clientX;
-        widthStart = prefs.reviewWidth;
-        const move = (ev: PointerEvent) => setPrefs("reviewWidth", Math.round(Math.max(420, Math.min(1200, widthStart - (ev.clientX - dragStart)))));
-        const up = () => {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", up);
-            document.body.classList.remove("resizing");
-        };
-        document.body.classList.add("resizing");
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", up);
-    };
-
     const count = () => {
         const n = files().length + more();
         const plus = shownScope() !== "harness" && git()?.moreAtLeast ? "+" : "";
@@ -286,53 +297,73 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "This turn’s snapshot is incomplete." : "No file changes in this turn.";
         return "Nothing to commit: the working tree matches the last commit.";
     };
+    /** "2 of 3 files, +19 −4 in all." */
+    const where = () => {
+        const i = files().findIndex((f) => f.path === file()?.path);
+        const all = `+${view()?.added ?? 0} −${view()?.removed ?? 0} in all`;
+        return i < 0 ? `${count()}, ${all}.` : `${i + 1} of ${count()}, ${all}.`;
+    };
+    /** The file the head names: the one shown, or the one asked for while it loads. */
+    const headPath = () => shownFile()?.path ?? (askedFor() ? picked() : undefined);
+    const headSub = () => {
+        const path = headPath();
+        if (!path) return files().length ? count() : "";
+        const tag = shownFile() && fileTag(shownFile()!);
+        const dir = dirOf(path);
+        return [dir, tag].filter(Boolean).join(" · ");
+    };
+    const canOpen = () => {
+        const f = shownFile();
+        return Boolean(f && changeOf(f) !== "deleted" && f.kind !== "repo" && f.kind !== "submodule");
+    };
 
     return (
         <section class="review" aria-label="Review changes">
-            <div class="resize-handle left" onPointerDown={onResize} onDblClick={() => setPrefs("reviewWidth", 720)} />
-            <div class="review-head" data-tauri-drag-region>
-                <span class="review-title">Changes</span>
-                <Show when={files().length}>
-                    <span class="review-count">{count()}</span>
-                    <span class="stat">
-                        <span class="add">+{view()!.added}</span>
-                        <span class="del">−{view()!.removed}</span>
-                    </span>
-                </Show>
-                <span class="grow" data-tauri-drag-region />
-                <Show when={shownScope() === "uncommitted"}>
-                    <span title={commitDisabled() ?? "Commit the checked files"}>
-                        <button class="btn sm" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: selected() })}>Commit…</button>
-                    </span>
-                </Show>
-                <Show when={!noRepo()}><button class="btn sm" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>Push…</button></Show>
-                <Segmented
-                    label="Diff layout"
-                    size="sm"
-                    value={split() ? "split" : "unified"}
-                    onChange={(v) => setSplit(v === "split")}
-                    options={[
-                        { value: "unified", label: "Unified" },
-                        { value: "split", label: "Split" },
-                    ]}
-                />
-                <Show when={canReveal && shownFile()}>
-                    <button class="hb" title="Reveal in Finder" aria-label="Reveal in Finder" onClick={() => void revealPath(absolute(shownFile()!.path)).catch(reportError)}>
-                        <FolderOpen size={16} />
-                    </button>
-                </Show>
-                <button class="hb" title="Refresh" aria-label="Refresh" disabled={loading()} onClick={refresh}>
-                    <Show when={loading()} fallback={<RefreshCw size={15} />}>
-                        <Spinner size={14} />
+            <Show when={shellLayout().inspector.mode === "dock"}>
+                <ReviewResizer />
+            </Show>
+            <div class="rv-h" data-tauri-drag-region>
+                <button class="hb rv-back" title={prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close review" onClick={() => setReview(undefined)}>
+                    <Show when={prefs.panel} fallback={<X size={16} />}>
+                        <ChevronLeft size={16} />
                     </Show>
                 </button>
-                <button class="hb" title="Close (Esc)" aria-label="Close review" onClick={() => setReview(undefined)}>
-                    <X size={16} />
-                </button>
+                <div class="nm" data-tauri-drag-region>
+                    <Show when={headPath()} fallback={<b>Changes</b>}>
+                        {(path) => (
+                            <b class="selectable" title={path()}>
+                                {nameOf(path())}
+                            </b>
+                        )}
+                    </Show>
+                    <Show when={headSub()}>
+                        <span class="selectable" title={headSub()}>
+                            {headSub()}
+                        </span>
+                    </Show>
+                </div>
+                <Show when={shownFile()}>
+                    {(f) => (
+                        <span class="stat rv-stat">
+                            <span class="add">+{f().added}</span>
+                            <span class="del">−{f().removed}</span>
+                        </span>
+                    )}
+                </Show>
+                <DiffLayout />
+                <Show when={canOpen()}>
+                    <button class="hb" title={`Open in ${editorName() ?? "your editor"}`} aria-label="Open in editor" onClick={() => void openInEditor(absolute(shownFile()!.path))}>
+                        <SquareArrowOutUpRight size={15} />
+                    </button>
+                </Show>
+                <Show when={canReveal && shownFile()}>
+                    <button class="hb rv-reveal" title="Reveal in Finder" aria-label="Reveal in Finder" onClick={() => void revealPath(absolute(shownFile()!.path)).catch(reportError)}>
+                        <FolderOpen size={15} />
+                    </button>
+                </Show>
             </div>
-            <Show when={git()?.repo}><PublishStatus handle={p.handle} request={publishRequest()} onClose={() => setPublishRequest(undefined)} /></Show>
-            <div class="review-bar">
-                <Show when={!noRepo()} fallback={<span class="review-scope-note">{git()?.reason}</span>}>
+            <div class="rv-bar">
+                <Show when={!noRepo()} fallback={<span class="rv-reason selectable">{git()?.reason}</span>}>
                     <Segmented
                         label="Changes scope"
                         size="sm"
@@ -361,7 +392,6 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                             <For each={git()?.turns}>{(t, i) => <option value={String(t.id)}>Turn {i() + 1} · {new Date(t.startedAt).toLocaleString()} · {t.prompt.slice(0, 80)}</option>}</For>
                         </select>
                     </Show>
-                    <span class="grow" />
                     <Show when={scope() === "branch"}>
                         <span class="review-branch">
                             <GitBranch size={13} />
@@ -371,77 +401,107 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         </span>
                     </Show>
                 </Show>
+                <span class="grow" />
+                <button class="hb sm" title="Refresh" aria-label="Refresh" disabled={loading()} onClick={refresh}>
+                    <Show when={loading()} fallback={<RefreshCw size={14} />}>
+                        <Spinner size={13} />
+                    </Show>
+                </button>
             </div>
-            <Show
-                when={files().length}
-                fallback={
-                    <div class="review-empty">
-                        <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
-                            <Show when={view()} fallback={<Spinner size={16} />}>
-                                {empty()}
-                            </Show>
-                        </Show>
+            <Show when={files().length}>
+                <nav class="rv-files" aria-label="Changed files" aria-busy={loading()}>
+                    <For each={files()}>{(f) => <FilePill file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted"} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
+                    <Show when={more()}>
+                        <span class="rv-more">
+                            {more().toLocaleString()}
+                            {git()?.moreAtLeast ? "+" : ""} more not shown
+                        </span>
+                    </Show>
+                </nav>
+            </Show>
+            <div class="insp-body rv-body">
+                <Show when={git()?.repo}>
+                    <div class="rv-pr">
+                        <PublishStatus handle={p.handle} request={publishRequest()} onClose={() => setPublishRequest(undefined)} />
                     </div>
-                }
-            >
-                <div class="review-body" aria-busy={loading()}>
-                    <nav class="review-files" aria-label="Changed files">
-                        <For each={files()}>{(f) => <FileRow file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted"} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
-                        <Show when={more()}>
-                            <div class="rf-more">
-                                {more().toLocaleString()}
-                                {git()?.moreAtLeast ? "+" : ""} more not shown
-                            </div>
-                        </Show>
-                    </nav>
-                    <div class="review-diff">
-                        <Show when={askedFor() && !file()}>
-                            <div class="review-file-head">
-                                <span class="path truncate">{picked()}</span>
-                            </div>
-                            <div class="review-empty">
-                                <Show when={!unlisted.loading && asked()?.error} fallback={<Spinner size={16} />}>
-                                    {asked()!.error}{" "}
-                                    <button class="link-btn" onClick={() => void refetchUnlisted()}>
-                                        Try again
-                                    </button>
+                </Show>
+                <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}>
+                    <div class="rv-warn selectable" role="status">
+                        {git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}
+                        {git()?.notes?.join(" ")}
+                    </div>
+                </Show>
+                <Show
+                    when={files().length}
+                    fallback={
+                        <div class="rv-empty selectable">
+                            <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
+                                <Show when={view()} fallback={<Spinner size={16} />}>
+                                    {empty()}
                                 </Show>
-                            </div>
-                        </Show>
-                        {/* By path, not by the file's object: a refresh (an edit landing, a turn ending) updates the
-                            diff in place, so a comment being written, the scroll and the focus all stay. */}
-                        <Show when={shownFile()?.path} keyed>
-                            {(path) => {
-                                const comments = commentsFor(path);
-                                let last = shownFile()!;
-                                const f = () => (last = shownFile() ?? last);
-                                return (
-                                <>
-                                    <FileHead file={f()} />
-                                    <Show
-                                        when={!f().deferred}
-                                        fallback={
-                                            <div class="review-empty">
-                                                <Show when={!full.loading && loaded()} fallback={<Spinner size={16} />}>
-                                                    {loaded()!.error}{" "}
-                                                    <button class="link-btn" onClick={() => void refetchFull()}>
-                                                        Try again
-                                                    </button>
-                                                </Show>
-                                            </div>
-                                        }
-                                    >
-                                        <DiffView diff={f()} split={split()} comments={comments} />
-                                    </Show>
-                                </>
-                                );
-                            }}
-                        </Show>
-                    </div>
+                            </Show>
+                        </div>
+                    }
+                >
+                    <Show when={askedFor() && !file()}>
+                        <div class="rv-empty selectable">
+                            <Show when={!unlisted.loading && asked()?.error} fallback={<Spinner size={16} />}>
+                                {asked()!.error}{" "}
+                                <button class="link-btn" onClick={() => void refetchUnlisted()}>
+                                    Try again
+                                </button>
+                            </Show>
+                        </div>
+                    </Show>
+                    {/* By path, not by the file's object: a refresh (an edit landing, a turn ending) updates the
+                        diff in place, so a comment being written, the scroll and the focus all stay. */}
+                    <Show when={shownFile()?.path} keyed>
+                        {(path) => {
+                            const comments = commentsFor(path);
+                            let last = shownFile()!;
+                            const f = () => (last = shownFile() ?? last);
+                            return (
+                                <Show
+                                    when={!f().deferred}
+                                    fallback={
+                                        <div class="rv-empty selectable">
+                                            <Show when={!full.loading && loaded()} fallback={<Spinner size={16} />}>
+                                                {loaded()!.error}{" "}
+                                                <button class="link-btn" onClick={() => void refetchFull()}>
+                                                    Try again
+                                                </button>
+                                            </Show>
+                                        </div>
+                                    }
+                                >
+                                    <DiffView diff={f()} split={reviewSplit()} comments={comments} />
+                                </Show>
+                            );
+                        }}
+                    </Show>
+                </Show>
+                <p class="rv-note">
+                    <Show when={files().length}>{where()} </Show>
+                    {SCOPE_NOTE[shownScope()]}
+                    <Show when={shownFile()}> Click a line number, or drag across several, to comment; comments go with your next message.</Show>
+                </p>
+            </div>
+            <Show when={!noRepo()}>
+                <div class="insp-foot">
+                    <Show when={shownScope() === "uncommitted"}>
+                        <span class="grow" title={commitDisabled() ?? "Commit the checked files"}>
+                            <button class="btn ghost" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: selected() })}>
+                                <GitCommitHorizontal size={14} /> Commit…
+                            </button>
+                        </span>
+                    </Show>
+                    <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
+                        <button class="btn primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>
+                            <GitPullRequestArrow size={14} /> Push…
+                        </button>
+                    </span>
                 </div>
             </Show>
-            <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}><div class="review-note" role="status">{git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}{git()?.notes?.join(" ")}</div></Show>
-            <div class="review-note">{SCOPE_NOTE[shownScope()]}</div>
         </section>
     );
 }

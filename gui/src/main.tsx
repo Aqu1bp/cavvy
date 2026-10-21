@@ -8,6 +8,7 @@ import "./styles/sidebar.css";
 import "./styles/header.css";
 import "./styles/stage.css";
 import "./styles/panel.css";
+import "./styles/review.css";
 import "./styles/agent-view.css";
 import "./styles/home.css";
 import "./styles/toasts.css";

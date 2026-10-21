@@ -1,0 +1,485 @@
+/* ---- The diff reader (ReviewPane): the inspector widened ----
+   design/glass "Review": a head naming the file in view (back, name and folder,
+   +a −d, Unified | Split, open in editor), which changes and the files as pills,
+   the diff with its comment boxes, Commit and Push at the foot. The diff's own
+   look (.diff, .dl, .sl) is transcript.css's; the inspector's shared parts
+   (.insp-body, .insp-foot, .fs, pills) are panel.css's. */
+
+.review {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    font-size: 0.929rem;
+    container: review / inline-size;
+}
+
+/* ---- Head ---- */
+
+.rv-h {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 52px;
+    padding: 9px 8px 6px;
+    flex: none;
+    min-width: 0;
+}
+
+.rv-h .nm {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    line-height: 1.2;
+}
+
+.rv-h .nm b {
+    font: 600 0.893rem/1.3 var(--font-mono);
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rv-h .nm span {
+    font-size: 0.786rem;
+    color: var(--fg-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rv-h .segmented {
+    flex: none;
+}
+
+.rv-h .segmented.seg-sm button {
+    height: 24px;
+    padding: 0 9px;
+}
+
+.rv-stat {
+    font: 600 0.857rem/1 var(--font-ui);
+    font-variant-numeric: tabular-nums;
+    margin: 0 4px;
+}
+
+/* ---- Which changes ---- */
+
+.rv-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px 8px;
+    flex: none;
+    min-width: 0;
+}
+
+.rv-bar .segmented {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.rv-bar .segmented button {
+    flex: none;
+}
+
+.rv-reason {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.review-turn {
+    flex: 1 1 140px;
+    max-width: 240px;
+    height: 26px;
+    padding: 0 26px 0 11px;
+    border: 0;
+    border-radius: var(--pill);
+    background-color: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
+    color: var(--fg-2);
+    font-size: 0.857rem;
+    font-weight: 500;
+    text-overflow: ellipsis;
+}
+
+.review-turn:focus,
+.review-turn:focus-visible {
+    border: 0;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.review-branch {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.review-branch > svg,
+.review-branch .arrow {
+    flex: none;
+}
+
+.review-branch .mono {
+    font-size: 0.857rem;
+    color: var(--fg-2);
+}
+
+.review-branch .base-ctl {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 200px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: var(--pill);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
+    color: var(--fg);
+    font-size: 0.857rem;
+}
+
+.review-branch .base-ctl:hover,
+.review-branch .base-ctl[aria-expanded="true"] {
+    box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
+}
+
+/* The branch picker's list (a popover). */
+.base-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 6px;
+}
+
+/* ---- The files, as pills ---- */
+
+.rv-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-height: 94px;
+    padding: 0 10px 8px;
+    overflow-y: auto;
+    scrollbar-width: none;
+    flex: none;
+}
+
+.rv-file {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
+    height: 26px;
+    border-radius: var(--pill);
+    color: var(--fg-3);
+    transition: background 140ms, color 140ms;
+}
+
+.rv-file:hover:not(.on) {
+    background: var(--hover);
+}
+
+.rv-file.on {
+    background: var(--sheet);
+    color: var(--fg);
+    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+.rv-check {
+    display: inline-flex;
+    padding-left: 8px;
+    flex: none;
+}
+
+.rv-check input {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+.rv-file button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.rv-check + button {
+    padding-left: 6px;
+}
+
+.rv-file .fs {
+    width: auto;
+    height: auto;
+    padding: 1px 3px;
+    border-radius: 4px;
+    font-size: 0.679rem;
+}
+
+.rv-cmts {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+    font-size: 0.75rem;
+    color: var(--accent-text);
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-more {
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 6px;
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+/* ---- The diff ---- */
+
+.rv-body {
+    padding-top: 0;
+}
+
+.review .diff {
+    border-radius: 10px;
+    margin-bottom: 10px;
+}
+
+.review .diff-scroll {
+    max-height: none;
+}
+
+.rv-empty {
+    padding: 36px 16px;
+    text-align: center;
+    color: var(--fg-3);
+    line-height: 1.55;
+}
+
+.rv-empty .link-btn {
+    font-size: inherit;
+}
+
+.rv-note {
+    margin: 2px 2px 8px;
+    color: var(--fg-3);
+    font-size: 0.857rem;
+    line-height: 1.5;
+}
+
+/* A turn's snapshot that's incomplete, and git's notes. */
+.rv-warn {
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--warn-bg);
+    color: var(--fg-2);
+    font-size: 0.857rem;
+    line-height: 1.45;
+}
+
+/* The branch's pull request, when it has one (PublishStatus); "unavailable" stays quiet. */
+.rv-pr .review-note {
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 0.857rem;
+    line-height: 1.45;
+    color: var(--fg-3);
+    background: color-mix(in srgb, var(--hover) 60%, transparent);
+    overflow-wrap: anywhere;
+}
+
+.rv-pr .review-note:has(.link-btn) {
+    background: color-mix(in srgb, var(--ok) 9%, transparent);
+}
+
+.rv-pr .review-note .link-btn {
+    display: inline;
+    color: var(--fg);
+    font-size: inherit;
+    font-weight: 600;
+    text-align: left;
+}
+
+/* ---- Comments on lines (blocks/DiffComments), as the mockup's boxes under the line ---- */
+
+.review .dc-slot {
+    gap: 6px;
+    padding: 6px 10px 8px 52px;
+    background: transparent;
+    border-block: 0;
+}
+
+.review .dc-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 4px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--sheet-2);
+    box-shadow: 0 0 0 0.5px var(--line);
+    font-size: 0.893rem;
+    line-height: 1.45;
+}
+
+.review .dc-card.outdated {
+    box-shadow: 0 0 0 0.5px var(--line), inset 2px 0 0 var(--fg-4);
+}
+
+.review .dc-body {
+    display: contents;
+}
+
+.review .dc-icon {
+    grid-column: 1;
+    grid-row: 1;
+    display: inline-grid;
+    margin: 0;
+    color: var(--fg-3);
+}
+
+.review .dc-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+.review .dc-meta {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 6px;
+    font-size: 0.821rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.review .dc-label {
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.review .dc-tag {
+    background: var(--warn-bg);
+    color: var(--warn);
+    font-weight: 600;
+}
+
+.review .dc-tools {
+    grid-column: 3;
+    grid-row: 1;
+    margin: -4px -6px -4px 0;
+}
+
+.review .dc-tools .hb {
+    border-radius: var(--pill);
+}
+
+.review .dc-text {
+    grid-column: 1 / -1;
+    color: var(--fg);
+}
+
+.review .dc-snippet {
+    grid-column: 1 / -1;
+    margin: 2px 0 0;
+    border-radius: 8px;
+    background: var(--sheet);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.review .dc-box {
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--sheet-2);
+    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+.review .dc-input {
+    min-height: 56px;
+    padding: 8px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--sheet);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    font-size: 0.893rem;
+    line-height: 1.45;
+}
+
+.review .dc-input:focus {
+    border: 0;
+    box-shadow: inset 0 0 0 0.5px var(--line), 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.review .dc-actions {
+    justify-content: flex-end;
+}
+
+.review .dc-hint {
+    font-size: 0.786rem;
+    color: var(--fg-3);
+}
+
+.review .dc-outdated {
+    padding: 8px 10px;
+    background: transparent;
+    border-bottom: 0.5px solid var(--line);
+}
+
+.review .dc-outdated-head {
+    font-size: 0.821rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+/* ---- Narrow (a floating reader, 1024px windows and down) ---- */
+
+@container review (width < 460px) {
+    .rv-stat {
+        display: none;
+    }
+
+    .rv-h {
+        gap: 4px;
+    }
+
+    .rv-h .segmented.seg-sm button {
+        padding: 0 7px;
+    }
+
+    .review .dc-slot {
+        padding-left: 10px;
+    }
+
+    .dc-hint {
+        display: none;
+    }
+}
+
+@container review (width < 360px) {
+    .rv-h .nm span {
+        display: none;
+    }
+}

@@ -1,106 +1,393 @@
-/* ---- The panel: the session's details, in the sheet's inspector column ---- */
+/* ---- The side panel (RightPanel), in the sheet's inspector column ----
+   design/glass "Inspector": a segmented Changes | Plan header, the pane under it,
+   what's live under either, Commit and Push at the foot. The column itself
+   (docked or floating, its resizer) is shell.css's. The diff reader is review.css. */
 
 .panel {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    font-size: 0.929rem;
+    container: insp / inline-size;
 }
 
-.panel-scroll {
+/* ---- Shared by the panel and the diff reader ---- */
+
+.insp-h {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 52px;
+    padding: 9px 10px 6px;
+    flex: none;
+    min-width: 0;
+}
+
+.insp-h .segmented {
     flex: 1;
-    overflow-y: auto;
+    min-width: 0;
+}
+
+.insp-h .segmented button {
+    flex: 1;
+    min-width: 0;
+}
+
+/* A count in a segment ("Changes 3", "Plan 2/3"). */
+.segmented .ct {
+    font-size: 0.786rem;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.segmented .ct-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warn);
+    flex: none;
+}
+
+.insp-body {
+    flex: 1;
+    overflow: auto;
+    padding: 4px 10px 10px;
     min-height: 0;
 }
 
-.sec {
-    padding: 8px 8px 10px;
-    border-top: 1px solid var(--hairline);
+.pane {
+    animation: insp-fade 260ms var(--ease);
 }
 
-.sec:first-child {
-    border-top: 0;
+@keyframes insp-fade {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+}
+
+.insp-foot {
+    display: flex;
+    gap: 8px;
+    padding: 10px;
+    flex: none;
+    border-top: 0.5px solid var(--line);
+}
+
+.insp-foot > .grow {
+    display: flex;
+    min-width: 0;
+}
+
+.insp-foot .btn {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Controls in the inspector are pills, per the mockup's .btn. */
+.insp .btn {
+    height: 30px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: var(--pill);
+    font-size: 0.929rem;
+    font-weight: 600;
+    transition: transform 160ms var(--ease), filter 140ms, opacity 140ms, background 140ms, color 140ms;
+}
+
+.insp .btn:active:not(:disabled) {
+    transform: scale(0.96);
+}
+
+.insp .btn.sm {
+    height: 26px;
+    padding: 0 11px;
+    font-size: 0.857rem;
+}
+
+.insp .btn.ghost,
+.insp .btn.secondary {
+    color: var(--fg-2);
+    background: var(--ctl-strong);
+    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke), 0 1px 1px var(--line);
+}
+
+.insp .btn.ghost:hover:not(:disabled),
+.insp .btn.secondary:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--ctl-strong);
+}
+
+.insp .btn.primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+    box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.insp .btn.primary:hover:not(:disabled) {
+    background: var(--accent);
+    filter: brightness(1.06);
+}
+
+.insp .btn:disabled {
+    opacity: 0.45;
+}
+
+.insp .btn svg {
+    flex: none;
+}
+
+/* git status's letter, as a small tinted square. */
+.fs {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    font: 700 0.714rem/1 var(--font-ui);
+    color: var(--warn);
+    background: var(--warn-bg);
+}
+
+.fs.added,
+.fs.untracked {
+    color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 13%, transparent);
+}
+
+.fs.deleted {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.fs.renamed,
+.fs.typechange {
+    color: var(--accent-text);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Nothing to show: a glyph, a line, a sentence. */
+.blank {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 40px 16px;
+    text-align: center;
+    color: var(--fg-3);
+    line-height: 1.5;
+}
+
+.blank .ic {
+    color: var(--fg-4);
+    margin-bottom: 8px;
+}
+
+.blank b {
+    color: var(--fg-2);
+    font-weight: 600;
+}
+
+.blank .link-btn {
+    margin-top: 8px;
+}
+
+/* ---- Changes ---- */
+
+.sum {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 10px 8px 12px;
+    min-width: 0;
+}
+
+.sum b {
+    font-size: 1.571rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+}
+
+.sum .add {
+    color: var(--add-fg);
+}
+
+.sum .del {
+    color: var(--del-fg);
+}
+
+.sum > span {
+    color: var(--fg-3);
+    white-space: nowrap;
+}
+
+.sum .btn {
+    align-self: center;
+}
+
+.file {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px;
+    border-radius: 10px;
+    text-align: left;
+    transition: background 140ms;
+}
+
+.file:hover {
+    background: var(--hover);
+}
+
+.file:active {
+    background: var(--press);
+}
+
+.file .nm {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.file .nm b {
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.file .nm span {
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.file .stat {
+    font: 500 0.857rem/1 var(--font-ui);
+    font-variant-numeric: tabular-nums;
+}
+
+.file-more {
+    padding: 8px;
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+/* ---- Plan ---- */
+
+.plan ul {
+    margin: 0;
+    padding: 0;
+}
+
+.plan li {
+    list-style: none;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr);
+    gap: 8px;
+    padding: 9px 8px;
+    border-radius: 10px;
+    line-height: 1.45;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+
+.plan .box {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+    transition: background 300ms;
+}
+
+.plan .done .box {
+    background: var(--ok);
+    box-shadow: none;
+    color: var(--accent-ink);
+}
+
+.plan .done > span:last-child {
+    color: var(--fg-3);
+    text-decoration: line-through;
+    text-decoration-color: var(--fg-4);
+}
+
+.plan .now .box {
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.plan .now .box::after {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+
+.plan .now > span:last-child {
+    font-weight: 500;
+}
+
+/* ---- Sections: the proposed plan, and what's live under either pane ---- */
+
+.sec {
+    padding: 2px 0 8px;
+}
+
+.insp-live:not(:empty) {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 0.5px solid var(--line);
 }
 
 .sh {
     display: flex;
     align-items: center;
     gap: 6px;
-    min-height: 32px;
-    padding: 0 6px;
-    margin-bottom: 2px;
-    font-size: 0.786rem;
-    font-weight: 500;
-    color: var(--fg-muted);
+    min-height: 30px;
+    padding: 4px 8px 2px;
+    font-size: 0.821rem;
+    font-weight: 600;
+    color: var(--fg-3);
 }
 
 .prow {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     width: 100%;
-    min-height: 32px;
-    padding: 0 10px;
-    border-radius: 10px;
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: var(--fg-prose);
     min-width: 0;
+    min-height: 36px;
+    padding: 0 8px;
+    border-radius: 10px;
+    color: var(--fg);
     text-align: left;
-    transition: background var(--dur-fast);
+    transition: background 140ms;
 }
 
 button.prow:hover,
-a.prow:hover,
 .prow.swap:hover {
-    background: color-mix(in srgb, var(--fg) 7%, transparent);
-    text-decoration: none;
+    background: var(--hover);
+}
+
+button.prow:active {
+    background: var(--press);
 }
 
 .prow > svg:first-child {
-    color: var(--fg-muted);
+    color: var(--fg-3);
     flex: none;
-}
-
-.prow .cell {
-    position: relative;
-    width: 32px;
-    height: 32px;
-    margin-right: -10px;
-    display: grid;
-    place-items: center;
-    flex: none;
-    color: var(--fg-muted);
-    border-radius: 0 10px 10px 0;
-}
-
-.prow .cell::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 8px;
-    width: 1px;
-    height: 16px;
-    background: var(--hairline);
-}
-
-.prow .cell:hover {
-    color: var(--fg);
-    background: var(--bg-hover);
-}
-
-.prow.done {
-    color: color-mix(in srgb, var(--fg) 45%, transparent);
-}
-
-.prow.now {
-    color: var(--fg);
 }
 
 .prow .meta {
     margin-left: auto;
-    font-size: 0.786rem;
+    font-size: 0.821rem;
     font-weight: 500;
-    color: var(--fg-muted);
+    color: var(--fg-3);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     flex: none;
@@ -110,40 +397,35 @@ a.prow:hover,
     display: none;
 }
 
-.prow.swap:hover .meta {
+.prow.swap:hover .meta,
+.prow.swap:focus-within .meta {
     display: none;
 }
 
-.prow.swap:hover .act {
+.prow.swap:hover .act,
+.prow.swap:focus-within .act {
     display: grid;
 }
 
 .prow .act {
-    margin-right: -6px;
+    margin-right: -4px;
+    border-radius: var(--pill);
 }
 
 .prow .act.stop {
     color: var(--stop);
 }
 
-.prow .sub {
-    display: block;
-    font-size: 0.786rem;
-    font-weight: 400;
-    color: var(--fg-muted);
-    white-space: normal;
-    line-height: 1.35;
-    margin-top: 1px;
+.prow .meta.tone-warn {
+    color: var(--warn);
 }
 
-.prow.tall {
-    padding-top: 6px;
-    padding-bottom: 6px;
-    align-items: flex-start;
+.prow .meta.tone-err {
+    color: var(--danger);
 }
 
-.prow.tall > svg:first-child {
-    margin-top: 1px;
+.prow .meta.tone-ok {
+    color: var(--ok);
 }
 
 /* An agent's icon with its status dot. */
@@ -152,7 +434,7 @@ a.prow:hover,
     width: 16px;
     height: 16px;
     flex: none;
-    color: var(--fg-muted);
+    color: var(--fg-3);
 }
 
 .nd {
@@ -162,20 +444,20 @@ a.prow:hover,
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    box-shadow: 0 0 0 2px var(--bg-card);
-    background: var(--fg-faint);
+    box-shadow: 0 0 0 2px var(--insp-bg);
+    background: var(--fg-4);
 }
 
 .nd.st-running {
-    background: var(--link);
+    background: var(--accent);
 }
 
 .nd.st-waiting {
-    background: var(--warning);
+    background: var(--warn);
 }
 
 .nd.st-done {
-    background: var(--success);
+    background: var(--ok);
 }
 
 .nd.st-failed {
@@ -183,27 +465,26 @@ a.prow:hover,
 }
 
 .nd.st-stopped {
-    background: var(--fg-faint);
+    background: var(--fg-4);
 }
 
 .lt {
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: color-mix(in srgb, var(--fg) 88%, transparent);
+    color: var(--fg);
     line-height: 16px;
 }
 
+/* "Previous agents (3)": a fold with a rule to the chevron. */
 .divi {
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
     height: 32px;
-    padding: 0 10px 0 8px;
-    border-radius: 8px;
+    padding: 0 8px;
+    border-radius: 10px;
     font-size: 0.857rem;
     font-weight: 500;
-    color: color-mix(in srgb, var(--fg-muted) 80%, transparent);
+    color: var(--fg-3);
 }
 
 .divi:hover {
@@ -213,8 +494,8 @@ a.prow:hover,
 .divi i {
     flex: 1;
     min-width: 8px;
-    height: 1px;
-    background: var(--hairline);
+    height: 0.5px;
+    background: var(--line);
 }
 
 .divi .chev {
@@ -225,12 +506,17 @@ a.prow:hover,
     transform: rotate(90deg);
 }
 
+.divi-tag {
+    font-size: 0.75rem;
+    color: var(--danger);
+}
+
 .agent-row {
     position: relative;
 }
 
 .agent-row:hover {
-    background: color-mix(in srgb, var(--fg) 7%, transparent);
+    background: var(--hover);
 }
 
 .agent-hit {
@@ -248,29 +534,9 @@ a.prow:hover,
     pointer-events: none;
 }
 
-.todo-done {
-    color: var(--success) !important;
-}
-
-.todo-now {
-    color: var(--link) !important;
-}
-
-.todo-pending {
-    color: var(--fg-subtle) !important;
-}
-
 .shell-live {
     color: var(--shell) !important;
     animation: pulse 2s steps(6) infinite;
-}
-
-.prow .meta.tone-err {
-    color: var(--danger, var(--del));
-}
-
-.prow .meta.tone-ok {
-    color: var(--add);
 }
 
 .watch-live {
@@ -281,342 +547,55 @@ a.prow:hover,
     text-align: left;
     color: inherit;
     font-weight: inherit;
+    font-size: inherit;
     min-width: 0;
 }
 
 .shell-cmd {
     font-size: 0.857rem;
-    font-weight: 400;
 }
 
-.divi-tag {
-    font-size: 0.714rem;
+.mcp-spacer {
+    width: 16px;
+    flex: none;
 }
 
 .panel-error {
-    font-size: 0.786rem;
+    padding: 0 8px 6px 32px;
+    font-size: 0.821rem;
+    line-height: 1.4;
     color: var(--danger);
-    line-height: 1.35;
-    padding: 0 10px 6px 36px;
     overflow-wrap: anywhere;
 }
 
-/* ---- Review pane: the diff reader, in the sheet's inspector column (it widens it) ---- */
-
-.review {
-    position: relative;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
+/* The workspace menu's head: the project, and its branch. */
+.insp-ws {
     flex-direction: column;
-    container: review / inline-size;
-}
-
-.review-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: var(--header-h);
-    padding: 0 10px 0 16px;
-    flex: none;
-    border-bottom: 1px solid var(--hairline);
-}
-
-.review-title {
-    font-size: 1rem;
-    font-weight: 600;
-}
-
-/* Which changes: Git views, recorded turns or Harness's own edits. */
-.review-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    min-height: 38px;
-    padding: 4px 10px 4px 16px;
-    flex: none;
-    border-bottom: 1px solid var(--hairline);
+    align-items: flex-start;
+    gap: 2px;
     min-width: 0;
 }
 
-.review-turn {
-    height: 28px;
-    flex: 1 1 160px;
-    max-width: 280px;
-    font-size: 0.857rem;
-}
-
-.review-scope-note {
-    font-size: 0.857rem;
-    color: var(--fg-muted);
-}
-
-.review-branch {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    font-size: 0.857rem;
-    color: var(--fg-muted);
-}
-
-.review-branch > svg {
-    flex: none;
-}
-
-.review-branch .arrow {
-    flex: none;
-    color: var(--fg-subtle);
-}
-
-.review-branch .base-ctl {
-    max-width: 220px;
+.insp-ws > .truncate {
+    max-width: 100%;
     color: var(--fg);
 }
 
-.base-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    max-height: 280px;
-    overflow-y: auto;
-    padding: 6px;
-}
-
-.review-body {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-}
-
-.review-files {
-    width: 196px;
-    flex: none;
-    overflow-y: auto;
-    padding: 8px;
-    border-right: 1px solid var(--hairline);
-}
-
-.rf-row {
-    display: flex;
-    align-items: center;
-    border-radius: 8px;
-    min-width: 0;
-}
-
-.rf-row > span {
-    display: flex;
-    padding-left: 6px;
-    flex: none;
-}
-
-.rf-row.on {
-    background: var(--bg-active);
-}
-
-.rf {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 6px 8px;
-    border-radius: 8px;
-    min-width: 0;
-    text-align: left;
-}
-
-.rf:hover {
-    background: var(--bg-hover);
-}
-
-.rf.on {
-    background: var(--bg-active);
-}
-
-/* git status's letter for the file. */
-.rf-change {
-    flex: none;
-    width: 14px;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-align: center;
-    color: var(--warning);
-}
-
-.rf-change.added,
-.rf-change.untracked {
-    color: var(--success);
-}
-
-.rf-change.deleted {
-    color: var(--danger);
-}
-
-.rf-change.renamed,
-.rf-change.typechange {
-    color: var(--info);
-}
-
-.rf-more {
-    padding: 8px;
-    font-size: 0.786rem;
-    color: var(--fg-subtle);
-}
-
-.rf-comments {
+.insp-ws-br {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    flex: none;
-    font-size: 0.75rem;
-    color: var(--accent-text);
-    font-variant-numeric: tabular-nums;
-}
-
-.rf-text {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-width: 0;
-}
-
-.rf-name {
-    font-size: 0.857rem;
-    color: color-mix(in srgb, var(--fg) 85%, transparent);
-}
-
-.rf-dir {
-    font-size: 0.75rem;
-    color: var(--fg-subtle);
-}
-
-.rf-stat {
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 2px;
-}
-
-.review-count {
-    font-size: 0.857rem;
-    color: var(--fg-muted);
-}
-
-.file-tag {
-    flex: none;
-    padding: 0 5px;
-    border-radius: 4px;
-    font-size: 0.75rem;
+    gap: 4px;
+    max-width: 100%;
     font-weight: 500;
-    line-height: 16px;
+    color: var(--fg-3);
 }
 
-.file-tag.added {
-    color: var(--success);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 35%, transparent);
-}
-
-.file-tag.modified {
-    color: var(--fg-muted);
-    box-shadow: inset 0 0 0 1px var(--hairline);
-}
-
-.file-tag.deleted {
-    color: var(--danger);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent);
-}
-
-.review-diff .diff-scroll {
-    max-height: none;
-}
-
-.review-diff {
-    flex: 1;
-    min-width: 0;
-    overflow: auto;
-    padding: 12px 16px 24px;
-}
-
-/* Narrow, the files run along the top so the diff gets the full width. */
-@container review (width < 640px) {
-    .review-body {
-        flex-direction: column;
-    }
-
-    .review-files {
-        width: auto;
-        display: flex;
-        gap: 4px;
-        overflow: auto hidden;
-        border-right: none;
-        border-bottom: 1px solid var(--hairline);
-        scrollbar-width: none;
-    }
-
-    .rf-row {
-        flex: none;
-    }
-
-    .rf {
-        width: auto;
-        flex: none;
-        max-width: 220px;
-    }
-
-    .rf-dir {
-        display: none;
-    }
-
-    .rf-more {
-        flex: none;
-        align-self: center;
-    }
-
-    .rf-stat {
-        flex-direction: row;
-        gap: 6px;
-    }
-}
-
-.review-diff .diff {
-    border-radius: 10px;
-}
-
-.review-file-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 32px;
-    margin-bottom: 8px;
-    font-size: 0.857rem;
-    min-width: 0;
-}
-
-.review-file-head .path {
-    font-family: var(--font-mono);
-    color: var(--fg);
-}
-
-.review-empty {
-    padding: 32px 24px;
-    color: var(--fg-muted);
-    font-size: 0.929rem;
-    line-height: 1.55;
-    max-width: 420px;
-}
-
-.review-note {
-    padding: 10px 16px;
-    border-top: 1px solid var(--hairline);
-    font-size: 0.786rem;
-    color: var(--fg-subtle);
+.insp-ws-br svg {
     flex: none;
 }
 
-@container main (max-width: 560px) {
-    .review-files {
-        display: none;
+@media (prefers-reduced-motion: reduce) {
+    .pane {
+        animation: none;
     }
 }
-

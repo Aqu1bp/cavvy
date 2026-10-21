@@ -1,50 +1,51 @@
-// The session's side card: where it works (folder, branch, changes), and
-// only what's live besides: proposed plans, todos, running shells, secrets, MCP servers
-// that failed or ask for approval, and its sub-agents. Empty sections aren't drawn.
+// The side panel, in the sheet's inspector column: Changes | Plan at the top
+// (the folder's changes, each opening the diff reader; the proposed plan and the
+// agent's to-do list), what's live under either (running shells, watched pull
+// requests, monitors, secrets, MCP servers that failed or ask for approval,
+// sub-agents), and Commit and Push at the foot. Empty sections aren't drawn.
 
-import { createMemo, createResource, createSignal, For, Show } from "solid-js";
-import { ArrowUpLeft, Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitPullRequestArrow, KeyRound, Plug, Radar, Save, SquarePen, Terminal, X } from "lucide-solid";
-import type { AgentRun, PlanLink } from "@shared/protocol";
+import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
+import { ArrowUpLeft, Bot, Check, ChevronRight, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitPullRequestArrow, KeyRound, Map as MapIcon, Plug, Radar, Save, SquarePen, Terminal, X } from "lucide-solid";
+import type { AgentRun, GitFileDiff, PlanLink } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { activate, app, reportError, rpc, toast } from "../state/app";
-import { setPlanDialog } from "../state/ui";
+import { setCommitRequest, setMcpOpen, setPlanDialog } from "../state/ui";
 import { newSession, openAgents, openReview, stopAgent } from "../state/actions";
-import { setMcpOpen } from "../state/ui";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
-import { useChanges, useGitChanges } from "../state/changes";
-import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
+import { commitUnavailable, sessionReadReady, useGitChanges } from "../state/changes";
+import { canReveal, copyText, openExternal, os, revealPath } from "../lib/platform";
 import { duration, plural, tildify } from "../lib/format";
 import { now } from "../lib/clock";
+import { CHANGE, dirOf, nameOf, type Change, type InspectorPane } from "../lib/inspector";
+import { shortcut } from "../state/keybindings";
 import { Menu } from "./ui/Menu";
+import { Segmented, Spinner } from "./ui/bits";
+import { PublishDialog } from "./PublishDialog";
 
 const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
 const ran = (a: AgentRun) => duration((a.endedAt ?? (live(a) ? now() : a.startedAt)) - a.startedAt);
 
-function Workspace(p: { handle: SessionHandle }) {
-    let row: HTMLButtonElement | undefined;
+/** The folder the session works in: its actions, from the header's button (the path on hover). */
+function WorkspaceButton(p: { handle: SessionHandle }) {
+    let btn: HTMLButtonElement | undefined;
     const [menu, setMenu] = createSignal(false);
     const st = () => p.handle.view.state;
-    // Git's count of what changed in the folder; Harness's own record outside a repository.
-    const [git] = useGitChanges(() => p.handle);
-    const [edits] = useChanges(() => p.handle);
-    const changes = () => {
-        const g = git();
-        if (!g) return undefined;
-        if (g.repo) return { files: g.files.length + g.more, atLeast: g.moreAtLeast, added: g.added, removed: g.removed, error: g.error };
-        const e = edits();
-        return e && { files: e.files.length, atLeast: false, added: e.added, removed: e.removed, error: undefined };
-    };
     const close = () => setMenu(false);
     return (
-        <div class="sec">
-            <button ref={row} class="prow" aria-haspopup="menu" aria-expanded={menu()} title={tildify(st().cwd, app.hello?.homeDir)} onClick={() => setMenu(!menu())}>
+        <>
+            <button ref={btn} class="hb" aria-label="Workspace actions" aria-haspopup="menu" aria-expanded={menu()} title={tildify(st().cwd, app.hello?.homeDir)} onClick={() => setMenu(!menu())}>
                 <FolderGit2 size={16} />
-                <span class="truncate grow">{st().projectName}</span>
-                <span class="cell" aria-hidden="true">
-                    <ChevronDown size={16} />
-                </span>
             </button>
-            <Menu label="Workspace actions" open={menu()} anchor={() => row} onClose={close} width={232}>
+            <Menu label="Workspace actions" open={menu()} anchor={() => btn} onClose={close} align="end" width={244}>
+                <div class="menu-head insp-ws" title={tildify(st().cwd, app.hello?.homeDir)}>
+                    <span class="truncate">{st().projectName}</span>
+                    <Show when={st().branch}>
+                        <span class="insp-ws-br truncate" title="Git branch">
+                            <GitBranch size={12} />
+                            <span class="truncate">{st().branch}</span>
+                        </span>
+                    </Show>
+                </div>
                 <Show when={canReveal}>
                     <button role="menuitem" class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
                         <FolderOpen size={14} /> Reveal in Finder
@@ -60,27 +61,118 @@ function Workspace(p: { handle: SessionHandle }) {
                     <Plug size={14} /> MCP servers
                 </button>
             </Menu>
-            <Show when={st().branch}>
-                <span class="prow lock" title="Git branch">
-                    <GitBranch size={16} />
-                    <span class="truncate">{st().branch}</span>
+        </>
+    );
+}
+
+type Listed = { path: string; change: Change; added: number; removed: number; kind?: GitFileDiff["kind"]; from?: string };
+
+/**
+ * What changed in the folder: Git's uncommitted changes, whoever made them, or Harness's own
+ * record of its edits outside a repository. The files open the diff reader.
+ */
+function useFolderChanges(handle: () => SessionHandle) {
+    const [git] = useGitChanges(handle);
+    // Only asked for outside a repository, where git has nothing to say.
+    const [edits] = createResource(
+        () => git()?.repo === false && sessionReadReady(handle()) && { id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy },
+        ({ id }) => rpc.call("session.changes", { id }).catch(() => undefined),
+    );
+    return createMemo(() => {
+        const g = git();
+        if (!g) return undefined;
+        if (g.repo) {
+            const files: Listed[] = g.files.map((f) => ({ path: f.path, change: f.change, added: f.added, removed: f.removed, kind: f.kind, from: f.from }));
+            return { repo: true, files, count: g.files.length + g.more, more: g.more, atLeast: Boolean(g.moreAtLeast), added: g.added, removed: g.removed, error: g.error };
+        }
+        const e = edits();
+        if (!e) return undefined;
+        const files: Listed[] = e.files.map((f) => ({ path: f.path, change: f.status, added: f.added, removed: f.removed }));
+        return { repo: false, files, count: files.length, more: 0, atLeast: false, added: e.added, removed: e.removed, error: undefined as string | undefined, untracked: e.tracked === false };
+    });
+}
+
+function FileRow(p: { f: Listed; onOpen: () => void }) {
+    const c = () => CHANGE[p.f.change];
+    return (
+        <button class="file" title={`Review ${p.f.from ? `${p.f.from} → ${p.f.path}` : p.f.path}`} onClick={() => p.onOpen()}>
+            <span class={`fs ${p.f.change}`} title={c().label} aria-label={c().label}>
+                {c().letter}
+            </span>
+            <span class="nm">
+                <b class="truncate">{nameOf(p.f.path)}</b>
+                <Show when={dirOf(p.f.path)}>
+                    <span class="truncate">{dirOf(p.f.path)}</span>
+                </Show>
+            </span>
+            <Show when={p.f.added || p.f.removed}>
+                <span class="stat">
+                    <Show when={p.f.added || !p.f.removed}>
+                        <span class="add">+{p.f.added}</span>
+                    </Show>
+                    <Show when={p.f.removed}>
+                        <span class="del">−{p.f.removed}</span>
+                    </Show>
                 </span>
             </Show>
-            <button class="prow" title="Review changes" onClick={() => openReview()}>
-                <FileDiff size={16} />
-                <span class="grow">Changes</span>
-                <Show when={changes()?.files} fallback={<span class="meta" title={changes()?.error}>{changes()?.error ? "Unavailable" : changes() ? "None yet" : ""}</span>}>
-                    <span class="meta" title={plural(changes()!.files, "changed file")}>
-                        {changes()!.files}
-                        {changes()!.atLeast ? "+" : ""}
-                    </span>
-                    <span class="stat">
-                        <span class="add">+{changes()!.added}</span>
-                        <span class="del">−{changes()!.removed}</span>
-                    </span>
+        </button>
+    );
+}
+
+/** The Changes pane: the counts, then each file; a file opens the diff reader on it. */
+function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges>> }) {
+    const c = () => p.changes;
+    // Git's uncommitted view, or (outside a repository) Harness's own record.
+    const open = (path?: string) => openReview(path, c()?.repo === false ? "harness" : "uncommitted");
+    return (
+        <Show when={c()} fallback={<div class="pane blank" aria-busy="true"><Spinner size={16} /></div>}>
+            {(ch) => (
+                <Show
+                    when={ch().count}
+                    fallback={
+                        <div class="pane blank">
+                            <FileDiff size={22} class="ic" />
+                            <Show
+                                when={!ch().error}
+                                fallback={
+                                    <>
+                                        <b>Changes unavailable</b>
+                                        <span class="selectable">{ch().error}</span>
+                                    </>
+                                }
+                            >
+                                <b>No changes yet</b>
+                                {ch().repo ? "The working tree matches the last commit." : ch().untracked ? "This session isn't saved yet." : "Files Harness edits in this session show up here."}
+                            </Show>
+                            <button class="link-btn" onClick={() => open()}>
+                                {ch().repo ? "Review the branch or a turn" : "Open the diff reader"}
+                            </button>
+                        </div>
+                    }
+                >
+                    <div class="pane">
+                        <div class="sum">
+                            <b class="add">+{ch().added}</b>
+                            <b class="del">−{ch().removed}</b>
+                            <span class="grow" title={plural(ch().count, "changed file")}>
+                                in {ch().count.toLocaleString()}
+                                {ch().atLeast ? "+" : ""} {ch().count === 1 ? "file" : "files"}
+                            </span>
+                            <button class="btn ghost sm" title="Open the diff reader" onClick={() => open()}>
+                                Review
+                            </button>
+                        </div>
+                        <For each={ch().files}>{(f) => <FileRow f={f} onOpen={() => open(f.path)} />}</For>
+                        <Show when={ch().more}>
+                            <div class="file-more">
+                                {ch().more.toLocaleString()}
+                                {ch().atLeast ? "+" : ""} more not shown
+                            </div>
+                        </Show>
+                    </div>
                 </Show>
-            </button>
-        </div>
+            )}
+        </Show>
     );
 }
 
@@ -155,27 +247,31 @@ function ProposedPlan(p: { handle: SessionHandle }) {
     );
 }
 
-function Plan(p: { handle: SessionHandle }) {
+function Plan(p: { handle: SessionHandle; heading?: boolean }) {
     const todos = () => p.handle.view.state.todos;
     const done = () => todos().filter((t) => t.status === "completed").length;
     return (
         <Show when={todos().length}>
-            <div class="sec">
-                <div class="sh">
-                    Plan · {done()} of {todos().length}
-                </div>
-                <For each={todos()}>
-                    {(t) => (
-                        <span class={`prow lock ${t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : ""}`}>
-                            <Show when={t.status === "completed"} fallback={<Show when={t.status === "in_progress"} fallback={<Circle size={16} class="todo-pending" />}><CircleDashed size={16} class="todo-now" /></Show>}>
-                                <CircleCheck size={16} class="todo-done" />
-                            </Show>
-                            <span class="truncate" title={t.content}>
-                                {t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}
-                            </span>
-                        </span>
-                    )}
-                </For>
+            <div class="sec plan">
+                <Show when={p.heading}>
+                    <div class="sh">
+                        Steps · {done()} of {todos().length}
+                    </div>
+                </Show>
+                <ul aria-label={`Plan: ${done()} of ${todos().length} done`}>
+                    <For each={todos()}>
+                        {(t) => (
+                            <li class={t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : ""} title={t.content}>
+                                <span class="box" aria-label={t.status === "completed" ? "Done" : t.status === "in_progress" ? "In progress" : "To do"}>
+                                    <Show when={t.status === "completed"}>
+                                        <Check size={11} stroke-width={3} />
+                                    </Show>
+                                </span>
+                                <span class="selectable">{t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}</span>
+                            </li>
+                        )}
+                    </For>
+                </ul>
             </div>
         </Show>
     );
@@ -398,20 +494,116 @@ function Lineage(p: { handle: SessionHandle }) {
     );
 }
 
+/** Which pane the side panel shows; kept while the app runs, like the reader's layout. */
+const [pane, setPane] = createSignal<InspectorPane>("changes");
+
+/** Commit and push, at the panel's foot (the diff reader has its own, for the files checked there). */
+function PanelFoot(p: { handle: SessionHandle; changes: ReturnType<ReturnType<typeof useFolderChanges>> }) {
+    const [publish, setPublish] = createSignal<string>();
+    createEffect(on(() => p.handle.id, () => setPublish(undefined)));
+    const paths = () => (p.changes?.files ?? []).filter((f) => f.kind !== "folder" && f.kind !== "repo").map((f) => f.path);
+    const commitOff = () => commitUnavailable(p.handle) ?? (p.changes?.error ? "Refresh the changes before committing." : !paths().length ? "Nothing to commit." : undefined);
+    return (
+        <Show when={p.changes?.repo}>
+            <div class="insp-foot">
+                <span class="grow" title={commitOff() ?? "Commit the changed files"}>
+                    <button class="btn ghost" disabled={Boolean(commitOff())} onClick={() => setCommitRequest({ id: p.handle.id, paths: paths() })}>
+                        <GitCommitHorizontal size={14} /> Commit…
+                    </button>
+                </span>
+                <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
+                    <button class="btn primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublish(p.handle.id)}>
+                        <GitPullRequestArrow size={14} /> Push…
+                    </button>
+                </span>
+            </div>
+            <PublishDialog id={publish()} onClose={() => setPublish(undefined)} onPublished={() => {}} />
+        </Show>
+    );
+}
+
 export function RightPanel(p: { handle: SessionHandle }) {
+    const changes = useFolderChanges(() => p.handle);
+    const st = () => p.handle.view.state;
+    const todos = () => st().todos;
+    const hasPlan = () => Boolean(st().plan || st().planLinks?.length);
+    const planWaits = () => st().interactions.some((i) => i.kind === "plan");
+    const cycle = () => {
+        const k = shortcut("chat:cycleMode");
+        return k && (os === "macos" ? k.replaceAll("+", "") : k);
+    };
     return (
         <aside class="panel" aria-label="Session details">
-            <div class="panel-scroll">
-                <Workspace handle={p.handle} />
-                <ProposedPlan handle={p.handle} />
-                <Plan handle={p.handle} />
-                <Shells handle={p.handle} />
-                <Watches handle={p.handle} />
-                <Monitors handle={p.handle} />
-                <Secrets handle={p.handle} />
-                <Mcp handle={p.handle} />
-                <Lineage handle={p.handle} />
+            <div class="insp-h" data-tauri-drag-region>
+                <Segmented
+                    label="Side panel"
+                    value={pane()}
+                    onChange={setPane}
+                    options={[
+                        {
+                            value: "changes",
+                            label: (
+                                <>
+                                    Changes
+                                    <Show when={changes()?.count}>
+                                        <span class="ct">
+                                            {changes()!.count.toLocaleString()}
+                                            {changes()!.atLeast ? "+" : ""}
+                                        </span>
+                                    </Show>
+                                </>
+                            ),
+                        },
+                        {
+                            value: "plan",
+                            label: (
+                                <>
+                                    Plan
+                                    <Show when={todos().length}>
+                                        <span class="ct">
+                                            {todos().filter((t) => t.status === "completed").length}/{todos().length}
+                                        </span>
+                                    </Show>
+                                    <Show when={planWaits()}>
+                                        <span class="ct-dot" title="The plan needs you" />
+                                    </Show>
+                                </>
+                            ),
+                            title: planWaits() ? "The plan is waiting for your answer" : undefined,
+                        },
+                    ]}
+                />
+                <WorkspaceButton handle={p.handle} />
             </div>
+            <div class="insp-body panel-scroll">
+                <Show when={pane() === "plan"} fallback={<ChangesPane changes={changes()} />}>
+                    <Show
+                        when={hasPlan() || todos().length}
+                        fallback={
+                            <div class="pane blank">
+                                <MapIcon size={22} class="ic" />
+                                <b>No plan yet</b>
+                                Switch to Plan mode{cycle() ? ` (${cycle()})` : ""} and the agent lays out the steps before changing anything. Its to-do list shows here as it works.
+                            </div>
+                        }
+                    >
+                        <div class="pane">
+                            <ProposedPlan handle={p.handle} />
+                            <Plan handle={p.handle} heading={hasPlan()} />
+                        </div>
+                    </Show>
+                </Show>
+                {/* What's live, whichever pane is showing. */}
+                <div class="insp-live">
+                    <Shells handle={p.handle} />
+                    <Watches handle={p.handle} />
+                    <Monitors handle={p.handle} />
+                    <Secrets handle={p.handle} />
+                    <Mcp handle={p.handle} />
+                    <Lineage handle={p.handle} />
+                </div>
+            </div>
+            <PanelFoot handle={p.handle} changes={changes()} />
         </aside>
     );
 }
