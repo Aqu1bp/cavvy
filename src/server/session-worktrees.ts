@@ -48,10 +48,11 @@ async function gitDir(cwd: string, flags: string[]): Promise<string | undefined>
  * locked worktree stays registered whatever its folder becomes (a link to another repository,
  * say), so the folder must also be that worktree to Git: its common Git dir the session's, and
  * its own Git dir the common dir (the main worktree) or the entry in <common>/worktrees/ that
- * names this folder. What comes back is the folder checked, links resolved, so it can't be
- * swapped for another afterwards.
+ * names this folder; and the work tree Git uses there that folder (core.worktree, in the
+ * worktree's config or the repository's, can move it). What comes back is the folder checked,
+ * links resolved, and its Git dir, so a read can be pinned to them (gitChanges' `pin`).
  */
-export async function sessionWorktree(cwd: string, wanted: string): Promise<WorktreeInfo & { real: string }> {
+export async function sessionWorktree(cwd: string, wanted: string): Promise<WorktreeInfo & { real: string; gitDir: string }> {
     const asked = resolve(cwd, wanted);
     const want = canonical(asked);
     const all = listed(cwd);
@@ -60,14 +61,19 @@ export async function sessionWorktree(cwd: string, wanted: string): Promise<Work
     const missing = () => new RpcError(`The worktree ${wanted} is missing.`, "not_found");
     if (!record) throw new RpcError(`${wanted} isn't one of this repository's worktrees.`, "not_found");
     if (!record.exists || record.prunable !== undefined) throw missing();
-    const [expected, common, own] = await Promise.all([gitDir(cwd, ["--path-format=absolute", "--git-common-dir"]), gitDir(want, ["--path-format=absolute", "--git-common-dir"]), gitDir(want, ["--absolute-git-dir"])]);
-    if (!expected || common !== expected || !own) throw missing();
+    const [expected, common, own, top] = await Promise.all([
+        gitDir(cwd, ["--path-format=absolute", "--git-common-dir"]),
+        gitDir(want, ["--path-format=absolute", "--git-common-dir"]),
+        gitDir(want, ["--absolute-git-dir"]),
+        gitDir(want, ["--show-toplevel"]),
+    ]);
+    if (!expected || common !== expected || !own || top !== want) throw missing();
     // Git lists a linked worktree's folder from its entry's gitdir file: the entry found in the folder must be that one.
     if (record.main ? own !== expected : dirname(own) !== join(expected, "worktrees") || backLink(own) !== record.path) throw missing();
-    return { ...record, real: want };
+    return { ...record, real: want, gitDir: own };
 }
 
-/** The folder a linked worktree's entry in <common>/worktrees/ names (its gitdir file holds <folder>/.git), as git lists it. */
+/** The folder a linked worktree's entry in <common>/worktrees/ names (its gitdir file holds <folder>/.git). */
 function backLink(entry: string): string | undefined {
     try {
         const file = readFileSync(join(entry, "gitdir"), "utf-8").replace(/\r?\n$/, "");

@@ -2908,7 +2908,7 @@ export class Runtime {
             if (!w.current) {
                 // Turns are snapshots of the session's own folder.
                 if (rest.scope === "turn" || rest.scope === "last-turn") throw new RpcError("Turns are recorded for this session's own folder only.", "invalid");
-                return gitChanges(w.real, { scope: rest.scope, base: rest.base, path: rest.path });
+                return gitChanges(w.real, { scope: rest.scope, base: rest.base, path: rest.path }, undefined, { gitDir: w.gitDir });
             }
         }
         return gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));

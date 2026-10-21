@@ -11,6 +11,7 @@ const iso = isolate();
 const { Engine } = await import("../src/server/engine");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 const { committerTime } = await import("../src/server/session-worktrees");
+const { gitChanges } = await import("../src/server/git-changes");
 import type { AgentRun, GitChangesInfo, SessionSnapshot, SessionWorktreeInfo } from "../src/server/protocol";
 afterAll(() => iso.cleanup());
 
@@ -154,6 +155,43 @@ describe("session.gitChanges with a worktree", () => {
             await expect(call("session.gitChanges", { scope: "uncommitted", worktree: linked })).rejects.toMatchObject({ code: "not_found" });
             // The real one still reads.
             expect((await call<GitChangesInfo>("session.gitChanges", { scope: "uncommitted", worktree: second })).files.map((f) => f.path)).toEqual(["second.txt"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a worktree whose Git config moves its work tree elsewhere is refused, from its own config or the repository's", async () => {
+        const { main, linked, engine, call } = await setup("moved");
+        const other = repo("moved other repo");
+        writeFileSync(join(other, "secret.txt"), "not this repository's\n");
+        try {
+            git(main, "config", "extensions.worktreeConfig", "true");
+            git(linked, "config", "--worktree", "core.worktree", other);
+            await expect(call("session.gitChanges", { scope: "uncommitted", worktree: linked })).rejects.toMatchObject({ code: "not_found" });
+            git(linked, "config", "--worktree", "--unset", "core.worktree");
+            git(main, "config", "core.worktree", other);
+            await expect(call("session.gitChanges", { scope: "uncommitted", worktree: linked })).rejects.toMatchObject({ code: "not_found" });
+            git(main, "config", "--unset", "core.worktree");
+            expect((await call<GitChangesInfo>("session.gitChanges", { scope: "uncommitted", worktree: linked })).files.map((f) => f.path)).toEqual(["readme.txt"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a pinned read stays in the worktree checked, whatever its config says later", async () => {
+        const { main, linked, engine } = await setup("pinned");
+        const other = repo("pinned other repo");
+        writeFileSync(join(other, "secret.txt"), "not this repository's\n");
+        try {
+            const gitDir = git(linked, "rev-parse", "--absolute-git-dir");
+            // Moved after the check: the read still reads the folder checked, with its own index.
+            git(main, "config", "extensions.worktreeConfig", "true");
+            git(linked, "config", "--worktree", "core.worktree", other);
+            // Unpinned, git follows it into the other repository.
+            expect((await gitChanges(linked, { scope: "uncommitted" })).files.map((f) => f.path)).toEqual(["../pinned other repo/secret.txt"]);
+            const read = await gitChanges(linked, { scope: "uncommitted" }, undefined, { gitDir });
+            expect(read.files.map((f) => f.path)).toEqual(["readme.txt"]);
+            expect(read.head?.branch).toBe("agent/work");
         } finally {
             await engine.stop();
         }
