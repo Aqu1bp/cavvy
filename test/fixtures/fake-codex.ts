@@ -38,6 +38,7 @@
 // FAKE_PERMS          the permissions the "perms" scenario asks for (JSON)
 // FAKE_THREAD_TIER     the service tier a resumed thread is already on (e.g. priority from an earlier turn);
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
+// FAKE_CODEX_SKILL    a skill of Codex's own that skills/list reports; FAKE_NO_SKILLS=1: an older Codex, without skills/extraRoots/set
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
@@ -64,7 +65,7 @@
 // thread/resume (with the earlier turn's id) and when a compaction starts.
 
 import { createHash } from "crypto";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
 
@@ -495,6 +496,22 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     finish("completed");
 }
 
+/** Like Codex: each extra root's <folder>/SKILL.md, named by its frontmatter, at its real path; and one of its own (FAKE_CODEX_SKILL). */
+let extraRoots: string[] = [];
+function listSkills() {
+    const out: { name: string; description: string; path: string; scope: string; enabled: boolean }[] = [];
+    if (process.env.FAKE_CODEX_SKILL) out.push({ name: process.env.FAKE_CODEX_SKILL, description: "Codex's own", path: `/codex/skills/${process.env.FAKE_CODEX_SKILL}/SKILL.md`, scope: "system", enabled: true });
+    for (const root of extraRoots) {
+        for (const folder of existsSync(root) ? readdirSync(root) : []) {
+            const file = join(root, folder, "SKILL.md");
+            if (!existsSync(file)) continue;
+            const name = readFileSync(file, "utf-8").match(/^name:\s*(\S+)/m)?.[1] ?? folder;
+            out.push({ name, description: "", path: realpathSync(file), scope: "user", enabled: true });
+        }
+    }
+    return out;
+}
+
 async function handle(m: any) {
     log({ received: m });
     if (m.method === undefined) {
@@ -593,6 +610,13 @@ async function handle(m: any) {
             void runTurn(p.threadId, turnId, p);
             return;
         }
+        case "skills/extraRoots/set":
+            // A Codex from before skills/extraRoots/set (FAKE_NO_SKILLS=1).
+            if (process.env.FAKE_NO_SKILLS === "1") return fail(`unknown method ${m.method}`);
+            extraRoots = p.extraRoots;
+            return reply({});
+        case "skills/list":
+            return reply({ data: [{ cwd: p.cwds?.[0] ?? cwd, skills: listSkills(), errors: [] }] });
         case "turn/interrupt":
             if (current) {
                 current.interrupted = true;

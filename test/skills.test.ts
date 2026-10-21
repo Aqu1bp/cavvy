@@ -329,15 +329,31 @@ describe("in the TUI", () => {
         expect(restored).toHaveLength(1);
     });
 
-    test("on Claude Code's first turn, a skill in its own folders goes to it; one only the harness has is expanded", async () => {
+    test("on Claude Code and Codex, every skill's /name goes to the CLI as typed (the backend runs it natively)", async () => {
         skill(claudeSkills, "cc-skill", "description: Claude Code has it", "CC body");
         skill(userSkills, "harness-skill", "description: Only here", "Harness only");
-        const { app, turns } = testApp();
-        app.model = { id: "default", provider: "claude-code" } as any;
-        await runCommand(app, "/cc-skill a");
-        await runCommand(app, "/harness-skill b");
-        expect(turns[0]!.text).toBe("/cc-skill a");
-        expect(turns[1]!.text).toContain("Harness only");
+        for (const provider of ["claude-code", "codex"]) {
+            const { app, turns } = testApp();
+            app.model = { id: "default", provider } as any;
+            await runCommand(app, "/cc-skill a");
+            await runCommand(app, "/harness-skill b");
+            expect(turns.map((t) => t.text)).toEqual(["/cc-skill a", "/harness-skill b"]);
+        }
+    });
+
+    test("on Codex, its own skills are in the $ menu once it has listed them", () => {
+        skill(userSkills, "deploy", "description: Ship it", "Deploy.");
+        const { app } = testApp();
+        app.model = { id: "default", provider: "codex" } as any;
+        app.cliCommands = { provider: "codex", names: new Set(["imagegen", "deploy"]) };
+        const labels = (text: string) => {
+            app.editor.set(text);
+            return ((app as any).completions()?.items ?? []).map((i: any) => i.label);
+        };
+        expect(labels("use $")).toEqual(expect.arrayContaining(["$deploy", "$imagegen"]));
+        expect(labels("use $").filter((l: string) => l === "$deploy")).toHaveLength(1);
+        app.model = { id: "m", provider: "anthropic" } as any;
+        expect(labels("use $")).not.toContain("$imagegen");
     });
 
     test("on Claude Code, its own commands and skills go to it instead of being refused", async () => {

@@ -43,8 +43,11 @@ import { parseRule, pathPattern } from "../permissions/rules";
 import { paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
+import { formatSkill } from "../agent/skills";
+import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
+import { writeAgentsFile } from "./claude-agents";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
@@ -295,11 +298,19 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
+        // The harness's skills Claude Code doesn't read itself come as a plugin of their own, so it runs them like its own.
+        const configDir = t.skills?.length ? claudeConfigDir(this.def.id, t) : undefined;
+        const plugged = t.skills?.length ? forClaudeCode(t.skills, t.cwd, t.trusted, configDir) : [];
+        const pluginDir = skillFolder(plugged, { plugin: true });
+        // One it has under no name (the plugin couldn't be made, an untrusted project's) is pasted in, as for the harness's models.
+        const names = claudeNames(t.skills ?? [], pluginDir ? plugged : [], t.cwd, t.trusted, configDir);
+        const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter);
+        const turn = new ClaudeTurn(this.def, bin, { ...t, prompt }, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
+        turn.pluginDir = pluginDir;
         this.turns.add(turn);
         try {
             const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
-            return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })), ...documents]);
+            return await turn.run([{ type: "text", text: prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })), ...documents]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
@@ -405,6 +416,12 @@ class ClaudeTurn {
     private toldStopped = false;
     /** The harness's hooks registered with Claude Code, by the callback id it sends back. */
     private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
+    /** The harness's skills, as a plugin folder (src/backends/native-skills.ts). */
+    pluginDir?: string;
+    /** Each sub-agent's type, by the id it asks permission with. */
+    private agentTypes = new Map<string, string>();
+    /** Where --agents reads from, removed when the process exits. */
+    private agentsFile?: { path: string; remove: () => void };
 
     constructor(
         private def: ProviderDef,
@@ -441,8 +458,14 @@ class ClaudeTurn {
             `Harness waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after an answer for reported background commands and monitors; sub-agents retain their 60-minute limit. Background commands and monitors do not survive process shutdown, a user interrupt, or their grace timeout. Recognized dev servers/watchers are stopped without waiting after the answer. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
+        if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
         if (!t.trusted) a.push("--setting-sources", "user");
+        // The harness's agents, for its own Agent tool (a file: -p reads one, and prompts can outgrow an argument).
+        if (t.agents && Object.keys(t.agents).length && !t.readOnly) {
+            this.agentsFile ??= writeAgentsFile(t.agents);
+            a.push("--agents", this.agentsFile.path);
+        }
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
         const sandbox = claudeAccountSandbox();
@@ -728,7 +751,12 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
+        try {
+            this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
+        } catch (e) {
+            this.agentsFile?.remove();
+            throw e;
+        }
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
             this.reason = "error";
@@ -775,6 +803,7 @@ class ClaudeTurn {
             clearTimeout(this.settleTimer);
             this.finishing = true;
             await this.proc.stop(this.aborted ? 1000 : 3000);
+            this.agentsFile?.remove();
             // Polling may still be recording a queued prompt's start. Finish it before Agent records the end.
             await this.idlePending;
             await this.deliveryPending;
@@ -880,7 +909,9 @@ class ClaudeTurn {
                 this.billedToPlan = m.apiKeySource === "none";
                 if (typeof m.model === "string") this.resolvedModel = m.model;
                 // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
-                if (cliCommandNames(m.slash_commands)) this.host.emit({ type: "cli_commands", provider: this.def.id, names: cliCommandNames(m.slash_commands)! });
+                // Not the harness's own skills (harness:name): the menus have those already.
+                const names = cliCommandNames(m.slash_commands)?.filter((n) => !n.startsWith(CLAUDE_PREFIX));
+                if (names) this.host.emit({ type: "cli_commands", provider: this.def.id, names });
                 break;
             case "background_tasks_changed":
                 if (Array.isArray(m.tasks)) {
@@ -910,6 +941,8 @@ class ClaudeTurn {
                 const id = String(m.tool_use_id ?? "");
                 if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, this.shellCommands.get(id)!);
                 if (this.agentLabels.has(id) && typeof m.task_id === "string") this.agentTasks.set(id, m.task_id);
+                // Its permission requests carry this id (agent_id): which agent asks.
+                if (typeof m.task_id === "string" && typeof m.subagent_type === "string") this.agentTypes.set(m.task_id, m.subagent_type);
                 if (m.is_backgrounded === true && this.agentLabels.has(id)) this.backgroundAgents.add(id);
                 this.agentStarted(id);
                 break;
@@ -1336,10 +1369,11 @@ class ClaudeTurn {
         }
         // The harness's own tools: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
         const own = this.t.orchestrator;
-        if (own && String(req.tool_name ?? "").startsWith(`mcp__${own.name}__`)) return { behavior: "allow", updatedInput: raw };
+        if (own && own.tools.some((t) => req.tool_name === `mcp__${own.name}__${t}`)) return { behavior: "allow", updatedInput: raw };
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
-        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined });
+        const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
+        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
@@ -1434,7 +1468,7 @@ export function titleFor(name: string, input: Record<string, unknown>): string {
         case "Task":
             return `Task(${s("description") || s("subagent_type")})`;
         case "Skill":
-            return `Skill(${s("skill") || s("name")})`;
+            return `Skill(${(s("skill") || s("name")).replace(CLAUDE_PREFIX, "")})`;
         default:
             return name;
     }
@@ -1490,4 +1524,13 @@ function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | u
         return { summary: `Found ${n} ${what}${n === 1 ? "" : what === "match" ? "es" : "s"}` };
     }
     return undefined;
+}
+
+/** The config folder this turn's Claude Code reads (its skills are under it). */
+function claudeConfigDir(provider: string, t: BackendTurn): string | undefined {
+    try {
+        return accountEnv(provider, t.accountId, t.cwd).CLAUDE_CONFIG_DIR;
+    } catch {
+        return process.env.CLAUDE_CONFIG_DIR;
+    }
 }

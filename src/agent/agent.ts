@@ -51,6 +51,8 @@ import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-promp
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { TurnSnapshots } from "./turn-snapshots";
 import { redact } from "../util/redact";
+import type { Skill } from "./skills";
+import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
@@ -185,6 +187,8 @@ export interface AgentOptions {
     isSubagent?: boolean;
     /** Current folder trust; private working-tree snapshots require it. */
     trusted?: () => boolean;
+    /** The session's skills, which Claude Code and Codex are given to run themselves. */
+    skills?: () => readonly Skill[];
     /** A sub-agent's type and task, for its SubagentStop hooks. */
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
@@ -363,6 +367,9 @@ export class Agent {
     private recentActions: string[] = [];
     /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
     private delegations?: Delegations;
+    /** The harness agents this turn passed to Claude Code (--agents), by name: their permission modes apply to their asks. */
+    private nativeDefs = new Map<string, AgentDef>();
+    private nativeNotes = new Set<string>();
     private registration?: Registration;
     /** What the harness MCP server offers this turn, and its instructions (read by the server on each request). */
     private serverTools: ServerTool[] = [];
@@ -1091,6 +1098,8 @@ export class Agent {
             backgroundWaitSec: s.claudeCode?.backgroundWaitSec,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             trusted,
+            // The backend registers a project's own only where the user trusted it (the list may come from implicit trust).
+            skills: this.o.skills?.() ?? [],
             approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
@@ -1098,9 +1107,30 @@ export class Agent {
             hooks: this.model.provider === "claude-code" ? backendOwnedHooks(s) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
+            agents: this.nativeAgents(trusted),
             signal,
             host,
         };
+    }
+
+    /** On Claude Code, the harness's agents run on its own Agent tool; none for sub-agents, which can't start more. */
+    private nativeAgents(trusted: boolean): BackendTurn["agents"] {
+        this.nativeDefs.clear();
+        if (this.model.provider !== "claude-code" || this.o.isSubagent || this.o.readOnly) return undefined;
+        try {
+            const defs = loadAgents(this.state.projectRoot);
+            const notes: string[] = [];
+            const agents = claudeAgents(defs, { mode: this.o.mode.get(), trusted, cwd: this.state.cwd, projectRoot: this.state.projectRoot, settings: this.o.settings(), notes });
+            for (const d of defs) if (Object.hasOwn(agents, d.name)) this.nativeDefs.set(d.name, d);
+            // Said once a session, not every turn.
+            for (const n of notes) if (!this.nativeNotes.has(n)) {
+                this.nativeNotes.add(n);
+                this.emit({ type: "notice", level: "warn", message: n });
+            }
+            return agents;
+        } catch {
+            return undefined;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1405,6 +1435,10 @@ export class Agent {
         };
         const base = this.backendTurn(signal, host);
         let stopRounds = 0;
+        // The user's own message, for the skills it names: its first part, not the files and notes after it.
+        // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
+        const first = !this.o.isSubagent && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
+        const asked = { request: first, requestAfter: first === undefined ? undefined : text.slice(first.length) };
         let prompt = text;
         let promptImages = images;
         let promptDocuments = documents;
@@ -1414,12 +1448,12 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
@@ -1716,7 +1750,9 @@ export class Agent {
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
-        const mode = this.o.mode.get();
+        // One of the harness's agents Claude Code runs: its own permissionMode, as when the harness runs it.
+        const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
+        const mode = childMode(this.o.mode.get(), own?.permissionMode);
         const cwd = this.state.cwd;
         // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
         if (this.o.readOnly) {
@@ -1725,12 +1761,12 @@ export class Agent {
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
-        const own = { memoryDir: this.o.memoryDir };
-        let decision = this.o.checker.check(tool, input, mode, cwd, own);
+        const memory = { memoryDir: this.o.memoryDir };
+        let decision = this.o.checker.check(tool, input, mode, cwd, memory);
         let ruled = approves(decision);
         for (const p of req.otherPaths ?? []) {
             if (decision.behavior === "deny") break;
-            const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd, own);
+            const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd, memory);
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }

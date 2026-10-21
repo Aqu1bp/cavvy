@@ -22,7 +22,7 @@ const { McpManager } = await import("../src/mcp/manager");
 const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
 const { loadSettings } = await import("../src/config/settings");
 const { redact } = await import("../src/util/redact");
-const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
+const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, MCP_SERVER_NAME, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
 const { attachTiming } = await import("../src/backends/claude-code");
 const { SecretStore } = await import("../src/agent/secrets");
@@ -677,6 +677,14 @@ describe("Claude Code as the main agent", () => {
         expect(text).toContain("openrouter:openai/gpt-x");
         expect(text).not.toContain("anthropic/claude-x");
         expect(text).not.toContain("claude-code:default");
+    });
+
+    test("only the harness's own tools are approved by their server's name: another tool under that name is asked about", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ server: MCP_SERVER_NAME, tool: "erase", args: {} }]);
+        const { run, asked } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+        await run("erase it");
+        expect(asked.map((r) => r.tool.name)).toEqual([`mcp__${MCP_SERVER_NAME}__erase`]);
     });
 
     test("a background task follows the session's speed when it changes", async () => {

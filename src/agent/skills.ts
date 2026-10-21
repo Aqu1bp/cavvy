@@ -231,14 +231,22 @@ export function skillMentions(text: string, skills: readonly Skill[]): Skill[] {
     if (!text.includes("$") || !skills.length) return [];
     const byName = new Map(skills.filter((s) => s.userInvocable).map((s) => [s.name, s]));
     const out = new Map<string, Skill>();
-    for (const m of text.matchAll(/(^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s.,;:!?)]|$)/g)) {
-        const raw = m[2]!.replace(/:+$/, "");
-        // $HOME and $5 are a shell variable and a price.
-        if (!/[a-z]/.test(raw)) continue;
-        const s = byName.get(raw.toLowerCase());
+    for (const name of mentionNames(text)) {
+        const s = byName.get(name);
         if (s) out.set(s.name, s);
     }
     return [...out.values()];
+}
+
+/** The names `text` mentions as $name, lowercased, in order. */
+export function mentionNames(text: string): string[] {
+    const out: string[] = [];
+    for (const m of text.matchAll(/(^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s.,;:!?)]|$)/g)) {
+        const raw = m[2]!.replace(/:+$/, "");
+        // $HOME and $5 are a shell variable and a price.
+        if (/[a-z]/.test(raw)) out.push(raw.toLowerCase());
+    }
+    return out;
 }
 
 /** The prompt with the instructions of `mentioned` (its $mentions) after it, for the model; `text` itself is what the transcript shows. */
@@ -247,10 +255,3 @@ export function withSkills(text: string, mentioned: readonly Skill[]): string {
     return blocks.length ? `${text}\n\n${blocks.join("\n\n")}` : text;
 }
 
-/**
- * Should Claude Code run this /name itself? Those it listed, yes; before it
- * has listed any (the first turn), the skills it reads from its own folders.
- */
-export function claudeCodeRuns(name: string, skill: Skill | undefined, listed: ReadonlySet<string> | undefined): boolean {
-    return listed ? listed.has(name) : !!skill?.claudeCode;
-}
