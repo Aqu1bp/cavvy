@@ -2322,7 +2322,7 @@ export class Runtime {
         const index = this.session.messages.length;
         this.turnSnapshotFloor = this.latestCheckpoint();
         // No imagesKey yet: @mentioned images join the prompt's own once mentions are expanded below.
-        const { imagesKey: _provisional, ...attached } = attachedPrompt(opts.attachments);
+        const attached = attachedPrompt(opts.attachments, false);
         const turn: Turn = {
             id: this.newId(),
             prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }) },

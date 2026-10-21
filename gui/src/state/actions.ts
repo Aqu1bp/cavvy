@@ -12,6 +12,7 @@ import { toWire, type Attachment } from "../lib/attachments";
 import { activate, app, createSession, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
+import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
 import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
@@ -215,6 +216,9 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             id = h.id;
             created = true;
         }
+        const images = attachments.flatMap((a) => (a.kind === "image" ? [a] : []));
+        // Hashed while the message uploads: done long before the turn asks (and if not, it asks the server as before).
+        if (images.length) void keepSentImages(id, images);
         await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined, ...(opts.followUp ? { mode: opts.followUp } : {}) });
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.

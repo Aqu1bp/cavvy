@@ -469,6 +469,70 @@ describe("the composer's sorting (gui/src/lib/attachments)", () => {
     });
 });
 
+describe("attaching a screenshot, quickly and byte for byte (gui/src/lib/attachments)", () => {
+    // Bytes that aren't a multiple of 3 long, with every value, so padding and the whole alphabet are exercised.
+    const sample = (n: number) => Uint8Array.from({ length: n }, (_, i) => (i * 131 + (i >> 8)) & 0xff);
+
+    test("base64 is the same as before, with WebKit's own encoder and without it", () => {
+        const native = (Uint8Array.prototype as { toBase64?: unknown }).toBase64;
+        const nativeFrom = (Uint8Array as { fromBase64?: unknown }).fromBase64;
+        expect(typeof native).toBe("function");
+        for (const n of [0, 1, 2, 3, 4, 5, 0x8000 + 1, 300_001]) {
+            const bytes = sample(n);
+            const expected = Buffer.from(bytes).toString("base64");
+            expect(gui.toBase64(bytes)).toBe(expected);
+            expect(Buffer.from(gui.fromBase64(expected)).equals(Buffer.from(bytes))).toBe(true);
+            // The fallback (an engine without Uint8Array.prototype.toBase64) gives the same.
+            delete (Uint8Array.prototype as { toBase64?: unknown }).toBase64;
+            delete (Uint8Array as { fromBase64?: unknown }).fromBase64;
+            try {
+                expect(gui.toBase64(bytes)).toBe(expected);
+                expect(Buffer.from(gui.fromBase64(expected)).equals(Buffer.from(bytes))).toBe(true);
+            } finally {
+                (Uint8Array.prototype as { toBase64?: unknown }).toBase64 = native;
+                (Uint8Array as { fromBase64?: unknown }).fromBase64 = nativeFrom;
+            }
+        }
+    });
+
+    test("what's sent for a dropped image is its bytes as they were, and only them", async () => {
+        const bytes = new Uint8Array([...Buffer.from(PNG, "base64"), ...sample(100_001)]);
+        const img = await gui.readAttachment(new File([bytes], "Screenshot.png", { type: "image/png" }), []);
+        expect(img).toEqual({ kind: "image", name: "Screenshot.png", size: bytes.length, mediaType: "image/png", data: Buffer.from(bytes).toString("base64") });
+        expect(gui.toWire([img])).toEqual({ images: [{ mediaType: "image/png", data: Buffer.from(bytes).toString("base64") }] });
+        // No worker here (Bun can't decode images): the chip shows the image itself.
+        expect(await gui.previewOf(img as Extract<typeof img, { kind: "image" }>)).toBe(`data:image/png;base64,${Buffer.from(bytes).toString("base64")}`);
+        const [back] = gui.fromWire([{ mediaType: "image/png", data: PNG }], undefined);
+        expect(gui.toWire([back!])).toEqual({ images: [{ mediaType: "image/png", data: PNG }] });
+    });
+
+    test("the composer computes the server's imagesKey, so a sent prompt's images needn't be fetched back", async () => {
+        const { imagesKeyOf } = await import("../gui/src/lib/imagecache");
+        const img = (data: string, mediaType = "image/png") => ({ type: "image" as const, mediaType, data });
+        const big = Buffer.from(sample(250_000)).toString("base64");
+        for (const images of [[img(PNG)], [img(PNG), img(big, "image/jpeg")], [img(big), img(PNG)]]) {
+            expect(await imagesKeyOf(images)).toBe(attachedPrompt(images).imagesKey!);
+        }
+        expect(await imagesKeyOf([])).toBeUndefined();
+        // The turn's first, provisional prompt doesn't hash the images.
+        expect(attachedPrompt([img(PNG), img(big)], false)).toEqual({ images: 2 });
+    });
+
+    test("a thumbnail covers the transcript's and the composer's tiles, keeps the shape, and never enlarges", async () => {
+        const { coverSize, THUMB_BOX } = await import("../gui/src/lib/thumbnail-size");
+        const shot = coverSize(3024, 1964)!;
+        expect(shot.height).toBe(THUMB_BOX.height);
+        expect(shot.width).toBeGreaterThanOrEqual(THUMB_BOX.width);
+        expect(Math.abs(shot.width / shot.height - 3024 / 1964)).toBeLessThan(0.01);
+        const tall = coverSize(1170, 2532)!;
+        expect(tall.width).toBe(THUMB_BOX.width);
+        expect(tall.height).toBeGreaterThanOrEqual(THUMB_BOX.height);
+        expect(coverSize(200, 150)).toBeUndefined();
+        expect(coverSize(THUMB_BOX.width, 4000)).toBeUndefined();
+        expect(coverSize(0, 10)).toBeUndefined();
+    });
+});
+
 describe("nothing gets lost", () => {
     async function busySession() {
         const s = await engineWithSession();

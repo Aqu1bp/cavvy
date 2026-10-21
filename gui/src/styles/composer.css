@@ -405,6 +405,8 @@
     height: 44px;
     border-radius: 10px;
     overflow: hidden;
+    /* Under the thumbnail, while it's made. */
+    background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line);
 }
 

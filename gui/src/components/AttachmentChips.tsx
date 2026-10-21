@@ -1,7 +1,20 @@
-import { createSignal, For, Match, Show, Switch } from "solid-js";
+import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { ChevronDown, File, FileText, FileX, TextCursorInput, X } from "lucide-solid";
-import { formatSize, type Attachment } from "../lib/attachments";
+import { formatSize, previewOf, type Attachment, type ImageAttachment } from "../lib/attachments";
 import { plural } from "../lib/format";
+
+/** The chip shows at once; its thumbnail, made in a worker, when it's ready. */
+function Preview(p: { image: ImageAttachment }) {
+    const [src, setSrc] = createSignal<string>();
+    let live = true;
+    onCleanup(() => (live = false));
+    void previewOf(p.image).then((u) => live && setSrc(u));
+    return (
+        <Show when={src()}>
+            <img src={src()} alt={p.image.name} />
+        </Show>
+    );
+}
 
 /**
  * What's attached to the message being written: image thumbnails, and chips
@@ -24,7 +37,7 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                             <Match when={a.kind === "image" && a}>
                                 {(img) => (
                                     <div class="attachment" title={`${img().name} · ${formatSize(img().size)}`}>
-                                        <img src={img().preview} alt={img().name} />
+                                        <Preview image={img()} />
                                         <button class="attachment-x" title="Remove" aria-label={`Remove ${img().name}`} onClick={() => p.onRemove(i())}>
                                             <X size={11} />
                                         </button>
