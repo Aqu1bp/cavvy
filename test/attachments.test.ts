@@ -568,7 +568,7 @@ describe("nothing gets lost", () => {
         }
     });
 
-    test("one delivered while the agent CLI only waits is prepared as a sent one: its @mentions attach; one its hooks block isn't sent or rewound to", async () => {
+    test("one delivered while the agent CLI only waits is prepared as a sent one: its @mentions attach; one its hooks block isn't sent and starts no turn", async () => {
         const { engine, c, id, rt } = await busySession();
         try {
             await engine.handle(c, "session.send", { id, text: "what does @README.md say?", mode: "queue" });
@@ -583,10 +583,11 @@ describe("nothing gets lost", () => {
             expect(seen[0]).toContain("Accounts, organizations and billing.");
             // Said in its own turn, as for a sent one.
             expect(JSON.stringify(rt.snapshot().turns.at(-1)!.blocks)).toContain("Attached README.md");
+            const before = rt.snapshot().turns.length;
             expect(await inner.drainWaiting(steps)).toBeUndefined();
-            const blocked = rt.snapshot().turns.at(-1)!;
-            expect(blocked.prompt?.text).toBe("blocked one");
-            expect(blocked.prompt?.index).toBeUndefined();
+            // No turn of its own: what comes next goes on in the turn that was running.
+            expect(rt.snapshot().turns).toHaveLength(before);
+            expect(rt.snapshot().turns.some((t) => t.prompt?.text === "blocked one")).toBe(false);
             expect(rt.snapshot().state.queued).toEqual([]);
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);

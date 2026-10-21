@@ -713,7 +713,12 @@ class ClaudeTurn {
     private async forwardWaiting(): Promise<boolean> {
         if (this.aborted || this.finishing || !this.host.drainWaiting) return false;
         const p = await this.host.drainWaiting(() => this.progress());
-        if (!p || this.aborted || this.finishing) return false;
+        if (!p) return false;
+        if (this.aborted || this.finishing) {
+            // Stopped after it was recorded (its start snapshot was being taken): the next turn is told of it.
+            this.host.undelivered?.([p.text]);
+            return false;
+        }
         this.reason = undefined;
         // As a prompt of the user's own is sent: its $names as runTurn reads them, then its images and PDFs.
         const text = claudePrompt(p.text, p.request, this.t.skills ?? [], this.skillNames, formatSkill, p.requestAfter);

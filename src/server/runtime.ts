@@ -2091,19 +2091,29 @@ export class Runtime {
     private async drainWaiting(steps: { record(): void; admit(parts: UserContent[]): Promise<boolean> }): Promise<{ parts: UserContent[]; display: string } | undefined> {
         const q = this.queued.find((x) => !x.held && !isCommand(x));
         if (!q) return undefined;
+        const at = this.queued.indexOf(q);
         this.queued = this.queued.filter((x) => x !== q);
         this.queueUpdated();
+        // Prepared as a sent prompt is (startTurn); what it uses and attaches is said in its turn, once it has one.
+        const signal = this.abort?.signal ?? new AbortController().signal;
+        const said: [string, "info" | "warn"][] = [];
+        const parts = await this.preparePrompt(q.text, { attachments: q.attachments }, signal, (text, level) => void said.push([text, level]));
+        const admitted = !signal.aborted && (await steps.admit(parts));
+        if (signal.aborted) {
+            // Stopped before it went: back in the queue as it was, so the interrupt hands it back to the composer.
+            this.queued.splice(Math.min(at, this.queued.length), 0, q);
+            this.queueUpdated();
+            return undefined;
+        }
+        // A hook blocked it (the hook's warning says so): the turn that's waiting stays the one its output goes to.
+        if (!admitted) return undefined;
         // What the CLI said before it goes first, so the prompt's place in the session is where it lands.
         steps.record();
         const turn = this.drainedTurn(q.text, q.attachments, true);
-        // Prepared as a sent prompt is (startTurn), in its own turn: what it uses and attaches is said there.
-        const parts = await this.preparePrompt(q.text, { attachments: q.attachments }, this.abort?.signal ?? new AbortController().signal);
         const images = parts.filter((p): p is AttachedPart => p.type === "image");
         if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
-        if (await steps.admit(parts)) return { parts, display: q.text };
-        // A hook blocked it (the turn says so): it isn't in the conversation, so there's nothing to rewind to.
-        this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images), index: undefined } } });
-        return undefined;
+        for (const [text, level] of said) this.notice(text, level);
+        return { parts, display: q.text };
     }
 
     /**
@@ -2404,7 +2414,7 @@ export class Runtime {
      * A prompt as it's sent: $names bring their skills, @mentions attach files and MCP resources (not a wake's:
      * it quotes outside text), then what was attached to it. The user is told what was used and attached.
      */
-    private async preparePrompt(text: string, opts: { kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; mentionsIn?: string }, signal: AbortSignal): Promise<UserContent[]> {
+    private async preparePrompt(text: string, opts: { kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; mentionsIn?: string }, signal: AbortSignal, say: (text: string, level: "info" | "warn") => void = (t, l) => this.notice(t, l)): Promise<UserContent[]> {
         const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
         // $name brings that skill's instructions along; the transcript keeps what was typed.
         const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.ws.skills);
@@ -2413,17 +2423,17 @@ export class Runtime {
         const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(scan, this.toolState, roots, this.checker);
         // Claude Code and Codex are sent the $name, and load the skill themselves.
         parts[0] = { type: "text", text: skills.length && !cliRunsSkills(this.agent?.model.provider) ? withSkills(text, skills) : text };
-        if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
+        if (skills.length) say(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`, "info");
         const res = await expandMcpMentions(scan, this.ws.mcp, this.mcpAsker(), signal);
         parts.push(...res.parts);
         attached.push(...res.attached);
         notices.push(...res.notices);
-        for (const n of notices) this.notice(n, "warn");
-        if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
+        for (const n of notices) say(n, "warn");
+        if (attached.length) say(`Attached ${attached.join(", ")}`, "info");
         if (opts.attachments?.length) {
-            if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) this.notice(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
+            if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) say(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
             // Checked when it was sent; the model may have changed while it waited in the queue.
-            if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) this.notice(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
+            if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) say(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
             parts.push(...opts.attachments);
         }
         return parts;
