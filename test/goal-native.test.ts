@@ -15,7 +15,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
-const { codexGoal, codexGoalCommand } = await import("../src/backends/codex");
+const { codexGoal, codexGoalCommand, CodexTurn } = await import("../src/backends/codex");
 const { claudeGoal } = await import("../src/backends/claude-code");
 const { nativeGoalView, nativeGoalStatus, nativeGoals } = await import("../src/agent/goal");
 const { Engine } = await import("../src/server/engine");
@@ -373,11 +373,91 @@ describe("Codex", () => {
         const starts = received().filter((m) => m.method === "turn/start").map((m) => m.params);
         // The refused one, then the restart of Codex's own turn (begun under bypass) under plan mode.
         expect(starts.slice(1).map((p) => p.sandboxPolicy.type)).toEqual(["readOnly", "readOnly"]);
-        // It's the turn Codex started on refusing that was stopped (the message went into it), not a later one.
-        const steered = received().find((m) => m.method === "turn/steer")!.params.expectedTurnId;
-        expect(received().find((m) => m.method === "turn/interrupt")!.params.turnId).toBe(steered);
+        // It's the turn Codex started on refusing (turn-2) that was stopped, before the message went into it:
+        // that goes into the restart.
+        expect(received().find((m) => m.method === "turn/interrupt")!.params.turnId).toBe("turn-2");
+        expect(received().filter((m) => m.method === "turn/steer" && (m.params.expectedTurnId === "turn-2" || /also fix the links/.test(m.params.input[0].text)))).toEqual([]);
         expect(starts.at(-1)!.input[0].text).toContain("plan mode");
+        expect(starts.at(-1)!.input[0].text).toContain("also fix the links");
         expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+    });
+
+    test("a message for Codex's next goal turn waits for its restart when the mode switched to plan since", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "80";
+        const queue: string[] = [];
+        const a = await makeAgent("codex", undefined, queue);
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 5000;
+        while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+        await Bun.sleep(30);
+        queue.push("also fix the links");
+        a.setMode("plan");
+        expect(await done).toBe("done");
+        // Codex's own next turn (under bypass) was stopped before anything went into it.
+        expect(received().filter((m) => m.method === "turn/steer" && (m.params.expectedTurnId === "turn-2" || /also fix the links/.test(m.params.input[0].text)))).toEqual([]);
+        expect(received().find((m) => m.method === "turn/interrupt")!.params.turnId).toBe("turn-2");
+        const restart = received().filter((m) => m.method === "turn/start").at(-1)!.params;
+        expect(restart.sandboxPolicy.type).toBe("readOnly");
+        expect(restart.input[0].text).toContain("also fix the links");
+    });
+
+    test("a mode switched while the goal's first turn starts: restarted before the goal is made active", async () => {
+        process.env.FAKE_GOAL_TURNS = "2";
+        process.env.FAKE_SLOW_TURN_START = "150";
+        const a = await makeAgent("codex");
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 5000;
+        while (!received().some((m) => m.method === "turn/start") && Date.now() < until) await Bun.sleep(2);
+        a.setMode("plan");
+        expect(await done).toBe("done");
+        const rpc = received().filter((m) => m.method);
+        const firstActive = rpc.findIndex((m) => m.method === "thread/goal/set" && m.params.status === "active");
+        const starts = rpc.map((m, i) => [m, i] as const).filter(([m]) => m.method === "turn/start");
+        expect(starts.map(([m]) => m.params.sandboxPolicy.type)).toEqual(["dangerFullAccess", "readOnly"]);
+        // Active only once the turn under plan mode had started.
+        expect(firstActive).toBeGreaterThan(starts[1]![1]);
+    });
+
+    test("a thread's policy and the mode it's kept for come from one reading of the mode", async () => {
+        process.env.FAKE_GOAL_TURNS = "5";
+        process.env.FAKE_TURN_MS = "80";
+        const session = Session.create(cwd, { persist: false });
+        const a = await makeAgent("codex", session);
+        // A goal left active on the thread (Codex goes on with it).
+        const ac = new AbortController();
+        const running = a.run("/goal the docs build", ac.signal);
+        const until = Date.now() + 5000;
+        while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+        ac.abort();
+        await running;
+        const goalsFile = JSON.parse(readFileSync(LOG + ".goals.json", "utf-8"));
+        goalsFile["thr-new"].status = "active";
+        writeFileSync(LOG + ".goals.json", JSON.stringify(goalsFile));
+        // The next run: the mode switches to plan while the thread is being resumed (under bypass), and Codex
+        // starts its own turn as it refuses the one for the message.
+        process.env.FAKE_GOAL_RACE = "1";
+        const proto = CodexTurn.prototype as any;
+        const original = proto.mcpOverrides;
+        proto.mcpOverrides = async function (...args: unknown[]) {
+            const r = await original.apply(this, args);
+            a.setMode("plan");
+            return r;
+        };
+        const before = received().length;
+        try {
+            expect(await a.run("go on")).toBe("done");
+        } finally {
+            proto.mcpOverrides = original;
+        }
+        const later = received().slice(before);
+        expect(later.find((m) => m.method === "thread/resume")!.params.sandbox).toBe("danger-full-access");
+        // Codex's own turn ran under the thread's bypass: stopped before the message went in, and restarted under plan.
+        expect(later.filter((m) => m.method === "turn/steer" && /go on/.test(m.params.input[0].text))).toEqual([]);
+        expect(later.some((m) => m.method === "turn/interrupt")).toBe(true);
+        const restart = later.filter((m) => m.method === "turn/start").at(-1)!.params;
+        expect(restart.sandboxPolicy.type).toBe("readOnly");
+        expect(restart.input[0].text).toContain("go on");
     });
 
     test("leaving plan mode between the goal's turns applies to the next one Codex starts too", async () => {

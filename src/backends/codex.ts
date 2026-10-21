@@ -381,7 +381,7 @@ interface SubAgent {
 /** Notifications from a thread not known yet to be a sub-agent's: what it would show. */
 const SHOWN_FROM_SUBAGENTS = new Set(["turn/started", "turn/completed", "item/started", "item/completed", "item/commandExecution/outputDelta", "item/fileChange/patchUpdated", "error", "warning", "configWarning"]);
 
-class CodexTurn {
+export class CodexTurn {
     private rpc!: Rpc;
     private threadId?: string;
     private turnId?: string;
@@ -457,25 +457,36 @@ class CodexTurn {
     ) {}
 
     /**
-     * A turn Codex started itself runs under the thread's last policy: a mode other than that one now, looser
-     * or out of plan mode too, restarts it under the mode (a turn started here for a looser mode just goes on).
+     * Whether the turn running under `turnMode` (the mode its policy was made from) can't go on under mode `m`.
+     * A turn started here restarts for a stricter policy or plan mode (a looser one waits for the next turn); one
+     * Codex started itself (adopted) runs under the thread's last policy, so any other restarts it, as nothing
+     * else would apply it.
      */
-    private adoptedModeChanged(m: PermissionMode) {
-        if (this.turnMode === undefined || this.aborted || (this.turnId && this.completedTurns.has(this.turnId))) return;
+    private stale(m: PermissionMode): boolean {
+        if (this.turnMode === undefined) return false;
         const ro = Boolean(this.t.readOnly);
-        if (codexPolicyKey(m, ro) === codexPolicyKey(this.turnMode, ro) && (m === "plan") === (this.turnMode === "plan")) return;
+        const differs = codexPolicyKey(m, ro) !== codexPolicyKey(this.turnMode, ro) || (m === "plan") !== (this.turnMode === "plan");
+        if (!differs) return false;
+        return this.adopted || STRICTNESS[m] > STRICTNESS[this.turnMode] || m === "plan";
+    }
+
+    /**
+     * The check before anything goes into the running turn (it's started, adopted, steered, its goal made
+     * active): stale for the mode as it is now, it's restarted under it instead (true). Already restarting: true.
+     */
+    private restartIfStale(): boolean {
+        if (this.restartFor) return true;
+        if (!this.turnId || this.aborted || this.completedTurns.has(this.turnId)) return false;
+        const m = this.host.mode();
+        if (!this.stale(m)) return false;
         this.restartFor = m;
         this.goalOnRestart = this.goal?.status === "active";
         this.interrupt();
+        return true;
     }
 
-    modeChanged(m: PermissionMode) {
-        if (!this.turnId || this.turnMode === undefined || this.aborted) return;
-        if (STRICTNESS[m] > STRICTNESS[this.turnMode] && codexPolicyKey(m, Boolean(this.t.readOnly)) !== codexPolicyKey(this.turnMode, Boolean(this.t.readOnly)) || (m === "plan" && this.turnMode !== "plan")) {
-            this.restartFor = m;
-            this.goalOnRestart = this.goal?.status === "active";
-            this.interrupt();
-        }
+    modeChanged(_m: PermissionMode) {
+        this.restartIfStale();
     }
 
     private get host(): BackendHost {
@@ -526,7 +537,9 @@ class CodexTurn {
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).
             if (this.billedToPlan) void this.readLimits();
-            const policy = codexPolicy(this.host.mode(), t.additionalDirectories, Boolean(t.readOnly));
+            // The thread's policy, from one reading of the mode: what Codex's own goal turns run under (threadMode).
+            const startMode = this.host.mode();
+            const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly));
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
             const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), o?.name);
@@ -547,8 +560,8 @@ class CodexTurn {
             const fastTier = tierFor(t.fastMode);
             /** The thread's tier as last reported or set. */
             let tierNow: string | null | undefined;
-            this.threadMode = this.host.mode();
-            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(this.host.mode(), t.readOnly) } : { sandbox: policy.sandbox }), approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+            this.threadMode = startMode;
+            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(startMode, t.readOnly) } : { sandbox: policy.sandbox }), approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
@@ -641,6 +654,8 @@ class CodexTurn {
                             this.turnsSeen.add(this.turnId);
                             this.ownTurns.add(this.turnId);
                         }
+                        // The mode changed while it was starting: restarted under it, before anything goes into it.
+                        if (this.restartIfStale()) return;
                         // Sent while the turn was starting: it can take them now.
                         if (this.turnId && this.steerWaiting) this.steerQueued();
                         if (activate && this.turnId && !this.aborted) {
@@ -772,6 +787,11 @@ class CodexTurn {
             this.turnDone?.();
             return;
         }
+        // Started under the thread's policy: stale for the mode now, the messages go into its restart instead.
+        if (this.restartIfStale()) {
+            if (text) this.unsteered.push(text);
+            return;
+        }
         if (text) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(text, []) }).catch(() => this.unsteered.push(text));
         // Sent while no turn was running (waiting for this one): it can take them now.
         if (this.steerWaiting) this.steerQueued();
@@ -849,11 +869,10 @@ class CodexTurn {
         // Interrupted while the turn was being started.
         if (this.aborted && this.turnId) this.interrupt();
         // The mode changed while it was being started (modeChanged had no turn to stop yet).
-        else if (this.turnId && this.adopted) this.adoptedModeChanged(this.host.mode());
-        else if (this.turnId) this.modeChanged(this.host.mode());
-        this.adopted = false;
+        else this.restartIfStale();
         await Promise.race([done, this.rpc.done]);
         this.turnDone = undefined;
+        this.adopted = false;
         if (!this.status && !this.aborted && !this.failure) this.failure = `Codex stopped before the turn finished${cliMessage(this.rpc.proc.stderr()) ? `: ${cliMessage(this.rpc.proc.stderr())}` : ""}`;
     }
 
@@ -1560,6 +1579,11 @@ class CodexTurn {
             const texts = await this.host.drainQueued(() => this.progress());
             if (!texts.length) return;
             const text = texts.join("\n\n");
+            // Into a turn that runs as the mode says, or into its restart (also when it changed while draining).
+            if (this.turnId !== turnId || this.restartIfStale()) {
+                this.unsteered.push(text);
+                return;
+            }
             try {
                 await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(text, []) });
             } catch {
