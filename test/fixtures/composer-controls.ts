@@ -205,14 +205,15 @@ key("Enter", { metaKey: true, shiftKey: true });
 assert.equal(sends, sendsBefore);
 assert.deepEqual(calls.at(-1), { method: "session.sendQueuedNow", params: { id: "f", queueId: 2 } });
 // Custom bindings, explicit unbinding and a pending chord take precedence over the queue shortcut.
+// Spelled cmd, the key this fixture presses (its isMod is the Mac one): mod is Ctrl off a Mac, as on CI.
 input("keep this draft");
 for (const binding of [null, "app:interrupt"]) {
-    applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter": binding } }] }) });
+    applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "cmd+shift+enter": binding } }] }) });
     key("Enter", { metaKey: true, shiftKey: true });
     assert.equal(sends, sendsBefore);
     assert.equal(ta.props.value, "keep this draft");
 }
-applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter t": "app:interrupt" } }] }) });
+applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "cmd+shift+enter t": "app:interrupt" } }] }) });
 assert.equal(key("Enter", { metaKey: true, shiftKey: true }).prevented, true);
 assert.equal(sends, sendsBefore);
 key("t");
