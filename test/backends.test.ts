@@ -557,6 +557,52 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(used.reduce((a, b) => a + b, 0)).toBe(4321);
     });
 
+    test("by default a background sub-agent isn't stopped however long it runs, as in Claude Code: only the user stops it", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const saved = { ...backgroundTiming };
+        const realNow = Date.now;
+        let skew = 0;
+        Date.now = () => realNow() + skew;
+        backgroundTiming.pollMs = 10;
+        const ac = new AbortController();
+        try {
+            expect(saved.maxWaitMs).toBe(Number.POSITIVE_INFINITY);
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            const done = run("map the auth module", ac.signal);
+            while (!notices(events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            // Three hours on: still waited for.
+            skew = 3 * 60 * 60_000;
+            await Bun.sleep(300);
+            expect(subEnds(events)).toEqual([]);
+            expect(notices(events).join("\n")).not.toMatch(/Stopped/);
+            ac.abort();
+            expect(await done).toBe("aborted");
+        } finally {
+            Date.now = realNow;
+            ac.abort();
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 20_000);
+
+    test("with no cap, a run whose Claude Code crashed while something it started holds its output open still ends", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_HOLD_STDOUT = "1";
+        process.env.FAKE_EXIT_AFTER_MS = "800";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.exitDrainMs = 100;
+        try {
+            const { run } = await makeAgent({ provider: "claude-code" });
+            const started = Date.now();
+            await run("map the auth module");
+            // Its output is held for 8 s (FAKE_HOLD_STDOUT): it ended well before that.
+            expect(Date.now() - started).toBeLessThan(5000);
+        } finally {
+            delete process.env.FAKE_HOLD_STDOUT;
+            delete process.env.FAKE_EXIT_AFTER_MS;
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 20_000);
+
     test("a background sub-agent that never finishes is waited on only so long, and the user is told it was stopped", async () => {
         process.env.FAKE_SCENARIO = "agent-background-stuck";
         const saved = { ...backgroundTiming };
@@ -2942,7 +2988,8 @@ describe("Claude Code reviewed grace fixes", () => {
     test("repeated Monitor report turns cannot extend the overall background cap", async () => {
         process.env.FAKE_SCENARIO = "monitor-repeated-reports";
         const saved = { ...backgroundTiming };
-        Object.assign(backgroundTiming, { maxWaitMs: 350, pollMs: 10 });
+        // The commands' cap alone, sub-agents uncapped as by default: a monitor that keeps reporting still stops.
+        Object.assign(backgroundTiming, { commandsMaxWaitMs: 350, pollMs: 10 });
         const abort = new AbortController();
         const timeout = setTimeout(() => abort.abort(), 4000);
         try {

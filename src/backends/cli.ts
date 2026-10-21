@@ -156,34 +156,65 @@ export class JsonLinesProcess {
         }
     }
 
-    /** Each line of stdout that is a JSON object; other lines go with stderr. Ends when stdout does, or after kill(). */
-    async *messages(): AsyncGenerator<Record<string, any>> {
+    /**
+     * Each line of stdout that is a JSON object; other lines go with stderr. Ends when stdout does, or after
+     * kill(). With `quietAfterExitMs`: also once the process has exited and nothing more comes for that long
+     * (a child it started may hold stdout open). Only time spent waiting for output counts, so output already
+     * written is all read, however slowly the caller takes it.
+     */
+    async *messages(o: { quietAfterExitMs?: number } = {}): AsyncGenerator<Record<string, any>> {
         const d = new TextDecoder();
         let buf = "";
         const reader = (this.reader = this.proc.stdout.getReader());
-        while (true) {
-            let r: Awaited<ReturnType<typeof reader.read>>;
-            try {
-                r = await reader.read();
-            } catch {
-                break;
-            }
-            if (r.done) break;
-            buf += d.decode(r.value, { stream: true });
-            let i: number;
-            while ((i = buf.indexOf("\n")) >= 0) {
-                const line = buf.slice(0, i).trim();
-                buf = buf.slice(i + 1);
-                if (!line) continue;
-                let msg: unknown;
+        // One watch for the whole read, not one per chunk (that would hold every chunk until the exit).
+        let waitingSince: number | undefined;
+        let finished = false;
+        let quietTimer: ReturnType<typeof setTimeout> | undefined;
+        const quiet = o.quietAfterExitMs;
+        if (quiet !== undefined) {
+            void this.exited.then(() => {
+                const exitedAt = Date.now();
+                const check = () => {
+                    if (finished) return;
+                    const since = waitingSince === undefined ? undefined : Math.max(waitingSince, exitedAt);
+                    // Gone, and nothing more for that long while we waited: what's still held open won't be read.
+                    if (since !== undefined && Date.now() - since >= quiet) return void reader.cancel().catch(() => {});
+                    quietTimer = setTimeout(check, since === undefined ? quiet : quiet - (Date.now() - since)) as ReturnType<typeof setTimeout>;
+                };
+                check();
+            });
+        }
+        try {
+            while (true) {
+                let r: Awaited<ReturnType<typeof reader.read>>;
                 try {
-                    msg = JSON.parse(line);
+                    waitingSince = Date.now();
+                    r = await reader.read();
                 } catch {
-                    this.err = (this.err + line + "\n").slice(-STDERR_TAIL);
-                    continue;
+                    break;
+                } finally {
+                    waitingSince = undefined;
                 }
-                if (msg && typeof msg === "object" && !Array.isArray(msg)) yield msg as Record<string, any>;
+                if (r.done) break;
+                buf += d.decode(r.value, { stream: true });
+                let i: number;
+                while ((i = buf.indexOf("\n")) >= 0) {
+                    const line = buf.slice(0, i).trim();
+                    buf = buf.slice(i + 1);
+                    if (!line) continue;
+                    let msg: unknown;
+                    try {
+                        msg = JSON.parse(line);
+                    } catch {
+                        this.err = (this.err + line + "\n").slice(-STDERR_TAIL);
+                        continue;
+                    }
+                    if (msg && typeof msg === "object" && !Array.isArray(msg)) yield msg as Record<string, any>;
+                }
             }
+        } finally {
+            finished = true;
+            clearTimeout(quietTimer);
         }
     }
 

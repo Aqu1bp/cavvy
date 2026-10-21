@@ -14,9 +14,10 @@
 // takes a turn of its own with the report (a result with origin
 // task-notification). So a run lasts until the prompts it sent are answered
 // (each result names the prompt it answers, by the uuid it was sent with) and
-// nothing it waits for is left in the background, at most
-// backgroundTiming.maxWaitMs past the answer; longer only for a background
-// command still within its own timeout, which Claude Code would let run.
+// nothing it waits for is left in the background. Sub-agents and workflows
+// run until they're done or the user stops them, as in Claude Code (no limit
+// by default: backgroundTiming.maxWaitMs); background commands until their
+// own timeout or the grace for one without.
 //
 // What this never does: read, copy or forward Claude Code's credentials (its
 // keychain entry, ~/.claude/.credentials.json, CLAUDE_CODE_OAUTH_TOKEN), call
@@ -62,8 +63,20 @@ export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background work once the prompt is answered (changeable for tests). */
 export const backgroundTiming = {
-    /** Overall background wait cap, including across automatic report turns. It doesn't stop a command still within its own timeout. */
-    maxWaitMs: 60 * 60_000,
+    /**
+     * A cap on the wait for sub-agents, workflows and other background work, across report turns; none by
+     * default, as Claude Code has none: they run until they're done or the user stops them (Esc). It doesn't
+     * stop a command still within its own timeout. Tests set one.
+     */
+    maxWaitMs: Number.POSITIVE_INFINITY,
+    /**
+     * The cap for background commands without a timeout of their own and for monitors, across report turns:
+     * a monitor's grace starts again with each report, so one that reports often would otherwise keep the run
+     * going for good. A command still within its own timeout isn't cut short. (At most maxWaitMs, when that's set.)
+     */
+    commandsMaxWaitMs: 60 * 60_000,
+    /** After Claude Code exits, how long its output may stay quiet before it's no longer read (a child it started may hold it open). */
+    exitDrainMs: 2000,
     /** The grace for a background command that passes no timeout, and for monitors: Claude Code's default background timeout. */
     commandWaitMs: 30 * 60_000,
     /** The most a background command's own timeout can give it: Claude Code's maximum background timeout. */
@@ -491,7 +504,7 @@ class ClaudeTurn {
         if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
         a.push("--append-system-prompt", [t.appendSystemPrompt, t.goalContext,
-            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow). For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
@@ -652,14 +665,16 @@ class ClaudeTurn {
             clearTimeout(this.settleTimer);
             this.settleTimer = undefined;
             this.waitFor(left);
-            if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
-            // Waited long enough (only between Claude Code's turns, so none is cut short). A command still
-            // within its own timeout goes on (until it's up, above); what else is left stops.
-            const ms = backgroundTiming.maxWaitMs;
-            // Sub-agents and workflows go on too while one does: stopping one ends the shells under it (a grandchild's
-            // too), and a command's completion goes to the sub-agent that ran it. Its timeout bounds the wait.
+            // Commands without a timeout of their own and monitors have a cap; sub-agents and workflows none by
+            // default (maxWaitMs), as in Claude Code: they run until they're done or the user stops them.
+            const waited = Date.now() - this.waitingSince!;
+            const capOf = (t: BackgroundWork) => (t.commandTask ? Math.min(backgroundTiming.commandsMaxWaitMs, backgroundTiming.maxWaitMs) : backgroundTiming.maxWaitMs);
+            // Sub-agents and workflows go on too while a command within its own timeout does: stopping one ends the
+            // shells under it (a grandchild's too), and a command's completion goes to the sub-agent that ran it.
             const timed = left.some((t) => ownDeadline(t) !== undefined);
-            const over = left.filter((t) => ownDeadline(t) === undefined && !(timed && !t.commandTask));
+            const over = left.filter((t) => ownDeadline(t) === undefined && waited >= capOf(t) && !(timed && !t.commandTask));
+            if (!over.length) return false;
+            const ms = Math.min(...over.map(capOf));
             // So too while a finished command's report is still due: stop the rest by task id and let that turn come.
             if (over.length < left.length || (this.reportsDue && over.every((t) => t.id))) {
                 for (const task of over) this.stopTask(task, `waited ${span(ms)}, the limit for background work`);
@@ -873,7 +888,9 @@ class ClaudeTurn {
         void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
         const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
         try {
-            for await (const m of this.proc.messages()) {
+            // Claude Code gone (a crash) while something it started holds its output open: once all it wrote is
+            // read and nothing more comes for a moment, the run ends rather than waiting for good.
+            for await (const m of this.proc.messages({ quietAfterExitMs: backgroundTiming.exitDrainMs })) {
                 if (m.type === "result") {
                     this.goals?.poll();
                     this.commandWaitingSince.clear();
