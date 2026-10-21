@@ -930,6 +930,62 @@ describe("connecting", () => {
         }
     });
 
+    test("while a tool call's input streams, the activity says the tool is being prepared, not \"Writing Write\"", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            (rt as any).onEvent({ type: "tool_call_start", id: "call_w", name: "Write" });
+            expect(rt.snapshot().state.activity?.label).toBe("Preparing Write");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("an untitled session's notification title is one line cut at a word, not the raw prompt with its newlines", async () => {
+        const { engine, rt } = await engineWithSession();
+        const sent: any[] = [];
+        engine.clients.add({ subs: new Set<string>(), send: (m: any) => sent.push(m) } as any);
+        try {
+            expect(rt.title).toBeUndefined();
+            (rt as any).firstPrompt = () => 'Feature request: project scripts ("actions") in the GUI\n\nYou should be able to run them';
+            engine.notify(rt, "done", "Finished in 20m 52s");
+            const title = sent.find((e) => e.type === "notify")?.title;
+            expect(title).not.toContain("\n");
+            expect(title).toBe('Feature request: project scripts ("actions") in the GUI');
+            // It reaches every window and the OS notification center, so a key in the prompt is masked.
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const secret = "zq7Xv9Lr2Wm4Kp8Tq0Jd5Hs3Nb6Yc1Fe";
+            registerSecret(secret, "NS");
+            try {
+                (rt as any).firstPrompt = () => `${secret} why does this fail`;
+                engine.notify(rt, "done", "Finished in 3s");
+                expect(sent.filter((e) => e.type === "notify").at(-1)?.title).toBe("[REDACTED NS] why does this fail");
+            } finally {
+                unregisterSecret(secret);
+            }
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("the title request is redacted before it's cut, so a secret across the 3000-character cut doesn't reach the title model", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const { engine, rt } = await engineWithSession();
+        const secret = "zq7Xv9Lr2Wm4Kp8Tq0Jd5Hs3Nb6Yc1Fe";
+        try {
+            registerSecret(secret, "TS");
+            const before = mock.requests.length;
+            await (rt as any).generateTitle(`explain ${"x".repeat(2990 - 8)}${secret} and more`);
+            const sent = mock.requests.slice(before).filter((r) => r.kind === "title");
+            expect(sent).toHaveLength(1);
+            for (let i = 0; i + 6 <= secret.length; i++) expect(sent[0]!.body).not.toContain(secret.slice(i, i + 6));
+        } finally {
+            unregisterSecret(secret);
+            await engine.stop();
+        }
+    });
+
     test("a title that fails every try comes from the first prompt that said something, and each failure is logged", async () => {
         const logged: string[] = [];
         const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });

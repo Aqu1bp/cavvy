@@ -566,7 +566,12 @@ export function replay(o: ReplayInput): Turn[] {
                 if (kind === "interrupt") {
                     const t = ensure(index);
                     t.status = "aborted";
-                    for (const b of t.blocks) if (b.t === "tool" && b.status === "running") b.status = "error";
+                    for (const b of t.blocks)
+                        if (b.t === "tool" && b.status === "running") {
+                            b.status = "error";
+                            // Stopped before it ran: no edit happened, whatever its input said.
+                            if (!o.ui.tools.get(b.id)?.diff) delete b.diff;
+                        }
                     return;
                 }
                 if (kind === "tool_results") {
@@ -638,6 +643,9 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (!b) return;
     const rec = ui.tools.get(p.toolCallId);
     Object.assign(b, resultPatch(p.content, p.isError, b.agent));
+    // A diff built from the call's input is of an edit that never happened when the call failed.
+    // A declined one keeps it: that's what the user was shown and said no to.
+    if (b.status === "error" && !rec?.diff) delete b.diff;
     if (rec?.summary) b.summary = rec.summary;
     else if (b.status === "ok") b.summary = derivedSummary(b, p.content);
     if (rec?.durationMs !== undefined) b.durationMs = rec.durationMs;

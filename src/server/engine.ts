@@ -44,7 +44,7 @@ import { expandPath, isInside, sniffImage } from "../util/files";
 /** The largest image file shown inline in a reply. */
 const MAX_SHOWN_IMAGE = 10 * 1024 * 1024;
 import { maskKey, redact } from "../util/redact";
-import { cleanTitle, modelSummary, Runtime } from "./runtime";
+import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
 import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
@@ -373,7 +373,10 @@ export class Engine {
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
-        const title = rt.title ?? rt.firstPrompt()?.slice(0, 60) ?? basename(rt.ws.cwd);
+        // One line cut at a word (as a title from the prompt is made), not the raw prompt with its
+        // newlines. Redacted first: the title reaches every window and the OS notification center.
+        const first = rt.firstPrompt();
+        const title = rt.title ?? (first ? promptTitle(redact(first)) : undefined) ?? basename(rt.ws.cwd);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Harness: ${body}`;
