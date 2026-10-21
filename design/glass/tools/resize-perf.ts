@@ -10,7 +10,7 @@
 // RUNS (default 3: the median run is reported), CHROME (the binary), INJECT_CSS (extra CSS to try), TRACE_DIR (keeps each handle's
 // last trace there, for DevTools' Performance panel).
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const args = process.argv.slice(2);
@@ -25,7 +25,13 @@ const W = Number(process.env.W ?? 1512);
 const H = Number(process.env.H ?? 982);
 
 const port = 9333 + Math.floor(Math.random() * 500);
-const proc = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${mkdtempSync("/tmp/cdp-")}`, "--hide-scrollbars", "--no-first-run", `--window-size=${W},${H}`, "about:blank"], { stdio: "ignore" });
+const profile = mkdtempSync("/tmp/cdp-");
+const proc = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, "--hide-scrollbars", "--no-first-run", `--window-size=${W},${H}`, "about:blank"], { stdio: "ignore" });
+// Chrome and its profile go however this ends.
+process.on("exit", () => {
+    proc.kill();
+    rmSync(profile, { recursive: true, force: true });
+});
 let tab: any;
 for (let i = 0; i < 50 && !tab; i++) {
     await Bun.sleep(200);
@@ -213,5 +219,4 @@ for (const name of wanted) {
 if (jsonOut) await Bun.write(jsonOut, JSON.stringify(results, null, 2));
 console.log(errors.length ? `PAGE ERRORS:\n${errors.join("\n")}` : "no page errors");
 ws.close();
-proc.kill();
 process.exit(0);
