@@ -26,6 +26,8 @@ import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
+import { CODEX_HOOK_SERVER, CODEX_HOOK_TOOL, codexHookArgs, codexHookFailed, codexHookTaken, nativeCall, preToolUseAnswer } from "./codex-hooks";
+import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
@@ -106,9 +108,9 @@ export function untrustedArgs(cwd: string): string[] {
 }
 
 /** Start app-server (no handshake yet). */
-function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string } = {}): Rpc {
+function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: boolean } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
-    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : [])];
+    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks ? codexHookArgs() : [])];
     return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
@@ -195,7 +197,7 @@ export function codexPolicy(mode: PermissionMode, additionalDirectories: string[
             // Edits and commands inside the workspace run in Codex's sandbox; going beyond it, Codex's own reviewer decides.
             return { approvalPolicy: "on-request", sandbox: "workspace-write", sandboxPolicy: workspaceWrite, approvalsReviewer: "auto_review" };
         case "bypassPermissions":
-            // With PreToolUse hooks, Codex asks about every command so they can see it (and the mode approves what it allows).
+            // With PreToolUse hooks Codex can't run itself (an older Codex), it asks about every command so they can see it (and the mode approves what it allows).
             if (preToolUse) return { approvalPolicy: "untrusted", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
             return { approvalPolicy: "never", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" }, approvalsReviewer: "user" };
         default:
@@ -234,6 +236,8 @@ function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
 
 /** A hook rewrote a call Codex asked about: Codex can only run what it asked, so the call is refused. */
 const CANT_REWRITE = "A hook rewrote this call, and Codex can only run the call as it asked, so neither the rewrite nor the original ran.";
+/** A PreToolUse rewrite Codex can't take: a patch (the harness sees it as an edit), a sub-agent, or a command without one. */
+const CANT_REWRITE_NATIVE = "A PreToolUse hook rewrote this call into something Codex can't run in its place, so neither the rewrite nor the original ran.";
 
 /** Codex's fast service tiers: "priority" in its catalog (0.163), "fast" in older ones. */
 const FAST_TIERS = new Set(["fast", "priority"]);
@@ -395,6 +399,11 @@ class CodexTurn {
     private items = new Map<string, OpenItem>();
     /** PostToolUse hooks still running: the turn waits for them. */
     private hookRuns = new Set<Promise<void>>();
+    /** Codex runs the harness's PreToolUse hooks itself, calling back to this server; without it, they see only what Codex asks about. */
+    private hookServer?: Registration;
+    private nativeHooks = false;
+    /** What PreToolUse hooks (or the user, asked from one) already said of a call, for when Codex then asks about it. */
+    private hookAnswers = new Map<string, "allow">();
     private streamed = new Set<string>();
     private texts: string[] = [];
     /** The main thread's answer: what a sub-agent on Codex reports. */
@@ -470,7 +479,9 @@ class CodexTurn {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
         const accountPermissions = accountPermissionConfig(t.additionalDirectories);
-        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId });
+        // PreToolUse hooks go to Codex as one of its own, calling back to the harness, which runs them.
+        if (this.hooked("PreToolUse")) this.hookServer = registerTools([this.hookTool()]);
+        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: Boolean(this.hookServer) });
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Codex was running. Send again to apply their updated protections.";
             void this.rpc.proc.kill();
@@ -496,19 +507,25 @@ class CodexTurn {
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).
             if (this.billedToPlan) void this.readLimits();
-            const policy = codexPolicy(this.host.mode(), t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse"));
+            if (this.hookServer) this.nativeHooks = await this.hooksTaken(t.cwd);
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
-            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), o?.name);
+            const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
             const off = overrides.config;
-            if (overrides.reservedCollision) {
+            if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
+                this.host.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and Codex asks about every command this turn so your PreToolUse hooks see them.` });
+                this.nativeHooks = false;
+            }
+            const policy = codexPolicy(this.host.mode(), t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
+            if (o && overrides.collisions.includes(o.name)) {
                 this.host.emit({ type: "notice", level: "warn", message: "Codex already has a server named harness; it is disabled and this turn runs without Harness delegation to avoid merging server configurations." });
                 o = undefined;
             }
             const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config: Record<string, unknown> | undefined = o && !t.readOnly ? { mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
+            if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };
             if (accountPermissions) config = { ...config, ...accountPermissions };
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
@@ -525,7 +542,8 @@ class CodexTurn {
                 } catch (e) {
                     // Never fall back by dropping account denies: fail closed instead.
                     if (this.aborted || !o || accountPermissions) throw e;
-                    const r = await this.rpc.request(method, { ...params, config: off, developerInstructions: baseInstructions });
+                    const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
+                    const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
                     this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
                     return r;
                 }
@@ -560,7 +578,7 @@ class CodexTurn {
                 while (true) {
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.host.mode();
-                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse"));
+                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
                     const note = modeNote(mode, Boolean(t.readOnly));
                     const input = this.input(note ? `${note}\n\n${text}` : text, images);
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
@@ -609,6 +627,7 @@ class CodexTurn {
             t.signal.removeEventListener("abort", onAbort);
             if (abortTimer) clearTimeout(abortTimer);
             await this.rpc.proc.stop(1000);
+            this.hookServer?.close();
             // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
             await this.steering;
             // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
@@ -685,6 +704,11 @@ class CodexTurn {
 
     private onNotification(method: string, p: any) {
         const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
+        if (method === "hook/completed" && this.nativeHooks && codexHookFailed(p)) {
+            // Codex goes on with a call whose hook didn't run: the turn stops instead.
+            this.host.emit({ type: "notice", level: "error", message: "Your PreToolUse hooks couldn't run for a Codex tool call, so the turn was stopped." });
+            this.interrupt(this.origin(p));
+        }
         if (method === "thread/started" && typeof p?.thread?.id === "string" && typeof p.thread.model === "string") this.threadModels.set(p.thread.id, p.thread.model);
         const modelThread = thread ?? this.threadId;
         if (method === "model/rerouted" && typeof p?.toModel === "string" && modelThread) {
@@ -1153,9 +1177,101 @@ class CodexTurn {
         }
     }
 
-    /** The harness has hooks for this event (Codex runs none of them itself). */
+    /** The harness has hooks for this event. */
     private hooked(event: HookEvent): boolean {
         return Boolean(this.t.hooks?.[event]?.length && this.host.hooks);
+    }
+
+    /** Codex took the harness's PreToolUse hook, trusted (an older Codex doesn't list hooks, or doesn't run them). */
+    private async hooksTaken(cwd: string): Promise<boolean> {
+        try {
+            if (codexHookTaken(await withTimeout(this.rpc.request("hooks/list", { cwds: [cwd] }), 20_000, "Codex didn't list its hooks"))) return true;
+        } catch (e) {
+            if (this.aborted) throw e;
+        }
+        if (!saidNoNativeHooks) this.host.emit({ type: "notice", level: "info", message: `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` });
+        saidNoNativeHooks = true;
+        return false;
+    }
+
+    /** A call refused before Codex started it shows as one, with why: Codex reports no item for it. */
+    private refusedCall(id: string | undefined, call: { toolName: string; input: Record<string, unknown> }, reason: string, from?: Origin) {
+        if (from && !from.sub) return;
+        const c = { type: "tool_call" as const, id: id ?? `refused-${Date.now()}`, name: call.toolName, input: call.input };
+        const target = call.toolName === "Bash" ? String(call.input.command ?? "") : String(call.input.file_path ?? "");
+        const title = call.toolName === "Bash" ? commandTitle(target) : target ? `${call.toolName}(${target})` : call.toolName;
+        for (const e of [{ type: "tool_start", call: c, title }, { type: "tool_end", call: c, result: { content: reason, isError: true }, durationMs: 0 }] as AgentEvent[]) {
+            if (from?.sub) this.subEmit(from.sub, e);
+            else this.host.emit(e);
+        }
+    }
+
+    /** The tool Codex's PreToolUse hook calls. Hidden from the model (MCP Apps visibility), so only the hook calls it. */
+    private hookTool(): ServerTool {
+        return {
+            name: CODEX_HOOK_TOOL,
+            description: `Runs ${APP_TITLE}'s PreToolUse hooks for a tool call Codex is about to make.`,
+            inputSchema: { type: "object", properties: { tool_name: { type: "string" }, tool_input: {}, tool_use_id: { type: "string" } }, required: ["tool_name"] },
+            meta: { ui: { visibility: ["app"] } },
+            call: async (args, { meta }) => {
+                try {
+                    return { text: await this.nativePreToolUse(args, meta) };
+                } catch (e) {
+                    // Refused rather than let through: Codex goes on with a call whose hook failed.
+                    return { text: preToolUseAnswer({ deny: `PreToolUse hooks couldn't run: ${redact((e as Error).message)}` }) };
+                }
+            },
+        };
+    }
+
+    /**
+     * Codex is about to make a tool call (any thread, any mode): the harness's
+     * PreToolUse hooks run, and what they say goes back as Codex's own hook
+     * answer. A rewrite is checked as the call it becomes (rules, read-only,
+     * the mode), and a hook that asks gets the user now: Codex itself may not ask.
+     */
+    private async nativePreToolUse(args: Record<string, unknown>, meta: Record<string, unknown>): Promise<string> {
+        if (this.aborted) return preToolUseAnswer({ deny: "Interrupted by user." });
+        const from = this.origin({ threadId: meta.threadId });
+        const agentLabel = from ? (from.sub?.label ?? "Codex sub-agent") : undefined;
+        const id = typeof args.tool_use_id === "string" ? args.tool_use_id : undefined;
+        const call = nativeCall(String(args.tool_name ?? ""), args.tool_input, this.t.cwd);
+        const h = await this.host.hooks!("PreToolUse", { tool_name: call.toolName, tool_input: call.input, ...(id ? { tool_use_id: id } : {}) });
+        const context = h?.additionalContext;
+        const deny = (reason: string) => {
+            this.refusedCall(id, call, reason, from);
+            return preToolUseAnswer({ deny: reason, context });
+        };
+        if (h?.stop) {
+            this.host.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
+            this.interrupt(from);
+            return deny(`Stopped by PreToolUse hook: ${h.stop}`);
+        }
+        if (h?.blocked) return deny(`Blocked by PreToolUse hook: ${h.blocked}`);
+        if (h?.decision === "deny") return deny(`Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`);
+        const bypass = (this.turnMode ?? this.host.mode()) === "bypassPermissions";
+        const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
+        if (h?.updatedInput) {
+            if (!call.rewritable || (call.toolName === "Bash" && typeof h.updatedInput.command !== "string")) return deny(CANT_REWRITE_NATIVE);
+            // Checked as the call it now is, as a rewrite for the harness's own models is.
+            const a = await this.host.permission({ toolName: call.toolName, input: h.updatedInput, callId: id, hookDecision, hooksOnly: bypass, agentLabel });
+            if (!a.allow) {
+                if (a.stop) this.interrupt(from);
+                return deny(a.message || "Denied.");
+            }
+            if (id) this.hookAnswers.set(id, "allow");
+            return preToolUseAnswer({ updatedInput: h.updatedInput, context });
+        }
+        if (hookDecision === "ask") {
+            // Codex may not ask about it (bypass never does): the user is asked now.
+            const a = await this.host.permission({ toolName: call.toolName, input: call.input, callId: id, hookDecision, agentLabel });
+            if (!a.allow) {
+                if (a.stop) this.interrupt(from);
+                return deny(a.message || "Denied.");
+            }
+        }
+        if (hookDecision && id) this.hookAnswers.set(id, "allow");
+        return preToolUseAnswer({ context });
     }
 
     /**
@@ -1165,6 +1281,12 @@ class CodexTurn {
      */
     private async ask(req: BackendPermission): Promise<PermissionAnswer> {
         if (!this.hooked("PreToolUse")) return this.host.permission(req);
+        // Codex ran them already, before the call: what they said of it goes with the ask.
+        if (this.nativeHooks) {
+            const said = req.callId ? this.hookAnswers.get(req.callId) : undefined;
+            if (req.callId) this.hookAnswers.delete(req.callId);
+            return this.host.permission(said ? { ...req, hookDecision: said } : req);
+        }
         const h = await this.host.hooks!("PreToolUse", { tool_name: req.toolName, tool_input: req.input, ...(req.callId ? { tool_use_id: req.callId } : {}) });
         if (h?.blocked) return { allow: false, message: `Blocked by PreToolUse hook: ${h.blocked}`, stop: false };
         if (h?.decision === "deny") return { allow: false, message: `Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`, stop: false };
@@ -1189,7 +1311,7 @@ class CodexTurn {
     }
 
     /** Build MCP overrides for every turn from CLI config/provenance, or return an error if unsafe to start. */
-    private async mcpOverrides(cwd: string, readOnly: boolean, reservedName?: string) {
+    private async mcpOverrides(cwd: string, readOnly: boolean, reservedName?: string | string[]) {
         try {
             const r = codexMcpOverrides(await this.rpc.request("config/read", { cwd, includeLayers: true }), readOnly, reservedName);
             if (r.missingProvenance) this.host.emit({ type: "notice", level: "warn", message: "Codex did not identify its config layers; all configured MCP servers are disabled for this turn." });
@@ -1483,6 +1605,14 @@ export function orchestratorConfig(o: OrchestratorServer): Record<string, unknow
             },
         },
     };
+}
+
+/** Said once: a Codex that doesn't run the harness's hooks itself doesn't start to. */
+let saidNoNativeHooks = false;
+
+/** The server Codex's PreToolUse hook calls (thread config, over stdin like the delegation server's token). */
+function hookServerConfig(r: Registration): Record<string, unknown> {
+    return { [CODEX_HOOK_SERVER]: { url: r.url, http_headers: { Authorization: r.authorization }, startup_timeout_sec: 30, default_tools_approval_mode: "approve" } };
 }
 
 /**

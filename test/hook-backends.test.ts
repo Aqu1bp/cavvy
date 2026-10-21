@@ -61,7 +61,7 @@ const record = (file: string, then = "") => `cat >> '${file}'; echo >> '${file}'
 const say = (o: unknown) => `echo '${JSON.stringify(o)}'`;
 const toolEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "tool_end" ? [e] : []));
 
-async function makeAgent(provider: "claude-code" | "codex", settings: any, mode: PermissionMode = "bypassPermissions", ask?: () => any) {
+async function makeAgent(provider: "claude-code" | "codex", settings: any, mode: PermissionMode = "bypassPermissions", ask?: () => any, o: { readOnly?: boolean } = {}) {
     trust.trustForSession(cwd);
     const events: AgentEvent[] = [];
     const asked: unknown[] = [];
@@ -76,6 +76,7 @@ async function makeAgent(provider: "claude-code" | "codex", settings: any, mode:
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
         host: { drainQueued: () => [], emit: (e) => events.push(e), ui: {}, askPermission: ask ? async (req) => (asked.push(req), ask()) : undefined },
+        readOnly: o.readOnly,
     });
     const run = (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal });
     return { agent, events, asked, session, run };
@@ -164,30 +165,63 @@ describe("Codex's items run the harness's hooks", () => {
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
     const decision = () => received().find((m) => m.result?.decision)?.result.decision;
 
-    test("bypass mode with PreToolUse hooks: Codex asks about each command, so a hook can refuse it", async () => {
+    const ranLine = () => logLines().find((l) => "ran" in l);
+    const hookArg = () => (logLines()[0]?.argv as string[]).find((a) => a.startsWith("hooks="));
+
+    test("bypass mode with PreToolUse hooks: Codex runs them itself before the command, without being made to ask", async () => {
         const seen = join(cwd, "pre.jsonl");
         const settings = { hooks: { PreToolUse: [{ matcher: "Bash", command: `${record(seen)}; echo 'touching is banned' >&2; exit 2` }] } };
         const { run, events, asked } = await makeAgent("codex", settings, "bypassPermissions", () => ({ allow: true }));
         expect(await run("make x")).toBe("done");
-        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "dangerFullAccess" } });
-        expect(decision()).toBe("decline");
+        // Codex's own policy for the mode, and the hook is one of Codex's, trusted.
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
+        expect(hookArg()).toContain('"type"="mcp_tool"');
+        expect(received().some((m) => m.method === "hooks/list")).toBe(true);
+        expect(received().some((m) => m.method?.endsWith("requestApproval"))).toBe(false);
         expect(asked).toEqual([]);
-        expect(jsonl(seen)[0]).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "touch x" } });
-        expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true, content: expect.stringContaining("touching is banned") });
-        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        expect(jsonl(seen)[0]).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "touch x" }, tool_use_id: "cmd-turn-1" });
+        expect(ranLine()).toMatchObject({ ran: false, blockedByHook: expect.stringContaining("touching is banned") });
+        // Codex reports no item for a call it never started: the harness shows it, refused.
+        expect(toolEnds(events)[0]).toMatchObject({ call: { name: "Bash", input: { command: "touch x" } }, result: { isError: true, content: expect.stringContaining("touching is banned") } });
+    });
+
+    test("the hook's tool is the harness's and hidden from the model; its server's token goes over stdin, not in arguments", async () => {
+        const { run } = await makeAgent("codex", { hooks: { PreToolUse: [{ command: "true" }] } });
+        expect(await run("make x")).toBe("done");
+        const start = received().find((m) => m.method === "thread/start")!.params;
+        const server = start.config.mcp_servers.harness_hooks;
+        const { url, http_headers: { Authorization: auth } } = server;
+        expect(url).toStartWith("http://127.0.0.1:");
+        expect(server.default_tools_approval_mode).toBe("approve");
+        expect(hookArg()).not.toContain(auth.slice(7));
+        const listed = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: auth }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+        // Closed with the turn: the token no longer works.
+        expect(listed.status).toBe(401);
+        expect(logLines().find((l) => l.mcpConnected === "harness_hooks")?.tools).toEqual(["pre_tool_use"]);
     });
 
     test("bypass mode: a hook that says nothing lets the command run without asking, as bypass would", async () => {
         const { run, asked } = await makeAgent("codex", { hooks: { PreToolUse: [{ command: "true" }] } }, "bypassPermissions", () => ({ allow: false, message: "no", stop: false }));
         expect(await run("make x")).toBe("done");
-        expect(decision()).toBe("accept");
+        expect(ranLine()).toMatchObject({ ran: true });
+        expect(logLines().find((l) => l.hookCalled)?.hookCalled).toMatchObject({ tool: "pre_tool_use", input: { tool_name: "Bash", tool_input: { command: "touch x" } }, answer: "" });
         expect(asked).toEqual([]);
     });
 
-    test("without PreToolUse hooks bypass mode stays Codex's own (never asks)", async () => {
+    test("bypass mode: a hook's ask asks the user from the hook, since Codex never asks there", async () => {
+        const ask = { hooks: { PreToolUse: [{ command: say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" } }) }] } };
+        const a = await makeAgent("codex", ask, "bypassPermissions", () => ({ allow: false, message: "not that", stop: false }));
+        await a.run("make x");
+        expect(a.asked).toHaveLength(1);
+        expect(ranLine()).toMatchObject({ ran: false, blockedByHook: expect.stringContaining("declined") });
+    });
+
+    test("without PreToolUse hooks bypass mode stays Codex's own (never asks), and Codex gets no hook", async () => {
         const { run } = await makeAgent("codex", { hooks: { PostToolUse: [{ command: "true" }] } });
         expect(await run("make x")).toBe("done");
         expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
+        expect(hookArg()).toBeUndefined();
+        expect(received().find((m) => m.method === "thread/start")!.params.config?.mcp_servers?.harness_hooks).toBeUndefined();
     });
 
     test("default mode: a hook's allow approves without asking the user; a deny rule still wins", async () => {
@@ -203,7 +237,7 @@ describe("Codex's items run the harness's hooks", () => {
         expect(decision()).toBe("decline");
     });
 
-    test("default mode: a hook's ask asks the user even where a rule would allow it", async () => {
+    test("default mode: a hook's ask asks the user once, even where a rule would allow it", async () => {
         const settings = { permissions: { allow: ["Bash(touch:*)"] }, hooks: { PreToolUse: [{ command: say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" } }) }] } };
         const { run, asked } = await makeAgent("codex", settings, "default", () => ({ allow: true }));
         expect(await run("make x")).toBe("done");
@@ -211,20 +245,85 @@ describe("Codex's items run the harness's hooks", () => {
         expect(decision()).toBe("accept");
     });
 
-    test("Codex can't run a hook's rewritten command, so it isn't approved (PermissionRequest or PreToolUse)", async () => {
+    test("a PreToolUse rewrite runs on Codex, checked as the call it becomes (deny rules, read-only agents)", async () => {
+        const rewrite = (command: string) => say({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command } } });
+        const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: rewrite("printf safe-replacement") }] } }, "bypassPermissions", () => ({ allow: true }));
+        expect(await a.run("make x")).toBe("done");
+        expect(ranLine()).toMatchObject({ ran: true, command: "printf safe-replacement" });
+        expect(a.asked).toEqual([]);
+
+        // Rewritten into something a deny rule covers: refused, and neither ran.
+        rmSync(LOG, { force: true });
+        const b = await makeAgent("codex", { permissions: { deny: ["Bash(rm:*)"] }, hooks: { PreToolUse: [{ command: rewrite("rm -rf src") }] } }, "bypassPermissions", () => ({ allow: true }));
+        expect(await b.run("make x")).toBe("done");
+        expect(ranLine()).toMatchObject({ ran: false });
+        expect(toolEnds(b.events)[0]!.result).toMatchObject({ isError: true });
+
+        // A read-only agent's call rewritten into a write: refused.
+        rmSync(LOG, { force: true });
+        process.env.FAKE_COMMAND = "ls";
+        const c = await makeAgent("codex", { hooks: { PreToolUse: [{ command: rewrite("touch rewritten-write") }] } }, "default", () => ({ allow: true }), { readOnly: true });
+        expect(await c.run("look")).toBe("done");
+        expect(ranLine()).toMatchObject({ ran: false });
+        expect(c.asked).toEqual([]);
+    });
+
+    test("Codex can't run a PermissionRequest hook's rewritten command, so it isn't approved", async () => {
         const allowAs = say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command: "printf safe-replacement" } } } });
         const a = await makeAgent("codex", { hooks: { PermissionRequest: [{ command: allowAs }] } }, "default", () => ({ allow: true }));
         expect(await a.run("make x")).toBe("done");
         expect(decision()).toBe("decline");
-        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        expect(ranLine()).toMatchObject({ ran: false });
         expect(a.asked).toEqual([]);
+    });
 
-        rmSync(LOG, { force: true });
-        const rewrite = say({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "printf safe-replacement" } } });
-        const b = await makeAgent("codex", { hooks: { PreToolUse: [{ command: rewrite }] } }, "bypassPermissions", () => ({ allow: true }));
-        expect(await b.run("make x")).toBe("done");
-        expect(decision()).toBe("decline");
-        expect(toolEnds(b.events)[0]!.result).toMatchObject({ isError: true, content: expect.stringContaining("rewrite") });
+    test("continue:false from a PreToolUse hook refuses the call and stops the turn", async () => {
+        const stop = say({ continue: false, stopReason: "enough for today" });
+        const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: stop }] } }, "bypassPermissions");
+        await a.run("make x");
+        expect(ranLine()).toMatchObject({ ran: false });
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+        expect(a.events.some((e) => e.type === "notice" && e.message.includes("enough for today"))).toBe(true);
+    });
+
+    test("if the hook's call fails, Codex goes on with the command, so the turn is stopped and says why", async () => {
+        process.env.FAKE_HOOK_SERVER_DOWN = "1";
+        const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: "true" }] } }, "bypassPermissions");
+        await a.run("make x");
+        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+        expect(a.events.some((e) => e.type === "notice" && e.level === "error" && e.message.includes("couldn't run"))).toBe(true);
+    });
+
+    describe("a Codex that doesn't run the harness's hooks itself (before 0.160)", () => {
+        beforeEach(() => (process.env.FAKE_NO_HOOKS = "1"));
+
+        test("bypass mode: Codex is made to ask about each command, so a hook can still refuse it", async () => {
+            const seen = join(cwd, "pre.jsonl");
+            const settings = { hooks: { PreToolUse: [{ matcher: "Bash", command: `${record(seen)}; echo 'touching is banned' >&2; exit 2` }] } };
+            const { run, events, asked } = await makeAgent("codex", settings, "bypassPermissions", () => ({ allow: true }));
+            expect(await run("make x")).toBe("done");
+            expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "dangerFullAccess" } });
+            expect(received().find((m) => m.method === "thread/start")!.params.config?.mcp_servers?.harness_hooks).toBeUndefined();
+            expect(decision()).toBe("decline");
+            expect(asked).toEqual([]);
+            expect(jsonl(seen)[0]).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "touch x" } });
+            expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true, content: expect.stringContaining("touching is banned") });
+            expect(ranLine()).toMatchObject({ ran: false });
+        });
+
+        test("a hook that says nothing lets the command run as bypass would; a rewrite is refused", async () => {
+            const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: "true" }] } }, "bypassPermissions", () => ({ allow: false, message: "no", stop: false }));
+            expect(await a.run("make x")).toBe("done");
+            expect(decision()).toBe("accept");
+            expect(a.asked).toEqual([]);
+
+            rmSync(LOG, { force: true });
+            const rewrite = say({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "printf safe-replacement" } } });
+            const b = await makeAgent("codex", { hooks: { PreToolUse: [{ command: rewrite }] } }, "bypassPermissions", () => ({ allow: true }));
+            expect(await b.run("make x")).toBe("done");
+            expect(decision()).toBe("decline");
+            expect(toolEnds(b.events)[0]!.result).toMatchObject({ isError: true, content: expect.stringContaining("rewrite") });
+        });
     });
 
     test("a PermissionRequest hook that rewrites Codex's permissions request grants nothing, not the original scope", async () => {
