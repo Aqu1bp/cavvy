@@ -1253,6 +1253,10 @@
     color: var(--fg-3);
 }
 
+.cm-desc.cm-warn {
+    color: var(--warn);
+}
+
 .cm-status {
     padding: 9px 10px;
     font-size: 0.857rem;

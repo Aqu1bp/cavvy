@@ -2110,7 +2110,9 @@ export class Runtime {
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
         this.toolState.wakes?.resume();
-        if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
+        // These answer here and send nothing to the model, so what's attached would be lost: the message stays in the box.
+        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust)(?=\s|$)/i)?.[1]?.toLowerCase();
+        if (bare) throw new RpcError(`/${bare} doesn't take attachments. Send them in a message of their own.`, "no_attachments");
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
         if (unknown) throw new RpcError(`Unknown command /${unknown}`, "unknown_command");

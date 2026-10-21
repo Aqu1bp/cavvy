@@ -558,7 +558,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                                         <span class="cm-args"> {c().cmd.args}</span>
                                                     </Show>
                                                 </span>
-                                                <span class="cm-desc truncate">{c().cmd.description}</span>
+                                                {/* /compact and the like answer without the model: what's attached would be lost, so the server refuses it. */}
+                                                <Show when={c().cmd.noAttachments && !c().mention && attachments().length} fallback={<span class="cm-desc truncate">{c().cmd.description}</span>}>
+                                                    <span class="cm-desc cm-warn truncate">Doesn't take attachments: send them on their own</span>
+                                                </Show>
                                             </>
                                         )}
                                     </Match>

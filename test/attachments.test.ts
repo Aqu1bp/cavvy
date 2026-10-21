@@ -330,10 +330,16 @@ describe("edge cases", () => {
         }
     });
 
-    test("a slash command that starts a turn takes the files along; /compact refuses them", async () => {
+    test("a slash command that starts a turn takes the files along; /compact, /loop, /schedules and /trust refuse them", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         try {
             await expect(engine.handle(c, "session.send", { id, text: "/compact", files: [{ name: "a.txt", data: b64("a") }] })).rejects.toThrow(/compact doesn't take attachments/);
+            // They answer without sending anything to the model: what's attached would be dropped, so they say so instead.
+            const image = { mediaType: "image/png", data: b64("png") };
+            for (const text of ["/loop 5m check the build", "/schedules", "/trust"]) {
+                await expect(engine.handle(c, "session.send", { id, text, images: [image] })).rejects.toMatchObject({ code: "no_attachments", message: `${text.split(" ")[0]} doesn't take attachments. Send them in a message of their own.` });
+            }
+            expect(rt.snapshot().state.schedules ?? []).toEqual([]);
             await engine.handle(c, "session.send", { id, text: "/init", files: [{ name: "conventions.md", data: b64("tabs, not spaces\n") }] });
             await until(() => rt.session.messages.some((m) => m.role === "user" && m.meta?.kind === "command"));
             const cmd = rt.session.messages.find((m) => m.role === "user" && m.meta?.kind === "command")!;
