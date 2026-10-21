@@ -225,8 +225,14 @@
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 3px var(--line);
 }
 
-.segmented button:hover:not(.on) {
+.segmented button:hover:not(.on):not([aria-disabled="true"]) {
     color: var(--fg-2);
+}
+
+/* Not available here: its tooltip says why. */
+.segmented button[aria-disabled="true"] {
+    opacity: 0.45;
+    cursor: default;
 }
 
 /* ---- Dialogs -------------------------------------------------------- */

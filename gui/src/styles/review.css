@@ -175,6 +175,134 @@
     box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
 }
 
+/* Which worktree: the session's own folder or another (ReviewWorktreePicker), in the base picker's pill. */
+.rv-wt-ctl {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    max-width: 260px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: var(--pill);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
+    color: var(--fg);
+    font-size: 0.857rem;
+}
+
+.rv-wt-ctl svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.rv-wt-ctl .chv {
+    opacity: 0.6;
+}
+
+.rv-wt-ctl:hover,
+.rv-wt-ctl[aria-expanded="true"] {
+    box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
+}
+
+/* Another worktree than the session's: marked with the accent, so the view isn't taken for the session's own. */
+.rv-wt-ctl.away {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent), 0 1px 2px var(--line);
+}
+
+.rv-wt-ctl.away svg:first-child {
+    color: var(--accent);
+}
+
+.rv-wt-ctl .mono {
+    font-size: 0.857rem;
+}
+
+/* "This session": a quiet tag after the branch. */
+.rv-wt-self {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: var(--pill);
+    background: var(--hover);
+    color: var(--fg-3);
+    font: 500 0.75rem/1.4 var(--font-ui);
+}
+
+.base-list.rv-wt-list {
+    gap: 4px;
+    max-height: min(560px, 62vh);
+}
+
+/* Its full height, however long the list: a flex column would squeeze rows into each other. */
+.menu-item.rv-wt-item {
+    flex: none;
+    align-items: flex-start;
+    padding: 8px 10px 9px;
+}
+
+.menu-item.rv-wt-item > svg:first-child {
+    margin-top: 2px;
+}
+
+.rv-wt-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* What's working in it: sub-agents and sessions, each with its state's dot. */
+.rv-wt-work {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 10px;
+    margin-top: 4px;
+    min-width: 0;
+}
+
+.rv-wt-who {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    max-width: 100%;
+    font-size: 0.821rem;
+    color: var(--fg-2);
+}
+
+.rv-wt-ico {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+}
+
+.rv-wt-item .rv-wt-ico svg {
+    color: var(--fg-3);
+}
+
+.rv-wt-dot {
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1.5px var(--sheet);
+}
+
+.rv-wt-dot.st-running {
+    background: var(--accent);
+}
+
+.rv-wt-dot.st-waiting {
+    background: var(--warn);
+}
+
+.rv-wt-more {
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
 /* The branch picker's list (a popover). */
 .base-list {
     display: flex;

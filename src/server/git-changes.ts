@@ -150,6 +150,12 @@ interface Refs {
     default?: string;
 }
 
+/** What the Branch view compares with when no base is picked: Harness's main branch, as a short name and its full ref. */
+export async function defaultBase(root: string): Promise<{ name: string; ref: string } | undefined> {
+    const refs = await listRefs(root, Date.now() + DEADLINE_MS);
+    return refs.default ? { name: refs.default, ref: refs.full.get(refs.default)! } : undefined;
+}
+
 async function listRefs(root: string, deadline: number): Promise<Refs> {
     const [list, originHead] = await Promise.all([
         git(root, ["for-each-ref", "--sort=-committerdate", "--format=%(refname) %(symref)", "refs/heads", "refs/remotes"], { maxBytes: 4 * 1024 * 1024, deadline }),

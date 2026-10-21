@@ -57,6 +57,7 @@ import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/q
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
+import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
@@ -67,6 +68,7 @@ import type {
     Block,
     ChangesInfo,
     GitChangesInfo,
+    SessionWorktreeInfo,
     GitCommitHead,
     GitCommitInfo,
     GitCommitMessageInfo,
@@ -2895,9 +2897,31 @@ export class Runtime {
         this.op({ op: "reset", turns, agents });
     }
 
-    /** What git says changed in the session's folder, whoever changed it. */
-    gitChanges(req: { scope: GitScope; base?: string; path?: string; turnId?: number }): Promise<GitChangesInfo> {
-        return gitChanges(this.ws.cwd, req, TurnSnapshots.for(this.session, this.ws.cwd));
+    /**
+     * What git says changed in the session's folder, whoever changed it; or, with `worktree`, in another
+     * worktree of its repository (only one `git worktree list` reports: never any other folder).
+     */
+    async gitChanges(req: { scope: GitScope; base?: string; path?: string; turnId?: number; worktree?: string }): Promise<GitChangesInfo> {
+        const { worktree, ...rest } = req;
+        if (worktree !== undefined) {
+            const w = sessionWorktree(this.ws.cwd, worktree);
+            if (!w.current) {
+                // Turns are snapshots of the session's own folder.
+                if (rest.scope === "turn" || rest.scope === "last-turn") throw new RpcError("Turns are recorded for this session's own folder only.", "invalid");
+                return gitChanges(w.path, { scope: rest.scope, base: rest.base, path: rest.path });
+            }
+        }
+        return gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
+    }
+
+    /** The worktrees of the session's repository, for the diff reader to look at. */
+    worktrees(): Promise<SessionWorktreeInfo[]> {
+        return sessionWorktrees(this.ws.cwd);
+    }
+
+    /** Its sub-agents, as the GUI has them. */
+    get agentRuns(): readonly AgentRun[] {
+        return this.view.agents;
     }
 
     private checkCommitting() {

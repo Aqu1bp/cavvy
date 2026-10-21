@@ -730,6 +730,28 @@ export interface WorktreeInfo {
     managed: boolean;
 }
 
+/** A sub-agent working in a worktree, by the paths its recent tool calls name. */
+export interface WorktreeAgent {
+    id: string;
+    /** The session whose sub-agent it is. */
+    sessionId: string;
+    description: string;
+    /** Waiting for an answer (a permission), not running. */
+    waiting: boolean;
+}
+
+/** One of a session's repository's worktrees, as the diff reader lists them to look at. */
+export interface SessionWorktreeInfo extends WorktreeInfo {
+    /** The running sub-agents of the sessions loaded in the server that work in it. */
+    agents?: WorktreeAgent[];
+    /** What `ahead` counts from: the branch the Branch view compares with by default. */
+    base?: string;
+    /** Commits on its HEAD that `base` doesn't have. */
+    ahead?: number;
+    /** When its HEAD commit was made (ms since the epoch). */
+    committedAt?: number;
+}
+
 /** Removed, or not yet: these ignored files (the first few of `total`) would be deleted with it. */
 export type RemoveWorktreeResult = { removed: true } | { removed: false; ignored: string[]; total: number; confirm: string };
 
@@ -1332,7 +1354,13 @@ export interface Methods {
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
     "session.fork": { params: { id: string; index: number; text: string; turn: string }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number }; result: GitChangesInfo };
+    /**
+     * `worktree`: another worktree of the session's repository to look at (a path `session.worktrees` lists);
+     * any other folder is refused. Turn scopes are the session's own folder's only.
+     */
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
+    /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
+    "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
