@@ -557,6 +557,33 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(used.reduce((a, b) => a + b, 0)).toBe(4321);
     });
 
+    test("by default a background sub-agent isn't stopped however long it runs, as in Claude Code: only the user stops it", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const saved = { ...backgroundTiming };
+        const realNow = Date.now;
+        let skew = 0;
+        Date.now = () => realNow() + skew;
+        backgroundTiming.pollMs = 10;
+        const ac = new AbortController();
+        try {
+            expect(saved.maxWaitMs).toBe(Number.POSITIVE_INFINITY);
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            const done = run("map the auth module", ac.signal);
+            while (!notices(events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            // Three hours on: still waited for.
+            skew = 3 * 60 * 60_000;
+            await Bun.sleep(300);
+            expect(subEnds(events)).toEqual([]);
+            expect(notices(events).join("\n")).not.toMatch(/Stopped/);
+            ac.abort();
+            expect(await done).toBe("aborted");
+        } finally {
+            Date.now = realNow;
+            ac.abort();
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 20_000);
+
     test("a background sub-agent that never finishes is waited on only so long, and the user is told it was stopped", async () => {
         process.env.FAKE_SCENARIO = "agent-background-stuck";
         const saved = { ...backgroundTiming };
