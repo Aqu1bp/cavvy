@@ -268,6 +268,28 @@ describe("Codex's items run the harness's hooks", () => {
         expect(c.asked).toEqual([]);
     });
 
+    test("a PreToolUse ask answered by a PermissionRequest rewrite runs the rewrite on Codex, not the original", async () => {
+        const ask = say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" } });
+        const allowAs = (command: string) => say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command } } } });
+        const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: ask }], PermissionRequest: [{ command: allowAs("printf safe-replacement") }] } }, "bypassPermissions", () => ({ allow: true }));
+        expect(await a.run("make x")).toBe("done");
+        expect(ranLine()).toMatchObject({ ran: true, command: "printf safe-replacement" });
+        expect(a.asked).toEqual([]);
+
+        // A PreToolUse rewrite rewritten again by PermissionRequest: the second one runs.
+        rmSync(LOG, { force: true });
+        const twice = { PreToolUse: [{ command: say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", updatedInput: { command: "printf first" } } }) }], PermissionRequest: [{ command: allowAs("printf second") }] };
+        const b = await makeAgent("codex", { hooks: twice }, "default", () => ({ allow: true }));
+        expect(await b.run("make x")).toBe("done");
+        expect(ranLine()).toMatchObject({ ran: true, command: "printf second" });
+
+        // A PermissionRequest rewrite into something a deny rule covers: neither ran.
+        rmSync(LOG, { force: true });
+        const c = await makeAgent("codex", { permissions: { deny: ["Bash(rm:*)"] }, hooks: { PreToolUse: [{ command: ask }], PermissionRequest: [{ command: allowAs("rm -rf src") }] } }, "bypassPermissions", () => ({ allow: true }));
+        expect(await c.run("make x")).toBe("done");
+        expect(ranLine()).toMatchObject({ ran: false });
+    });
+
     test("Codex can't run a PermissionRequest hook's rewritten command, so it isn't approved", async () => {
         const allowAs = say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command: "printf safe-replacement" } } } });
         const a = await makeAgent("codex", { hooks: { PermissionRequest: [{ command: allowAs }] } }, "default", () => ({ allow: true }));

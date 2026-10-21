@@ -1251,24 +1251,23 @@ class CodexTurn {
         if (h?.decision === "deny") return deny(`Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`);
         const bypass = (this.turnMode ?? this.host.mode()) === "bypassPermissions";
         const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
-        if (h?.updatedInput) {
-            if (!call.rewritable || (call.toolName === "Bash" && typeof h.updatedInput.command !== "string")) return deny(CANT_REWRITE_NATIVE);
-            // Checked as the call it now is, as a rewrite for the harness's own models is.
-            const a = await this.host.permission({ toolName: call.toolName, input: h.updatedInput, callId: id, hookDecision, hooksOnly: bypass, agentLabel });
+        // Codex runs a rewrite in the call's place only where its input is the harness's (a command, an MCP call).
+        const runnable = (input: Record<string, unknown>) => call.rewritable && (call.toolName !== "Bash" || typeof input.command === "string");
+        if (h?.updatedInput && !runnable(h.updatedInput)) return deny(CANT_REWRITE_NATIVE);
+        if (h?.updatedInput || hookDecision === "ask") {
+            // A rewrite is checked as the call it now is, as one for the harness's own models is; a hook that
+            // asks gets the user now, since Codex may not ask (bypass never does). Either way a PermissionRequest
+            // hook may answer, and may rewrite it again: what it approved is what runs.
+            const input = h?.updatedInput ?? call.input;
+            const a = await this.host.permission({ toolName: call.toolName, input, callId: id, hookDecision, hooksOnly: h?.updatedInput ? bypass : undefined, agentLabel });
             if (!a.allow) {
                 if (a.stop) this.interrupt(from);
                 return deny(a.message || "Denied.");
             }
+            const run = a.updatedInput ?? h?.updatedInput;
+            if (run && !runnable(run)) return deny(CANT_REWRITE_NATIVE);
             if (id) this.hookAnswers.set(id, "allow");
-            return preToolUseAnswer({ updatedInput: h.updatedInput, context });
-        }
-        if (hookDecision === "ask") {
-            // Codex may not ask about it (bypass never does): the user is asked now.
-            const a = await this.host.permission({ toolName: call.toolName, input: call.input, callId: id, hookDecision, agentLabel });
-            if (!a.allow) {
-                if (a.stop) this.interrupt(from);
-                return deny(a.message || "Denied.");
-            }
+            return preToolUseAnswer({ updatedInput: run, context });
         }
         if (hookDecision && id) this.hookAnswers.set(id, "allow");
         return preToolUseAnswer({ context });
