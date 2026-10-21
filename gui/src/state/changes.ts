@@ -16,7 +16,7 @@ export function sessionReadReady(handle: SessionHandle): boolean {
 export function commitUnavailable(handle: SessionHandle | undefined): string | undefined {
     if (!handle) return "This session is no longer open.";
     const state = handle.view.state;
-    if (state.busy || state.queued.length || state.interactions.length || state.shells.some((s) => s.running) || handle.view.agents.some((a) => !a.replayed && (a.status === "running" || a.status === "waiting"))) return "Wait for the session's responses, questions, shells, and tasks to finish before committing.";
+    if (state.busy || state.queued.length || state.interactions.length || state.shells.some((s) => s.running && !s.monitor) || handle.view.agents.some((a) => !a.replayed && (a.status === "running" || a.status === "waiting"))) return "Wait for the session's responses, questions, shells, and tasks to finish before committing.";
     if (!state.trusted) return "Trust this folder before committing: Git runs the repository's hooks.";
 }
 

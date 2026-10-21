@@ -25,6 +25,7 @@ import { parseRule, ruleMatches, toolPath, type RuleTarget } from "../permission
 import { expandPath } from "../util/files";
 import { childEnv } from "../tools/bash";
 import { redactedJson } from "../util/redact";
+import { isShellTool } from "../tools/types";
 
 export type { HookEvent };
 
@@ -130,7 +131,7 @@ export function matcherFn(m: string | undefined): (v: string) => boolean {
 
 function target(toolName: string, input: any, cwd: string): RuleTarget {
     const t: RuleTarget = { toolName };
-    if (toolName === "Bash") t.command = String(input?.command ?? "");
+    if (isShellTool(toolName)) t.command = String(input?.command ?? "");
     const p = toolPath(toolName, input);
     if (p !== undefined) t.path = expandPath(p, cwd);
     if (toolName === "WebFetch") t.url = String(input?.url ?? "");
@@ -160,7 +161,8 @@ export function hookApplies(h: HookConfig, event: HookEvent, payload: Record<str
     const field = MATCH_FIELD[event];
     if (field) {
         const v = payload[field];
-        if (typeof v === "string" && !matcherFn(h.matcher)(v)) return false;
+        // A Monitor command runs like a Bash one: hooks that guard Bash guard it too.
+        if (typeof v === "string" && !matcherFn(h.matcher)(v) && !(field === "tool_name" && v === "Monitor" && matcherFn(h.matcher)("Bash"))) return false;
     }
     if (event === "FileChanged" && h.matcher && h.matcher !== "*" && typeof payload.file_path === "string" && !fileMatches(h.matcher, payload.file_path)) return false;
     if (h.if && TOOL_EVENTS.has(event) && typeof payload.tool_name === "string") {

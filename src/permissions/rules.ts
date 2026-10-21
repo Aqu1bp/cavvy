@@ -12,6 +12,7 @@ import { isAbsolute, join } from "path";
 import { homedir } from "os";
 import { analyzeCommand, effectiveArgv, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical, spellings } from "../util/files";
+import { isShellTool } from "../tools/types";
 
 export interface ParsedRule {
     tool: string;
@@ -238,11 +239,13 @@ export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode:
     const toolMatches =
         tool === "*" ||
         tool === t.toolName ||
+        // A Monitor command runs like a Bash one: Bash rules cover it too.
+        (tool === "Bash" && isShellTool(t.toolName)) ||
         (tool === "Edit" && EDIT_TOOLS.has(t.toolName)) ||
         (tool === "Read" && READ_TOOLS.has(t.toolName));
     if (!toolMatches) return false;
     if (!rule.spec) return true;
-    if (t.toolName === "Bash") return t.command !== undefined && bashRuleMatches(rule.spec, t.command, mode);
+    if (isShellTool(t.toolName)) return t.command !== undefined && bashRuleMatches(rule.spec, t.command, mode);
     if (EDIT_TOOLS.has(t.toolName) || READ_TOOLS.has(t.toolName)) return t.path !== undefined && matchPath(rule.spec, t.path, root, mode === "deny");
     if (t.toolName === "WebFetch") {
         if (!t.url) return false;

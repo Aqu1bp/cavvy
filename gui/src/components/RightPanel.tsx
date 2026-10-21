@@ -3,7 +3,7 @@
 // that failed or ask for approval, and its sub-agents. Empty sections aren't drawn.
 
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
-import { ArrowUpLeft, Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitPullRequestArrow, KeyRound, Plug, Save, SquarePen, Terminal, X } from "lucide-solid";
+import { ArrowUpLeft, Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitPullRequestArrow, KeyRound, Plug, Radar, Save, SquarePen, Terminal, X } from "lucide-solid";
 import type { AgentRun, PlanLink } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { activate, app, reportError, rpc, toast } from "../state/app";
@@ -182,7 +182,7 @@ function Plan(p: { handle: SessionHandle }) {
 }
 
 function Shells(p: { handle: SessionHandle }) {
-    const running = () => p.handle.view.state.shells.filter((s) => s.running);
+    const running = () => p.handle.view.state.shells.filter((s) => s.running && !s.monitor);
     return (
         <Show when={running().length}>
             <div class="sec">
@@ -204,9 +204,42 @@ function Shells(p: { handle: SessionHandle }) {
     );
 }
 
+/** "45s left", "12m left": a glance, not a countdown (the tooltip has the exact time). */
+function timeLeft(ms: number): string {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return s < 60 ? `${s}s left` : `${Math.ceil(s / 60)}m left`;
+}
+
+/** Commands the agent is watching (Monitor): each new line of theirs wakes it. */
+function Monitors(p: { handle: SessionHandle }) {
+    const running = () => p.handle.view.state.shells.filter((s) => s.running && s.monitor);
+    return (
+        <Show when={running().length}>
+            <div class="sec">
+                <div class="sh">Monitors</div>
+                <For each={running()}>
+                    {(m) => (
+                        <div class="prow swap" title={`${m.monitor!.description}\n${m.command}`}>
+                            <Radar size={16} class="shell-live" />
+                            <span class="truncate grow">{m.monitor!.description}</span>
+                            <span class="meta" title={`${plural(m.monitor!.events, "event")} so far; it stops in ${duration(Math.max(0, m.monitor!.expiresAt - now()))}`}>
+                                {timeLeft(m.monitor!.expiresAt - now())}
+                            </span>
+                            <button class="act hb sm" title="Stop monitor" aria-label={`Stop monitor: ${m.monitor!.description}`} onClick={() => void rpc.call("session.killShell", { id: p.handle.id, shellId: m.id }).catch(reportError)}>
+                                <X size={14} />
+                            </button>
+                        </div>
+                    )}
+                </For>
+            </div>
+        </Show>
+    );
+}
+
 /** Pull requests the agent watches: it's woken when checks fail or someone comments. */
 function Watches(p: { handle: SessionHandle }) {
-    const watches = () => p.handle.view.state.watches ?? [];
+    // Monitors have their own section (time left, from the shell list).
+    const watches = () => (p.handle.view.state.watches ?? []).filter((w) => w.kind !== "monitor");
     const tone = (detail?: string) => (/failing|conflicts|can't reach/.test(detail ?? "") ? "tone-err" : /passed/.test(detail ?? "") ? "tone-ok" : "");
     return (
         <Show when={watches().length}>
@@ -374,6 +407,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
                 <Plan handle={p.handle} />
                 <Shells handle={p.handle} />
                 <Watches handle={p.handle} />
+                <Monitors handle={p.handle} />
                 <Secrets handle={p.handle} />
                 <Mcp handle={p.handle} />
                 <Lineage handle={p.handle} />

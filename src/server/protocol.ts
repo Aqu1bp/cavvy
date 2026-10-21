@@ -514,7 +514,7 @@ export interface SessionState {
     /** Files this session's edit tools changed (the Changes panel). */
     filesChanged: number;
     /** Background shells started by the agent. */
-    shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number }[];
+    shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number; /** Started by Monitor: its lines wake the agent. */ monitor?: { description: string; events: number; expiresAt: number } }[];
     /** What the agent is watching in the background (pull requests): each wakes it when there's news. */
     watches?: WatchInfo[];
     plan?: PlanRef;

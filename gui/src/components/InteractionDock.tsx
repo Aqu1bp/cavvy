@@ -4,7 +4,7 @@
 // anything; the number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { rpc } from "../state/app";
@@ -97,6 +97,9 @@ function PermIcon(p: { it: PermissionInteraction }) {
         <Switch fallback={<ShieldAlert size={14} />}>
             <Match when={p.it.toolName === "Bash"}>
                 <SquareTerminal size={14} />
+            </Match>
+            <Match when={p.it.toolName === "Monitor"}>
+                <Radar size={14} />
             </Match>
             <Match when={p.it.category === "edit"}>
                 <FilePen size={14} />
@@ -211,7 +214,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json}>
                     <div class="itab-desc">{p.it.title}</div>
                 </Show>
-                <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash"}>
+                <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
                     <div class="itab-desc">{p.it.reason}</div>
                 </Show>
                 <Show when={feedback() !== undefined}>

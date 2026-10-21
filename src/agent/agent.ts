@@ -36,7 +36,7 @@ import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox
 import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Sampler, Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { formatWakes, wakeDisplay } from "./wakes";
-import { isReadOnly } from "../tools/types";
+import { isReadOnly, isShellTool } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
@@ -2074,7 +2074,7 @@ export class Agent {
         }
 
         // Read-only agents (explore) never change anything, whatever a hook later rewrites the call into.
-        const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
+        const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (isShellTool(tool.name) && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
         if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
 
         const settings = this.o.settings();
@@ -2100,7 +2100,7 @@ export class Agent {
         // What an approval is remembered by: the call as the model made it, before hosts are added.
         const asked = input;
         // The hosts the checker opens by itself (settings, registries) join the ones the command listed.
-        if (tool.name === "Bash" && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
+        if (isShellTool(tool.name) && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
         // Whatever approves it, a command the checker sandboxed stays sandboxed.
         const sandbox = decision.sandbox;
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
@@ -2161,7 +2161,7 @@ export class Agent {
             // preview is optional
         }
         // No reviewer ran (or it gave none): a long command gets a line from the model, but the popup never waits long for it.
-        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
+        const command = isShellTool(tool.name) ? String(input.command ?? "") : "";
         if (!summary && command && needsSummary(command)) summary = await this.o.classifier?.summarize({ toolName: tool.name, input, cwd: this.state.cwd }, signal);
         if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user") };
         // Whichever step wrote it (the summary model, the full review, a repeated block), none for an action it couldn't see whole.
@@ -2431,7 +2431,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];

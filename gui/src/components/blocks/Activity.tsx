@@ -22,6 +22,7 @@ import {
     ListChecks,
     MessageCircleQuestion,
     Plug,
+    Radar,
     Search,
     Sparkles,
     ShieldCheck,
@@ -91,6 +92,7 @@ const VERBS: Record<string, string> = {
     Bash: "Run",
     BashOutput: "Check output",
     KillShell: "Stop",
+    Monitor: "Monitor",
     WebFetch: "Fetch",
     WebSearch: "Search the web",
     Task: "Agent",
@@ -116,6 +118,7 @@ const RUNNING: Record<string, string> = {
     NotebookEdit: "Editing notebook",
     Bash: "Running",
     BashOutput: "Checking output",
+    Monitor: "Starting monitor",
     WebFetch: "Fetching",
     WebSearch: "Searching the web",
     Task: "Agent working",
@@ -151,6 +154,7 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     let a = arg;
     if (t.name === "Bash") a = String(input.command ?? arg ?? "").split("\n")[0];
     if (t.job && (t.name === "BashOutput" || t.name === "KillShell")) a = t.job.label;
+    if (t.name === "Monitor") a = String(input.description ?? arg ?? "");
     if (t.name === "Task") a = String(input.description ?? arg ?? "");
     if (t.name === "AskUserQuestion") a = String(input.question ?? arg ?? "");
     if (t.name === "Skill") a = String(input.skill ?? input.name ?? arg ?? "");
@@ -172,6 +176,7 @@ export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
             <Match when={p.name === "Edit" || p.name === "MultiEdit" || p.name === "NotebookEdit"}><FilePen size={s()} /></Match>
             <Match when={p.name === "Write"}><FilePlus2 size={s()} /></Match>
             <Match when={p.name === "Bash" || p.name === "BashOutput" || p.name === "KillShell"}><SquareTerminal size={s()} /></Match>
+            <Match when={p.name === "Monitor"}><Radar size={s()} /></Match>
             <Match when={p.name === "WebFetch" || p.name === "WebSearch"}><Globe size={s()} /></Match>
             <Match when={p.name === "Task"}><Bot size={s()} /></Match>
             <Match when={p.name === "Skill"}><Sparkles size={s()} /></Match>
@@ -192,6 +197,7 @@ function summarize(tools: ToolBlock[]): string {
     const edited = new Set<string>();
     const created = new Set<string>();
     const commands: string[] = [];
+    const monitors: string[] = [];
     let web = 0;
     let fetched = 0;
     let agents = 0;
@@ -236,6 +242,9 @@ function summarize(tools: ToolBlock[]): string {
                 break;
             case "Bash":
                 commands.push(String(i.command ?? ""));
+                break;
+            case "Monitor":
+                monitors.push(String(i.description ?? "").trim());
                 break;
             case "WebSearch":
                 web++;
@@ -286,6 +295,8 @@ function summarize(tools: ToolBlock[]): string {
     if (edited.size) parts.push(edited.size === 1 && !created.size ? `edited ${short([...edited][0]!)}` : `edited ${plural(edited.size, "file")}`);
     if (commands.length === 1 && commands[0]!.length <= 48 && !commands[0]!.includes("\n")) parts.push(`ran \`${commands[0]}\``);
     else if (commands.length) parts.push(`ran ${plural(commands.length, "command")}`);
+    if (monitors.length === 1 && monitors[0] && monitors[0].length <= 48) parts.push(`started a monitor: ${monitors[0]}`);
+    else if (monitors.length) parts.push(`started ${plural(monitors.length, "monitor")}`);
     if (web) parts.push("searched the web");
     if (fetched) parts.push(`fetched ${plural(fetched, "page")}`);
     if (agents) parts.push(agents === 1 ? "ran an agent" : `ran ${agents} agents`);
@@ -853,7 +864,7 @@ function ToolDetailsContent(p: { tool: ToolBlock }) {
                         <Output tool={t()} />
                     </Show>
                 </Match>
-                <Match when={t().name === "Bash"}>
+                <Match when={t().name === "Bash" || t().name === "Monitor"}>
                     <Section label="Command">
                         <CodeBlock code={String(input().command ?? "")} lang="bash" bare />
                     </Section>

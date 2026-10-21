@@ -13,6 +13,7 @@
 // changed to fit this reviewer's verdicts and merged with the harness's own.
 
 import { textOf, type AssistantMessage, type ChatRequest } from "../providers/types";
+import { isShellTool } from "../tools/types";
 
 export interface ReviewContext {
     /** The developer's own recent messages, oldest first. */
@@ -247,12 +248,12 @@ export function reviewPrompt(c: ClassifierInput): string {
     // Hosts only mean something in the sandbox; outside it the command can reach anything.
     const hosts = c.sandboxed && Array.isArray(allowedHosts) && allowedHosts.length ? allowedHosts : undefined;
     const shown = hosts ? { ...rest, allowedHosts: hosts } : rest;
-    parts.push("", "Proposed action:", `<action tool="${c.toolName}">\n${quote(stableStringify(c.toolName === "Bash" ? shown : c.input))}\n</action>`);
+    parts.push("", "Proposed action:", `<action tool="${c.toolName}">\n${quote(stableStringify(isShellTool(c.toolName) ? shown : c.input))}\n</action>`);
     if (c.sandboxed && hosts) {
         parts.push("", "If allowed, this command runs in a sandbox: network only to localhost and the hosts in allowedHosts, writes only inside the project and temp directories, no credential files, no other processes. Judge whether the task needs those hosts; apart from them, only its effect on the project itself matters.");
     } else if (c.sandboxed) {
         parts.push("", "If allowed, this command runs in a sandbox: no network except localhost, writes only inside the project and temp directories, no credential files, no other processes. Only its effect on the project itself matters.");
-    } else if (c.toolName === "Bash") {
+    } else if (isShellTool(c.toolName)) {
         parts.push("", unsandboxed ? "The agent asked to run this outside the sandbox (most likely its sandboxed run failed). It would run with the developer's full access." : "This command would run with the developer's full access (network, all their files).");
     }
     if (c.sensitive) parts.push("", `Sensitive target: the command names ${c.sensitive}, which may contain credentials. Loading it so a project command can use it is routine; printing, copying or sending it anywhere isn't.`);

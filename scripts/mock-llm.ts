@@ -26,6 +26,7 @@
 //                    "met" after, or "impossible" when the goal says so
 //   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
 //   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
+//   "monitor"        watches a build log with Monitor; its lines wake the agent later
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -87,6 +88,14 @@ const TESTS_REPORT = `Only email sign-in is tested (\`test/auth.test.ts\`, one c
 
 function scenario(prompt: string, toolRounds: number, lastResult: string): Step | undefined {
     const p = prompt.toLowerCase();
+    // A monitor's lines woke the agent: say what they were.
+    if (/<event source="monitor"/.test(prompt)) {
+        const lines = [...prompt.matchAll(/<monitor-output[^>]*>\n([\s\S]*?)<\/monitor-output>/g)].flatMap((m) => m[1]!.trim().split("\n"));
+        const ended = /ended: its command exited with code (\d+)/.exec(prompt);
+        if (ended) return { text: `The build watch ended (exit code ${ended[1]}).` };
+        const failed = lines.find((l) => /error|fail/i.test(l));
+        return { text: failed ? `The build reported a failure: \`${failed}\`. I'll look into \`test/auth.test.ts\` next.` : `Progress: ${lines.join("; ")}.` };
+    }
     // News from a watched pull request (the harness woke the agent).
     if (/events? you asked to be told about arrived/.test(p)) {
         if (/checks failed/.test(p)) return { text: "CI's **test** job failed on the latest commit. The log shows the SAML assertion test expects an issuer check; I'll fix it and push again." };
@@ -253,6 +262,14 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds === 0) return { text: "I'll set that up.", calls: [{ name: "CronCreate", args: { cron: "57 8 * * 1-5", prompt: "Run the test suite and summarize any failures", durable: true } }] };
         return { text: `Done: the test suite runs on weekday mornings at 8:57. ${lastResult.match(/Next run: [^.]*/)?.[0] ?? ""}. It's saved with this session, and recurring schedules stop after 7 days.` };
     }
+    if (/\bmonitor\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "I'll watch the build and react when it reports something.",
+                calls: [{ name: "Monitor", args: { command: 'for i in 1 2 3; do sleep 2; echo "build step $i/3 ok"; done; sleep 1; echo "ERROR test/auth.test.ts: 1 failed"; sleep 2', description: "build progress and errors", timeout_ms: 120000 } }],
+            };
+        return { text: "Watching the build. Each step it reports will come back to me, so you don't need to check on it." };
+    }
     // Starts a background command, then waits a moment and checks it in one response (the check queues behind the wait).
     if (/\bwaitcheck\b/.test(p)) {
         if (toolRounds === 0) return { text: "Starting it.", calls: [{ name: "Bash", args: { command: "sleep 2", description: "Run the slow suite", run_in_background: true } }] };
@@ -299,6 +316,7 @@ function titleFor(prompt: string): string {
     if (/\bagents?\b/.test(p)) return "Review auth with agents";
     if (/\bnote\b/.test(p)) return "Write a release note";
     if (/\bbackground\b/.test(p)) return "Review tests in the background";
+    if (/\bmonitor\b/.test(p)) return "Watch the build";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
