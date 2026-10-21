@@ -232,7 +232,7 @@ export class Runtime {
     /** Compacts a long conversation left idle before its prompt cache expires (src/agent/idle-compact.ts). */
     readonly idleCompact = new IdleCompactTimer({
         plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
-        ready: () => this.idle && !this.closed && !this.drafting.size,
+        ready: () => this.idle && !this.closed && !this.drafting.size && !this.queued.length,
         run: () => void this.compact(undefined, { idle: true }).catch((e) => this.engine.log(`session ${this.id}: idle compaction: ${(e as Error).message}`)),
     });
     /** The compaction running is an idle one: a message sent meanwhile cancels it and runs. */
@@ -2653,7 +2653,7 @@ export class Runtime {
         let done!: () => void;
         if (idle) this.idleDone = new Promise<void>((r) => (done = r));
         const ac = (this.abort = new AbortController());
-        const activity = idle ? { label: "Compacting while idle", since: Date.now(), detail: "The prompt cache is about to expire. Send a message to cancel." } : { label: "Compacting conversation", since: Date.now() };
+        const activity = idle ? { label: "Compacting while idle", since: Date.now(), detail: "The prompt cache is about to expire. Send a message to cancel.", idle: true } : { label: "Compacting conversation", since: Date.now() };
         // Idle, it isn't "working" in the sidebar: nothing the user started.
         this.setState(idle ? { busy: true, activity } : { busy: true, status: "running", activity });
         // Not the user's doing: the session doesn't move up the sidebar for it.

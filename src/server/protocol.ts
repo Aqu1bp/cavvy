@@ -496,7 +496,7 @@ export interface SessionState {
     status: SessionStatus;
     busy: boolean;
     /** The spinner line: what it's doing right now. */
-    activity?: { label: string; since: number; detail?: string };
+    activity?: { label: string; since: number; detail?: string; /** An idle compaction: what the user does next takes over from it. */ idle?: boolean };
     contextTokens: number;
     cost: number;
     /** Some usage had no known price: `cost` leaves it out (it isn't free). */
@@ -1317,7 +1317,7 @@ export interface Methods {
     "session.setMode": { params: { id: string; mode: PermissionModeId }; result: null };
     "session.setFastMode": { params: { id: string; enabled: boolean }; result: null };
     /** The window's input box for the session has an unsent message (`present`), or no longer has: one being written holds off compacting while idle. */
-    "session.draft": { params: { id: string; present: boolean }; result: null };
+    "session.draft": { params: { id: string; present: boolean; /** The Rewind dialog open on it, rather than a message being written. */ dialog?: boolean }; result: null };
     "session.setEffort": { params: { id: string; effort: EffortLevel }; result: null };
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };

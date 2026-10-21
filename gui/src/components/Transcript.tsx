@@ -218,7 +218,7 @@ export function Transcript(p: { handle: SessionHandle }) {
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
                     <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label ?? "") && !turns().some((t) => t.status === "running")}>
                         <div class="turn">
-                            <LiveHead state={p.handle.view.state} tail hint={p.handle.view.state.activity?.label === "Compacting while idle" ? "send a message to stop it" : undefined} />
+                            <LiveHead state={p.handle.view.state} tail hint={p.handle.view.state.activity?.idle ? "send a message to stop it" : undefined} />
                         </div>
                     </Show>
                     <div class="transcript-end" />

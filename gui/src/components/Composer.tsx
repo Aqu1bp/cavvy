@@ -460,7 +460,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const placeholder = () => {
         if (shell()) return "Run a shell command";
         // A message doesn't wait for an idle compaction: it stops it and goes.
-        if (busy() && st()?.activity?.label === "Compacting while idle") return "Send a message to stop compacting and carry on…";
+        if (busy() && st()?.activity?.idle) return "Send a message to stop compacting and carry on…";
         if (busy()) return followUp() === "steer" ? "Steer: add to the current turn at its next step…" : "Queue a message for after this turn…";
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
     };
@@ -645,7 +645,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         }}
                     />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
-                    <FastModeToggle current={st()?.model} currentRef={app.settings.model} enabled={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy} />
+                    <FastModeToggle current={st()?.model} currentRef={app.settings.model} enabled={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} />
                     <EffortMenu current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
                     <span class="spacer" />

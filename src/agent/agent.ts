@@ -388,6 +388,10 @@ export class Agent {
     private lastUsageTotal = 0;
     /** The prompt cache of the conversation's last request (idle compaction keeps it from going to waste). */
     private cache?: CacheWindow;
+    /** The cache an idle compaction was tried on: failed or cancelled, it isn't tried again until the next request. */
+    private idleTried?: CacheWindow;
+    /** When the model request now answering was sent. */
+    private sentAt = 0;
     /** How the last turn ended: only one that finished compacts while idle. */
     private lastEnd?: TurnEndReason;
     /** The last few tool calls, for the auto-mode reviewer ("Bash: npm test"). */
@@ -636,7 +640,6 @@ export class Agent {
             }
 
             let msg: AssistantMessage;
-            const sentAt = Date.now();
             try {
                 msg = await this.callModel(signal);
             } catch (e) {
@@ -664,7 +667,7 @@ export class Agent {
             this.emit({ type: "assistant", message: msg });
             if (msg.usage) {
                 this.recordUsage(msg.usage);
-                this.noteCache(msg.usage, sentAt);
+                this.noteCache(msg.usage, this.sentAt);
             }
 
             const calls = toolCallsOf(msg);
@@ -1013,6 +1016,7 @@ export class Agent {
     idleCompactPlan(now = Date.now()): IdleCompactPlan | null {
         if (this.o.isSubagent || this.running || this.lastEnd !== "done") return null;
         if (this.delegations?.running().length) return null;
+        if (this.cache && this.cache === this.idleTried) return null;
         return idleCompactPlan({ settings: this.o.settings(), cache: this.cache, contextTokens: this.contextTokens, now });
     }
 
@@ -1045,6 +1049,8 @@ export class Agent {
             for (let attempt = 1; ; attempt++) {
                 this.emit({ type: "request_start" });
                 try {
+                    // After any retries: the cache dates from the request that was answered.
+                    this.sentAt = Date.now();
                     return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
                 } catch (e) {
                     if (isAbort(e, signal)) throw new ProviderError("aborted");
@@ -1089,6 +1095,7 @@ export class Agent {
 
     /** Summarize the history and replace it. Returns false if there was nothing to do. */
     async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean }): Promise<boolean> {
+        if (opts.idle) this.idleTried = this.cache;
         if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
         const history = this.session.messages;
         if (history.length < 2) return false;

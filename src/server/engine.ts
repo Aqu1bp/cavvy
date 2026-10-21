@@ -313,6 +313,14 @@ export class Workspace {
 
 // ---------------------------------------------------------------------------
 
+/** A window's Rewind dialog holds off an idle compaction apart from its message box. */
+const dialogs = new WeakMap<object, object>();
+function dialogOf(client: object): object {
+    let d = dialogs.get(client);
+    if (!d) dialogs.set(client, (d = {}));
+    return d;
+}
+
 export class Engine {
     private terminals: Terminals;
     /** Script lookup is asynchronous: a tab can close before its shell exists. */
@@ -1057,7 +1065,10 @@ export class Engine {
         this.clients.delete(client);
         this.terminals.drop(client);
         this.setups.drop(client);
-        for (const rt of this.runtimes.values()) rt.setDrafting(client, false);
+        for (const rt of this.runtimes.values()) {
+            rt.setDrafting(client, false);
+            rt.setDrafting(dialogOf(client), false);
+        }
         for (const id of client.subs) this.unloadLater(id);
     }
 
@@ -1967,7 +1978,7 @@ export class Engine {
                 return null;
             case "session.draft":
                 if (typeof p.present !== "boolean") throw new RpcError("present must be a boolean");
-                this.runtimes.get(str(p.id, "id"))?.setDrafting(client, p.present);
+                this.runtimes.get(str(p.id, "id"))?.setDrafting(p.dialog === true ? dialogOf(client) : client, p.present);
                 return null;
             case "session.setFastMode":
                 if (typeof p.enabled !== "boolean") throw new RpcError("enabled must be a boolean");

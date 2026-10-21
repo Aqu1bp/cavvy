@@ -139,7 +139,8 @@ export function Header(p: { handle?: SessionHandle }) {
                                     {
                                         icon: Shrink,
                                         label: "Compact conversation",
-                                        disabled: s().busy,
+                                        // An idle compaction gives way to the user's own.
+                                        disabled: s().busy && !s().activity?.idle,
                                         run: () => void (close(), rpc.call("session.compact", { id: s().id }).catch(reportError)),
                                     },
                                 ] as MenuEntry[]}

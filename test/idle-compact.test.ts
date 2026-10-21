@@ -10,7 +10,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 import { startMockAnthropic } from "./helpers/mock-anthropic";
 import type { Clock } from "../src/agent/idle-compact";
 import type { AgentEvent } from "../src/agent/agent";
-import type { AssistantMessage, Usage } from "../src/providers/types";
+import { ProviderError, type AssistantMessage, type Usage } from "../src/providers/types";
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
 
 const iso = isolate();
@@ -221,7 +221,7 @@ describe("the agent's cache", () => {
     const reply = (usage: Usage): AssistantMessage => ({ role: "assistant", provider: "anthropic", model: "claude-opus-5-5", stopReason: "end_turn", content: [{ type: "text", text: "done" }], usage });
     const big: Usage = { inputTokens: 3, outputTokens: 50, cacheWriteTokens: 240_000 };
 
-    function setup(o: { provider?: string; usage?: Usage; subagent?: boolean; settings?: Record<string, unknown>; fail?: boolean } = {}) {
+    function setup(o: { provider?: string; usage?: Usage; subagent?: boolean; settings?: Record<string, unknown>; fail?: boolean; before?: (call: number) => void } = {}) {
         const proj = tempDir("idle-agent-");
         const session = Session.create(proj, { system: "test system" });
         const settings = { idleCompaction: "always", ...o.settings } as any;
@@ -233,6 +233,7 @@ describe("the agent's cache", () => {
             client: {
                 async stream(req: { messages: unknown[]; signal?: AbortSignal }) {
                     requests.push(req);
+                    o.before?.(requests.length);
                     if (o.fail) throw new Error("overloaded");
                     return reply(o.usage ?? big);
                 },
@@ -261,6 +262,46 @@ describe("the agent's cache", () => {
         expect(plan.expiresAt - FIVE_MINUTES).toBeGreaterThanOrEqual(before);
         expect(plan.expiresAt - FIVE_MINUTES).toBeLessThanOrEqual(Date.now());
         expect(plan.fireAt).toBe(plan.expiresAt - 30_000);
+    });
+
+    test("after retries, it plans from the request that was answered, not the first attempt", async () => {
+        const realNow = Date.now;
+        let shift = 0;
+        Date.now = () => realNow() + shift;
+        try {
+            const { agent, run } = setup({
+                before: (call) => {
+                    if (call > 1) return;
+                    // The first attempt is refused, and the retries take ten minutes.
+                    shift = 10 * MIN;
+                    throw new ProviderError("overloaded", 529, true, 1);
+                },
+            });
+            const started = Date.now();
+            expect(await run("review everything")).toBe("done");
+            const plan = agent.idleCompactPlan()!;
+            expect(plan).not.toBeNull();
+            expect(plan.expiresAt - FIVE_MINUTES).toBeGreaterThanOrEqual(started + 10 * MIN);
+        } finally {
+            Date.now = realNow;
+        }
+    });
+
+    test("an idle compaction tried once (failed or cancelled) isn't planned again until the next request", async () => {
+        let failing = false;
+        const { agent, run } = setup({
+            before: () => {
+                if (failing) throw new Error("overloaded");
+            },
+        });
+        await run("review everything");
+        expect(agent.idleCompactPlan()).not.toBeNull();
+        failing = true;
+        await expect(agent.compact({ auto: true, idle: true, signal: new AbortController().signal })).rejects.toThrow();
+        expect(agent.idleCompactPlan()).toBeNull();
+        failing = false;
+        await run("one more thing");
+        expect(agent.idleCompactPlan()).not.toBeNull();
     });
 
     test("not for a sub-agent, a provider with no known TTL, a small context, or a turn that didn't finish", async () => {
@@ -423,6 +464,8 @@ describe("the GUI server, against a cached Anthropic API", () => {
             const history = rt.session.messages.length;
             fire(rt);
             await until(() => rt.snapshot().state.activity?.label === "Compacting while idle");
+            // Marked as one: the GUI leaves the controls that take over from it enabled.
+            expect(rt.snapshot().state.activity.idle).toBe(true);
             const sent = (await engine.handle(c, "session.send", { id, text: "one more thing" })) as { queued: boolean };
             expect(sent.queued).toBe(true);
             await until(() => rt.idle && rt.session.messages.length === history + 2);
@@ -474,10 +517,18 @@ describe("the GUI server, against a cached Anthropic API", () => {
             expect(notice).toMatchObject({ level: "warn" });
             expect(notice.text).toContain("The conversation is unchanged.");
             expect(JSON.stringify(rt.session.messages)).toBe(history);
-            // Not tried again until the next turn.
+            // Not tried again until the next turn: not after a !command, nor a draft cleared.
+            expect(rt.idleCompact.due).toBeUndefined();
+            await engine.handle(c, "session.send", { id, text: "!true" });
+            await until(() => rt.idle);
+            await engine.handle(c, "session.draft", { id, present: true });
+            await engine.handle(c, "session.draft", { id, present: false });
             expect(rt.idleCompact.due).toBeUndefined();
             await Bun.sleep(50);
             expect(mock.requests.filter((r) => r.compaction).length).toBe(compactions + 1);
+            // The next turn plans afresh.
+            await longTurn(engine, c, id, rt);
+            expect(rt.idleCompact.due).toBeDefined();
         } finally {
             mock.reply = reply;
             await engine.stop();
@@ -493,6 +544,10 @@ describe("the GUI server, against a cached Anthropic API", () => {
             fire(rt);
             rt.pending.delete("q");
             rt.queued.push({ id: 99, text: "waiting" });
+            fire(rt);
+            rt.queued.length = 0;
+            // One held since a restart, waiting for the user to send it, too.
+            rt.queued.push({ id: 98, text: "held", held: true });
             fire(rt);
             rt.queued.length = 0;
             await Bun.sleep(50);
@@ -517,7 +572,17 @@ describe("the GUI server, against a cached Anthropic API", () => {
             // The draft cleared without sending: armed again, it compacts at its time.
             await engine.handle(c, "session.draft", { id, present: false });
             expect(rt.idleCompact.due).toBeDefined();
-            // So does a window that goes away with a draft in it.
+            // The Rewind dialog open holds it off too, whatever the message box does.
+            await engine.handle(c, "session.draft", { id, present: true, dialog: true });
+            await engine.handle(c, "session.draft", { id, present: true });
+            await engine.handle(c, "session.draft", { id, present: false });
+            fire(rt);
+            await Bun.sleep(50);
+            expect(compactions()).toBe(n);
+            await engine.handle(c, "session.draft", { id, present: false, dialog: true });
+            expect(rt.idleCompact.due).toBeDefined();
+            // So does a window that goes away with a draft in it, or the dialog open.
+            await engine.handle(c, "session.draft", { id, present: true, dialog: true });
             await engine.handle(c, "session.draft", { id, present: true });
             engine.dropClient(c);
             expect(rt.idleCompact.due).toBeDefined();
@@ -701,6 +766,25 @@ describe("the TUI", () => {
         expect(app.session.messages.filter((m) => m.role === "assistant").length).toBe(2);
         expect(text()).not.toContain("Cancelled");
         app.schedules.scheduler.clear();
+    });
+
+    test("quitting disarms it: it can't start during the exit hooks", async () => {
+        const { app } = testApp();
+        await app.startTurn("review everything");
+        expect((app as any).idleCompact.due).toBeDefined();
+        (app as any).screen.stop = () => {};
+        const exit = process.exit;
+        process.exit = (() => undefined) as never;
+        let due: number | undefined;
+        try {
+            const done = app.exit(0);
+            due = (app as any).idleCompact.due;
+            await done;
+        } finally {
+            // Only once exit() is over: it ends by calling process.exit.
+            process.exit = exit;
+        }
+        expect(due).toBeUndefined();
     });
 
     test("not while a draft is being typed: the user is back", async () => {

@@ -125,7 +125,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                         </div>
                         <div class="usage-actions">
                             <span>{app.settings.autoCompact === false ? "Automatic compaction is off." : "Compacts on its own near the limit."}</span>
-                            <button class="ghost-btn outlined" disabled={!state() || state()?.busy} onClick={() => {
+                            <button class="ghost-btn outlined" disabled={!state() || (state()?.busy && !state()?.activity?.idle)} onClick={() => {
                                 if (!p.sessionId) return;
                                 close();
                                 void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
@@ -148,7 +148,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                             <Show when={p.sessionId && meter()?.reached}>
                                 <div class="usage-switches">
                                     <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
-                                    <For each={alternatives()}>{(a) => <button class="ghost-btn outlined" disabled={state()?.busy || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
+                                    <For each={alternatives()}>{(a) => <button class="ghost-btn outlined" disabled={(state()?.busy && !state()?.activity?.idle) || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
                                 </div>
                             </Show>
                         </section>
