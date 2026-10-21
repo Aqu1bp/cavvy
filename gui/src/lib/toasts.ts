@@ -3,8 +3,11 @@
 /** The Undo after a delete is the only way back, so it stays longer than the rest. */
 export const UNDO_DELETE_MS = 10_000;
 
-export function toastMs(level: "info" | "warn" | "error" | "success", ms?: number): number {
-    return ms ?? (level === "error" ? 8000 : 4500);
+/** A toast with something to do (Undo after archiving or settling) stays long enough to reach it. */
+export const UNDO_MS = 8000;
+
+export function toastMs(level: "info" | "warn" | "error" | "success", ms?: number, action?: ToastAction): number {
+    return ms ?? (level === "error" || action ? UNDO_MS : 4500);
 }
 
 export interface ToastAction {

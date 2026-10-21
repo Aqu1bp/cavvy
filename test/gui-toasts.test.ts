@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
 
-const { toastMs, UNDO_DELETE_MS, ToastLifetime, repeatedToast } = await import("../gui/src/lib/toasts");
+const { toastMs, UNDO_DELETE_MS, UNDO_MS, ToastLifetime, repeatedToast } = await import("../gui/src/lib/toasts");
 
-test("the Undo after a delete stays about 10 seconds; other toasts keep their timing", () => {
+test("the Undo after a delete stays about 10 seconds; other Undos 8; plain toasts keep their timing", () => {
     expect(UNDO_DELETE_MS).toBe(10_000);
     expect(toastMs("info", UNDO_DELETE_MS)).toBe(10_000);
+    expect(toastMs("info", UNDO_DELETE_MS, { label: "Undo", run() {} })).toBe(10_000);
+    expect(UNDO_MS).toBe(8000);
+    expect(toastMs("info", undefined, { label: "Undo", run() {} })).toBe(8000);
+    expect(toastMs("success", undefined, { label: "Undo", run() {} })).toBe(8000);
     expect(toastMs("info")).toBe(4500);
     expect(toastMs("success")).toBe(4500);
     expect(toastMs("warn")).toBe(4500);
