@@ -393,22 +393,31 @@ button.prow:active {
     flex: none;
 }
 
+/* A live row's stop (or forget) button takes the place of its time on hover, and on focus:
+   it's only faded out, so Tab still reaches it. */
+.prow.swap {
+    position: relative;
+}
+
 .prow.swap .act {
-    display: none;
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0;
 }
 
 .prow.swap:hover .meta,
 .prow.swap:focus-within .meta {
-    display: none;
+    visibility: hidden;
 }
 
 .prow.swap:hover .act,
 .prow.swap:focus-within .act {
-    display: grid;
+    opacity: 1;
 }
 
 .prow .act {
-    margin-right: -4px;
     border-radius: var(--pill);
 }
 
@@ -526,7 +535,6 @@ button.prow:active {
 }
 
 .agent-row .act {
-    position: relative;
     z-index: 1;
 }
 
@@ -569,7 +577,7 @@ button.prow:active {
 }
 
 /* The workspace menu's head: the project, and its branch. */
-.insp-ws {
+.menu-head.insp-ws {
     flex-direction: column;
     align-items: flex-start;
     gap: 2px;

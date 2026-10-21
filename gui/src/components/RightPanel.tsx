@@ -401,7 +401,7 @@ function Mcp(p: { handle: SessionHandle }) {
                                 <span class={`meta tone-${statusLabel(m).tone}`}>{statusLabel(m).text}</span>
                             </button>
                             <Show when={m.error}>
-                                <div class="panel-error">{m.error}</div>
+                                <div class="panel-error selectable">{m.error}</div>
                             </Show>
                         </>
                     )}

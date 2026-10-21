@@ -419,9 +419,9 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </Show>
                 </nav>
             </Show>
-            <div class="insp-body rv-body">
+            <div class="insp-body rv-body" aria-busy={loading()}>
                 <Show when={git()?.repo}>
-                    <div class="rv-pr">
+                    <div class="rv-pr selectable">
                         <PublishStatus handle={p.handle} request={publishRequest()} onClose={() => setPublishRequest(undefined)} />
                     </div>
                 </Show>
