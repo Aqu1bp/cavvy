@@ -16,7 +16,9 @@ import type { NativeGoal } from "../agent/goal";
 import { redact } from "../util/redact";
 
 /** At most this much of a transcript is read when it's first found (a long resumed session): its newest part. */
-const FIRST_READ = 16 * 1024 * 1024;
+const FIRST_READ = 4 * 1024 * 1024;
+/** At most this much is read at a time, so a poll doesn't hold up the rest of the app; the next goes on. */
+const CHUNK = 1024 * 1024;
 
 /** How far each transcript has been read, and where its goal stood there: the next turn goes on from it. */
 const readSoFar = new Map<string, { offset: number; goal: NativeGoal | null }>();
@@ -61,7 +63,6 @@ const folderName = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, "-");
 export class ClaudeGoalWatch {
     private file?: string;
     private offset = 0;
-    private rest = "";
     private goal: NativeGoal | null = null;
     /** What was before the turn changed the goal, and hasn't been reported yet. */
     private unreported = false;
@@ -90,35 +91,39 @@ export class ClaudeGoalWatch {
                 this.unreported = Boolean(known.goal);
             }
         }
-        let fd: number;
+        // Never fatal: the transcript is Claude Code's, and the goal tab can do without it.
         try {
-            fd = openSync(this.file, "r");
+            this.read(this.file);
         } catch {
-            return;
+            // unreadable for now: next time
         }
+    }
+
+    /** What's been written since the last read, whole lines only (a line still being written waits for the next). */
+    private read(file: string) {
+        const fd = openSync(file, "r");
         try {
             const size = fstatSync(fd).size;
             if (size < this.offset) {
                 // Rewritten: read again from the start.
                 this.offset = 0;
-                this.rest = "";
                 this.goal = null;
             }
             if (this.offset === 0 && size > FIRST_READ) this.offset = size - FIRST_READ;
-            if (size === this.offset) return this.flush();
-            const buf = Buffer.alloc(size - this.offset);
+            const buf = Buffer.alloc(Math.min(size - this.offset, CHUNK));
             let read = 0;
             while (read < buf.length) {
                 const n = readSync(fd, buf, read, buf.length - read, this.offset + read);
                 if (n <= 0) break;
                 read += n;
             }
-            this.offset += read;
-            const lines = (this.rest + buf.subarray(0, read).toString("utf8")).split("\n");
-            this.rest = lines.pop() ?? "";
-            for (const line of lines) if (line.includes('"goal_status"')) this.entry(line);
+            const end = buf.subarray(0, read).lastIndexOf(0x0a);
+            if (end >= 0) {
+                this.offset += end + 1;
+                for (const line of buf.subarray(0, end).toString("utf8").split("\n")) if (line.includes('"goal_status"')) this.entry(line);
+                readSoFar.set(file, { offset: this.offset, goal: this.goal });
+            } else if (read === CHUNK) this.offset += read; // one line longer than a chunk: no goal entry is
             this.flush();
-            readSoFar.set(this.file, { offset: this.offset - Buffer.byteLength(this.rest), goal: this.goal });
         } finally {
             closeSync(fd);
         }

@@ -172,6 +172,22 @@ describe("ClaudeGoalWatch", () => {
         w.poll();
         expect(seen.map((g) => g?.status ?? null)).toEqual(["active", null]);
     });
+
+    test("a character split across reads stays whole, and an unreadable transcript is passed over", () => {
+        const file = join(bin, "t2.jsonl");
+        const seen: any[] = [];
+        const w = new ClaudeGoalWatch(() => file, Date.now() - 1000, (g: any) => seen.push(g));
+        const set = Buffer.from(line({ met: false, sentinel: true, condition: "tests pass for café" }) + line({ met: false, condition: "tests pass for café", reason: "Not yet." }));
+        const cut = set.indexOf(Buffer.from("é")) + 1;
+        writeFileSync(file, set.subarray(0, cut));
+        w.poll();
+        writeFileSync(file, set);
+        w.poll();
+        expect(seen).toEqual([expect.objectContaining({ condition: "tests pass for café", turns: 0 }), expect.objectContaining({ condition: "tests pass for café", turns: 1, lastReason: "Not yet." })]);
+        expect(seen[1].since).toBe(seen[0].since);
+        const broken = new ClaudeGoalWatch(() => bin, 0, () => {});
+        expect(() => broken.poll()).not.toThrow();
+    });
 });
 
 describe("Codex", () => {

@@ -686,7 +686,6 @@ class ClaudeTurn {
         this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env });
         // Its /goal, as it goes: read from its transcript (src/backends/claude-goal.ts).
         this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, this.t.cwd, this.sessionId) : undefined), Date.now(), (goal) => this.host.emit({ type: "goal", goal }));
-        const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
             this.reason = "error";
@@ -705,6 +704,7 @@ class ClaudeTurn {
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
         void this.attach().then(() => this.aborted || this.sendUser(content));
+        const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {

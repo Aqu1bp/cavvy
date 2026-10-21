@@ -433,12 +433,12 @@ class CodexTurn {
     private restartFor?: PermissionMode;
     /** The thread's goal (thread/goal/*) as Codex last reported it; undefined until it has. */
     private goal?: NativeGoal | null;
-    /** A turn Codex started on its own (the goal going on), not taken up yet. */
-    private autoTurn?: string;
+    /** Turns Codex said it started that weren't the one waited on then: the goal's own, or one of ours said before its answer. */
+    private startedTurns: string[] = [];
     /** Turns started here (turn/start): never one Codex started on its own, even if it said so before answering. */
     private ownTurns = new Set<string>();
     /** Turns that have ended, with how (an adopted one may have ended before it was waited on). */
-    private completedTurns = new Map<string, string>();
+    private completedTurns = new Map<string, { status: string; error?: unknown }>();
     /** Wakes the wait for the goal's next turn (one started, the goal changed, Codex gone). */
     private goalWake?: () => void;
 
@@ -602,8 +602,8 @@ class CodexTurn {
                         try {
                             r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         } catch (e) {
-                            // Codex started the goal's next turn first: the user's messages go into that one.
-                            const id = this.goal?.status === "active" && !activate ? await this.nextGoalTurn() : undefined;
+                            // Codex started the goal's next turn first (and so refused this one): the user's messages go into that one.
+                            const id = this.goal?.status === "active" && !activate ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
                             if (!id) throw e;
                             return this.adoptTurn(id, text);
                         }
@@ -733,7 +733,8 @@ class CodexTurn {
         this.turnId = id;
         const ended = this.completedTurns.get(id);
         if (ended !== undefined) {
-            this.status = ended;
+            this.status = ended.status;
+            if (ended.status === "failed") this.fail(ended.error, "Codex reported a failed turn");
             if (text) this.unsteered.push(text);
             this.turnDone?.();
             return;
@@ -745,12 +746,10 @@ class CodexTurn {
     private async nextGoalTurn(waitMs = GOAL_TURN_WAIT_MS, warn = true): Promise<string | undefined> {
         const deadline = Date.now() + waitMs;
         while (!this.aborted && this.goal?.status === "active") {
-            const id = this.autoTurn;
-            if (id && !this.completedTurns.has(id) && !this.ownTurns.has(id)) {
-                this.autoTurn = undefined;
-                return id;
-            }
-            this.autoTurn = undefined;
+            // The newest Codex started that's still going and wasn't started here.
+            const id = this.startedTurns.filter((t) => !this.completedTurns.has(t) && !this.ownTurns.has(t)).at(-1);
+            this.startedTurns = [];
+            if (id) return id;
             const left = deadline - Date.now();
             if (left <= 0) {
                 if (!warn) return undefined;
@@ -844,7 +843,7 @@ class CodexTurn {
                 this.host.emit({ type: "request_start" });
                 // One Codex started itself, for the goal (it may start as the last ends, before that end is taken in).
                 if (typeof p.turn?.id === "string" && p.turn.id !== this.turnId) {
-                    this.autoTurn = p.turn.id;
+                    this.startedTurns.push(p.turn.id);
                     this.goalWake?.();
                 }
                 break;
@@ -880,7 +879,7 @@ class CodexTurn {
                 this.onItemCompleted(p.item ?? {}, p.turnId);
                 break;
             case "turn/completed":
-                if (typeof p.turn?.id === "string") this.completedTurns.set(p.turn.id, typeof p.turn.status === "string" ? p.turn.status : "completed");
+                if (typeof p.turn?.id === "string") this.completedTurns.set(p.turn.id, { status: typeof p.turn.status === "string" ? p.turn.status : "completed", error: p.turn.error });
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
                 this.status = p.turn?.status;
                 if (p.turn?.status === "failed") this.fail(p.turn?.error, "Codex reported a failed turn");

@@ -799,7 +799,10 @@ export class Runtime {
         // Nor does the loop's go on with a CLI, which keeps goals of its own (and gets /goal and the tab's buttons).
         if (nativeGoals(info.provider)) {
             const dropped = this.goal.clear();
-            if (dropped) this.notice(loopGoalDropped(dropped, info.provider), "info");
+            if (dropped) {
+                this.session.recordNotice("info", loopGoalDropped(dropped, info.provider));
+                this.notice(loopGoalDropped(dropped, info.provider), "info");
+            }
         }
         this.classifier.setComplete((system, prompt, signal, o) => this.complete(system, prompt, signal, o));
         if (!this.agent) this.makeAgent();

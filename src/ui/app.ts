@@ -739,7 +739,10 @@ export class App {
         const provider = this.model?.provider;
         if (!nativeGoals(provider)) return false;
         const dropped = this.goal?.clear();
-        if (dropped) this.notice(loopGoalDropped(dropped, provider!));
+        if (dropped) {
+            this.session.recordNotice("info", loopGoalDropped(dropped, provider!));
+            this.notice(loopGoalDropped(dropped, provider!));
+        }
         return Boolean(dropped);
     }
 
@@ -797,8 +800,7 @@ export class App {
             if (this.nativeGoal?.condition === g!.condition) {
                 const failed = g!.status === "failed";
                 this.session.recordNotice(failed ? "warn" : "info", end);
-                const [head, ...rest] = end.split("\n");
-                this.screen.print((cols) => ["", ...[head!, ...rest].flatMap((line, i) => wrapLine(line, cols - 6).map((l, j) => (i === 0 && j === 0 ? `  ⎿  ${failed ? theme.warning(l) : theme.success(l)}` : `     ${theme.muted(l)}`)))]);
+                this.screen.print((cols) => ["", ...end.split("\n").flatMap((line, i) => wrapLine(line, cols - 6).map((l, j) => (i === 0 && j === 0 ? `  ⎿  ${failed ? theme.warning(l) : theme.success(l)}` : `     ${theme.muted(l)}`)))]);
             }
             g = null;
         }
