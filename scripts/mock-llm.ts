@@ -91,6 +91,42 @@ const TESTS_REPORT = `Only email sign-in is tested (\`test/auth.test.ts\`, one c
 
 function scenario(prompt: string, toolRounds: number, lastResult: string): Step | undefined {
     const p = prompt.toLowerCase();
+    // A turn of a long, realistic session (scripts/perf-seed.ts): looks around, writes a file, then a long answer.
+    if (/\bperfturn\b/.test(p)) {
+        const n = Number(/perfturn (\d+)/.exec(p)?.[1] ?? 0);
+        const body = Array.from({ length: 40 }, (_, i) => `export function step${n}_${i}(x: number): number {\n    return x * ${i + 1} + ${n};\n}\n`).join("\n");
+        const steps: Step[] = [
+            {
+                reasoning: `Turn ${n}: find where this lives before changing it. `.repeat(8),
+                text: `I'll look around first (turn ${n}).`,
+                calls: [
+                    { name: "Glob", args: { pattern: "src/**/*.ts" } },
+                    { name: "Read", args: { file_path: "src/auth/index.ts" } },
+                    { name: "Grep", args: { pattern: "strategy", path: "src" } },
+                ],
+            },
+            {
+                text: "Now the change, and a quick check.",
+                calls: [
+                    { name: "Write", args: { file_path: `src/perf/module${n % 12}.ts`, content: `// turn ${n}\n${body}` } },
+                    { name: "Bash", args: { command: `ls src && echo turn ${n}`, description: "List the sources" } },
+                ],
+            },
+            { text: `${STREAM_DEMO}\n\n${SUMMARY}\n\nTurn ${n} is done.` },
+        ];
+        return steps[toolRounds];
+    }
+    // A turn that changes hundreds of files at once (scripts/perf-seed.ts): the "322 changed files" card.
+    if (/\bbulkchange\b/.test(p)) {
+        const steps: Step[] = [
+            {
+                text: "Generating the client for every endpoint.",
+                calls: [{ name: "Bash", args: { command: `mkdir -p gen && for i in $(seq 1 322); do seq 1 168 | sed "s/.*/export const x$i""n& = 1;/" > gen/endpoint$i.ts; done && echo done`, description: "Generate the endpoint clients" } }],
+            },
+            { text: "Generated **322** endpoint clients under `gen/`." },
+        ];
+        return steps[toolRounds];
+    }
     // A monitor's lines woke the agent: say what they were.
     if (/<event source="monitor"/.test(prompt)) {
         const lines = [...prompt.matchAll(/<monitor-output[^>]*>\n([\s\S]*?)<\/monitor-output>/g)].flatMap((m) => m[1]!.trim().split("\n"));
@@ -311,6 +347,9 @@ function goalVerdict(prompt: string): string {
 
 function titleFor(prompt: string): string {
     const p = prompt.toLowerCase();
+    if (/\bperfturn 9\d\d\b/.test(p)) return "Short session";
+    if (/\bperfturn 7\d\d\b/.test(p)) return `Older session ${/perfturn (\d+)/.exec(p)![1]}`;
+    if (/\bperfturn\b/.test(p)) return "Long session";
     if (/\bsso\b|\bdemo\b/.test(p)) return "Add enterprise SSO";
     if (/\bdiagnostics\b/.test(p)) return "Rename the email field";
     if (/\bplan\b/.test(p)) return "Plan the SSO rollout";

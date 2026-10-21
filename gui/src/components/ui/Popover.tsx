@@ -2,6 +2,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "
 import { Portal } from "solid-js/web";
 import { mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
+import { settingsTab } from "../../state/ui";
 
 export interface PopoverProps {
     open: boolean;
@@ -43,6 +44,12 @@ export function Popover(p: PopoverProps) {
 
     createEffect(() => {
         if (p.open && el && p.behavior) onCleanup(mountMenu(el, p.behavior));
+    });
+
+    // Settings hides what it covers without unmounting it (App.tsx): a menu there closes as Settings opens, as it did
+    // when that went, and one opened while it's covered (a shortcut, say) closes at once.
+    createEffect(() => {
+        if (settingsTab() && p.open && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
     });
 
     onMount(() => {

@@ -165,7 +165,14 @@ test("searchable picker traps Tab in both directions and delegates search keys",
     expect(f.closes).toBe(0);
 });
 
-test("global shortcuts stay inside the menu except the command palette", () => {
+test("find goes through to App, which decides what it does (nothing under Settings): the menu closes", () => {
+    const f = fixture(); f.tick();
+    const find = f.key("f", paletteModifier);
+    expect(find.stopped).toBe(false);
+    expect(f.closes).toBe(1);
+});
+
+test("global shortcuts stay inside the menu except the command palette and find", () => {
     const f = fixture(); f.tick();
     expect(f.key("n", { metaKey: true }).stopped).toBe(true);
     const composing = f.key("Escape", { isComposing: true });

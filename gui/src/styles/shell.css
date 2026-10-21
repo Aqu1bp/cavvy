@@ -104,9 +104,54 @@
     transition: opacity 240ms, transform var(--dur-panel) var(--ease);
 }
 
-.win-rail > * {
+.win-rail > :not(.settings-host),
+.win-rail > .keep > * {
     flex: 1;
     min-width: 0;
+}
+
+/* What Settings covers, kept mounted and laid out under it (App.tsx), so coming back is a repaint:
+   the rail under the settings sections, the session under the settings page. Not positioned, so
+   what's absolutely placed in it (the stage, Home) still fills the column it's in. */
+.keep {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* Its own stacking context, so nothing in the session (the composer dock at z-index 30, the
+   "Latest" pill at 25) paints over the settings page (z-index 6) while it's covered. */
+.main > .keep {
+    isolation: isolate;
+}
+
+/* The rail shows through the settings sections (both are on the window's glass): hidden outright. It's small. */
+.win-rail > .keep.covered {
+    visibility: hidden;
+}
+
+/* Settings over what it covers, each in a box that's always there: WebKit restyles every element
+   of a sibling when a child comes or goes (for :first-child and the like), which for the session
+   is all of it. Clicks go through while it's empty. */
+.settings-host {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    pointer-events: none;
+}
+
+.settings-host > * {
+    flex: 1;
+    min-width: 0;
+    pointer-events: auto;
+}
+
+/* The settings page is opaque: the session needs no restyling under it (lib/cover.ts). Under the
+   reconnecting banners (z-index 7), over the session's own layers. */
+.main > .settings-host {
+    z-index: 6;
 }
 
 [data-rail="docked"].rail-off .win-rail {
@@ -187,7 +232,8 @@
 }
 
 /* The title bar: the top row of the conversation column, over what scrolls under it. */
-.main > .header {
+.main > .header,
+.main > .keep > .header {
     position: relative;
     z-index: 5;
     flex: none;
