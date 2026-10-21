@@ -15,7 +15,7 @@ import { AsyncLocalStorage } from "async_hooks";
 import { constants, type Stats } from "fs";
 import type { BigIntStats } from "fs";
 import { lstat, open, readlink } from "fs/promises";
-import { basename, dirname, isAbsolute, join, relative } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import type { TurnSnapshots } from "../agent/turn-snapshots";
 import { canonical } from "../agent/checkpoints";
 import { gitArgv, gitEnv, REPO_VARS } from "../util/git";
@@ -112,11 +112,21 @@ export function gitEnvironment(o: { env?: Record<string, string>; privateEnv?: R
  */
 const pinned = new AsyncLocalStorage<{ workTree: string; gitDir: string }>();
 
+/**
+ * One folder, however it's spelled: separators (Windows takes / and \ alike, and git writes /),
+ * `.`, `..` and a trailing separator don't count. Case does: a folder whose name differs only in
+ * case can be another one (a case-sensitive folder), so that's refused rather than taken. `p` is
+ * the platform's path module (path.win32 in tests).
+ */
+export function samePath(a: string, b: string, p: { resolve: typeof resolve } = { resolve }): boolean {
+    return p.resolve(a) === p.resolve(b);
+}
+
 export async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string>; privateEnv?: Record<string, string>; deadline?: number } = {}): Promise<GitOut> {
     const left = Math.min(GIT_TIMEOUT_MS, (o.deadline ?? Infinity) - Date.now());
     if (left <= 0) throw tooLong();
     const pin = pinned.getStore();
-    const env = gitEnvironment(pin && cwd === pin.workTree ? { ...o, privateEnv: { ...o.privateEnv, GIT_WORK_TREE: pin.workTree, GIT_DIR: pin.gitDir } } : o);
+    const env = gitEnvironment(pin && samePath(cwd, pin.workTree) ? { ...o, privateEnv: { ...o.privateEnv, GIT_WORK_TREE: pin.workTree, GIT_DIR: pin.gitDir } } : o);
     const proc = Bun.spawn(gitArgv(args), {
         cwd,
         env,
@@ -663,10 +673,14 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         return notRepo(req.scope, reason);
     }
     // A folder's name can end in a newline; only git's own is taken off.
-    const root = trimNl(top.out);
+    let root = trimNl(top.out);
     // Pinned, git can only answer the pinned work tree; anything else and the calls below wouldn't be pinned.
+    // Git spells it its own way (C:/wt for C:\wt); from here on it's the pin's spelling.
     const pin = pinned.getStore();
-    if (pin && root !== pin.workTree) throw new RpcError("Git doesn't see this worktree where it was checked.", "not_found");
+    if (pin) {
+        if (!samePath(root, pin.workTree)) throw new RpcError("Git doesn't see this worktree where it was checked.", "not_found");
+        root = pin.workTree;
+    }
     const [head, branch, format, config, refs] = await Promise.all([
         git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], { deadline }),
         git(root, ["symbolic-ref", "-q", "HEAD"], { deadline }),

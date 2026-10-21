@@ -4,14 +4,14 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
-import { join } from "path";
+import { join, posix, win32 } from "path";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
 const { Engine } = await import("../src/server/engine");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 const { committerTime, sameFolder } = await import("../src/server/session-worktrees");
-const { gitChanges } = await import("../src/server/git-changes");
+const { gitChanges, samePath } = await import("../src/server/git-changes");
 import type { AgentRun, GitChangesInfo, SessionSnapshot, SessionWorktreeInfo } from "../src/server/protocol";
 afterAll(() => iso.cleanup());
 
@@ -225,6 +225,19 @@ describe("session.gitChanges with a worktree", () => {
         } finally {
             await engine.stop();
         }
+    });
+
+    test("a pinned read keeps its pin however git spells the folder: Windows' / and \\ alike, but not another case", () => {
+        // Git reports C:/wt for the C:\wt that was checked.
+        expect(samePath("C:/Users/me/wt", "C:\\Users\\me\\wt", win32)).toBe(true);
+        expect(samePath("C:/Users/me/wt/", "C:\\Users\\me\\.\\wt", win32)).toBe(true);
+        expect(samePath("C:/Users/me/wt", "C:\\Users\\me\\wt2", win32)).toBe(false);
+        // A name that differs only in case can be another folder (a case-sensitive one): refused, not taken.
+        expect(samePath("C:/Users/me/Wt", "C:\\Users\\me\\wt", win32)).toBe(false);
+        expect(samePath("/Users/me/wt/", "/Users/me/./wt", posix)).toBe(true);
+        expect(samePath("/Users/me/wt", "/Users/me/wt2", posix)).toBe(false);
+        // On POSIX a backslash is part of a name, not a separator.
+        expect(samePath("/Users/me/wt", "\\Users\\me\\wt", posix)).toBe(false);
     });
 
     test("the same folder, by its parent's real place and its name, on any platform's separators", () => {
