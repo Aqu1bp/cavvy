@@ -9,6 +9,7 @@
 //   "plan"           presents a plan for approval
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
+//   "streamdemo"     a long markdown reply (headings, lists, code, a table) at a model's pace: uneven chunks, uneven gaps
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
 //   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
@@ -39,6 +40,8 @@ type Json = Record<string, any>;
 interface Step {
     reasoning?: string;
     text?: string;
+    /** Stream the text the way a model does: a few characters to a few words at a time, at uneven gaps (same every run). */
+    paced?: boolean;
     calls?: { name: string; args: Json }[];
 }
 
@@ -288,6 +291,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         return { text: `The auth tests pass: ${lastResult.trim() || "12 pass, 0 fail"}.` };
     }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
+    if (/\bstreamdemo\b/.test(p)) return { reasoning: "They want the session flow explained with an example.", text: STREAM_DEMO, paced: true };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };
     if (toolRounds > 0) return { text: "Done." };
     return {
@@ -327,6 +331,53 @@ function recall(messages: Json[]): string {
         .map((m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim())
         .filter(Boolean);
     return `Your first message was "${said[0] ?? ""}". You've said: ${said.map((s) => `"${s}"`).join(", ")}.`;
+}
+
+const STREAM_DEMO = `Sessions keep running when the window closes: the server owns them, and the GUI is only a view onto its state. Here's how a turn moves through it.
+
+## How a turn runs
+
+The engine takes the prompt, calls the model, and streams **every event** back over the socket as it happens. Each session has its own queue, so a slow tool in one never holds up another.
+
+1. **Prompt** — \`Composer\` sends it with \`sendPrompt()\`
+2. **Model call** — the engine opens a stream to the provider
+   - text deltas append to the last text block
+   - tool calls become cards, each with its own status
+3. **Tools** — run in the session's folder, asking first when the mode says so
+
+### The append path
+
+Text deltas are merged into the turn in place, so the transcript only re-renders what changed:
+
+\`\`\`ts
+function onDelta(turn: Turn, delta: string) {
+    const last = turn.blocks.at(-1);
+    if (last?.t === "text") last.text += delta;
+    else turn.blocks.push({ t: "text", id: nextId(), text: delta });
+}
+\`\`\`
+
+## What each side owns
+
+| Part | Owns | Survives a restart |
+| --- | --- | --- |
+| Server | sessions, turns, tool runs | yes |
+| GUI | scroll position, open panels | no |
+| Provider | the model's context | per request |
+
+The short version: the GUI can come and go, and nothing in \`~/.harness/sessions\` is lost when it does. If a reply is cut off, *resume* picks it up from the last saved turn.`;
+
+/** A model's pace: 1 to 5 tokens a chunk (about 4 characters each), 15 to 90ms apart. Seeded, so every run is the same. */
+function pacedChunks(text: string): [string, number][] {
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const out: [string, number][] = [];
+    for (let i = 0; i < text.length; ) {
+        const n = Math.max(1, Math.round((1 + rand() * 4) * 4 * (0.6 + rand() * 0.8)));
+        out.push([text.slice(i, i + n), Math.round(15 + rand() * rand() * 75)]);
+        i += n;
+    }
+    return out;
 }
 
 /** Split text into small chunks the way a model streams it. */
@@ -421,7 +472,11 @@ export function startMockLlm(o: MockOptions = {}) {
                             delta({ reasoning_content: c });
                             await wait();
                         }
-                        if (step.text) for (const c of chunks(step.text)) {
+                        if (step.text && step.paced) for (const [c, ms] of pacedChunks(step.text)) {
+                            delta({ content: c });
+                            await Bun.sleep(delay ? ms : 0);
+                        }
+                        else if (step.text) for (const c of chunks(step.text)) {
                             delta({ content: c });
                             await wait();
                         }

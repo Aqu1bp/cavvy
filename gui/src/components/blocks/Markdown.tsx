@@ -1,6 +1,8 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createMemo, Index, Match, onCleanup, Switch } from "solid-js";
+import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch } from "solid-js";
 import { MarkdownRenderer } from "../../lib/markdown";
+import { createReveal } from "../../lib/reveal";
+import { paint } from "../../lib/stream-dom";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
 import { linksVersion, paths } from "../../state/filelinks";
@@ -68,15 +70,22 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
     return <RenderBoundary raw={() => p.text}><MarkdownContent {...p} /></RenderBoundary>;
 }
 
+/** One rendered block. While the reply streams it's updated in place (see lib/stream-dom.ts); the last one carries the writing mark. */
+function HtmlBlock(p: { html: string; live: boolean; last: boolean }) {
+    return <div class="md-block" ref={(el) => createRenderEffect(() => paint(el, p.html, p.live, p.live && p.last))} />;
+}
+
 function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
     const r = new MarkdownRenderer();
+    // While it streams, the text comes out at an even pace (see lib/reveal.ts).
+    const text = createReveal(() => p.text, () => Boolean(p.streaming));
     let root: HTMLDivElement | undefined;
     const images = createMemo(() => (p.sessionId ? replyImages(p.sessionId) : undefined));
     // Unchanged blocks keep their objects; positional owners also keep a growing
     // code block mounted when its source changes. Only a reply
     // with paths in it looks again when what's known changes.
     const segments = createMemo(() => {
-        const segs = r.segments(p.text, Boolean(p.streaming), p.sessionId ? paths.lookup(p.sessionId) : undefined);
+        const segs = r.segments(text(), Boolean(p.streaming), p.sessionId ? paths.lookup(p.sessionId) : undefined);
         if (r.watching) linksVersion();
         return segs;
     });
@@ -103,12 +112,13 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     return (
         <div ref={root} class={`md ${p.streaming ? "streaming" : ""} ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
             <Index each={segments()}>
-                {(s) => {
+                {(s, i) => {
                     const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });
                     const html = createMemo(() => { const part = s(); return part.kind === "html" ? part : undefined; });
+                    const last = createMemo(() => i === segments().length - 1);
                     return <Switch>
                         <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
-                        <Match when={html()}>{(h) => <div class="md-block" innerHTML={h().html} />}</Match>
+                        <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={Boolean(p.streaming)} last={last()} />}</Match>
                     </Switch>;
                 }}
             </Index>

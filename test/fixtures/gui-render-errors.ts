@@ -5,6 +5,7 @@ import { all, component, node, renderer, text } from "../helpers/gui-render";
 import { boundary } from "../helpers/render-boundary";
 import { rawRenderText, renderDetails } from "../../gui/src/lib/render-error";
 import * as format from "../../gui/src/lib/format";
+import { createReveal } from "../../gui/src/lib/reveal";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
@@ -78,7 +79,7 @@ for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails
             MarkdownRenderer: class { segments() { throw Error("bad markdown"); } },
             ...format, now: () => 0, prefs: {}, findReveal: () => undefined,
             ...Object.fromEntries(["Wrench", "Bot", "FileText", "ChevronRight", "CopyButton"].map((name) => [name, () => node(name)])),
-            onMount() {}, highlight: async () => undefined,
+            onMount() {}, highlight: async () => undefined, createReveal, paint() {},
             groupBlocks: () => { throw Error("bad turn"); },
         });
         const View = component('export function View() { return <><Widget {...props} /><button>still usable</button></>; }', "View", { Widget, props: props[kind] });
