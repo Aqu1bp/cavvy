@@ -204,3 +204,16 @@ test("outside a repository, Harness's record is asked for once per change, not a
         f.dispose();
     }
 });
+test("outside a repository, a failed request says so and leaves the reader reachable, rather than loading for ever", async () => {
+    const f = folderChanges(async () => {
+        throw new Error("session is gone");
+    });
+    try {
+        f.setGit({ repo: false, files: [], added: 0, removed: 0, bases: [], more: 0 });
+        await settle();
+        expect(f.changes()).toMatchObject({ repo: false, count: 0, files: [], error: "session is gone" });
+        expect(f.errors).toHaveLength(1);
+    } finally {
+        f.dispose();
+    }
+});

@@ -6,7 +6,7 @@
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
 import { ArrowUpLeft, Bot, Check, ChevronRight, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitPullRequestArrow, KeyRound, Map as MapIcon, Plug, Radar, Save, SquarePen, Terminal, X } from "lucide-solid";
-import type { AgentRun, GitFileDiff, PlanLink } from "@shared/protocol";
+import type { AgentRun, ChangesInfo, GitFileDiff, PlanLink } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { activate, app, reportError, rpc, toast } from "../state/app";
 import { setCommitRequest, setMcpOpen, setPlanDialog } from "../state/ui";
@@ -78,7 +78,12 @@ function useFolderChanges(handle: () => SessionHandle) {
     const notRepo = createMemo(() => git()?.repo === false);
     const [edits] = createResource(
         () => notRepo() && sessionReadReady(handle()) && { id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy },
-        ({ id }) => rpc.call("session.changes", { id }).catch(() => undefined),
+        ({ id }) =>
+            rpc.call("session.changes", { id }).catch((e): ChangesInfo & { error?: string } => {
+                if (sessionReadReady(handle())) reportError(e);
+                // Said, not left loading: the pane shows why, and still opens the reader.
+                return { files: [], added: 0, removed: 0, tracked: true, error: e instanceof Error ? e.message : String(e) };
+            }),
     );
     return createMemo(() => {
         const g = git();
@@ -90,7 +95,7 @@ function useFolderChanges(handle: () => SessionHandle) {
         const e = edits();
         if (!e) return undefined;
         const files: Listed[] = e.files.map((f) => ({ path: f.path, change: f.status, added: f.added, removed: f.removed }));
-        return { repo: false, files, count: files.length, more: 0, atLeast: false, added: e.added, removed: e.removed, error: undefined as string | undefined, untracked: e.tracked === false };
+        return { repo: false, files, count: files.length, more: 0, atLeast: false, added: e.added, removed: e.removed, error: (e as { error?: string }).error, untracked: e.tracked === false };
     });
 }
 
