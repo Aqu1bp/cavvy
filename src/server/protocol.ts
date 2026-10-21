@@ -1127,7 +1127,9 @@ export type ServerEvent =
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
     | { type: "scripts.changed"; project: string }
     /** An agent CLI reported where the user's plan stands. */
-    | { type: "limits"; limits: PlanLimits };
+    | { type: "limits"; limits: PlanLimits }
+    /** The keybindings file was saved, created or deleted. */
+    | { type: "keybindings.changed"; keybindings: KeybindingsFile };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -1152,6 +1154,18 @@ export interface TerminalInfo {
     script?: TerminalScript;
     login?: TerminalLogin;
     exitCode?: number;
+}
+
+/**
+ * The keybindings file as it is on disk (`text` undefined: there's none).
+ * Each window builds its own keymap from it: what `mod` means depends on the
+ * computer the window runs on.
+ */
+export interface KeybindingsFile {
+    path: string;
+    text?: string;
+    /** It exists but couldn't be read. */
+    error?: string;
 }
 
 export interface HelloResult {
@@ -1191,6 +1205,9 @@ export interface Methods {
     /** Login terminals clear the screen and never replay output, regardless of `have`. */
     "terminal.attach": { params: { id: string; have?: number }; result: TerminalInfo };
     hello: { params: { client?: string }; result: HelloResult };
+    "keybindings.get": { params: Record<string, never>; result: KeybindingsFile };
+    /** Creates the keybindings file from the template when there's none; true when it did. */
+    "keybindings.create": { params: Record<string, never>; result: { created: boolean; path: string } };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };
     /** Creates a script, or updates the one with `id`. */
     "scripts.save": { params: { cwd: string; id?: string; name: string; command: string; icon?: ScriptIcon | null; runOnWorktreeCreate?: boolean }; result: ProjectScript };

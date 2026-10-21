@@ -14,10 +14,11 @@ import { holdSidebar, sidebarEntries, sidebarIds, SESSION_PAGE, type SidebarEntr
 import { sessionStatus } from "../lib/session-status";
 import { setSidebarOrder } from "../state/sidebar";
 import { now } from "../lib/clock";
-import { isTauri, mod, os } from "../lib/platform";
+import { isTauri, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { shortcut, withShortcut } from "../state/keybindings";
 
 /** Cards shown before "Show more". */
 const PAGE = SESSION_PAGE;
@@ -234,7 +235,7 @@ function SessionRow(p: { s: SessionSummary; label?: string; hold: (id: string, h
 export function SidebarTop() {
     return (
         <div class="side-top" data-tauri-drag-region>
-            <button class="hb" title={`Hide sidebar (${mod}+B)`} aria-label="Hide sidebar" onClick={toggleSidebar}>
+            <button class="hb" title={withShortcut("Hide sidebar", "app:toggleSidebar")} aria-label="Hide sidebar" onClick={toggleSidebar}>
                 <PanelLeftClose size={17} />
             </button>
             <span class="brand" data-tauri-drag-region>
@@ -348,10 +349,10 @@ export function Sidebar() {
     return (
         <SidebarFrame>
             <div class="side-tools">
-                <button class="side-search" title={`Search sessions, messages and actions (${mod}+K)`} onClick={() => setPaletteOpen(true)}>
+                <button class="side-search" title={withShortcut("Search sessions, messages and actions", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
                     <Search size={16} />
                     <span>Search</span>
-                    <span class="side-kbd">{mod}K</span>
+                    <Show when={shortcut("app:commandPalette")}>{(k) => <span class="side-kbd">{os === "macos" ? k().replaceAll("+", "") : k()}</span>}</Show>
                 </button>
                 <button ref={viewBtn} class={`hb ${viewOpen() ? "on" : ""}`} title="View options" aria-label="View options" aria-haspopup="menu" aria-expanded={viewOpen()} onClick={() => setViewOpen(!viewOpen())}>
                     <ListFilter size={16} />
@@ -367,7 +368,7 @@ export function Sidebar() {
                 >
                     <FolderPlus size={16} />
                 </button>
-                <button class="hb" title={`New session (${mod}+N)`} aria-label="New session" onClick={() => newSession(app.homeCwd)}>
+                <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => newSession(app.homeCwd)}>
                     <SquarePen size={16} />
                 </button>
                 <Menu label="View options" open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
@@ -455,7 +456,7 @@ export function Sidebar() {
                     {app.conn === "open" ? "This computer" : "Reconnecting…"}
                 </span>
                 <span class="grow" />
-                <button class="hb lg" title={`Settings (${mod}+,)`} aria-label="Settings" onClick={() => setSettingsTab("general")}>
+                <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
                 </button>
             </div>

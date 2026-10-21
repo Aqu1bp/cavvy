@@ -3,13 +3,15 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { ArrowLeft, ArrowUp, ChartColumn, Check, ExternalLink, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ArrowUp, ChartColumn, Check, Copy, ExternalLink, FolderOpen, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
-import { mod, openExternal, terminalShortcut } from "../lib/platform";
+import { canReveal, copyText, mod, openExternal, os, revealPath } from "../lib/platform";
+import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
+import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
@@ -60,7 +62,7 @@ export function SettingsNav() {
                 <span class={`conn conn-${app.conn}`} />
                 <span class="side-foot-text truncate">{app.conn === "open" ? "This computer" : "Reconnecting…"}</span>
                 <span class="grow" />
-                <button class="hb lg" aria-pressed="true" title={`Close settings (${mod}+,)`} aria-label="Close settings" onClick={() => setSettingsTab(undefined)}>
+                <button class="hb lg" aria-pressed="true" title={withShortcut("Close settings", "app:settings")} aria-label="Close settings" onClick={() => setSettingsTab(undefined)}>
                     <Gear size={16} />
                 </button>
             </div>
@@ -574,40 +576,114 @@ function Providers() {
     );
 }
 
-const SHORTCUTS: [string, string][] = [
-    [`${mod}+N`, "New session"],
-    [`${mod}+K`, "Search sessions, messages and actions"],
-    [`${mod}+F`, "Find in the conversation"],
-    [`${mod}+,`, "Settings"],
-    [`${mod}+B`, "Toggle the sidebar"],
-    [`${mod}+.`, "Toggle the side panel"],
-    [`${mod}+/`, "Switch model"],
+/** Keys that aren't in the keybindings file: they belong to what's on screen. */
+const BUILT_IN: [string, string][] = [
     [`${mod}+1…9`, "Pick a model (model picker open)"],
-    [`${mod}+[  ${mod}+]`, "Previous / next session"],
-    [`${mod}+L`, "Focus the input box"],
-    [terminalShortcut, "Toggle the terminal"],
-    ["Shift+Tab", "Cycle permission mode"],
-    ["Esc", "Interrupt (while working) · deny a permission · close"],
+    ["Esc", "Deny a permission · close a dialog, Settings or the review"],
     ["1  2  3", "Answer the request on the composer"],
-    ["Enter  Shift+Enter", "Send · new line"],
     [`${mod}+Shift+Enter`, "While working: steer instead of queue, or the other way round (empty input: send the first queued message now)"],
-    ["↑", "Previous prompt (empty input)"],
     ["@", "Mention a file"],
     ["/", "Commands"],
     ["!", "Run a shell command yourself"],
 ];
 
-function Shortcuts() {
+const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu" };
+
+/** One key sequence as key caps: a chord's strokes one after another. */
+function KeySeq(p: { keys: string }) {
     return (
-        <For each={SHORTCUTS}>
-            {([k, d]) => (
-                <Row title={d}>
-                    <span class="sc-keys">
-                        <For each={k.split("  ")}>{(part) => <Kbd keys={part} />}</For>
-                    </span>
-                </Row>
-            )}
-        </For>
+        <span class="sc-seq">
+            <For each={p.keys.split(" ")}>{(stroke, i) => <>{i() > 0 && <span class="sc-then">then</span>}<Kbd keys={stroke} /></>}</For>
+        </span>
+    );
+}
+
+function Shortcuts() {
+    const [creating, setCreating] = createSignal(false);
+    const path = () => keybindingsFile()?.path ?? "~/.harness/keybindings.json";
+    const exists = () => keybindingsFile()?.text !== undefined;
+    const issues = () => keymap().issues;
+    const create = async () => {
+        setCreating(true);
+        try {
+            const r = await rpc.call("keybindings.create", {});
+            if (r.created) toast(`Created ${r.path}. Edit it in any editor; changes apply when you save.`, "success");
+        } catch (e) {
+            reportError(e);
+        } finally {
+            setCreating(false);
+        }
+    };
+    const copyPath = async () => {
+        if (await copyText(path())) toast("Path copied", "success");
+    };
+    const rows = (context: string) => ACTIONS.filter((a) => a.context === context && keymap().keysOf.has(a.id));
+    return (
+        <>
+            <Row
+                title="Keybindings file"
+                desc={
+                    <>
+                        <span class="mono">{path()}</span>
+                        <br />
+                        Same format as Claude Code's <code>keybindings.json</code>, shared with the terminal app. Saved changes apply at once.{" "}
+                        <a href={KEYBINDINGS_DOCS} onClick={(e) => { e.preventDefault(); void openExternal(KEYBINDINGS_DOCS); }}>Format</a>
+                    </>
+                }
+            >
+                <span class="sc-file-actions">
+                    <Show when={exists()} fallback={<button class="btn sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
+                        <button class="btn sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
+                    </Show>
+                    <Show when={canReveal && exists()}>
+                        <button class="btn sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
+                    </Show>
+                </span>
+            </Row>
+            <Show when={issues().length}>
+                <div class="sc-issues" role="alert">
+                    <div class="sc-issues-title">
+                        <AlertTriangle size={14} /> {issues().length === 1 ? "1 problem" : `${issues().length} problems`} in your keybindings file. The rest of it still applies.
+                    </div>
+                    <ul>
+                        <For each={issues()}>{(i) => <li class={i.level}><span class="sc-level">{i.level === "error" ? "Error" : "Warning"}</span> {i.message}</li>}</For>
+                    </ul>
+                </div>
+            </Show>
+            <For each={CONTEXTS}>
+                {(context) => (
+                    <Show when={rows(context).length}>
+                        <Group>{CONTEXT_TITLES[context]}</Group>
+                        <For each={rows(context)}>
+                            {(a) => {
+                                const keys = () => (keymap().keysOf.get(a.id) ?? []).map((k) => formatKeys(k, "gui", os));
+                                const custom = () => keymap().customized.has(a.id);
+                                return (
+                                    <Row title={a.description} desc={<span class="mono sc-action">{a.id}</span>}>
+                                        <span class="sc-keys">
+                                            <Show when={custom()}><span class="sc-custom" title="Set in your keybindings file">Custom</span></Show>
+                                            <Show when={keys().length} fallback={<span class="sc-none">Not bound</span>}>
+                                                <For each={keys()}>{(k) => <KeySeq keys={k} />}</For>
+                                            </Show>
+                                        </span>
+                                    </Row>
+                                );
+                            }}
+                        </For>
+                    </Show>
+                )}
+            </For>
+            <Group>Built in</Group>
+            <For each={BUILT_IN}>
+                {([k, d]) => (
+                    <Row title={d}>
+                        <span class="sc-keys">
+                            <For each={k.split("  ")}>{(part) => <Kbd keys={part} />}</For>
+                        </span>
+                    </Row>
+                )}
+            </For>
+        </>
     );
 }
 
@@ -638,7 +714,7 @@ const INTRO: Record<SettingsTab, string> = {
     appearance: "How Harness looks on this computer. Changes apply as you pick.",
     providers: "Where the models come from: API keys, and the CLIs signed in on this computer.",
     usage: "Your plans' limits, and the tokens and cost of your sessions by model.",
-    shortcuts: "Keys that work across the app.",
+    shortcuts: "Keys that work across the app, with any you set in your keybindings file.",
     about: "This build, and where it keeps its data.",
 };
 

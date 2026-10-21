@@ -9,6 +9,8 @@ import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp, type StoredQueued } from "../agent/queue-store";
 import type { Key } from "./keys";
+import { CHORD_TIMEOUT_MS, type Keymap } from "../keybindings/core";
+import { TuiKeybindings, tuiStroke } from "../keybindings/tui";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
@@ -172,6 +174,11 @@ export class App {
     private takeBackBlockedAt = 0;
     private flash?: { text: string; until: number };
     private showHelp = false;
+    /** The keybindings file, applied (and reapplied on every save). */
+    readonly keys = new TuiKeybindings();
+    /** Keys of a chord being typed, handled as usual if it isn't finished. */
+    private chordHeld: Key[] = [];
+    private chordToken = 0;
     private menuIndex = 0;
     private menuHiddenFor?: string;
     private exitResolve!: () => void;
@@ -232,12 +239,14 @@ export class App {
         process.on("exit", restore);
         // stderr would scribble over the screen.
         onConfigWarning((msg) => this.notice(msg, "warn"));
+        this.keys.watch((km, status) => this.reportKeybindings(km, status));
         for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0));
 
         this.customCommands = loadCustomCommands(this.cwd, this.init.trusted);
         this.skills = loadSkills(this.cwd, this.init.trusted);
         this.printWelcome();
         for (const n of this.init.startupNotes) this.notice(n, "warn");
+        if (this.keys.keymap.issues.length) this.reportKeybindings(this.keys.keymap, "start");
 
         this.mcp.load();
         const approvals = this.mcp.needsApproval();
@@ -268,6 +277,7 @@ export class App {
         const disposed = this.agent?.dispose();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.stopTicker();
+        this.keys.close();
         this.screen.setLive([]);
         const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
         if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
@@ -775,7 +785,7 @@ export class App {
             const lines = thinkingLines(t, cols);
             const shown = lines.slice(0, max);
             const out = ["", ...shown.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l)))];
-            if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (ctrl+o to show more next time)`));
+            if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (${this.keys.label("app:toggleTranscript") ?? "/config"} to show more next time)`));
             return out;
         });
     }
@@ -1244,18 +1254,9 @@ export class App {
         const e = this.editor;
         const n = k.name;
         if (this.pendingSubmit && ((k.ctrl && n === "c") || n === "escape")) return this.pendingSubmit.cancel();
-        const menu = this.completions();
-        if (menu && menu.items.length) {
-            if (n === "up") return void (this.menuIndex = (this.menuIndex - 1 + menu.items.length) % menu.items.length);
-            if (n === "down") return void (this.menuIndex = (this.menuIndex + 1) % menu.items.length);
-            if (n === "tab" && !k.shift) return this.applyCompletion(menu, false);
-            if (n === "enter" && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
-            if (n === "escape") {
-                this.menuHiddenFor = e.text;
-                return;
-            }
-        }
+        // Ctrl+C and Ctrl+D can't be rebound: they always get you out.
         if (k.ctrl && n === "c") {
+            this.dropChord();
             if (this.busy) return this.interrupt();
             if (!e.isEmpty || this.inputMode !== "prompt") {
                 e.clear();
@@ -1269,47 +1270,157 @@ export class App {
             return;
         }
         if (k.ctrl && n === "d") {
+            this.dropChord();
             if (e.isEmpty && !this.busy) return void this.exit(0);
             return e.del();
         }
-        if (n === "escape") {
-            if (this.busy) {
-                // An Esc meant to cancel a queued follow-up must not kill the running turn.
-                if (this.queued.length && Date.now() - this.takeBackBlockedAt >= 3000) return this.takeBackQueued();
-                this.takeBackBlockedAt = 0;
-                return this.interrupt();
-            }
-            if (this.showHelp) return void (this.showHelp = false);
-            if (Date.now() - this.escAt < 800) {
-                this.escAt = 0;
-                this.flash = undefined;
-                if (!e.isEmpty) {
-                    e.clear();
-                    this.inputMode = "prompt";
-                } else if (this.inputMode === "prompt") void runCommand(this, "/rewind");
-                return;
-            }
-            this.escAt = Date.now();
-            if (!e.isEmpty) this.flash = { text: "Esc again to clear", until: Date.now() + 800 };
-            else if (this.inputMode === "prompt" && rewindTargets(this.session.messages).length) this.flash = { text: "Esc again to rewind", until: Date.now() + 800 };
+        const menu = this.completions();
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
+        if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl && !this.chordHeld.length) return this.applyCompletion(menu, true);
+        const stroke = tuiStroke(k);
+        if (!stroke) {
+            this.flushChord(menu);
+            return this.fixedKey(k, menu);
+        }
+        const r = this.keys.matcher.match(stroke, menu?.items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
+        if (r.kind === "pending") {
+            // A new chord after one that went nowhere: the old one's keys first.
+            if (r.abandoned) for (const h of this.chordHeld.splice(0)) this.fixedKey(h, menu);
+            this.chordHeld.push(k);
+            this.flash = { text: `${r.keys.replace(/ctrl\+enter/g, "ctrl+j")} … (waiting for the next key)`, until: Date.now() + CHORD_TIMEOUT_MS };
+            const token = ++this.chordToken;
+            // A chord left unfinished: its keys do what they'd do on their own.
+            setTimeout(() => {
+                if (token !== this.chordToken || this.keys.matcher.waiting) return;
+                // A dialog opened meanwhile: its keys aren't typed into the prompt behind it.
+                if (this.dialogs.length) return this.dropChord();
+                this.flushChord(this.completions());
+                this.renderLive();
+            }, CHORD_TIMEOUT_MS + 20);
             return;
         }
-        if (n === "tab" && k.shift) return this.cycleMode();
-        // While working: send it the other way (queue instead of steer, or steer instead of queue).
-        if (n === "tab" && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
-        if (n === "enter") {
-            if (k.shift || k.meta || k.ctrl) return e.insert("\n");
-            if (e.text.endsWith("\\") && e.cursor === e.text.length) {
-                e.backspace();
+        const held = this.chordHeld.splice(0);
+        if (held.length) this.flash = undefined;
+        if (r.abandoned) for (const h of held) this.fixedKey(h, menu);
+        if (r.kind === "action") return this.runKeyAction(r.action, k, this.completions());
+        // Unbinding takes away an action, not the key's editing meaning (a GUI-only null can't break the prompt).
+        return this.fixedKey(k, held.length ? this.completions() : menu, r.kind === "none" && r.unbound);
+    }
+
+    /** The keys of an unfinished chord, as they'd be on their own. */
+    private flushChord(menu: ReturnType<App["completions"]>) {
+        const held = this.chordHeld.splice(0);
+        this.keys.matcher.reset();
+        this.chordToken++;
+        if (held.length && this.flash?.text.endsWith("(waiting for the next key)")) this.flash = undefined;
+        for (const h of held) this.fixedKey(h, menu);
+    }
+
+    private dropChord() {
+        if (!this.chordHeld.length) return;
+        this.chordHeld = [];
+        this.keys.matcher.reset();
+        this.chordToken++;
+        this.flash = undefined;
+    }
+
+    /** What a bound action does in the input box. */
+    private runKeyAction(action: string, k: Key, menu: ReturnType<App["completions"]>) {
+        const e = this.editor;
+        const items = menu?.items.length ? menu : undefined;
+        switch (action) {
+            case "autocomplete:accept":
+                return items && this.applyCompletion(items, false);
+            case "autocomplete:dismiss":
+                return void (this.menuHiddenFor = e.text);
+            case "autocomplete:previous":
+                return void (items && (this.menuIndex = (this.menuIndex - 1 + items.items.length) % items.items.length));
+            case "autocomplete:next":
+                return void (items && (this.menuIndex = (this.menuIndex + 1) % items.items.length));
+            case "chat:submit":
+                // Enter on an open menu takes the suggestion (and runs a command).
+                if (items) return this.applyCompletion(items, true);
+                if (e.text.endsWith("\\") && e.cursor === e.text.length) {
+                    e.backspace();
+                    return e.insert("\n");
+                }
+                return void this.submit();
+            case "chat:newline":
                 return e.insert("\n");
-            }
-            return void this.submit();
+            case "chat:cancel":
+                return this.escapeKey();
+            case "chat:cycleMode":
+                return this.cycleMode();
+            case "chat:externalEditor":
+                return void this.externalEditor();
+            case "chat:imagePaste":
+                return void this.pasteClipboardImage();
+            case "chat:undo":
+                return e.undo();
+            case "history:previous":
+                // The arrow moves between the lines of a long prompt first.
+                if (k.name === "up" && !k.ctrl && !k.meta && e.up()) return;
+                if (e.historyPrev()) this.syncModeFromHistory();
+                return;
+            case "history:next":
+                if (k.name === "down" && !k.ctrl && !k.meta && e.down()) return;
+                if (e.historyNext()) this.syncModeFromHistory();
+                return;
+            case "app:toggleTranscript":
+                this.verbose = !this.verbose;
+                this.flash = { text: `Verbose output ${this.verbose ? "on" : "off"}`, until: Date.now() + 1500 };
+                return;
+            case "app:toggleTodos":
+                this.showTodos = !this.showTodos;
+                return;
+            case "app:redraw":
+                return this.screen.clearScreen();
         }
+    }
+
+    private escapeKey() {
+        const e = this.editor;
+        if (this.busy) {
+            // An Esc meant to cancel a queued follow-up must not kill the running turn.
+            if (this.queued.length && Date.now() - this.takeBackBlockedAt >= 3000) return this.takeBackQueued();
+            this.takeBackBlockedAt = 0;
+            return this.interrupt();
+        }
+        if (this.showHelp) return void (this.showHelp = false);
+        const again = this.keys.label("chat:cancel") ?? "esc";
+        if (Date.now() - this.escAt < 800) {
+            this.escAt = 0;
+            this.flash = undefined;
+            if (!e.isEmpty) {
+                e.clear();
+                this.inputMode = "prompt";
+            } else if (this.inputMode === "prompt") void runCommand(this, "/rewind");
+            return;
+        }
+        this.escAt = Date.now();
+        const name = again === "escape" ? "Esc" : again;
+        if (!e.isEmpty) this.flash = { text: `${name} again to clear`, until: Date.now() + 800 };
+        else if (this.inputMode === "prompt" && rewindTargets(this.session.messages).length) this.flash = { text: `${name} again to rewind`, until: Date.now() + 800 };
+    }
+
+    /** Keys that aren't bindings: typing and moving around the input box. */
+    private fixedKey(k: Key, menu: ReturnType<App["completions"]>, unbound = false) {
+        const e = this.editor;
+        const n = k.name;
+        // Tab keeps the mid-turn shortcut unless a binding, chord, or explicit unbinding claims it.
+        if (!unbound && n === "tab" && !k.shift && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) {
+            const contexts = menu?.items.length ? ["Autocomplete", "Chat", "Global"] as const : ["Chat", "Global"] as const;
+            // A held chord prefix also comes here on timeout; preserve an explicit null then too.
+            const binding = contexts.map((context) => this.keys.keymap.table.get(context)?.get("tab")).find((value) => value !== undefined);
+            if (binding !== null) return void this.submit(true);
+        }
+        if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
+        // Any other modified Enter nobody unbound adds a line, in terminals that tell them apart.
+        if (n === "enter" && (k.shift || k.meta || k.ctrl)) return unbound ? undefined : e.insert("\n");
         if (n === "paste" && k.paste !== undefined) return this.pasteInto(k.paste);
-        if (k.ctrl && !k.meta && n === "v") return void this.pasteClipboardImage();
         if (n === "text" && k.text) {
             if (e.isEmpty && this.inputMode === "prompt") {
-                if (k.text === "!" ) return void (this.inputMode = "bash");
+                if (k.text === "!") return void (this.inputMode = "bash");
                 if (k.text === "#") return void (this.inputMode = "memory");
                 if (k.text === "?") return void (this.showHelp = !this.showHelp);
             }
@@ -1332,28 +1443,22 @@ export class App {
         if (k.ctrl && n === "u") return e.killToStart();
         if (k.ctrl && n === "w") return e.killWordLeft();
         if (k.ctrl && n === "y") return e.yank();
-        if (k.ctrl && (n === "_" || n === "-")) return e.undo();
-        if (n === "up" || (k.ctrl && n === "p")) {
-            if (n === "up" && e.up()) return;
-            if (e.historyPrev()) this.syncModeFromHistory();
-            return;
-        }
-        if (n === "down" || (k.ctrl && n === "n")) {
-            if (n === "down" && e.down()) return;
-            if (e.historyNext()) this.syncModeFromHistory();
-            return;
-        }
-        if (k.ctrl && n === "o") {
-            this.verbose = !this.verbose;
-            this.flash = { text: `Verbose output ${this.verbose ? "on" : "off"}`, until: Date.now() + 1500 };
-            return;
-        }
-        if (k.ctrl && n === "t") {
-            this.showTodos = !this.showTodos;
-            return;
-        }
-        if (k.ctrl && n === "l") return this.screen.clearScreen();
-        if (k.ctrl && n === "g") return void this.externalEditor();
+    }
+
+    /** Keybindings problems, shown when the file loads or changes. */
+    private reportKeybindings(km: Keymap, status: "start" | "applied" | "kept") {
+        if (km.issues.length) {
+            const errors = km.issues.filter((i) => i.level === "error").length;
+            const warnings = km.issues.length - errors;
+            const counts = [errors && `${errors} error${errors === 1 ? "" : "s"}`, warnings && `${warnings} warning${warnings === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+            const head = `${status === "kept" ? "Keybindings not reloaded, the last good ones stay" : status === "applied" ? "Keybindings reloaded with problems" : "Problems in your keybindings"} (${counts}): ${displayPath(this.keys.path, this.cwd)}`;
+            const color = errors ? theme.error : theme.warning;
+            this.screen.print((cols) => [
+                ...wrapLine(head, cols - 6).map((l, i) => (i === 0 ? "  ⎿  " : "     ") + color(l)),
+                ...km.issues.flatMap((issue) => wrapLine(issue.message, cols - 9).map((l, i) => (i === 0 ? `     ${issue.level === "error" ? theme.error("✘") : theme.warning("!")} ` : "       ") + l)),
+            ]);
+        } else if (status === "applied") this.notice(`Keybindings reloaded${km.customized.size ? ` (${km.customized.size} customized)` : ""}`);
+        this.renderLive();
     }
 
     private syncModeFromHistory() {
@@ -2081,7 +2186,7 @@ export class App {
             return out;
         }
         if (this.showHelp) {
-            out.push(...shortcutHelp(cols));
+            out.push(...shortcutHelp(cols, this.keys));
             return out;
         }
         out.push(this.footer(cols));
@@ -2203,18 +2308,24 @@ function isCommand(text: string): boolean {
     return text.startsWith("/") && !text.startsWith("//");
 }
 
-function shortcutHelp(cols: number): string[] {
+function shortcutHelp(cols: number, keys: TuiKeybindings): string[] {
+    // Each hint names the key bound now; one with no key isn't shown.
+    const hint = (action: string, text: (key: string) => string) => {
+        const key = keys.label(action);
+        return key === undefined ? undefined : text(key === "escape" ? "esc" : key);
+    };
+    const newline = keys.all("chat:newline").filter((k) => k !== "shift+enter");
     const rows = [
-        ["! for bash mode", "double esc to clear or rewind", "shift+tab to cycle modes"],
-        ["/ for commands", "ctrl+g to edit in $EDITOR", "ctrl+o for verbose output"],
-        ["@ for file paths", "\\⏎ or ctrl+j for newline", "ctrl+t to toggle todos"],
-        ["# to memorize", "esc to interrupt (queued first)", "ctrl+c twice to exit"],
+        ["! for bash mode", hint("chat:cancel", (k) => `double ${k} to clear or rewind`), hint("chat:cycleMode", (k) => `${k} to cycle modes`)],
+        ["/ for commands", hint("chat:externalEditor", (k) => `${k} to edit in $EDITOR`), hint("app:toggleTranscript", (k) => `${k} for verbose output`)],
+        ["@ for file paths", `\\⏎${newline.length ? ` or ${newline[newline.length - 1]}` : ""} for newline`, hint("app:toggleTodos", (k) => `${k} to toggle todos`)],
+        ["# to memorize", hint("chat:cancel", (k) => `${k} to interrupt (queued first)`), "ctrl+c twice to exit"],
         ["tab: steer or queue the other way", "/queue to manage queued messages", ""],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [
-        ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c, w - 1)), w)).join("")),
-        "  " + theme.muted(truncate("shift+enter also adds a newline, in terminals that support it", cols - 4)),
+        ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c ?? "", w - 1)), w)).join("")),
+        "  " + theme.muted(truncate(keys.all("chat:newline").includes("shift+enter") ? "shift+enter also adds a newline, in terminals that support it" : `Keys: ${keys.path}`, cols - 4)),
     ];
 }
 

@@ -144,7 +144,7 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
         const tags = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
         const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
-            prefs: { sidebar: true }, isTauri: false, document: {}, onMount() {},
+            prefs: { sidebar: true }, isTauri: false, document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined,
             settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
             ...Object.fromEntries(tags.map((tag) => [tag, () => { if (tag === target) throw Error("injected " + target); return node(tag); }])),
         });

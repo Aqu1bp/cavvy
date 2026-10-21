@@ -66,6 +66,7 @@ import type {
     EffortLevel,
     GuiSettings,
     HelloResult,
+    KeybindingsFile,
     ImplementMode,
     ImplementPlanResult,
     McpListInfo,
@@ -88,6 +89,7 @@ import type {
     SessionSummary,
     WorktreeInfo,
 } from "./protocol";
+import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
@@ -333,6 +335,7 @@ export class Engine {
     private cliCommandNames = new Map<string, Set<string>>();
 
     private readonly unregisterAccountRoots: () => void;
+    private stopKeybindings?: () => void;
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -346,6 +349,8 @@ export class Engine {
 
     async start() {
         void this.firstListings();
+        // Every window applies a save of the keybindings file at once.
+        this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
@@ -356,6 +361,7 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        this.stopKeybindings?.();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
@@ -1751,6 +1757,12 @@ export class Engine {
                     user = process.env.USER ?? "";
                 }
                 return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: harnessHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
+            }
+            case "keybindings.get":
+                return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
+            case "keybindings.create": {
+                const path = keybindingsPath();
+                return { created: ensureKeybindingsFile(path), path };
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));

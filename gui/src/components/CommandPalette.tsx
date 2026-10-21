@@ -6,12 +6,12 @@ import { archive, chooseProject, exportSession, fork, newSession, openProject, o
 import { setPrefs, THEMES } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
-import { mod, terminalShortcut } from "../lib/platform";
 import { ModeIcon, MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
 import { askDelete } from "./Header";
 import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
+import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
     id: string;
@@ -118,7 +118,7 @@ export function CommandPalette() {
 
     const entries = createMemo<Entry[]>(() => {
         const out: Entry[] = [
-            { id: "new", section: "Actions", label: "New session", hint: `${mod} N`, icon: <Plus size={15} />, run: () => newSession(app.homeCwd) },
+            { id: "new", section: "Actions", label: "New session", hint: shortcutHint("app:newSession"), icon: <Plus size={15} />, run: () => newSession(app.homeCwd) },
             {
                 id: "open",
                 section: "Actions",
@@ -129,11 +129,11 @@ export function CommandPalette() {
                     if (p) void openProject(p);
                 },
             },
-            { id: "model", section: "Actions", label: "Switch model…", hint: `${mod} /`, icon: <Sparkles size={15} />, run: () => setModelPickerOpen(true) },
-            { id: "sidebar", section: "Actions", label: "Toggle sidebar", hint: `${mod} B`, icon: <PanelLeft size={15} />, run: toggleSidebar },
-            { id: "terminal", section: "Actions", label: "Toggle terminal", hint: terminalShortcut.replace("+", " "), icon: <SquareTerminal size={15} />, run: () => setTerminalOpen(!terminalOpen()) },
-            { id: "panel", section: "Actions", label: "Toggle side panel", hint: `${mod} .`, icon: <PanelRight size={15} />, run: () => togglePanel() },
-            { id: "settings", section: "Actions", label: "Settings", hint: `${mod} ,`, icon: <Settings size={15} />, run: () => setSettingsTab("general") },
+            { id: "model", section: "Actions", label: "Switch model…", hint: shortcutHint("chat:modelPicker"), icon: <Sparkles size={15} />, run: () => setModelPickerOpen(true) },
+            { id: "sidebar", section: "Actions", label: "Toggle sidebar", hint: shortcutHint("app:toggleSidebar"), icon: <PanelLeft size={15} />, run: toggleSidebar },
+            { id: "terminal", section: "Actions", label: "Toggle terminal", hint: shortcutHint("app:toggleTerminal"), icon: <SquareTerminal size={15} />, run: () => setTerminalOpen(!terminalOpen()) },
+            { id: "panel", section: "Actions", label: "Toggle side panel", hint: shortcutHint("app:togglePanel"), icon: <PanelRight size={15} />, run: () => togglePanel() },
+            { id: "settings", section: "Actions", label: "Settings", hint: shortcutHint("app:settings"), icon: <Settings size={15} />, run: () => setSettingsTab("general") },
             { id: "providers", section: "Actions", label: "Add an API key…", keywords: "providers login keys", icon: <Settings size={15} />, run: () => setSettingsTab("providers") },
             { id: "usage", section: "Actions", label: "Usage and plan limits", keywords: "cost tokens spend limits plan quota", icon: <ChartColumn size={15} />, run: () => setSettingsTab("usage") },
         ];
