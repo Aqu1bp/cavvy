@@ -30,6 +30,9 @@ function useKeys(handler: (key: string) => boolean) {
         const onKey = (e: KeyboardEvent) => {
             if (e.metaKey || e.ctrlKey || e.altKey || typing() || document.querySelector(".dialog-backdrop, .popover")) return;
             if (performance.now() - shown < SETTLE_MS) return;
+            // Not while the card is out of sight (the terminal maximized over the conversation).
+            const card = document.querySelector<HTMLElement>(".itab");
+            if (card?.checkVisibility?.() === false) return;
             if (handler(e.key)) {
                 e.preventDefault();
                 e.stopPropagation();
