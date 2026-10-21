@@ -252,6 +252,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         terminalMax: terminalMax(),
         dock: dockHeight(),
     }));
+
     createEffect(() => setShellLayout(layout()));
 
     // Shrinking the window past the docking point closes a docked inspector (the diff reader floats instead).
@@ -407,6 +408,11 @@ export function App() {
     const reviewing = () => Boolean(review() && active() && !settingsTab());
     const panelShown = () => Boolean(prefs.panel && active() && !agent() && !settingsTab() && app.opening?.id !== app.activeId);
     const layout = () => shellLayout();
+    const drawerOpen = () => layout().railMode === "overlay" && railOpen();
+    // The drawer takes focus as it opens, so nothing behind it keeps it.
+    createEffect(on(drawerOpen, (open) => {
+        if (open) queueMicrotask(() => document.querySelector<HTMLElement>(".win-rail button:not([disabled])")?.focus());
+    }, { defer: true }));
     const inspOpen = () => reviewing() || panelShown();
 
     return (
@@ -441,7 +447,8 @@ export function App() {
                         </Show>
                     </div>
                     {/* One opaque sheet: the conversation | the inspector, and the terminal under both. */}
-                    <div class="sheet">
+                    {/* Behind the open drawer the sheet takes no focus, clicks or keys (Enter on a focused Allow, say). */}
+                    <div class="sheet" inert={drawerOpen()}>
                         <main class="main">
                             <Reconnecting />
                             <RenderBoundary resetKey={() => `${app.activeId}:${settingsTab()}:${agentFocus()}`}>
