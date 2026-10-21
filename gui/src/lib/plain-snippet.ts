@@ -11,8 +11,14 @@ export interface PlainSnippet {
 const LINK = /!?\[([^\]\n]*)\]\(([^)\s]*)(?:\s+"[^"]*")?\)/g;
 /** Inline code: its backticks go, what's inside stays exactly as written. */
 const CODE = /(`+)([\s\S]*?[^`])\1(?!`)/g;
-/** Paired markers: bold, strikethrough, and backticks that never closed. */
-const RUNS = /\*\*|__|~~|`+/g;
+/**
+ * Bold and strikethrough, only as emphasis: an opener and its closer around
+ * text that doesn't start or end with a space. `__` also needs no letter
+ * outside it (snake__case stays). A lone or spaced-out marker is text.
+ */
+const PAIRED = [/(\*\*|~~)(?=\S)([\s\S]*?\S)\1/g, /(?<![\p{L}\p{N}_])(__)(?=\S)([\s\S]*?\S)__(?![\p{L}\p{N}_])/gu];
+/** Backticks that never closed (a snippet cut inside inline code). */
+const TICKS = /`+/g;
 /** A lone * or _ that opens or closes emphasis: next to a word on one side, not on the other. */
 const OPEN = /(^|[\s(…"'])([*_])(?=[^\s*_])/g;
 const CLOSE = /([^\s*_])([*_])(?=$|[\s).,;:!?…"'])/g;
@@ -37,7 +43,14 @@ export function plainSnippet(text: string, match?: [number, number]): PlainSnipp
         cut(at, start);
         cut(start + m[1]!.length, at + m[0].length);
     }
-    for (const m of text.matchAll(RUNS)) cut(m.index!, m.index! + m[0].length);
+    for (const re of PAIRED) {
+        for (const m of text.matchAll(re)) {
+            const n = m[1]!.length;
+            cut(m.index!, m.index! + n);
+            cut(m.index! + m[0].length - n, m.index! + m[0].length);
+        }
+    }
+    for (const m of text.matchAll(TICKS)) cut(m.index!, m.index! + m[0].length);
     for (const m of text.matchAll(OPEN)) cut(m.index! + m[1]!.length, m.index! + m[1]!.length + 1);
     for (const m of text.matchAll(CLOSE)) cut(m.index! + m[1]!.length, m.index! + m[1]!.length + 1);
     const lead = LEAD.exec(text);

@@ -37,6 +37,18 @@ test("the match moves with the text and stays on the same words", () => {
     // A match spanning syntax keeps only its words.
     expect(marked("the **login flow**", "login flow**")).toBe("the [login flow]");
     // A match that was only syntax is no match.
-    expect(plainSnippet("a ** b **", [2, 4]).match).toBeUndefined();
+    expect(plainSnippet("a **b**", [2, 4]).match).toBeUndefined();
     expect(plainSnippet("plain", undefined).match).toBeUndefined();
+});
+
+test("**, __ and ~~ go only as emphasis, paired around words; otherwise they're text", () => {
+    expect(marked("Use snake__case identifier", "snake__case")).toBe("Use [snake__case] identifier");
+    expect(marked("Use ** glob to match all files", "**")).toBe("Use [**] glob to match all files");
+    expect(marked("a lone ~~ here, a lone __ there", "~~")).toBe("a lone [~~] here, a lone __ there");
+    expect(plainSnippet("unclosed **bold and ~~strike").text).toBe("unclosed **bold and ~~strike");
+    expect(plainSnippet("spaced ** out ** and __ out __").text).toBe("spaced ** out ** and __ out __");
+    expect(plainSnippet("__init__ and a__b__c").text).toBe("init and a__b__c");
+    // Real emphasis still goes, and the match stays on its words.
+    expect(marked("**bold**, __x__ and ~~gone~~ here", "gone")).toBe("bold, x and [gone] here");
+    expect(marked("Use snake__case **and** ** glob", "** glob")).toBe("Use snake__case and [** glob]");
 });
