@@ -1,8 +1,9 @@
-// Which dialogs and popovers are open.
+// Which dialogs and popovers are open, and how the window is laid out.
 
 import { createSignal } from "solid-js";
 import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
+import { INSPECTOR_DEFAULT, type WindowLayout } from "../lib/layout";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
@@ -62,3 +63,25 @@ export const openFind = () => (setFindOpen(true), setFindFocus((n) => n + 1));
 export const [findReveal, setFindReveal] = createSignal<{ turnId: string; part: string } | undefined>();
 /** A message to show once its session is open (a ⌘K hit): where it is, and what was searched. */
 export const [jumpTarget, setJumpTarget] = createSignal<{ sessionId: string; seg: number; index: number; role: "user" | "assistant"; query: string } | undefined>();
+
+/** The rail's drawer, open over the sheet in narrow windows (lib/layout.ts: below 900px the rail doesn't dock). */
+export const [railOpen, setRailOpen] = createSignal(false);
+/** The terminal fills the whole sheet (the conversation and inspector wait behind it). */
+export const [terminalMax, setTerminalMax] = createSignal(false);
+/** The terminal panel is showing (open, and with a tab for this project), as the panel decides. */
+export const [terminalShown, setTerminalShown] = createSignal(false);
+/** The composer dock's height, requests included: a floating inspector ends above it. */
+export const [dockHeight, setDockHeight] = createSignal(0);
+/** The diff reader shows changes side by side: the inspector widens further for it. */
+export const [reviewSplit, setReviewSplit] = createSignal(false);
+/** The inspector's width (its resizer), when it isn't the diff reader. */
+export const [inspectorWidth, setInspectorWidth] = createSignal(INSPECTOR_DEFAULT);
+
+/** The window's layout, kept by the shell (App.tsx) from lib/layout.ts's rules. */
+export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
+    railMode: "dock",
+    railShown: true,
+    sheet: { w: 0, h: 0 },
+    inspector: { open: false, mode: "dock", width: INSPECTOR_DEFAULT, short: false, bottom: 0 },
+    terminal: { shown: false, height: 0, maximized: false, most: 0 },
+});

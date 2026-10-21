@@ -45,7 +45,8 @@ async function panel() {
             return result;
         },
         React: { Fragment: "Fragment" },
-        For: "For", Show: "Show", Play: "Play", Plus: "Plus", RotateCw: "RotateCw", SquareTerminal: "SquareTerminal", X: "X",
+        For: "For", Show: "Show", Play: "Play", Plus: "Plus", RotateCw: "RotateCw", TerminalIcon: "TerminalIcon", X: "X", ChevronDown: "ChevronDown", Maximize2: "Maximize2", Minimize2: "Minimize2",
+        terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }),
         createSignal: (initial: unknown) => {
             let value = initial;
             const read = () => value;

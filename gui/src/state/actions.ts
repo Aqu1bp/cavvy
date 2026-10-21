@@ -12,7 +12,7 @@ import { activate, app, createSession, dropHandle, forkSession, handleFor, impor
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 export { forkAnchor } from "../lib/fork";
@@ -451,6 +451,8 @@ export function togglePanel() {
 }
 
 export function toggleSidebar() {
+    // Narrow windows: the rail is a drawer over the sheet, opened for the moment.
+    if (shellLayout().railMode === "overlay") return void setRailOpen(!railOpen());
     setPrefs("sidebar", !prefs.sidebar);
 }
 

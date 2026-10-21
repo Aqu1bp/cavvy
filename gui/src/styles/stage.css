@@ -1,30 +1,26 @@
-/* ---- The session's stage: transcript, composer, panel ------------------ */
+/* ---- The session's stage: the transcript, and the composer floating over its end ----
+   The stage fills the conversation column, under the title bar: the transcript
+   scrolls under the bar's soft edge and under the composer's dock.
+
+   For the transcript (Transcript, AgentView):
+     --lane-l / --lane-r  the scroller's side padding
+     --stage-top          room above the first message, clear of the title bar
+     --dock-h             the composer dock's height (requests included)
+   The composer and request cards go in .composer-dock > .composer-col. */
 
 .stage {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    --lane-l: 48px;
-    --lane-r: 48px;
+    position: absolute;
+    inset: 0;
+    --lane-l: 32px;
+    --lane-r: 32px;
     --dock-h: 140px;
+    --stage-top: calc(var(--bar-h, 52px) + 14px);
+    /* The composer's width: the text column and a little more. */
+    --dock-w: calc(var(--column-w) + 100px);
 }
 
-.stage.with-panel {
-    --lane-r: 324px;
-}
-
-/* Not enough room for the conversation beside the panel: the card floats over it. */
-@container main (max-width: 940px) {
-    .stage.with-panel {
-        --lane-r: 48px;
-    }
-}
-
-@container main (max-width: 640px) {
-    .stage {
-        --lane-l: 16px;
-        --lane-r: 16px;
-    }
+.stage .transcript-col {
+    padding-top: var(--stage-top);
 }
 
 .composer-dock {
@@ -33,14 +29,52 @@
     right: 0;
     bottom: 0;
     z-index: 30;
-    padding: 0 var(--lane-r) 16px var(--lane-l);
+    padding: 0 18px 12px;
+    pointer-events: none;
+}
+
+/* The transcript fades out behind the dock. */
+.composer-dock::before {
+    content: "";
+    position: absolute;
+    inset: -28px 0 0 0;
+    z-index: -1;
+    background: linear-gradient(transparent, var(--sheet) 62%);
     pointer-events: none;
 }
 
 .composer-col {
     position: relative;
-    max-width: var(--column-w);
+    max-width: var(--dock-w);
     margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     pointer-events: auto;
 }
 
+@container main (max-width: 700px) {
+    .stage {
+        --lane-l: 22px;
+        --lane-r: 22px;
+    }
+}
+
+@container main (max-width: 600px) {
+    .composer-dock {
+        padding: 0 10px 10px;
+    }
+}
+
+@container main (max-width: 440px) {
+    .stage {
+        --lane-l: 16px;
+        --lane-r: 16px;
+    }
+}
+
+@container main (max-height: 560px) {
+    .stage {
+        --stage-top: calc(var(--bar-h, 52px) + 6px);
+    }
+}

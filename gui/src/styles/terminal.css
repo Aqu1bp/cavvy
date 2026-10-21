@@ -1,16 +1,173 @@
-.terminal-panel { flex: none; min-height: 120px; max-height: 70vh; flex-direction: column; position: relative; border-top: 1px solid var(--border-strong); background: var(--bg); }
-.terminal-resize { position: absolute; top: -4px; left: 0; right: 0; height: 7px; cursor: ns-resize; z-index: 2; touch-action: none; }
-.terminal-resize:hover, .terminal-resize:focus-visible { background: var(--accent); opacity: .35; }
-.terminal-toolbar { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
-.terminal-label { color: var(--fg-muted); }
-.terminal-tabs { display: flex; min-width: 0; overflow-x: auto; }
-.terminal-tab { display: flex; align-items: center; flex-shrink: 0; border-bottom: 2px solid transparent; }
-.terminal-tab.on { border-color: var(--accent); }
-.terminal-tab > button:first-child { padding: 8px; white-space: nowrap; color: var(--fg-muted); }
-.terminal-tab.on > button:first-child { color: var(--fg); }
-.terminal-cwd { margin-left: auto; color: var(--fg-muted); max-width: 30%; font-family: var(--font-mono); }
-.terminal-screen { flex: 1; min-height: 0; flex-direction: column; padding: 6px 8px 2px; }
-.terminal-emulator { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.terminal-emulator .xterm { height: 100%; }
-.terminal-message { display: flex; align-items: center; justify-content: space-between; padding: 8px; gap: 8px; color: var(--fg-muted); font-size: 12px; }
-.terminal-tab-icon { vertical-align: -1px; color: var(--fg-muted); }
+/* ---- Terminal: the sheet's bottom row, under the conversation and the inspector ---- */
+
+.terminal-panel {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    position: relative;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--term-bg);
+    border-top: 0.5px solid var(--line);
+    overflow: hidden;
+}
+
+/* Maximized, it's the whole sheet. */
+.terminal-panel.max {
+    border-top: 0;
+}
+
+.terminal-panel.max .terminal-resize {
+    display: none;
+}
+
+.terminal-resize {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 6px;
+    cursor: row-resize;
+    z-index: 3;
+    touch-action: none;
+}
+
+.terminal-resize::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity 150ms;
+}
+
+.terminal-resize:hover::after,
+.terminal-resize:focus-visible::after,
+.terminal-panel.dragging .terminal-resize::after {
+    opacity: 1;
+}
+
+.terminal-resize:focus-visible {
+    outline: none;
+}
+
+.terminal-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 38px;
+    padding: 0 6px 0 8px;
+    flex: none;
+    font-size: 0.929rem;
+}
+
+.terminal-toolbar .hb {
+    border-radius: var(--pill);
+}
+
+.terminal-tabs {
+    display: flex;
+    gap: 2px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.terminal-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    height: 28px;
+    padding: 0 3px 0 10px;
+    border-radius: var(--pill);
+    flex: none;
+    color: var(--fg-3);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.terminal-tab:hover {
+    background: var(--hover);
+    color: var(--fg-2);
+}
+
+.terminal-tab.on {
+    background: var(--sheet);
+    color: var(--fg);
+    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+.terminal-tab > button[role="tab"] {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 100%;
+    color: inherit;
+    white-space: nowrap;
+}
+
+.terminal-tab > button[role="tab"]:focus-visible {
+    outline-offset: 0;
+}
+
+.terminal-tab-icon {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.terminal-tab .terminal-tab-x {
+    width: 20px;
+    height: 20px;
+    opacity: 0;
+}
+
+.terminal-tab:hover .terminal-tab-x,
+.terminal-tab.on .terminal-tab-x,
+.terminal-tab-x:focus-visible {
+    opacity: 1;
+}
+
+.terminal-cwd {
+    margin-left: auto;
+    padding: 0 8px;
+    max-width: 40%;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 0.821rem;
+}
+
+.terminal-screen {
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    padding: 2px 6px 6px 14px;
+}
+
+.terminal-emulator {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.terminal-emulator .xterm {
+    height: 100%;
+}
+
+/* xterm paints its viewport black under the last row; it's the panel's own colour here. */
+.terminal-emulator .xterm .xterm-viewport {
+    background-color: var(--term-bg);
+}
+
+.terminal-message {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 14px;
+    color: var(--fg-3);
+    font-size: 0.857rem;
+}

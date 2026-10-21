@@ -60,8 +60,9 @@ mock.module("../../gui/src/state/ui", () => ({
     setMcpOpen: (value: { focus?: string }) => mcpOpenings.push(value),
     ...Object.fromEntries([
         "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setFolderPickerOpen", "setModePickerOpen",
-        "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab",
+        "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab", "railOpen", "setRailOpen",
     ].map((name) => [name, noop])),
+    shellLayout: () => ({ railMode: "dock" }),
 }));
 const { send } = await import("../../gui/src/state/actions");
 const textFile = "# attached notes\n";
