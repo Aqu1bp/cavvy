@@ -47,6 +47,7 @@ import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
 import { BUILTIN_TOOLS } from "../tools/index";
 import type { Sampler, Tool, ToolDisplay, ToolState, TodoItem } from "../tools/types";
+import { isShellTool } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
@@ -1377,8 +1378,8 @@ export class App {
         let hiddenNote = "";
 
         if (req.agentLabel) header.push(theme.muted(`Requested by sub-agent: ${req.agentLabel}`), "");
-        if (tool.name === "Bash") {
-            title = req.secrets?.length ? "Bash command with secrets" : "Bash command";
+        if (isShellTool(tool.name)) {
+            title = tool.name === "Monitor" ? "Monitor command" : req.secrets?.length ? "Bash command with secrets" : "Bash command";
             const cmd = String(input.command ?? "");
             const { highlightCode } = await import("./highlight");
             const lines = highlightCode(cmd, "sh");
@@ -1437,7 +1438,7 @@ export class App {
             header.push(bold(req.title));
         }
         if (decision.dangerous) header.unshift(theme.error(`⚠ ${decision.reason ?? "This action is potentially destructive."}`), "");
-        else if (decision.reason && tool.name !== "Bash") header.push("", theme.muted(decision.reason));
+        else if (decision.reason && !isShellTool(tool.name)) header.push("", theme.muted(decision.reason));
         if (req.classifierReason) header.push("", theme.autoMode(`Auto mode asked you because: ${req.classifierReason}`));
         // What it does in a line, above the command, marked as the model's.
         if (req.summary) header.unshift(theme.muted("AI summary: ") + bold(req.summary) + (hiddenNote ? theme.warning(hiddenNote) : ""), "");
@@ -2638,6 +2639,10 @@ export class App {
             left = info.color(`${info.symbol} ${info.short} on`) + theme.muted(" (shift+tab to cycle)");
         }
         const parts: string[] = [];
+        // Watching in the background: lines from these can wake the agent (/bashes lists and stops them).
+        let monitors = 0;
+        for (const s of this.toolState.shells.values()) if (s.monitor && s.exitCode === null) monitors++;
+        if (monitors) parts.push(theme.success(`◉ ${monitors} monitor${monitors === 1 ? "" : "s"}`));
         if (this.model) parts.push(shortModel(this.model));
         if (this.model?.supportsFastMode && (this.session.fastMode ?? this.settings.fastMode)) parts.push("↯ fast");
         if (this.agent && this.model?.contextWindow) {

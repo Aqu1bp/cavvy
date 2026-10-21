@@ -30,7 +30,7 @@ import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./
 import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
-import { isReadOnly } from "../tools/types";
+import { isReadOnly, isShellTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
 import { childEnv } from "../util/env";
@@ -167,7 +167,7 @@ export class PermissionChecker {
 
     target(tool: Tool<any>, input: any, cwd: string): RuleTarget {
         const t: RuleTarget = { toolName: tool.name };
-        if (tool.name === "Bash") t.command = String(input?.command ?? "");
+        if (isShellTool(tool.name)) t.command = String(input?.command ?? "");
         // The field the tool itself uses, so an extra key can't stand in for it.
         const p = toolPath(tool.name, input);
         if ((EDIT_TOOLS.has(tool.name) || READ_TOOLS.has(tool.name)) && p !== undefined) t.path = expandPath(p, cwd);
@@ -232,7 +232,7 @@ export class PermissionChecker {
     /** Same action, same answer: the tool, its input, the folder it runs in and (file tools) the file it resolves to. */
     private actionKey(tool: Tool<any>, input: any, cwd: string, sandbox?: boolean): string {
         const where = canonical(cwd);
-        if (tool.name !== "Bash") {
+        if (!isShellTool(tool.name)) {
             const p = this.target(tool, input, cwd).path;
             return stableStringify([tool.name, input ?? null, where, p ? canonical(p) : null]);
         }
@@ -247,7 +247,7 @@ export class PermissionChecker {
      */
     private grantFor(tool: Tool<any>, input: any, d: Decision, cwd: string): SessionGrant | undefined {
         if (d.dangerous || d.config || d.rule || tool.category === "edit" || tool.category === "read") return undefined;
-        if (tool.name === "Bash") {
+        if (isShellTool(tool.name)) {
             const cmd = String(input?.command ?? "");
             if (d.sensitive) {
                 const paths = [...new Set(this.sensitivePaths(cmd, cwd))];
@@ -388,21 +388,21 @@ export class PermissionChecker {
         if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
             return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
         }
-        if (tool.name === "Bash" && accountTarget(t.command ?? "", cwd, this.shellEnv())) {
+        if (isShellTool(tool.name) && accountTarget(t.command ?? "", cwd, this.shellEnv())) {
             return { behavior: "deny", reason: "Access to CLI account folders is blocked." };
         }
 
         let dangerous: string | undefined;
-        if (tool.name === "Bash") dangerous = dangerousReason(t.command ?? "");
+        if (isShellTool(tool.name)) dangerous = dangerousReason(t.command ?? "");
 
         // Plan mode: research only.
         if (mode === "plan") {
             if (tool.category === "edit") return { behavior: "deny", reason: "Plan mode is active: files can't be modified. Finish planning and call ExitPlanMode to present the plan." };
-            if (tool.name === "Bash" && !isReadOnlyCommand(t.command ?? "")) {
+            if (isShellTool(tool.name) && !isReadOnlyCommand(t.command ?? "")) {
                 return { behavior: "deny", reason: "Plan mode is active: only read-only shell commands are allowed. Call ExitPlanMode with your plan before making changes." };
             }
             // Commit, push, open a pull request.
-            if (tool.category === "execute" && tool.name !== "Bash" && !isReadOnly(tool, input)) {
+            if (tool.category === "execute" && !isShellTool(tool.name) && !isReadOnly(tool, input)) {
                 return { behavior: "deny", reason: "Plan mode is active: nothing can be committed or pushed. Call ExitPlanMode with your plan first." };
             }
             if (tool.name === "Task" && t.agentType !== "explore") {
@@ -427,7 +427,7 @@ export class PermissionChecker {
         if (tool.category === "edit" && t.path && this.isHarnessConfig(t.path) && !(memoryDir && inMemory(t.path, memoryDir))) {
             return { behavior: "ask", config: true, reason: "This file configures the harness or git itself (permissions, hooks, MCP servers); changes always need your approval." };
         }
-        if (tool.name === "Bash") {
+        if (isShellTool(tool.name)) {
             const cfg = configTarget(t.command ?? "", harnessHome());
             if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg} (permissions, hooks, MCP servers or programs git runs); it always needs your approval.` };
         }
@@ -435,7 +435,7 @@ export class PermissionChecker {
         const allowed = findMatch(allow, t, this.root, "allow");
         // A prefix rule approves the program, not where its output goes:
         // `Bash(cat:*)` must not approve `cat x > ~/.zshrc`.
-        if (allowed && !(tool.name === "Bash" && this.redirectsEscape(t.command ?? "", cwd))) return { behavior: "allow", rule: allowed };
+        if (allowed && !(isShellTool(tool.name) && this.redirectsEscape(t.command ?? "", cwd))) return { behavior: "allow", rule: allowed };
 
         switch (tool.category) {
             case "meta":
@@ -461,7 +461,7 @@ export class PermissionChecker {
                 return { behavior: "ask", offerAcceptEdits: true };
             }
             case "execute": {
-                if (tool.name === "Bash") {
+                if (isShellTool(tool.name)) {
                     const cmd = t.command ?? "";
                     const suggestions = suggestBashRules(cmd);
                     const access = accessNeeded(cmd, cwd);
@@ -694,7 +694,7 @@ function harnessAccounts(): string {
 function approvedAction(tool: Tool<any>, input: any, cwd: string, path: string | undefined, grant: SessionGrant | undefined): ApprovedAction {
     const i = (input ?? {}) as Record<string, unknown>;
     const a: ApprovedAction = { tool: tool.name, cwd };
-    if (tool.name === "Bash") a.command = String(i.command ?? "");
+    if (isShellTool(tool.name)) a.command = String(i.command ?? "");
     else if (path) a.path = path;
     else if (typeof i.url === "string") a.url = i.url;
     else a.input = stableStringify(input ?? {});

@@ -26,13 +26,13 @@ function shellComplaintPattern(shell = pickShell()): RegExp {
     return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `);
 }
 const MAX_TIMEOUT = 600_000;
-const BG_BUFFER = 1_000_000;
+export const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
 /** Background lines beyond this bound are omitted, never released in raw pieces. */
-const MAX_PARTIAL_LINE = 64 * 1024;
+export const MAX_PARTIAL_LINE = 64 * 1024;
 
 /** Each pipe owns its decoder and pending line: stderr mustn't split a stdout secret (or vice versa). */
-function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void) {
+export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void) {
     let pending = "";
     let skipping = false;
     let order = 0;
@@ -42,6 +42,8 @@ function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, ord
         let lf = chunk.indexOf("\n");
         let cr = chunk.indexOf("\r");
         for (let start = 0; start < chunk.length; ) {
+            // A reader that stopped listening (a monitor that's flooding) doesn't want the rest of this chunk either.
+            if ((stream as { destroyed?: boolean }).destroyed) return;
             const nl = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
             const end = nl < 0 ? chunk.length : nl + 1;
             if (!skipping) {
@@ -76,7 +78,7 @@ function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, ord
  * A sandboxed command's environment: package caches it can write and, with
  * Seatbelt, its own proxy, open to the hosts it was approved with.
  */
-async function sandboxedEnv(env: Record<string, string>, sandbox: Sandbox, hosts: string[] | undefined): Promise<{ env: Record<string, string>; proxy?: CommandProxy }> {
+export async function sandboxedEnv(env: Record<string, string>, sandbox: Sandbox, hosts: string[] | undefined): Promise<{ env: Record<string, string>; proxy?: CommandProxy }> {
     if (sandbox.kind !== "seatbelt") return { env: { ...env, ...sandboxCacheEnv() } };
     const rules = (hosts ?? []).map(parseHostRule).filter((r): r is HostRule => r !== undefined);
     const proxy = await startProxy(rules);
@@ -90,6 +92,23 @@ export function sandboxOutputHint(sandbox: Sandbox, output: string, proxy: Comma
     return hints.length ? hints.join("\n") : undefined;
 }
 
+/** What's wrong with a command's allowedHosts, if anything. */
+export function validateHosts(hosts: unknown): string | undefined {
+    if (hosts === undefined) return undefined;
+    if (!Array.isArray(hosts)) return "allowedHosts must be an array of host names";
+    if (hosts.length > MAX_HOSTS) return `allowedHosts can list at most ${MAX_HOSTS} hosts`;
+    const bad = hosts.filter((h) => typeof h !== "string" || !parseHostRule(h));
+    if (bad.length) return `allowedHosts: ${bad.map((b) => JSON.stringify(b)).join(", ")} ${bad.length === 1 ? "isn't a host" : "aren't hosts"}. List host names like registry.npmjs.org, *.example.com or example.com:8443 (no URLs, paths or bare wildcards).`;
+    return undefined;
+}
+
+/** A command's environment: this session's secrets, and in the sandbox its caches and proxy. */
+export async function commandEnv(ctx: Pick<ToolContext, "settings" | "state" | "sandbox">, hosts: string[] | undefined): Promise<{ env: Record<string, string>; proxy?: CommandProxy }> {
+    // childEnv leaves out every registered secret; this session's own go back in, for its shell alone.
+    const env = { ...childEnv(ctx.settings.env), ...ctx.state.secrets?.env() };
+    return ctx.sandbox ? sandboxedEnv(env, ctx.sandbox, hosts) : { env };
+}
+
 /** The shell commands run in: the user's, if it's bash or zsh. */
 export function pickShell(): string {
     const sh = process.env.SHELL ?? "";
@@ -98,7 +117,7 @@ export function pickShell(): string {
 }
 
 /** `shell -c script`, inside the sandbox when there is one. */
-function shellArgv(script: string, sandbox?: Sandbox): string[] {
+export function shellArgv(script: string, sandbox?: Sandbox): string[] {
     return sandbox ? sandboxArgv(sandbox, pickShell(), script) : [pickShell(), "-c", script];
 }
 
@@ -127,7 +146,7 @@ interface RunResult {
 }
 
 /** The shell's own idea of where it is: an inherited PWD can spell the directory differently (or through a symlink). */
-function withPwd(env: Record<string, string>, cwd: string): Record<string, string> {
+export function withPwd(env: Record<string, string>, cwd: string): Record<string, string> {
     const { OLDPWD: _, ...rest } = env;
     return { ...rest, PWD: cwd };
 }
@@ -225,7 +244,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
     });
 }
 
-function cleanOutput(s: string): string {
+export function cleanOutput(s: string): string {
     // Collapse carriage-return progress bars to their final state, strip ANSI.
     const lines = stripAnsi(redact(s))
         .split("\n")
@@ -283,20 +302,10 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
     title: (i) => `Bash(${(i.command ?? "").split("\n")[0]}${(i.command ?? "").includes("\n") ? " …" : ""})`,
     validate(input) {
         if (typeof input.command !== "string" || !input.command.trim()) return "command must be a non-empty string";
-        const hosts: unknown = input.allowedHosts;
-        if (hosts !== undefined) {
-            if (!Array.isArray(hosts)) return "allowedHosts must be an array of host names";
-            if (hosts.length > MAX_HOSTS) return `allowedHosts can list at most ${MAX_HOSTS} hosts`;
-            const bad = hosts.filter((h) => typeof h !== "string" || !parseHostRule(h));
-            if (bad.length) return `allowedHosts: ${bad.map((b) => JSON.stringify(b)).join(", ")} ${bad.length === 1 ? "isn't a host" : "aren't hosts"}. List host names like registry.npmjs.org, *.example.com or example.com:8443 (no URLs, paths or bare wildcards).`;
-        }
-        return undefined;
+        return validateHosts(input.allowedHosts);
     },
     async run(input, ctx) {
-        // childEnv leaves out every registered secret; this session's own go back in, for its shell alone.
-        let env = { ...childEnv(ctx.settings.env), ...ctx.state.secrets?.env() };
-        let proxy: CommandProxy | undefined;
-        if (ctx.sandbox) ({ env, proxy } = await sandboxedEnv(env, ctx.sandbox, input.allowedHosts));
+        const { env, proxy } = await commandEnv(ctx, input.allowedHosts);
         if (input.run_in_background) return startBackground(input.command, ctx, env, proxy);
         const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(1000, input.timeout ?? ctx.settings.bashTimeout ?? 120_000));
         let lastProgress = 0;
@@ -361,7 +370,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
     },
 };
 
-const KILL_GRACE_MS = 3000;
+export const KILL_GRACE_MS = 3000;
 
 /** Whether any process in the group is still alive. */
 function groupAlive(pid: number): boolean {
@@ -398,6 +407,22 @@ export async function stopGroup(pid: number | undefined, graceMs: number): Promi
     return "killed";
 }
 
+/** A background line too long to keep. */
+export const overflowLine = () => "[Output line omitted: exceeds 64 KiB]\n";
+
+/** Into a background shell's output ring, which keeps the last BG_BUFFER characters. */
+export function appendOutput(shell: BackgroundShell, text: string) {
+    shell.output += text;
+    if (shell.output.length > BG_BUFFER) {
+        let drop = shell.output.length - BG_BUFFER;
+        // Only redacted, complete lines enter the ring; evict whole lines for readability.
+        const nl = shell.output.indexOf("\n", drop);
+        if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
+        shell.output = shell.output.slice(drop);
+        shell.readOffset = Math.max(0, shell.readOffset - drop);
+    }
+}
+
 function startBackground(command: string, ctx: ToolContext, env: Record<string, string>, proxy: CommandProxy | undefined) {
     const id = `bash_${++shellCounter}`;
     const [file, ...args] = shellArgv(command, ctx.sandbox);
@@ -424,20 +449,9 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
             return how;
         },
     };
-    const onChunk = (text: string) => {
-        shell.output += text;
-        if (shell.output.length > BG_BUFFER) {
-            let drop = shell.output.length - BG_BUFFER;
-            // Only redacted, complete lines enter the ring; evict whole lines for readability.
-            const nl = shell.output.indexOf("\n", drop);
-            if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
-            shell.output = shell.output.slice(drop);
-            shell.readOffset = Math.max(0, shell.readOffset - drop);
-        }
-    };
-    const overflow = () => "[Output line omitted: exceeds 64 KiB]\n";
-    if (child.stdout) readShellStream(child.stdout, onChunk, MAX_PARTIAL_LINE, overflow);
-    if (child.stderr) readShellStream(child.stderr, onChunk, MAX_PARTIAL_LINE, overflow);
+    const onChunk = (text: string) => appendOutput(shell, text);
+    if (child.stdout) readShellStream(child.stdout, onChunk, MAX_PARTIAL_LINE, overflowLine);
+    if (child.stderr) readShellStream(child.stderr, onChunk, MAX_PARTIAL_LINE, overflowLine);
     // The network goes with the shell: whatever it left running loses it.
     child.on("close", (code) => {
         shell.exitCode = code ?? -1;
@@ -459,7 +473,7 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
     name: "BashOutput",
     category: "read",
     readOnly: true,
-    description: "Retrieves new output from a background shell started with Bash run_in_background. Returns only output produced since the last check, plus the shell's status. Optional filter is a regex; only matching lines are returned.",
+    description: "Retrieves new output from a background shell started with Bash run_in_background, or from a monitor (stdout and stderr). Returns only output produced since the last check, plus the shell's status. Optional filter is a regex; only matching lines are returned.",
     parameters: {
         type: "object",
         properties: {
@@ -498,7 +512,7 @@ export const KillShellTool: Tool<{ shell_id: string }> = {
     name: "KillShell",
     category: "meta",
     readOnly: false,
-    description: "Stops a background shell started with Bash run_in_background.",
+    description: "Stops a background shell started with Bash run_in_background, or a monitor started with Monitor.",
     parameters: {
         type: "object",
         properties: { shell_id: { type: "string", description: "The background shell id to kill" } },

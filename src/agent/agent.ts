@@ -36,7 +36,7 @@ import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox
 import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Sampler, Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { formatWakes, wakeDisplay } from "./wakes";
-import { isReadOnly } from "../tools/types";
+import { isReadOnly, isShellTool } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
@@ -63,6 +63,7 @@ import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
+import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall } from "../tools/monitor";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
 import { readFile } from "fs/promises";
 import { join, relative } from "path";
@@ -1207,6 +1208,8 @@ export class Agent {
         const scheduling = Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
         const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
+        // Claude Code has a Monitor of its own; Codex gets Harness's.
+        const monitoring = watching && caller === "codex";
         if (!delegating && !(store && ask) && !scheduling && !watching) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
@@ -1234,6 +1237,10 @@ export class Agent {
         if (watching) {
             tools.push(...watchServerTools((signal) => this.toolContext("", signal)));
             instructions.push(WATCH_INSTRUCTIONS);
+        }
+        if (monitoring) {
+            tools.push(...monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            instructions.push(MONITOR_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -1520,7 +1527,13 @@ export class Agent {
                 return out;
             },
         };
-        const base = this.backendTurn(signal, host);
+        // A stop from Harness's checks of a tool it serves the backend (a hook, a PermissionRequest interrupt) ends the backend's turn, as a stop on its own call does.
+        const stopper = new AbortController();
+        this.stopServedTurn = () => {
+            declined = true;
+            stopper.abort();
+        };
+        const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), host);
         let stopRounds = 0;
         // The user's own message, for the skills it names: its first part, not the files and notes after it.
         // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
@@ -1557,6 +1570,12 @@ export class Agent {
             }
             this.recordBackendTurn(provider, name, result);
             if (result.reason === "aborted" || signal.aborted) {
+                if (this.hookStop && !signal.aborted) {
+                    this.endNotice("warn", `Stopped by a hook: ${this.hookStop}`);
+                    this.hookStop = undefined;
+                    this.syncBackend(provider);
+                    return this.endBackendTurn(provider, "blocked");
+                }
                 const r = declined ? this.endBackendTurn(provider, "denied") : this.interrupted(false);
                 this.syncBackend(provider);
                 return r;
@@ -1702,6 +1721,22 @@ export class Agent {
      */
     private emitFromBackend(e: AgentEvent) {
         e = redactBackendEvent(e);
+        this.noteServedCall(e, this.servedMain);
+        // Harness's own tools it served (Monitor for Codex) show as those tools.
+        if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
+            const native = nativeMonitorCall(e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length), (e.call.input ?? {}) as Record<string, unknown>);
+            const tool = native && this.findTool(native.name);
+            if (native && tool) {
+                const call = { ...e.call, ...native };
+                let title = native.name;
+                try {
+                    title = tool.title(native.input as any);
+                } catch {
+                    // keep the name
+                }
+                e = e.type === "tool_start" ? { ...e, call, title, tool } : { ...e, call, title };
+            }
+        }
         if (e.type === "tool_start" || e.type === "tool_end") {
             const call = e.call;
             if (call.name === DELEGATE_TOOL && e.type === "tool_start") this.delegateCalls.push({ id: call.id, input: (call.input ?? {}) as Record<string, unknown>, claimed: false });
@@ -1762,6 +1797,54 @@ export class Agent {
         if (signal.aborted) return refuse("Interrupted by user");
         if (!answer.allow) return refuse("The user declined this tool call. Don't retry it; wait for the user to say how to proceed.");
         return undefined;
+    }
+
+    private servedCalls = 0;
+    /** The backend's calls of the tools Harness serves it, by whose they are: its main thread's, or a sub-agent's. */
+    private servedMain = new Set<string>();
+    private servedSub = new Set<string>();
+
+    private noteServedCall(e: AgentEvent, into: Set<string>): void {
+        if (e.type === "subagent") return this.noteServedCall(e.event, this.servedSub);
+        if ((e.type !== "tool_start" && e.type !== "tool_end") || !e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`)) return;
+        if (e.type === "tool_start") into.add(e.call.id);
+        else into.delete(e.call.id);
+    }
+
+    /** A served call one of the backend's sub-agents made. Its event may come just after the call, so this waits a moment for it. */
+    private async fromBackendSubagent(callId: string): Promise<boolean> {
+        for (let i = 0; i < 40; i++) {
+            if (this.servedMain.has(callId)) return false;
+            if (this.servedSub.has(callId)) return true;
+            await Bun.sleep(50);
+        }
+        return false;
+    }
+    /** Ends the backend's running turn: a served call's checks said stop. */
+    private stopServedTurn?: () => void;
+
+    /**
+     * One of Harness's own tools, called by a backend through the harness MCP server (Monitor for Codex). The CLI
+     * approves Harness's tools without asking, so it goes through the same checks as the tool's call from a model
+     * Harness runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
+     * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
+     */
+    private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
+        // Only the main agent can be woken, so a sub-agent gets no Monitor (Harness's sub-agents don't either). Nor can its stop end the main turn.
+        if (callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
+        const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
+        const prep = await this.prepare(call, signal, tool);
+        if ("result" in prep) {
+            if (prep.stop || this.hookStop) this.stopServedTurn?.();
+            return { text: prep.result.content, isError: true };
+        }
+        // Cancelled while its checks ran (a hook, the reviewer): it doesn't start.
+        if (signal.aborted) return { text: "Interrupted by user before this tool ran.", isError: true };
+        const context: string[] = [];
+        const r = await this.runTool(call, prep.tool, prep.input, signal, prep.auto, prep.sandbox, context);
+        if (this.hookStop) this.stopServedTurn?.();
+        // What a PostToolUse hook adds goes with the result: it's the backend that reads it.
+        return { text: [r.content, ...context].join("\n\n"), isError: r.isError };
     }
 
     /**
@@ -2038,21 +2121,26 @@ export class Agent {
         return { results: out, denied };
     }
 
-    private errorResult(call: ToolCallPart, content: string, display?: ToolDisplay): ToolResultPart {
+    private errorResult(call: ToolCallPart, content: string, display?: ToolDisplay, quiet = false): ToolResultPart {
         const r: ToolResult = { content, isError: true, display };
-        this.emit({ type: "tool_end", call, result: r, durationMs: 0 });
+        if (!quiet) this.emit({ type: "tool_end", call, result: r, durationMs: 0 });
         return { type: "tool_result", toolCallId: call.id, toolName: call.name, content, isError: true };
     }
 
-    /** Validate and get permission. Either an approved job or a ready result. */
+    /**
+     * Validate and get permission. Either an approved job or a ready result.
+     * `served`: the tool, for a call a backend made through the harness MCP server (it shows as the backend's own tool call).
+     */
     private async prepare(
         call: ToolCallPart,
         signal: AbortSignal,
+        served?: Tool<any>,
     ): Promise<{ tool: Tool<any>; input: any; auto?: string; sandbox?: boolean } | { result: ToolResultPart; stop?: boolean }> {
-        const tool = this.findTool(call.name);
+        const quiet = Boolean(served);
+        const tool = served ?? this.findTool(call.name);
         if (!tool) {
-            this.emit({ type: "tool_start", call, title: call.name });
-            return { result: this.errorResult(call, `No such tool: ${call.name}. Available tools: ${this.tools.map((t) => t.name).join(", ")}`) };
+            if (!quiet) this.emit({ type: "tool_start", call, title: call.name });
+            return { result: this.errorResult(call, `No such tool: ${call.name}. Available tools: ${this.tools.map((t) => t.name).join(", ")}`, undefined, quiet) };
         }
         let input: any = coerceInput(tool, call.input ?? {});
         let title = call.name;
@@ -2061,46 +2149,46 @@ export class Agent {
         } catch {
             // keep the bare name
         }
-        this.emit({ type: "tool_start", call, title, tool });
+        if (!quiet) this.emit({ type: "tool_start", call, title, tool });
 
         const schemaErr = validateInput(tool, input);
-        if (schemaErr) return { result: this.errorResult(call, `Invalid input for ${tool.name}: ${schemaErr}`) };
+        if (schemaErr) return { result: this.errorResult(call, `Invalid input for ${tool.name}: ${schemaErr}`, undefined, quiet) };
         const ctx = this.toolContext(call.id, signal);
         try {
             const err = await tool.validate?.(input, ctx);
-            if (err) return { result: this.errorResult(call, err) };
+            if (err) return { result: this.errorResult(call, err, undefined, quiet) };
         } catch (e) {
-            return { result: this.errorResult(call, `Validation failed: ${(e as Error).message}`) };
+            return { result: this.errorResult(call, `Validation failed: ${(e as Error).message}`, undefined, quiet) };
         }
 
         // Read-only agents (explore) never change anything, whatever a hook later rewrites the call into.
-        const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
-        if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
+        const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (isShellTool(tool.name) && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
+        if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? "")), undefined, quiet) };
 
         const settings = this.o.settings();
         let hookDecision: "allow" | "deny" | "ask" | undefined;
         if (settings.hooks?.PreToolUse?.length) {
             const h = await this.hooks("PreToolUse", { tool_name: tool.name, tool_input: input, tool_use_id: call.id }, signal);
-            if (this.hookStop) return { result: this.errorResult(call, `Stopped by PreToolUse hook: ${this.hookStop}`) };
-            if (h?.blocked) return { result: this.errorResult(call, `Blocked by PreToolUse hook: ${h.blocked}`) };
+            if (this.hookStop) return { result: this.errorResult(call, `Stopped by PreToolUse hook: ${this.hookStop}`, undefined, quiet) };
+            if (h?.blocked) return { result: this.errorResult(call, `Blocked by PreToolUse hook: ${h.blocked}`, undefined, quiet) };
             hookDecision = h?.decision;
-            if (hookDecision === "deny") return { result: this.errorResult(call, `Denied by PreToolUse hook${h?.reason ? `: ${h.reason}` : ""}`) };
+            if (hookDecision === "deny") return { result: this.errorResult(call, `Denied by PreToolUse hook${h?.reason ? `: ${h.reason}` : ""}`, undefined, quiet) };
             if (h?.updatedInput) {
                 // The hook's input replaces the model's, and is checked like it.
                 input = coerceInput(tool, h.updatedInput);
                 const err = validateInput(tool, input);
-                if (err) return { result: this.errorResult(call, `A PreToolUse hook changed the input to something invalid: ${err}`) };
-                if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
+                if (err) return { result: this.errorResult(call, `A PreToolUse hook changed the input to something invalid: ${err}`, undefined, quiet) };
+                if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? "")), undefined, quiet) };
             }
         }
 
         const mode = this.o.mode.get();
         let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
-        if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied") };
+        if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied", undefined, quiet) };
         // What an approval is remembered by: the call as the model made it, before hosts are added.
         const asked = input;
         // The hosts the checker opens by itself (settings, registries) join the ones the command listed.
-        if (tool.name === "Bash" && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
+        if (isShellTool(tool.name) && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
         // Whatever approves it, a command the checker sandboxed stays sandboxed.
         const sandbox = decision.sandbox;
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
@@ -2117,32 +2205,32 @@ export class Agent {
                 // Told why, the agent can take a safer way (the user decides once blocks pile up).
                 if (v.decision === "block") {
                     void this.hooks("PermissionDenied", { tool_name: tool.name, tool_input: input, tool_use_id: call.id, reason: v.reason });
-                    return { result: this.errorResult(call, blockedByReviewer(v.reason)) };
+                    return { result: this.errorResult(call, blockedByReviewer(v.reason), undefined, quiet) };
                 }
                 classifierReason = v.reason;
                 summary = v.summary;
             } catch (e) {
-                if (isAbort(e, signal)) return { result: this.errorResult(call, "Interrupted") };
+                if (isAbort(e, signal)) return { result: this.errorResult(call, "Interrupted", undefined, quiet) };
             }
         }
 
         if (settings.hooks?.PermissionRequest?.length) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             // continue: false ends the turn whatever the hook decided, as on every event.
-            if (this.hookStop) return { result: this.errorResult(call, `Stopped by PermissionRequest hook: ${this.hookStop}`) };
+            if (this.hookStop) return { result: this.errorResult(call, `Stopped by PermissionRequest hook: ${this.hookStop}`, undefined, quiet) };
             if (h?.permission?.behavior === "allow") {
                 const approvedInput = h.updatedInput ? coerceInput(tool, h.updatedInput) : input;
                 const err = h.updatedInput ? validateInput(tool, approvedInput) : undefined;
-                if (err) return { result: this.errorResult(call, `A PermissionRequest hook changed the input to something invalid: ${err}`) };
+                if (err) return { result: this.errorResult(call, `A PermissionRequest hook changed the input to something invalid: ${err}`, undefined, quiet) };
                 if (!h.updatedInput) return { tool, input, sandbox, auto: "hook" };
-                if (writes(approvedInput)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(approvedInput.command ?? ""))) };
+                if (writes(approvedInput)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(approvedInput.command ?? "")), undefined, quiet) };
                 // The hook answers for you, but not past a deny rule, and the new command gets its own sandbox.
                 const again = this.o.checker.check(tool, approvedInput, mode, this.state.cwd);
-                if (again.behavior === "deny") return { result: this.errorResult(call, again.reason ?? "Permission denied") };
-                const hosts = tool.name === "Bash" && again.sandbox && again.hosts?.length ? { allowedHosts: again.hosts } : {};
+                if (again.behavior === "deny") return { result: this.errorResult(call, again.reason ?? "Permission denied", undefined, quiet) };
+                const hosts = isShellTool(tool.name) && again.sandbox && again.hosts?.length ? { allowedHosts: again.hosts } : {};
                 return { tool, input: { ...approvedInput, ...hosts }, sandbox: again.sandbox, auto: "hook" };
             }
-            if (h?.permission?.behavior === "deny") return { result: this.errorResult(call, h.permission.message || "Denied by a PermissionRequest hook"), stop: h.permission.interrupt };
+            if (h?.permission?.behavior === "deny") return { result: this.errorResult(call, h.permission.message || "Denied by a PermissionRequest hook", undefined, quiet), stop: h.permission.interrupt };
         }
 
         if (!this.o.host.askPermission) {
@@ -2150,6 +2238,8 @@ export class Agent {
                 result: this.errorResult(
                     call,
                     `Permission to use ${tool.name} was not granted (non-interactive session). ${decision.reason ?? ""} Allow it with --allowedTools, a permission rule, or --permission-mode.`.trim(),
+                    undefined,
+                    quiet,
                 ),
             };
         }
@@ -2161,14 +2251,14 @@ export class Agent {
             // preview is optional
         }
         // No reviewer ran (or it gave none): a long command gets a line from the model, but the popup never waits long for it.
-        const command = tool.name === "Bash" ? String(input.command ?? "") : "";
+        const command = isShellTool(tool.name) ? String(input.command ?? "") : "";
         if (!summary && command && needsSummary(command)) summary = await this.o.classifier?.summarize({ toolName: tool.name, input, cwd: this.state.cwd }, signal);
-        if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user") };
+        if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user", undefined, quiet) };
         // Whichever step wrote it (the summary model, the full review, a repeated block), none for an action it couldn't see whole.
         if (summary && !summaryFits(input)) summary = undefined;
         decision = this.o.checker.withGrant(tool, asked, decision, this.state.cwd);
-        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, summary, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id });
-        if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user") };
+        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, summary, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id, ...(quiet ? { signal } : {}) });
+        if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user", undefined, quiet) };
         // The reviewer sent it to the user, who has now decided: its blocks count afresh.
         if (classifierReason !== undefined) this.o.classifier?.userDecided();
         if (answer.setMode) {
@@ -2192,23 +2282,25 @@ export class Agent {
         }
         const fb = answer.feedback?.trim();
         if (fb) {
-            return { result: this.errorResult(call, `The user declined this tool call and said:\n${fb}`) };
+            return { result: this.errorResult(call, `The user declined this tool call and said:\n${fb}`, undefined, quiet) };
         }
         return {
-            result: this.errorResult(call, "The user declined this tool call. Stop and wait for the user to tell you how to proceed; don't retry it."),
+            result: this.errorResult(call, "The user declined this tool call. Stop and wait for the user to tell you how to proceed; don't retry it.", undefined, quiet),
             stop: true,
         };
     }
 
-    private async runTool(call: ToolCallPart, tool: Tool<any>, input: any, signal: AbortSignal, auto?: string, sandboxed?: boolean): Promise<ToolResultPart> {
+    /** `served`: a call a backend made through the harness MCP server (no events; hook context is collected here). */
+    private async runTool(call: ToolCallPart, tool: Tool<any>, input: any, signal: AbortSignal, auto?: string, sandboxed?: boolean, served?: string[]): Promise<ToolResultPart> {
+        const quiet = Boolean(served);
         const started = Date.now();
         this.noteAction(tool, input);
-        if (auto) this.emit({ type: "tool_approved", id: call.id, reason: auto, sandboxed });
+        if (auto && !quiet) this.emit({ type: "tool_approved", id: call.id, reason: auto, sandboxed });
         let sandbox: Sandbox | undefined;
         if (sandboxed) {
             const kind = sandboxKind();
             // Approved on the condition that it's contained: never fall back to running it bare.
-            if (!kind) return this.errorResult(call, "The sandbox this command was approved for isn't available. Run it with dangerouslyDisableSandbox: true to have it reviewed instead.");
+            if (!kind) return this.errorResult(call, "The sandbox this command was approved for isn't available. Run it with dangerouslyDisableSandbox: true to have it reviewed instead.", undefined, quiet);
             sandbox = { kind, policy: sandboxPolicy(this.o.checker.workspaceRoots(), { harnessHome: harnessHome() }) };
         }
         let result: ToolResult;
@@ -2232,9 +2324,9 @@ export class Agent {
             const h = await this.hooks(event, { ...payload, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             if (h?.updatedToolOutput !== undefined) result = { ...result, content: redact(h.updatedToolOutput) };
             if (h?.blocked) result = { ...result, content: `${result.content}\n\n${event} hook feedback:\n${h.blocked}` };
-            if (h?.additionalContext) this.toolHookContext.push(`Context from a ${event} hook (${tool.name}):\n${h.additionalContext}`);
+            if (h?.additionalContext) (served ?? this.toolHookContext).push(`Context from a ${event} hook (${tool.name}):\n${h.additionalContext}`);
         }
-        this.emit({ type: "tool_end", call, result, durationMs: Date.now() - started });
+        if (!quiet) this.emit({ type: "tool_end", call, result, durationMs: Date.now() - started });
         return {
             type: "tool_result",
             toolCallId: call.id,
@@ -2431,7 +2523,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];

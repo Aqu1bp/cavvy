@@ -29,6 +29,7 @@ import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle,
 import { codexMcpOverrides } from "./codex-mcp";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
+import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
@@ -1732,6 +1733,7 @@ export class CodexTurn {
      */
     private async nativePreToolUse(args: Record<string, unknown>, meta: Record<string, unknown>): Promise<string> {
         if (this.aborted) return preToolUseAnswer({ deny: "Interrupted by user." });
+        if (this.hooksItself(String(args.tool_name ?? ""))) return "";
         const from = this.origin({ threadId: meta.threadId });
         const agentLabel = from ? (from.sub?.label ?? "Codex sub-agent") : undefined;
         const id = typeof args.tool_use_id === "string" ? args.tool_use_id : undefined;
@@ -1796,10 +1798,16 @@ export class CodexTurn {
         return this.host.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.host.mode()) === "bypassPermissions" });
     }
 
+    /** Harness's Monitor tools run the hooks themselves, as Monitor, BashOutput or KillShell: Codex's run would be a second one. */
+    private hooksItself(toolName: string): boolean {
+        const server = this.t?.orchestrator?.name;
+        return Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);
+    }
+
     /** PostToolUse or PostToolUseFailure for a main-thread item that ran; what they say reaches Codex while it works. */
     private async postToolUse(id: string, open: OpenItem, content: string, isError: boolean, durationMs: number) {
         const event: HookEvent = isError ? "PostToolUseFailure" : "PostToolUse";
-        if (!this.hooked(event) || this.aborted) return;
+        if (!this.hooked(event) || this.aborted || this.hooksItself(open.name)) return;
         const base = { tool_name: open.name, tool_input: open.input, tool_use_id: id, duration_ms: durationMs, ...(open.mcp ? { mcp_server: open.mcp.server } : {}) };
         const h = await this.host.hooks!(event, isError ? { ...base, error: content.slice(0, 20_000), is_interrupt: false } : { ...base, tool_response: { content: content.slice(0, 20_000), is_error: false } });
         const notes = [h?.blocked ? `${event} hook feedback on ${open.title}:\n${h.blocked}` : "", h?.additionalContext ? `Context from a ${event} hook (${open.name}):\n${h.additionalContext}` : ""].filter(Boolean);

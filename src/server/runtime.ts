@@ -32,7 +32,9 @@ import { formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
 import { loadsPluginsNatively, onlyPluginHooks, runsPluginCommand, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
+import { stoppedMonitorNote } from "../tools/monitor";
 import type { Sampler, Tool, ToolResult, ToolState } from "../tools/types";
+import { isShellTool } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
 import { costOf } from "../providers/pricing";
@@ -1459,7 +1461,7 @@ export class Runtime {
         const shell = this.toolState.shells.get(id);
         if (!shell) return {};
         // Redacted whole, before it's cut: a secret registered since, across the cut, would otherwise show its first part.
-        const d = this.shellDescriptions.get(id);
+        const d = shell.monitor?.description ?? this.shellDescriptions.get(id);
         const label = redact(d ?? shell.command).trim().split("\n")[0]!.slice(0, 120);
         return { job: { label, startedAt: shell.startedAt } };
     }
@@ -1816,8 +1818,8 @@ export class Runtime {
         };
         if (decision.grant) it.options.push({ id: "session", label: `Allow ${redact(decision.grant.label)} for the session` });
         if (req.preview?.summary) it.summary = redact(req.preview.summary);
-        if (tool.name === "Bash") {
-            it.heading = req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
+        if (isShellTool(tool.name)) {
+            it.heading = tool.name === "Monitor" ? "Watch a command's output" : req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
             it.command = redact(String(input.command ?? ""));
             if (input.description) it.description = redact(String(input.description));
             if (req.secrets?.length) it.secrets = [...req.secrets];
@@ -2770,7 +2772,7 @@ export class Runtime {
     private checkGitCommit(action = "committing") {
         if (!this.ws.trusted) throw new RpcError(action === "committing" ? "Trust this folder before committing: Git commits run the repository's hooks." : "Trust this folder before publishing: Git transports can run configured programs.", "needs_trust", this.ws.cwd);
         if (this.closed) throw new RpcError("This session was closed.", "busy");
-        if (!this.idle) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
+        if (!this.settled(false)) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
     }
 
     async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
@@ -2923,7 +2925,14 @@ export class Runtime {
     // Background shells
 
     private syncShells() {
-        const shells = [...this.toolState.shells.values()].map((s) => ({ id: s.id, command: redact(s.command).slice(0, 300), running: s.exitCode === null, exitCode: s.exitCode, startedAt: s.startedAt }));
+        const shells = [...this.toolState.shells.values()].map((s) => ({
+            id: s.id,
+            command: redact(s.command).slice(0, 300),
+            running: s.exitCode === null,
+            exitCode: s.exitCode,
+            startedAt: s.startedAt,
+            ...(s.monitor ? { monitor: { description: redact(s.monitor.description), events: s.monitor.events, expiresAt: s.monitor.expiresAt } } : {}),
+        }));
         const same = JSON.stringify(shells) === JSON.stringify(this.view.state.shells);
         if (!same) this.setState({ shells });
         const running = shells.some((s) => s.running);
@@ -2952,6 +2961,8 @@ export class Runtime {
     async killShell(shellId: string) {
         const sh = this.toolState.shells.get(shellId);
         if (!sh) throw new Error(`No background shell ${shellId}`);
+        // The agent may be counting on it to wake it: it hears it was stopped with the next message.
+        if (sh.monitor && sh.exitCode === null) this.agent?.addReminder(stoppedMonitorNote(sh));
         await sh.kill();
         this.syncShells();
     }
@@ -2964,8 +2975,13 @@ export class Runtime {
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
+        return this.settled(true);
+    }
+
+    /** Idle, except that running monitors may be left out: they watch, and a commit needn't wait out their half hour. */
+    private settled(monitors: boolean): boolean {
         if (this.busy || this.committing || this.nextQueued() || this.pending.size || this.switching || this.goal.pending()) return false;
-        if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
+        if ([...this.toolState.shells.values()].some((s) => s.exitCode === null && (monitors || !s.monitor))) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }
 

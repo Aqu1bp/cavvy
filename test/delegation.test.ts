@@ -147,6 +147,7 @@ const setServers = () => received().filter((m) => m.type === "control_request" &
 const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
 const { WakeQueue, WatcherMap, stopWatchers } = await import("../src/agent/wakes");
+const { MonitorTool } = await import("../src/tools/monitor");
 const { gitToolDeps } = await import("../src/tools/git-tools");
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
@@ -1340,6 +1341,197 @@ describe("Codex as the main agent", () => {
         const thread = received().find((m) => m.method === "thread/start")!.params;
         expect(thread.config).toBeUndefined();
         expect(thread.developerInstructions).not.toContain("delegate");
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("Monitor for Codex (it has none of its own)", () => {
+    const MONITOR_TOOLS = ["monitor", "monitor_output", "monitor_stop"];
+    const harnessTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
+    const monitors = (agent: InstanceType<typeof Agent>) => [...agent.state.shells.values()].filter((s) => s.monitor);
+
+    test("a session that can be woken gives Codex the monitor tools; a call is asked about as Monitor and starts one", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        // Not read-only, so it is asked about (a read-only one runs unasked, as Harness's own Monitor does).
+        calls([{ tool: "monitor", args: { command: "touch started; echo ready; sleep 30", description: "server readiness" } }]);
+        const { run, agent, asked, events } = await makeAgent({ provider: "codex", wakes: true });
+        try {
+            expect(await run("watch the server")).toBe("done");
+            expect(harnessTools()).toEqual(expect.arrayContaining(MONITOR_TOOLS));
+            const thread = received().find((m) => m.method === "thread/start")!.params;
+            expect(thread.developerInstructions).toContain("use monitor");
+            // The CLI approves Harness's tools without asking: Harness asks, as for its own Monitor.
+            expect(asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Monitor", "touch started; echo ready; sleep 30"]]);
+            expect(asked[0]!.callId).toMatch(/^mcp-/);
+            const [r] = mcpResults();
+            expect(r).toMatchObject({ tool: "monitor", isError: false });
+            expect(r.text).toMatch(/Started monitor monitor_\d+/);
+            // It names the tools Codex has.
+            expect(r.text).toContain("monitor_stop id");
+            expect(r.text).not.toContain("KillShell");
+            expect(r.text).not.toContain("BashOutput");
+            // Shown once, as Harness's Monitor (not as an MCP call, nor twice).
+            const startsOf = events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []));
+            expect(startsOf).toEqual(["Monitor"]);
+            const m = monitors(agent);
+            expect(m).toHaveLength(1);
+            expect(agent.state.watchers!.has(m[0]!.id)).toBe(true);
+            await until(() => agent.state.wakes!.pending().some((w) => w.text.includes("ready")));
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
+    test("declined, or refused by a Bash rule, it starts nothing", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "touch started; tail -f app.log", description: "errors" } }]);
+        const declined = await makeAgent({ provider: "codex", wakes: true, ask: () => ({ allow: false }) });
+        // The user said no: the turn ends there, as when they decline one of Codex's own commands.
+        expect(await declined.run("watch")).toBe("denied");
+        expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
+        expect(mcpResults()[0].text).toContain("declined");
+        expect(monitors(declined.agent)).toHaveLength(0);
+
+        rmSync(LOG, { force: true });
+        calls([{ tool: "monitor", args: { command: "rm -rf build", description: "cleanup" } }]);
+        const denied = await makeAgent({ provider: "codex", wakes: true, settings: { permissions: { deny: ["Bash(rm:*)"] } } });
+        expect(await denied.run("watch")).toBe("done");
+        expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
+        expect(denied.asked).toHaveLength(0);
+        expect(monitors(denied.agent)).toHaveLength(0);
+    });
+
+    test("a call cancelled while its checks run starts nothing", async () => {
+        // A read-only command (no prompt), held up by a slow PreToolUse hook; the call is cancelled meanwhile.
+        const { agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PreToolUse: [{ matcher: "Bash", command: "sleep 1" }] } } });
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 200);
+        const r = await (agent as any).runServed(MonitorTool, { command: "tail -f /dev/null", description: "quiet" }, ac.signal);
+        expect(r.isError).toBe(true);
+        await Bun.sleep(300);
+        expect(monitors(agent)).toHaveLength(0);
+        stopWatchers(agent.state);
+    });
+
+    test("a call cancelled while the user is asked withdraws the prompt", async () => {
+        let prompt: PermissionRequest | undefined;
+        const { agent } = await makeAgent({ provider: "codex", wakes: true, ask: (req) => ((prompt = req), new Promise(() => {})) });
+        const ac = new AbortController();
+        const r = (agent as any).runServed(MonitorTool, { command: "touch started; tail -f /dev/null", description: "quiet" }, ac.signal);
+        await until(() => prompt !== undefined);
+        ac.abort();
+        expect(prompt!.signal?.aborted).toBe(true);
+        void r;
+    });
+
+    test("context a PostToolUse hook adds reaches Codex with the result", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "tail -f /dev/null", description: "quiet" } }]);
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PostToolUse: [{ matcher: "Monitor", command: `echo '{"hookSpecificOutput":{"additionalContext":"watch budget: 2 left"}}'` }] } } });
+        try {
+            expect(await run("watch")).toBe("done");
+            expect(mcpResults()[0].text).toContain("watch budget: 2 left");
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
+    test("hooks run once for a call, as Monitor, though Codex runs them before its MCP calls too", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "tail -f /dev/null", description: "quiet" } }]);
+        const pre = join(cwd, "pre.log");
+        const post = join(cwd, "post.log");
+        const record = (file: string) => `cat >> ${file}; echo >> ${file}`;
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PreToolUse: [{ matcher: "*", command: record(pre) }], PostToolUse: [{ matcher: "*", command: record(post) }] } } });
+        try {
+            expect(await run("watch")).toBe("done");
+            // Codex took the PreToolUse hook as its own, so it called it before the monitor call.
+            expect(logLines().some((l) => l.hookCalled)).toBe(true);
+            const names = (file: string) => readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).tool_name);
+            expect(names(pre)).toEqual(["Monitor"]);
+            expect(names(post)).toEqual(["Monitor"]);
+            expect(monitors(agent)).toHaveLength(1);
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
+    test("a stop from a hook on Codex's call ends Codex's turn, as on its own calls", async () => {
+        const say = (o: unknown) => `echo '${JSON.stringify(o)}'`;
+        const cases: [Record<string, unknown>, string][] = [
+            [{ PermissionRequest: [{ matcher: "Monitor", command: say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: "not now", interrupt: true } } }) }] }, "denied"],
+            [{ PreToolUse: [{ matcher: "Monitor", command: say({ continue: false, stopReason: "budget spent" }) }] }, "blocked"],
+            [{ PostToolUse: [{ matcher: "Monitor", command: say({ continue: false, stopReason: "budget spent" }) }] }, "blocked"],
+        ];
+        for (const [hooks, reason] of cases) {
+            process.env.FAKE_SCENARIO = "mcp";
+            rmSync(LOG, { force: true });
+            calls([
+                { tool: "monitor", args: { command: "touch started; sleep 30", description: "first" } },
+                { tool: "monitor", args: { command: "touch again; sleep 30", description: "second" } },
+            ]);
+            const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks } });
+            try {
+                expect(await run("watch")).toBe(reason);
+                expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+                // Codex made no second call.
+                expect(mcpResults()).toHaveLength(1);
+            } finally {
+                stopWatchers(agent.state);
+            }
+        }
+    });
+
+    test("a Codex sub-agent gets no Monitor, and its call can't end the main turn", async () => {
+        process.env.FAKE_SCENARIO = "subagent";
+        process.env.FAKE_CHILD_MCP = JSON.stringify({ tool: "monitor", args: { command: "touch started; sleep 30", description: "child's" } });
+        try {
+            const { run, agent, asked } = await makeAgent({ provider: "codex", wakes: true });
+            try {
+                expect(await run("count files")).toBe("done");
+                const [r] = mcpResults();
+                expect(r).toMatchObject({ tool: "monitor", isError: true });
+                expect(r.text).toContain("isn't available to sub-agents");
+                // Refused before any check: not asked about (the sub-agent's own command is).
+                expect(asked.map((a) => a.tool.name)).not.toContain("Monitor");
+                expect(monitors(agent)).toHaveLength(0);
+            } finally {
+                stopWatchers(agent.state);
+            }
+        } finally {
+            delete process.env.FAKE_CHILD_MCP;
+        }
+    });
+
+    test("monitor_output and monitor_stop act on monitors only", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([
+            { tool: "monitor_output", args: { id: "bash_1" } },
+            { tool: "monitor_stop", args: { id: "bash_1" } },
+        ]);
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true });
+        let killed = false;
+        agent.state.shells.set("bash_1", { id: "bash_1", command: "sleep 30", startedAt: Date.now(), output: "", readOffset: 0, exitCode: null, sandboxed: false, kill: async () => ((killed = true), "stopped") });
+        expect(await run("stop it")).toBe("done");
+        for (const r of mcpResults()) {
+            expect(r.isError).toBe(true);
+            expect(r.text).toContain("No monitor with id bash_1");
+        }
+        expect(killed).toBe(false);
+        expect(agent.state.shells.has("bash_1")).toBe(true);
+    });
+
+    test("Claude Code keeps its own Monitor: none offered; nor in -p, which has nowhere to wake", async () => {
+        const cc = await makeAgent({ provider: "claude-code", wakes: true });
+        expect(await cc.run("hi")).toBe("done");
+        const ccTools = (setServers()[0]?.request.servers.harness.tools ?? []).map((t: { name: string }) => t.name);
+        expect(ccTools).not.toContain("monitor");
+
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex", wakes: true, headless: true });
+        expect(await headless.run("hi")).toBe("done");
+        expect(harnessTools()).not.toContain("monitor");
     });
 });
 

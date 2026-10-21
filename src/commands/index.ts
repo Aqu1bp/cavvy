@@ -79,6 +79,7 @@ import { mayStart } from "../mcp/manager";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS } from "../keybindings/core";
 import { ensureKeybindingsFile } from "../keybindings/file";
 import { isWebUrl } from "../mcp/oauth";
+import { stoppedMonitorNote } from "../tools/monitor";
 
 export interface Command {
     name: string;
@@ -1845,13 +1846,18 @@ async function doctorCommand(app: App) {
 async function bashesCommand(app: App) {
     const shells = [...app.toolState.shells.values()];
     if (!shells.length) {
-        app.notice("No background shells.");
+        app.notice("No background shells or monitors.");
         return;
     }
     const pick = (await app.showDialog(
         new SelectDialog<string>({
-            title: "Background shells",
-            items: shells.map((s) => ({ label: truncate(s.command, 60), value: s.id, description: s.exitCode === null ? theme.success("running") : theme.muted(`exited ${s.exitCode}`), detail: formatDuration(Date.now() - s.startedAt) })),
+            title: "Background shells and monitors",
+            items: shells.map((s) => ({
+                label: s.monitor ? `Monitor · ${truncate(redact(s.monitor.description), 50)}` : truncate(s.command, 60),
+                value: s.id,
+                description: s.exitCode === null ? theme.success(s.monitor ? "watching" : "running") : theme.muted(`exited ${s.exitCode}`),
+                detail: s.monitor && s.exitCode === null ? `${s.monitor.events} event${s.monitor.events === 1 ? "" : "s"} · ${formatDuration(Math.max(0, s.monitor.expiresAt - Date.now()))} left` : formatDuration(Date.now() - s.startedAt),
+            })),
             numbers: true,
         }),
     )) as string | undefined;
@@ -1859,8 +1865,9 @@ async function bashesCommand(app: App) {
     const sh = app.toolState.shells.get(pick);
     if (!sh) return;
     const tail = redact(sh.output).split("\n").slice(-20);
-    app.print(["", heading(`${sh.id}: ${truncate(sh.command, 80)}`), ...tail.map((l) => theme.muted("  " + l))]);
+    app.print(["", heading(`${sh.id}: ${truncate(sh.monitor ? redact(sh.monitor.description) : sh.command, 80)}`), ...tail.map((l) => theme.muted("  " + l))]);
     if (sh.exitCode === null && (await confirm(app, `Stop ${sh.id}?`))) {
+        if (sh.monitor) app.agent?.addReminder(stoppedMonitorNote(sh));
         const how = await sh.kill();
         app.toolState.shells.delete(sh.id);
         app.notice(how === "killed" ? `Stopped ${sh.id} (it ignored SIGTERM, so it was force-killed)` : `Stopped ${sh.id}`);
@@ -2063,7 +2070,7 @@ const BUILTIN: Command[] = [
             if (!todos.length) return app.notice("No todos.");
             app.print((cols) => ["", heading("Todos"), ...renderTodos(todos, cols)]);
         } },
-    { name: "bashes", description: "List and stop background shells", run: bashesCommand },
+    { name: "bashes", aliases: ["monitors"], description: "List and stop background shells and monitors", run: bashesCommand },
     { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>", whileBusy: true, run: (app, args) => loopCommand(app, args) },
     { name: "schedules", description: "This session's schedules: pause, resume, run now or delete", args: "[pause|resume|delete|run <id>]", run: schedulesCommand },
     { name: "secrets", description: "List the secrets this session holds (names only), or forget one", args: "[forget NAME]", whileBusy: true, run: secretsCommand },

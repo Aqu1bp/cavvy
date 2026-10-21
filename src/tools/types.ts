@@ -61,6 +61,8 @@ export interface BackgroundShell {
     sandboxHint?: () => string | undefined;
     /** SIGTERM, then SIGKILL after the grace period if anything in the group is still running. */
     kill: (graceMs?: number) => Promise<"gone" | "stopped" | "killed">;
+    /** Started by Monitor: its stdout lines wake the agent. */
+    monitor?: { description: string; events: number; expiresAt: number };
 }
 
 /** Shared, mutable state that tools read and write during a session. */
@@ -172,6 +174,11 @@ export interface Tool<I = Record<string, unknown>> {
  * files under a root the user approved for exactly the same reason.
  */
 export type HiddenReason = "deny" | "protected" | "sensitive" | `ask:${string}`;
+
+/** Tools that run a shell command: permission rules, the sandbox and the reviewer treat them alike. */
+export function isShellTool(name: string): boolean {
+    return name === "Bash" || name === "Monitor";
+}
 
 export function isReadOnly(tool: Tool<any>, input: any): boolean {
     return typeof tool.readOnly === "function" ? tool.readOnly(input) : tool.readOnly;
