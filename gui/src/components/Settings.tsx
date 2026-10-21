@@ -526,11 +526,10 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         await connectCli(p.pr);
         setBusy(false);
     };
-    const removable = () => (p.pr.agentCli ? p.pr.configured : p.pr.requiresKey && p.pr.configured && !p.pr.source?.startsWith("$"));
+    const removable = () => p.pr.requiresKey && p.pr.configured && !p.pr.source?.startsWith("$");
     // The line under the name: the key as stored (masked), or what's missing.
     const sub = () =>
         p.pr.masked ? undefined
-        : p.pr.agentCli ? (p.pr.agentCli.installed ? (p.pr.configured ? undefined : "Not set up") : "Not installed")
         : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : "Set up in the terminal")
         : undefined;
     return (
@@ -545,83 +544,58 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             >
                 {p.pr.agentCli ? `Stops using ${p.pr.name} in Harness. It stays signed in.` : `Removes the stored ${p.pr.name} key from Harness. You'll need to add it again to use this provider.`}
             </ConfirmDialog>
-            <div class="prov-line">
-                <span class="prov-logo" title={p.pr.configured ? "Set up" : "Not set up"}>
-                    <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} />
-                </span>
-                <div class="prov-lab">
-                    <div class="prov-name">
-                        <span class="truncate">{p.pr.name}</span>
-                        <Show when={p.pr.agentCli && p.pr.configured}>
-                            <span class="tag ok">Connected</span>
-                        </Show>
-                        <Show when={p.pr.local}>
-                            <span class="tag">local</span>
-                        </Show>
-                    </div>
-                    <Show when={p.pr.masked || sub()}>
-                        <div class="prov-sub">
-                            <Show when={p.pr.masked} fallback={sub()}>
-                                <code class="prov-key">{p.pr.masked}</code>
+            {/* Claude Code and Codex: their row, accounts and menus are in Accounts. */}
+            <Show
+                when={!p.pr.agentCli}
+                fallback={<Accounts provider={p.pr} connecting={busy()} onConnect={() => void connect()} onTurnOff={() => setConfirmRemove(true)} />}
+            >
+                <div class="prov-line">
+                    <span class="prov-logo" title={p.pr.configured ? "Set up" : "Not set up"}>
+                        <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} />
+                    </span>
+                    <div class="prov-lab">
+                        <div class="prov-name">
+                            <span class="truncate">{p.pr.name}</span>
+                            <Show when={p.pr.local}>
+                                <span class="tag">local</span>
                             </Show>
                         </div>
-                    </Show>
-                </div>
-                <span class="prov-end">
-                    <Show when={p.pr.source && p.pr.source !== "local"}>
-                        <span class="tag">{p.pr.source}</span>
-                    </Show>
-                    <Show when={p.pr.agentCli}>
-                        {(cli) => (
+                        <Show when={p.pr.masked || sub()}>
+                            <div class="prov-sub">
+                                <Show when={p.pr.masked} fallback={sub()}>
+                                    <code class="prov-key">{p.pr.masked}</code>
+                                </Show>
+                            </div>
+                        </Show>
+                    </div>
+                    <span class="prov-end">
+                        <Show when={p.pr.source && p.pr.source !== "local"}>
+                            <span class="tag">{p.pr.source}</span>
+                        </Show>
+                        <Show when={p.pr.requiresKey}>
                             <Show
-                                when={!p.pr.configured}
+                                when={removable()}
                                 fallback={
-                                    <button class="btn ghost sm" title={`Turn off (${p.pr.name} stays signed in)`} aria-label={`Turn off ${p.pr.name}`} onClick={() => setConfirmRemove(true)}>
-                                        Turn off
-                                    </button>
-                                }
-                            >
-                                <Show
-                                    when={cli().installed}
-                                    fallback={
+                                    <Show when={!p.pr.configured}>
                                         <Show when={p.pr.keyUrl}>
                                             <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
-                                                Install <ExternalLink size={11} />
+                                                Get a key <ExternalLink size={11} />
                                             </button>
                                         </Show>
-                                    }
-                                >
-                                    <button class="btn secondary sm" disabled={busy()} onClick={() => void connect()}>
-                                        {busy() ? <Spinner size={12} /> : `Use my ${cli().plan}`}
-                                    </button>
-                                </Show>
-                            </Show>
-                        )}
-                    </Show>
-                    <Show when={p.pr.requiresKey}>
-                        <Show
-                            when={removable()}
-                            fallback={
-                                <Show when={!p.pr.configured}>
-                                    <Show when={p.pr.keyUrl}>
-                                        <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
-                                            Get a key <ExternalLink size={11} />
+                                        <button class="btn secondary sm" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
+                                            Add key
                                         </button>
                                     </Show>
-                                    <button class="btn secondary sm" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
-                                        Add key
-                                    </button>
-                                </Show>
-                            }
-                        >
-                            <button class="hb sm" title="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => setConfirmRemove(true)}>
-                                <X size={14} />
-                            </button>
+                                }
+                            >
+                                <button class="hb sm" title="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => setConfirmRemove(true)}>
+                                    <X size={14} />
+                                </button>
+                            </Show>
                         </Show>
-                    </Show>
-                </span>
-            </div>
-            <Show when={p.pr.agentCli?.installed}><Accounts provider={p.pr} /></Show>
+                    </span>
+                </div>
+            </Show>
             <Show when={adding()}>
                 <div class="prov-add">
                     <input class="input mono" type="password" autofocus aria-label={`${p.pr.name} key`} placeholder={`Paste your ${p.pr.name} key`} value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void save()} />

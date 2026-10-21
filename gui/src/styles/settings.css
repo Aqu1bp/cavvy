@@ -77,6 +77,24 @@
     min-height: 0;
     overflow-y: auto;
     background: var(--sheet);
+    /* Opening Settings: the page fades and rises in, the mockup's 280ms
+       whatever Settings → Panel animations says. It mounts once per opening,
+       so switching sections doesn't replay it; closing is instant, as in the
+       mockup. */
+    animation: settings-in 280ms var(--ease);
+}
+
+@keyframes settings-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-page {
+        animation: none;
+    }
 }
 
 .set-in {
@@ -597,8 +615,7 @@
         max-width: 100%;
     }
 
-    .prov-add,
-    .prov .accounts {
+    .prov-add {
         padding-left: 14px;
     }
 }

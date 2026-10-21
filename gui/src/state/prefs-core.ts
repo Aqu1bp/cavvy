@@ -76,7 +76,8 @@ export const PREF_DEFAULTS: Prefs = {
     reviewWidth: 720,
     favoriteModels: [],
     chatWidth: "default",
-    motion: "instant",
+    // "instant" came from t3code; new installs get quick panels. Saved prefs keep their value (they're stored whole).
+    motion: "quick",
 };
 
 const SCHEMES: readonly string[] = ["system", "light", "dark"];

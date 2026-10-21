@@ -157,7 +157,7 @@ describe("first paint and the app agree", () => {
                 const later = app(stored, dark, storageThrows);
                 expect(early.dataset).toEqual(later.dataset);
                 expect(early.style).toEqual(later.style);
-                expect(later.dataset).toEqual({ theme: dark ? "dark" : "light", scheme: dark ? "dark" : "light", glass: "glass", tint: "clear", contrast: "standard", density: "comfortable", motion: "instant" });
+                expect(later.dataset).toEqual({ theme: dark ? "dark" : "light", scheme: dark ? "dark" : "light", glass: "glass", tint: "clear", contrast: "standard", density: "comfortable", motion: "quick" });
             }
         });
     }
