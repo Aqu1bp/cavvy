@@ -5,6 +5,8 @@ import { readFileSync } from "fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text } from "../helpers/gui-render";
 import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_MIN, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../../gui/src/lib/inspector";
+import { frameDrag } from "../../gui/src/lib/drag";
+import { fakeFrames } from "../helpers/frames";
 
 const review = readFileSync(new URL("../../gui/src/components/ReviewPane.tsx", import.meta.url), "utf8");
 const panel = readFileSync(new URL("../../gui/src/components/RightPanel.tsx", import.meta.url), "utf8");
@@ -12,11 +14,15 @@ const between = (source: string, from: string, to: string) => source.slice(sourc
 
 test("the reader's handle starts from the width shown, not the saved one, and takes arrow keys and a double-click", () => {
     const world = dragWorld();
+    const frames = fakeFrames();
+    const shown: (number | undefined)[] = [];
     const Resizer = component(between(review, "function ReviewResizer(", "export function ReviewPane("), "ReviewResizer", {
         // Saved at 420; the layout shows it at 640 (55% of the sheet).
         // A 1400px sheet: the conversation keeps 480, so it can widen to 920.
         shellLayout: () => ({ sheet: { w: 1400 }, inspector: { mode: "dock", width: 640 } }),
         setPrefs: (key: string, value: number) => saved.push([key, value]),
+        setReviewDrag: (w: number | undefined) => shown.push(w),
+        frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames }),
         reviewDragWidth, reviewWidthRange, REVIEW_DEFAULT, REVIEW_STEP,
         window: world.window, document: world.document,
     });
@@ -33,13 +39,23 @@ test("the reader's handle starts from the width shown, not the saved one, and ta
         const listeners = world.listeners;
         const target = {};
         handle.props.onPointerDown({ button: 0, clientX: 500, pointerId: 1, preventDefault() {}, currentTarget: target });
-        // Ten pixels left widens it from 640, at once: no dead zone up to the width shown.
+        // Ten pixels left widens it from 640 on the next frame: no dead zone up to the width shown.
         listeners.pointermove!({ clientX: 490 });
-        expect(saved.at(-1)).toEqual(["reviewWidth", 650]);
+        frames.run();
+        expect(shown).toEqual([650]);
+        // Moves within a frame show once, at the latest; nothing is saved until the release.
+        listeners.pointermove!({ clientX: 520 });
         listeners.pointermove!({ clientX: 530 });
-        expect(saved.at(-1)).toEqual(["reviewWidth", 610]);
+        frames.run();
+        expect(shown).toEqual([650, 610]);
+        expect(saved).toEqual([]);
         expect(world.classes.has("resizing")).toBe(true);
+        // The release saves the last width at once, shown or not, and stops showing the dragged one.
+        listeners.pointermove!({ clientX: 540 });
         listeners.pointerup!({});
+        expect(saved).toEqual([["reviewWidth", 600]]);
+        expect(shown).toEqual([650, 610, undefined]);
+        expect(frames.pending()).toBe(0);
         expect(listeners.pointermove).toBeUndefined();
         expect(world.classes.has("resizing")).toBe(false);
         // Only the main button drags.
@@ -77,11 +93,16 @@ function dragWorld() {
     };
 }
 
-test("closing the reader in the middle of a drag ends it: no resizing class or listeners left behind", () => {
+test("closing the reader in the middle of a drag ends it: no resizing class or listeners left behind, and the width so far is kept", () => {
     const world = dragWorld();
+    const frames = fakeFrames();
+    const saved: [string, number][] = [];
+    let shown: number | undefined;
     const Resizer = component(between(review, "function ReviewResizer(", "export function ReviewPane("), "ReviewResizer", {
         shellLayout: () => ({ sheet: { w: 1400 }, inspector: { mode: "dock", width: 640 } }),
-        setPrefs() {},
+        setPrefs: (key: string, value: number) => saved.push([key, value]),
+        setReviewDrag: (w: number | undefined) => (shown = w),
+        frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames }),
         reviewDragWidth, reviewWidthRange, REVIEW_DEFAULT, REVIEW_STEP,
         window: world.window, document: world.document,
     });
@@ -91,10 +112,16 @@ test("closing the reader in the middle of a drag ends it: no resizing class or l
     const el = { setPointerCapture() {}, addEventListener() {}, removeEventListener() {} };
     handle.props.onPointerDown({ button: 0, clientX: 500, pointerId: 1, preventDefault() {}, currentTarget: el });
     expect(world.classes.has("resizing")).toBe(true);
+    world.listeners.pointermove!({ clientX: 480 });
+    frames.run();
+    expect(shown).toBe(660);
     // Esc closes the reader while the button is still down: the handle goes away.
     dispose();
     expect(world.classes.has("resizing")).toBe(false);
     expect(Object.keys(world.listeners).filter((k) => world.listeners[k])).toEqual([]);
+    expect(saved).toEqual([["reviewWidth", 660]]);
+    expect(shown).toBeUndefined();
+    expect(frames.pending()).toBe(0);
 });
 
 test("Unified | Split sets the shared split signal the layout widens the inspector for", () => {

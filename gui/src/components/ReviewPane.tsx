@@ -7,13 +7,14 @@
 // in the folder, whoever made it; Harness edits shows only what the edit tools
 // did, and is all there is outside a Git repository.
 
-import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { batch, createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { ChevronLeft, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
-import { review, reviewSplit, setCommitRequest, setReview, setReviewSplit, shellLayout } from "../state/ui";
+import { review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
+import { frameDrag } from "../lib/drag";
 import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { editorName, openInEditor } from "../state/actions";
 import { canReveal, revealPath } from "../lib/platform";
@@ -111,9 +112,18 @@ function ReviewResizer() {
         const from = shown();
         setDragging(true);
         document.body.classList.add("resizing");
+        // Shown once a frame, saved to the preferences on release (or when the reader closes mid-drag).
+        const drag = frameDrag({
+            show: setReviewDrag,
+            commit: (w) => batch(() => {
+                if (w !== undefined) set(w);
+                setReviewDrag(undefined);
+            }),
+        });
         // On the window, not the handle: the handle can go away mid-drag, and its listeners with it.
-        const move = (ev: PointerEvent) => set(reviewDragWidth(from, ev.clientX - x));
+        const move = (ev: PointerEvent) => drag.move(reviewDragWidth(from, ev.clientX - x));
         const end = () => {
+            drag.end();
             stop = undefined;
             setDragging(false);
             document.body.classList.remove("resizing");

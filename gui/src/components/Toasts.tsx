@@ -7,6 +7,7 @@ import { For, Match, onCleanup, Show, Switch } from "solid-js";
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from "lucide-solid";
 import { dismissToast, pauseToast, runToastChoice, toast, toasts, type Toast } from "../state/app";
 import { copyText } from "../lib/platform";
+import { titleBarBox } from "../state/ui";
 
 export function ToastItem(p: { toast: Toast }) {
     const t = () => p.toast;
@@ -68,8 +69,10 @@ export function ToastItem(p: { toast: Toast }) {
 }
 
 export function Toasts() {
+    // The title bar's row (Header.tsx keeps it), here rather than on the root: see toasts.css.
+    const px = (v: number | undefined) => (v === undefined ? undefined : `${v}px`);
     return (
-        <div class="toasts">
+        <div class="toasts" style={{ "--bar-start": px(titleBarBox()?.start), "--bar-end": px(titleBarBox()?.end), "--bar-top": px(titleBarBox()?.top) }}>
             <div class="toast-region" role="alert" aria-live="assertive" aria-relevant="additions text">
                 <For each={toasts.filter((t) => t.level === "error")}>{(t) => <ToastItem toast={t} />}</For>
             </div>

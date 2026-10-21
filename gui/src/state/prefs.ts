@@ -5,7 +5,7 @@
 import { createEffect, createRoot, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { setNativeTheme } from "../lib/platform";
-import { applyAppearance, migratePrefs, PREF_DEFAULTS, type Prefs } from "./prefs-core";
+import { appearanceOf, migratePrefs, PREF_DEFAULTS, showAppearance, type Appearance, type Prefs } from "./prefs-core";
 
 export { ACCENTS, CHAT_WIDTHS, PREF_DEFAULTS, type AccentId, type ContrastId, type GlassId, type Prefs, type Scheme, type TintId } from "./prefs-core";
 
@@ -33,15 +33,29 @@ export function activeTheme(): "light" | "dark" {
 }
 
 createRoot(() => {
+    // Only what changed goes to <html> (a write there can restyle the whole window), and the
+    // native window hears only of a change of scheme (each time is a call to the app).
+    let shown: Appearance | undefined;
     createEffect(() => {
-        void setNativeTheme(applyAppearance(document.documentElement, prefs, systemDark()));
+        const next = appearanceOf(prefs, systemDark());
+        showAppearance(document.documentElement, next, shown);
+        if (next.theme !== shown?.theme) void setNativeTheme(next.theme);
+        shown = next;
     });
+    // Saved once for a run of changes in one go (a reset, say), with the last of them.
+    let snapshot: string | undefined;
     createEffect(() => {
-        const snapshot = JSON.stringify(prefs);
-        try {
-            localStorage.setItem(KEY, snapshot);
-        } catch {
-            // private mode: preferences last for this window only
-        }
+        const queued = snapshot !== undefined;
+        snapshot = JSON.stringify(prefs);
+        if (queued) return;
+        queueMicrotask(() => {
+            const saving = snapshot!;
+            snapshot = undefined;
+            try {
+                localStorage.setItem(KEY, saving);
+            } catch {
+                // private mode: preferences last for this window only
+            }
+        });
     });
 });

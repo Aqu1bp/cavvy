@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { batch, createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Maximize2, Minimize2, Play, Plus, RotateCw, TerminalIcon, X } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -7,7 +7,8 @@ import "../styles/terminal.css";
 import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, terminalMax, setTerminalMax, setTerminalShown, shellLayout, type SetupRun } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, type SetupRun } from "../state/ui";
+import { frameDrag } from "../lib/drag";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, loadTabs, restoreTabs, saveTabs, TerminalClosures, terminalInputChunks, type SavedTab } from "../lib/terminal";
 import { isTerminalReply } from "@shared/terminal-reply";
@@ -126,19 +127,33 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     };
     let panel: HTMLElement | undefined;
     // The conversation keeps its room above the terminal (lib/layout.ts); dragging ends a maximized terminal.
-    const setHeight = (h: number) => setPrefs("terminalHeight", Math.round(Math.max(120, Math.min(shellLayout().terminal.most, h))));
+    const clampHeight = (h: number) => Math.round(Math.max(120, Math.min(shellLayout().terminal.most, h)));
+    const setHeight = (h: number) => setPrefs("terminalHeight", clampHeight(h));
     const [dragging, setDragging] = createSignal(false);
+    /** Ends the drag under way, if any: on release, and when the panel goes away in the middle of one. */
+    let stopDrag: (() => void) | undefined;
+    onCleanup(() => stopDrag?.());
     const resize = (e: PointerEvent) => {
         if (e.button !== 0) return;
         e.preventDefault();
+        stopDrag?.();
         const target = e.currentTarget as HTMLElement;
         target.setPointerCapture(e.pointerId);
         const y = e.clientY;
         const height = panel?.offsetHeight ?? 260;
         setTerminalMax(false);
         setDragging(true);
-        const move = (event: PointerEvent) => setHeight(height + y - event.clientY);
-        const end = () => { setDragging(false); target.removeEventListener("pointermove", move); target.removeEventListener("lostpointercapture", end); };
+        // Shown once a frame, saved to the preferences on release.
+        const drag = frameDrag({
+            show: setTerminalDrag,
+            commit: (h) => batch(() => {
+                if (h !== undefined) setPrefs("terminalHeight", h);
+                setTerminalDrag(undefined);
+            }),
+        });
+        const move = (event: PointerEvent) => drag.move(clampHeight(height + y - event.clientY));
+        const end = () => { stopDrag = undefined; drag.end(); setDragging(false); target.removeEventListener("pointermove", move); target.removeEventListener("lostpointercapture", end); };
+        stopDrag = end;
         target.addEventListener("pointermove", move);
         target.addEventListener("lostpointercapture", end);
     };

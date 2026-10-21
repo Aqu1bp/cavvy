@@ -10,7 +10,7 @@ import { app, reportError, rpc, toast } from "../state/app";
 import { archive, editorName, exportSession, newSession, openInEditor, openReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab } from "../state/ui";
+import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox } from "../state/ui";
 import { copyText, isTauri, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
 import { Menu } from "./ui/Menu";
@@ -34,9 +34,10 @@ export function askDelete(h?: SessionHandle) {
 }
 
 /**
- * Where the title starts and the tools end, as --bar-start and --bar-end on the
- * root (from the window's left and right edges): the toasts drop into this row,
- * over the title and clear of the capsule, wherever the shell puts it.
+ * Where the title starts and the tools end (from the window's left and right edges): the toasts
+ * drop into this row, over the title and clear of the capsule, wherever the shell puts it. Kept
+ * for the toasts alone: custom properties on the root would restyle the whole window each time
+ * the title bar resizes (on every frame of dragging the rail, say).
  */
 function placeToasts(header: HTMLElement) {
     if (!header.isConnected) return;
@@ -44,10 +45,11 @@ function placeToasts(header: HTMLElement) {
     const tools = header.querySelector<HTMLElement>(".bar-end")?.getBoundingClientRect();
     const box = header.getBoundingClientRect();
     if (!box.width) return;
-    const root = document.documentElement.style;
-    root.setProperty("--bar-start", `${Math.round(title?.left ?? box.left)}px`);
-    root.setProperty("--bar-end", `${Math.round(window.innerWidth - (tools?.width ? tools.left : box.right))}px`);
-    root.setProperty("--bar-top", `${Math.round(box.top)}px`);
+    setTitleBarBox({
+        start: Math.round(title?.left ?? box.left),
+        end: Math.round(window.innerWidth - (tools?.width ? tools.left : box.right)),
+        top: Math.round(box.top),
+    });
 }
 
 /**

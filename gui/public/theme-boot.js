@@ -1,7 +1,7 @@
 // Applies the saved appearance before the first paint, so the window never
 // flashes the wrong colors. (External file: the Content-Security-Policy allows
-// no inline scripts.) migrate and apply repeat migratePrefs and applyAppearance
-// in src/state/prefs-core.ts, with its defaults; test/gui-prefs.test.ts checks
+// no inline scripts.) migrate and apply repeat migratePrefs, and appearanceOf
+// with showAppearance, in src/state/prefs-core.ts, with its defaults; test/gui-prefs.test.ts checks
 // that both give <html> the same attributes and properties.
 (function () {
     var ACCENTS = ["blue", "indigo", "violet", "pink", "red", "orange", "green", "teal", "graphite"];

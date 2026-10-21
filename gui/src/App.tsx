@@ -1,16 +1,17 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { Toasts } from "./components/Toasts";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorWidth, paletteOpen, railOpen, requestComposerFocus, review, reviewSplit, setAgentFocus, setDockHeight, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalMax, terminalShown } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown } from "./state/ui";
 import { isTauri, os } from "./lib/platform";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, requestCloses, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
+import { frameDrag } from "./lib/drag";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { Transcript } from "./components/Transcript";
@@ -103,23 +104,39 @@ function SessionView(p: { handle: SessionHandle }) {
 /** The docked inspector's left edge: drag (or arrow keys) to resize; double-click for the default. */
 function InspectorResizer() {
     const [dragging, setDragging] = createSignal(false);
-    const set = (w: number) => setInspectorWidth(clampInspectorWidth(w, shellLayout().sheet.w));
+    const clamp = (w: number) => clampInspectorWidth(w, shellLayout().sheet.w);
+    const set = (w: number) => setInspectorWidth(clamp(w));
+    /** Ends the drag under way, if any: on release, and when the handle goes away in the middle of one. */
+    let stop: (() => void) | undefined;
+    onCleanup(() => stop?.());
     const start = (e: PointerEvent) => {
         if (e.button !== 0) return;
         e.preventDefault();
+        stop?.();
         const target = e.currentTarget as HTMLElement;
         target.setPointerCapture(e.pointerId);
         const x = e.clientX;
         const from = shellLayout().inspector.width;
         setDragging(true);
         document.body.classList.add("resizing");
-        const move = (ev: PointerEvent) => set(from - (ev.clientX - x));
+        // Shown once a frame, saved (inspectorWidth, and so localStorage) on release.
+        const drag = frameDrag({
+            show: setInspectorDrag,
+            commit: (w) => batch(() => {
+                if (w !== undefined) setInspectorWidth(w);
+                setInspectorDrag(undefined);
+            }),
+        });
+        const move = (ev: PointerEvent) => drag.move(clamp(from - (ev.clientX - x)));
         const end = () => {
+            stop = undefined;
+            drag.end();
             setDragging(false);
             document.body.classList.remove("resizing");
             target.removeEventListener("pointermove", move);
             target.removeEventListener("lostpointercapture", end);
         };
+        stop = end;
         target.addEventListener("pointermove", move);
         target.addEventListener("lostpointercapture", end);
     };
@@ -165,18 +182,19 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         try { localStorage.setItem(INSPECTOR_KEY, String(w)); } catch { /* private mode */ }
     }, { defer: true }));
 
+    // A size being dragged shows in place of the saved one until the release saves it.
     const layout = createMemo(() => windowLayout({
         win: win(),
         rail: prefs.sidebar,
         railOpen: railOpen(),
-        railWidth: prefs.sidebarWidth,
+        railWidth: railDrag() ?? prefs.sidebarWidth,
         panel: p.panel,
         review: p.review,
         split: reviewSplit(),
-        reviewBase: prefs.reviewWidth,
-        inspectorWidth: inspectorWidth(),
+        reviewBase: reviewDrag() ?? prefs.reviewWidth,
+        inspectorWidth: inspectorDrag() ?? inspectorWidth(),
         terminalShown: terminalShown(),
-        terminalPreferred: prefs.terminalHeight,
+        terminalPreferred: terminalDrag() ?? prefs.terminalHeight,
         terminalMax: terminalMax(),
         dock: dockHeight(),
     }));
@@ -342,6 +360,10 @@ export function App() {
         if (open) queueMicrotask(() => document.querySelector<HTMLElement>(".win-rail button:not([disabled])")?.focus());
     }, { defer: true }));
     const inspOpen = () => reviewing() || panelShown();
+    // The sizes go on the elements that use them, not on .app: a custom property changing on an
+    // element restyles everything under it, so on .app each frame of a drag restyled the window.
+    // (shell.css registers them as not inherited; the few children that need one inherit it explicitly.)
+    const railWidth = () => railDrag() ?? prefs.sidebarWidth;
 
     return (
         <div
@@ -354,15 +376,9 @@ export function App() {
             data-term={layout().terminal.shown ? "on" : "off"}
             data-tmax={layout().terminal.maximized ? "on" : "off"}
             data-settings={settingsTab() ? "on" : "off"}
-            style={{
-                "--insp-w": `${layout().inspector.width}px`,
-                "--insp-col": inspOpen() && layout().inspector.mode === "dock" ? `${layout().inspector.width}px` : "0px",
-                "--insp-bottom": `${layout().inspector.bottom}px`,
-                "--term-h": `${layout().terminal.height}px`,
-            }}
         >
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
-                <div class="win">
+                <div class="win" style={{ "--rail-w": `${railWidth()}px` }}>
                     {/* The window's edges drag it, under the rail and the sheet (the rail's top and the title bar drag too). */}
                     <div class="win-drag" data-tauri-drag-region />
                     <div class="rail-scrim" aria-hidden="true" onClick={() => setRailOpen(false)} />
@@ -376,7 +392,14 @@ export function App() {
                     </div>
                     {/* One opaque sheet: the conversation | the inspector, and the terminal under both. */}
                     {/* Behind the open drawer the sheet takes no focus, clicks or keys (Enter on a focused Allow, say). */}
-                    <div class="sheet" inert={drawerOpen()}>
+                    <div
+                        class="sheet"
+                        inert={drawerOpen()}
+                        style={{
+                            "--insp-col": inspOpen() && layout().inspector.mode === "dock" ? `${layout().inspector.width}px` : "0px",
+                            "--term-h": `${layout().terminal.height}px`,
+                        }}
+                    >
                         <main class="main">
                             <Reconnecting />
                             <RenderBoundary resetKey={() => `${app.activeId}:${settingsTab()}:${agentFocus()}`}>
@@ -418,7 +441,7 @@ export function App() {
                                 </Switch>
                             </RenderBoundary>
                         </main>
-                        <div class="insp">
+                        <div class="insp" style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
                             <Show when={panelShown() && !reviewing() && layout().inspector.mode === "dock"}>
                                 <InspectorResizer />
                             </Show>

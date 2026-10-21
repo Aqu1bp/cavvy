@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { runInNewContext } from "vm";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
-import { ACCENTS, applyAppearance, migratePrefs, PREF_DEFAULTS, type Prefs } from "../gui/src/state/prefs-core";
+import { ACCENTS, appearanceOf, migratePrefs, PREF_DEFAULTS, showAppearance, type Prefs } from "../gui/src/state/prefs-core";
 
 const BOOT = readFileSync(new URL("../gui/public/theme-boot.js", import.meta.url), "utf8");
 const PREFS = new Bun.Transpiler({ loader: "ts" }).transformSync(
@@ -21,17 +21,24 @@ function page(stored: string | null | undefined, dark: boolean, storageThrows = 
     let value = stored;
     const dataset: Record<string, string> = {};
     const style: Record<string, string> = {};
+    /** Every write to <html> (`data-*` for an attribute, `--*` for a property) and to storage, in order. */
+    const writes: string[] = [];
+    const logged = new Proxy(dataset, {
+        set: (target, key, v) => (writes.push(`data-${String(key)}`), Reflect.set(target, key, v)),
+        deleteProperty: (target, key) => (writes.push(`data-${String(key)}`), Reflect.deleteProperty(target, key)),
+    });
     let onSchemeChange: ((e: { matches: boolean }) => void) | undefined;
     return {
         dataset,
         style,
+        writes,
         stored: () => value,
         systemChanges: (matches: boolean) => onSchemeChange?.({ matches }),
         globals: {
-            document: { documentElement: { dataset, style: { setProperty: (k: string, v: string) => { style[k] = v; } } } },
+            document: { documentElement: { dataset: logged, style: { setProperty: (k: string, v: string) => { writes.push(k); style[k] = v; } } } },
             localStorage: {
                 getItem: (_k: string) => { if (storageThrows) throw new Error("storage unavailable"); return value ?? null; },
-                setItem: (_k: string, v: string) => { if (storageThrows) throw new Error("storage unavailable"); value = v; },
+                setItem: (_k: string, v: string) => { writes.push("storage"); if (storageThrows) throw new Error("storage unavailable"); value = v; },
             },
             matchMedia: () => ({ matches: dark, addEventListener: (_: string, fn: typeof onSchemeChange) => { onSchemeChange = fn; } }),
         },
@@ -66,7 +73,8 @@ function app(stored: string | null | undefined, dark: boolean, storageThrows = f
         createSignal: solid.createSignal,
         createStore,
         setNativeTheme: async (scheme: string) => { native.push(scheme); },
-        applyAppearance,
+        appearanceOf,
+        showAppearance,
         migratePrefs,
         PREF_DEFAULTS,
     };
@@ -163,9 +171,13 @@ describe("first paint and the app agree", () => {
     }
 });
 
+/** Lets the saving queued meanwhile run. */
+const settled = () => Promise.resolve();
+
 describe("the app's preferences", () => {
-    test("a migrated theme is saved back in today's shape", () => {
+    test("a migrated theme is saved back in today's shape", async () => {
         const later = app(JSON.stringify({ theme: "contrast", lightTheme: "paper", darkTheme: "dusk", sidebar: false }), false);
+        await settled();
         expect(later.prefs.scheme).toBe("dark");
         expect(later.prefs.contrast).toBe("high");
         const saved = later.saved();
@@ -176,7 +188,7 @@ describe("the app's preferences", () => {
         expect(later.dataset).toMatchObject({ theme: "dark", contrast: "high" });
     });
 
-    test("changes show at once; System follows the system, a fixed scheme doesn't", () => {
+    test("changes show at once; System follows the system, a fixed scheme doesn't", async () => {
         const later = app(JSON.stringify({ scheme: "system" }), false);
         expect(later.dataset.theme).toBe("light");
         later.systemChanges(true);
@@ -198,6 +210,64 @@ describe("the app's preferences", () => {
         expect(later.dataset.tint).toBe("accent");
         later.setPrefs("accent", undefined);
         expect(later.dataset).not.toHaveProperty("accent");
+        await settled();
         expect(later.saved()).toMatchObject({ scheme: "light", glass: "tinted", tint: "accent", contrast: "high" });
+    });
+
+    test("a change writes only its own part to <html>: a width, no theme attributes and no call to the native window", async () => {
+        const later = app(JSON.stringify({ scheme: "dark", accent: "teal" }), false);
+        await settled();
+        later.writes.length = 0;
+        later.setPrefs("sidebarWidth", 300);
+        expect(later.writes).toEqual(["--sidebar-w"]);
+        expect(later.style["--sidebar-w"]).toBe("300px");
+        later.setPrefs("reviewWidth", 800);
+        later.setPrefs("terminalHeight", 300);
+        later.setPrefs("favoriteModels", ["mock/a"]);
+        expect(later.writes).toEqual(["--sidebar-w", "--review-w"]);
+        later.setPrefs("density", "compact");
+        expect(later.writes.at(-1)).toBe("data-density");
+        later.setPrefs("tint", "ocean");
+        expect(later.writes.at(-1)).toBe("data-tint");
+        expect(later.dataset.tint).toBe("ocean");
+        later.setPrefs("accent", undefined);
+        expect(later.writes.at(-1)).toBe("data-accent");
+        expect(later.dataset).not.toHaveProperty("accent");
+        // None of that was a change of scheme.
+        expect(later.native).toEqual(["dark"]);
+    });
+
+    test("the native window hears of the scheme only when the scheme showing changes", () => {
+        const later = app(JSON.stringify({ scheme: "system" }), false);
+        expect(later.native).toEqual(["light"]);
+        later.setPrefs("glass", "tinted");
+        later.setPrefs("contrast", "high");
+        later.setPrefs("scheme", "light");
+        expect(later.native).toEqual(["light"]);
+        later.setPrefs("scheme", "dark");
+        expect(later.native).toEqual(["light", "dark"]);
+        // A fixed scheme doesn't follow the system.
+        later.systemChanges(false);
+        expect(later.native).toEqual(["light", "dark"]);
+        later.setPrefs("scheme", "system");
+        expect(later.native).toEqual(["light", "dark", "light"]);
+    });
+
+    test("a run of changes in one go is saved once, with the last of them", async () => {
+        const later = app(JSON.stringify({}), false);
+        await settled();
+        later.writes.length = 0;
+        later.setPrefs("sidebarWidth", 300);
+        later.setPrefs("sidebarWidth", 310);
+        later.setPrefs("chatWidth", "wide");
+        expect(later.writes.filter((w) => w === "storage")).toEqual([]);
+        await settled();
+        expect(later.writes.filter((w) => w === "storage")).toEqual(["storage"]);
+        expect(later.saved()).toMatchObject({ sidebarWidth: 310, chatWidth: "wide" });
+        // And the next change is saved too.
+        later.setPrefs("sidebarWidth", 320);
+        await settled();
+        expect(later.saved()).toMatchObject({ sidebarWidth: 320 });
+        expect(later.writes.filter((w) => w === "storage")).toEqual(["storage", "storage"]);
     });
 });

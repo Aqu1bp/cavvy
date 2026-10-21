@@ -1,6 +1,6 @@
 // The parts of the preferences with no side effects: their shape, defaults,
 // the migration of older saved preferences, and how they're shown on <html>.
-// public/theme-boot.js repeats migratePrefs and applyAppearance in plain JS so
+// public/theme-boot.js repeats migratePrefs, appearanceOf and showAppearance in plain JS so
 // the first paint is right; test/gui-prefs.test.ts keeps the two in step.
 
 export type Scheme = "system" | "light" | "dark";
@@ -117,27 +117,44 @@ export function migratePrefs(saved: unknown): Partial<Prefs> {
     return out as Partial<Prefs>;
 }
 
-/** What applyAppearance writes to: <html>, or a stand-in in tests. */
+/** What showAppearance writes to: <html>, or a stand-in in tests. */
 export interface AppearanceTarget {
     dataset: Record<string, string | undefined>;
     style: { setProperty(name: string, value: string): void };
 }
 
-/** Shows the preferences on <html>; returns the scheme showing. */
-export function applyAppearance(d: AppearanceTarget, p: Prefs, systemDark: boolean): "light" | "dark" {
+/** How the preferences show on <html>: its data attributes (undefined: none), its custom properties, and the scheme showing. */
+export interface Appearance {
+    theme: "light" | "dark";
+    dataset: Record<string, string | undefined>;
+    style: Record<string, string>;
+}
+
+export function appearanceOf(p: Prefs, systemDark: boolean): Appearance {
     const theme = p.scheme === "system" ? (systemDark ? "dark" : "light") : p.scheme;
-    d.dataset.theme = theme;
-    d.dataset.scheme = theme;
-    d.dataset.glass = p.glass;
-    d.dataset.tint = p.tint;
-    d.dataset.contrast = p.contrast;
-    if (p.accent) d.dataset.accent = p.accent;
-    else delete d.dataset.accent;
-    d.dataset.density = p.density;
-    d.dataset.motion = p.motion;
-    d.style.setProperty("--font-scale", String(p.fontSize / 14));
-    d.style.setProperty("--sidebar-w", `${p.sidebarWidth}px`);
-    d.style.setProperty("--review-w", `${p.reviewWidth}px`);
-    d.style.setProperty("--column-w", `${CHAT_WIDTHS[p.chatWidth] ?? CHAT_WIDTHS.default}px`);
-    return theme;
+    return {
+        theme,
+        dataset: { theme, scheme: theme, glass: p.glass, tint: p.tint, contrast: p.contrast, accent: p.accent, density: p.density, motion: p.motion },
+        style: {
+            "--font-scale": String(p.fontSize / 14),
+            "--sidebar-w": `${p.sidebarWidth}px`,
+            "--review-w": `${p.reviewWidth}px`,
+            "--column-w": `${CHAT_WIDTHS[p.chatWidth] ?? CHAT_WIDTHS.default}px`,
+        },
+    };
+}
+
+/**
+ * Writes `next` to <html>: all of it, or with `before` (what's there now) only what differs. Each
+ * write to <html> can restyle the whole window, so a change of one preference writes only its own.
+ */
+export function showAppearance(d: AppearanceTarget, next: Appearance, before?: Appearance): void {
+    for (const [key, value] of Object.entries(next.dataset)) {
+        if (before && before.dataset[key] === value) continue;
+        if (value === undefined) delete d.dataset[key];
+        else d.dataset[key] = value;
+    }
+    for (const [name, value] of Object.entries(next.style)) {
+        if (before?.style[name] !== value) d.style.setProperty(name, value);
+    }
 }
