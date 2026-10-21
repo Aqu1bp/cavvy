@@ -136,6 +136,29 @@ describe("session.gitChanges with a worktree", () => {
         }
     });
 
+    test("a registered worktree whose folder now leads somewhere else is refused: another repository, or another of its worktrees", async () => {
+        const { main, linked, engine, call } = await setup("swapped");
+        const other = repo("swapped other repo");
+        writeFileSync(join(other, "secret.txt"), "not this repository's\n");
+        const second = join(realpathSync(iso.home), "swapped second");
+        git(main, "worktree", "add", "-b", "agent/second", second);
+        writeFileSync(join(second, "second.txt"), "second\n");
+        try {
+            // Locked, so git keeps it registered (and never calls it prunable) with its folder gone.
+            git(main, "worktree", "lock", linked);
+            rmSync(linked, { recursive: true, force: true });
+            symlinkSync(other, linked);
+            await expect(call("session.gitChanges", { scope: "uncommitted", worktree: linked })).rejects.toMatchObject({ code: "not_found" });
+            rmSync(linked);
+            symlinkSync(second, linked);
+            await expect(call("session.gitChanges", { scope: "uncommitted", worktree: linked })).rejects.toMatchObject({ code: "not_found" });
+            // The real one still reads.
+            expect((await call<GitChangesInfo>("session.gitChanges", { scope: "uncommitted", worktree: second })).files.map((f) => f.path)).toEqual(["second.txt"]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("a worktree whose folder was deleted is refused until it's back", async () => {
         const { linked, engine, call } = await setup("deleted");
         try {

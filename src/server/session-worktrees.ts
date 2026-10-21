@@ -3,8 +3,8 @@
 // folder. Read-only: Git only lists and counts commits here, so nothing from
 // the repository's config runs (see git-changes.ts).
 
-import { realpathSync } from "fs";
-import { resolve } from "path";
+import { readFileSync, realpathSync } from "fs";
+import { dirname, join, resolve } from "path";
 import { defaultBase, git } from "./git-changes";
 import type { SessionWorktreeInfo, WorktreeInfo } from "./protocol";
 import { RpcError } from "./rpc-error";
@@ -31,17 +31,50 @@ function listed(cwd: string): WorktreeInfo[] {
     }
 }
 
+/** A Git dir as `git rev-parse` names it, with links resolved; undefined when git can't say. */
+async function gitDir(cwd: string, flags: string[]): Promise<string | undefined> {
+    try {
+        const r = await git(cwd, ["rev-parse", ...flags]);
+        const out = r.out.toString("utf-8").replace(/\n$/, "");
+        return r.code === 0 && out ? canonical(out) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /**
- * The worktree `wanted` names, if it's one of the repository `cwd` is in and
- * is there to read; otherwise an error. Compared once symlinks are resolved,
- * and what comes back is Git's own record, never the path as asked.
+ * The worktree `wanted` names, if it's one of the repository `cwd` is in and is there to read;
+ * otherwise an error. Compared once symlinks are resolved. Git's record alone isn't enough: a
+ * locked worktree stays registered whatever its folder becomes (a link to another repository,
+ * say), so the folder must also be that worktree to Git: its common Git dir the session's, and
+ * its own Git dir the common dir (the main worktree) or the entry in <common>/worktrees/ that
+ * names this folder. What comes back is the folder checked, links resolved, so it can't be
+ * swapped for another afterwards.
  */
-export function sessionWorktree(cwd: string, wanted: string): WorktreeInfo {
-    const want = canonical(resolve(cwd, wanted));
-    const record = listed(cwd).find((w) => canonical(w.path) === want);
+export async function sessionWorktree(cwd: string, wanted: string): Promise<WorktreeInfo & { real: string }> {
+    const asked = resolve(cwd, wanted);
+    const want = canonical(asked);
+    const all = listed(cwd);
+    // The worktree named as git lists it, if it is; else (a link to one) the one it leads to.
+    const record = all.find((w) => w.path === asked) ?? all.find((w) => canonical(w.path) === want);
+    const missing = () => new RpcError(`The worktree ${wanted} is missing.`, "not_found");
     if (!record) throw new RpcError(`${wanted} isn't one of this repository's worktrees.`, "not_found");
-    if (!record.exists || record.prunable !== undefined) throw new RpcError(`The worktree ${wanted} is missing.`, "not_found");
-    return record;
+    if (!record.exists || record.prunable !== undefined) throw missing();
+    const [expected, common, own] = await Promise.all([gitDir(cwd, ["--path-format=absolute", "--git-common-dir"]), gitDir(want, ["--path-format=absolute", "--git-common-dir"]), gitDir(want, ["--absolute-git-dir"])]);
+    if (!expected || common !== expected || !own) throw missing();
+    // Git lists a linked worktree's folder from its entry's gitdir file: the entry found in the folder must be that one.
+    if (record.main ? own !== expected : dirname(own) !== join(expected, "worktrees") || backLink(own) !== record.path) throw missing();
+    return { ...record, real: want };
+}
+
+/** The folder a linked worktree's entry in <common>/worktrees/ names (its gitdir file holds <folder>/.git), as git lists it. */
+function backLink(entry: string): string | undefined {
+    try {
+        const file = readFileSync(join(entry, "gitdir"), "utf-8").replace(/\r?\n$/, "");
+        return file ? dirname(resolve(entry, file)) : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 /** The repository's worktrees, each with how far its HEAD is ahead of the main branch and when it was committed. */
