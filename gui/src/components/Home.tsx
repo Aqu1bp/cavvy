@@ -1,9 +1,8 @@
-// Home: one question, the composer, and where the session will run. The
-// project is picked in the question itself; the folder and branch sit in a
-// strip under the composer.
+// Home (a new session): the mark, one question, where the session will run
+// (project, branch or worktree), the composer, and a few ways to start.
 
 import { createResource, createSignal, For, Show } from "solid-js";
-import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, ShieldAlert } from "lucide-solid";
+import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, ListChecks, MessageSquareText, ShieldAlert, TerminalIcon } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { requestComposerFocus, setSettingsTab } from "../state/ui";
@@ -13,10 +12,31 @@ import { CliSessions } from "./CliSessions";
 import { Composer } from "./Composer";
 import { Menu } from "./ui/Menu";
 import { WorktreePicker } from "./WorktreePicker";
+import { Logo } from "./ui/bits";
+
+/** Ways to start, under the composer: a click puts the prompt in it, to edit or send. */
+const STARTS = [
+    { icon: MessageSquareText, label: "Explain this project", prompt: "Give me a tour of this project: what it does, how it's laid out, and where to start reading." },
+    { icon: ListChecks, label: "Review my changes", prompt: "Review my uncommitted changes and point out anything that looks wrong." },
+    { icon: TerminalIcon, label: "Fix failing tests", prompt: "Run the tests, find what fails, and fix it." },
+];
+
+/** Puts text in the composer under `root` as typing would (its draft, undo and autosize follow). */
+function fillComposer(root: HTMLElement | undefined, text: string) {
+    const ta = root?.querySelector("textarea");
+    if (!ta) return;
+    ta.focus();
+    ta.select();
+    if (!document.execCommand?.("insertText", false, text)) {
+        ta.value = text;
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    ta.setSelectionRange(text.length, text.length);
+}
 
 export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
-    /** The question's project name or the strip's folder: the menu opens by the one you used. */
+    /** The project pill: the recent-projects menu opens by it. */
     const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
     const [info, { refetch }] = createResource(
         () => app.conn === "open" && app.homeCwd,
@@ -39,20 +59,31 @@ export function Home() {
         const path = await chooseProject();
         if (path) await openProject(path);
     };
-    const projectButton = () => (
-        <button class="inline-pick" aria-haspopup="menu" aria-expanded={pickerOpen()} onClick={togglePicker}>
-            <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
-        </button>
-    );
+    let composer: HTMLDivElement | undefined;
 
     return (
         <div class="home">
-            <div class="home-inner">
-                <h1 class="home-q" aria-label={app.homeCwd ? `What should we build in ${basename(app.homeCwd)}?` : "Choose a project to start"}>
-                    <Show when={app.homeCwd} fallback={<>{projectButton()} to start</>}>
-                        What should we build in {projectButton()}?
-                    </Show>
-                </h1>
+            <div class="home-col">
+                <div class="home-hero">
+                    <Logo size={44} />
+                    <h1 class="home-q">{app.homeCwd ? "What should we work on?" : "Choose a project to start"}</h1>
+                    <div class="home-where">
+                        <button
+                            class="pillbtn"
+                            title={app.homeCwd ? `${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder` : "Choose a project folder"}
+                            aria-haspopup="menu"
+                            aria-expanded={pickerOpen()}
+                            onClick={togglePicker}
+                        >
+                            <Folder size={14} />
+                            <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
+                            <ChevronDown size={13} class="chev" />
+                        </button>
+                        <Show when={app.homeCwd && info()?.git}>
+                            <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
+                        </Show>
+                    </div>
+                </div>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
                     <div class="menu-head">Recent projects</div>
                     <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
@@ -132,27 +163,26 @@ export function Home() {
                     </div>
                 </Show>
 
-                <Composer
-                    variant="home"
-                    autofocus
-                    compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository: each model works in a worktree of its own." : "Choose a project folder first." }}
-                    placeholder={app.homeCwd ? "Describe a task, ask a question, or paste an error…" : "Choose a project folder to start"}
-                    strip={
-                        app.homeCwd ? (
-                            <>
-                                <button class="strip-ctl" title={`${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder`} aria-haspopup="menu" aria-expanded={pickerOpen()} onClick={togglePicker}>
-                                    <Folder size={13} />
-                                    <span class="truncate">{tildify(app.homeCwd, app.hello?.homeDir)}</span>
-                                    <ChevronDown size={12} class="chv" />
+                <div class="home-composer" ref={composer}>
+                    <Composer
+                        autofocus
+                        compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository: each model works in a worktree of its own." : "Choose a project folder first." }}
+                        placeholder={app.homeCwd ? "Describe the task. / for commands, @ for files, ! to run a command" : "Choose a project folder to start"}
+                    />
+                </div>
+
+                <Show when={app.homeCwd}>
+                    <div class="home-starts">
+                        <For each={STARTS}>
+                            {(start) => (
+                                <button title={start.prompt} onClick={() => fillComposer(composer, start.prompt)}>
+                                    <start.icon size={14} />
+                                    {start.label}
                                 </button>
-                                <span class="grow" />
-                                <Show when={info()?.git}>
-                                    <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
-                                </Show>
-                            </>
-                        ) : undefined
-                    }
-                />
+                            )}
+                        </For>
+                    </div>
+                </Show>
 
                 <Show when={app.homeCwd} keyed>
                     {(cwd) => <CliSessions cwd={cwd} />}
