@@ -584,6 +584,25 @@ describe("Claude Code's background work (live test findings)", () => {
         }
     }, 20_000);
 
+    test("with no cap, a run whose Claude Code crashed while something it started holds its output open still ends", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_HOLD_STDOUT = "1";
+        process.env.FAKE_EXIT_AFTER_MS = "800";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.exitDrainMs = 100;
+        try {
+            const { run } = await makeAgent({ provider: "claude-code" });
+            const started = Date.now();
+            await run("map the auth module");
+            // Its output is held for 8 s (FAKE_HOLD_STDOUT): it ended well before that.
+            expect(Date.now() - started).toBeLessThan(5000);
+        } finally {
+            delete process.env.FAKE_HOLD_STDOUT;
+            delete process.env.FAKE_EXIT_AFTER_MS;
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 20_000);
+
     test("a background sub-agent that never finishes is waited on only so long, and the user is told it was stopped", async () => {
         process.env.FAKE_SCENARIO = "agent-background-stuck";
         const saved = { ...backgroundTiming };
@@ -2969,7 +2988,8 @@ describe("Claude Code reviewed grace fixes", () => {
     test("repeated Monitor report turns cannot extend the overall background cap", async () => {
         process.env.FAKE_SCENARIO = "monitor-repeated-reports";
         const saved = { ...backgroundTiming };
-        Object.assign(backgroundTiming, { maxWaitMs: 350, pollMs: 10 });
+        // The commands' cap alone, sub-agents uncapped as by default: a monitor that keeps reporting still stops.
+        Object.assign(backgroundTiming, { commandsMaxWaitMs: 350, pollMs: 10 });
         const abort = new AbortController();
         const timeout = setTimeout(() => abort.abort(), 4000);
         try {

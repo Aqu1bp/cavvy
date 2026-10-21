@@ -69,6 +69,14 @@ export const backgroundTiming = {
      * stop a command still within its own timeout. Tests set one.
      */
     maxWaitMs: Number.POSITIVE_INFINITY,
+    /**
+     * The cap for background commands without a timeout of their own and for monitors, across report turns:
+     * a monitor's grace starts again with each report, so one that reports often would otherwise keep the run
+     * going for good. A command still within its own timeout isn't cut short. (At most maxWaitMs, when that's set.)
+     */
+    commandsMaxWaitMs: 60 * 60_000,
+    /** After Claude Code exits, how long its output is still read (a child it started may hold it open). */
+    exitDrainMs: 2000,
     /** The grace for a background command that passes no timeout, and for monitors: Claude Code's default background timeout. */
     commandWaitMs: 30 * 60_000,
     /** The most a background command's own timeout can give it: Claude Code's maximum background timeout. */
@@ -657,14 +665,16 @@ class ClaudeTurn {
             clearTimeout(this.settleTimer);
             this.settleTimer = undefined;
             this.waitFor(left);
-            if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
-            // Waited long enough (only between Claude Code's turns, so none is cut short). A command still
-            // within its own timeout goes on (until it's up, above); what else is left stops.
-            const ms = backgroundTiming.maxWaitMs;
-            // Sub-agents and workflows go on too while one does: stopping one ends the shells under it (a grandchild's
-            // too), and a command's completion goes to the sub-agent that ran it. Its timeout bounds the wait.
+            // Commands without a timeout of their own and monitors have a cap; sub-agents and workflows none by
+            // default (maxWaitMs), as in Claude Code: they run until they're done or the user stops them.
+            const waited = Date.now() - this.waitingSince!;
+            const capOf = (t: BackgroundWork) => (t.commandTask ? Math.min(backgroundTiming.commandsMaxWaitMs, backgroundTiming.maxWaitMs) : backgroundTiming.maxWaitMs);
+            // Sub-agents and workflows go on too while a command within its own timeout does: stopping one ends the
+            // shells under it (a grandchild's too), and a command's completion goes to the sub-agent that ran it.
             const timed = left.some((t) => ownDeadline(t) !== undefined);
-            const over = left.filter((t) => ownDeadline(t) === undefined && !(timed && !t.commandTask));
+            const over = left.filter((t) => ownDeadline(t) === undefined && waited >= capOf(t) && !(timed && !t.commandTask));
+            if (!over.length) return false;
+            const ms = Math.min(...over.map(capOf));
             // So too while a finished command's report is still due: stop the rest by task id and let that turn come.
             if (over.length < left.length || (this.reportsDue && over.every((t) => t.id))) {
                 for (const task of over) this.stopTask(task, `waited ${span(ms)}, the limit for background work`);
@@ -864,6 +874,13 @@ class ClaudeTurn {
             void this.proc.kill();
         });
         let killTimer: ReturnType<typeof setTimeout> | undefined;
+        // Claude Code gone (a crash) while something it started still holds its output open: what it wrote is
+        // read for a moment, then nothing more can come, so the run ends rather than waiting for good.
+        let goneTimer: ReturnType<typeof setTimeout> | undefined;
+        let ended = false;
+        void this.proc.exited.then(() => {
+            if (!ended) goneTimer = setTimeout(() => void this.proc.kill(), backgroundTiming.exitDrainMs);
+        });
         const onAbort = () => {
             this.aborted = true;
             // Nothing to interrupt before the prompt is sent, or while Claude Code only waits on its background work.
@@ -913,6 +930,8 @@ class ClaudeTurn {
             await this.idlePending;
             await this.deliveryPending;
             if (killTimer) clearTimeout(killTimer);
+            ended = true;
+            clearTimeout(goneTimer);
         }
         // Anything still open never got a result. Sub-agents still working (in the background) stopped with Claude Code.
         const lost = [...this.liveAgents].filter((id) => this.backgroundAgents.has(id));
