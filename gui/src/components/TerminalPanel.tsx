@@ -12,7 +12,7 @@ import { basename, tildify } from "../lib/format";
 import { EarlyInput, loadTabs, restoreTabs, saveTabs, TerminalClosures, terminalInputChunks, type SavedTab } from "../lib/terminal";
 import { isTerminalReply } from "@shared/terminal-reply";
 import { copyText, isMod } from "../lib/platform";
-import { actionOf, withShortcut } from "../state/keybindings";
+import { terminalKey, withShortcut } from "../state/keybindings";
 
 /**
  * `script`: the project script the tab was opened to run (once: restarting it gives a plain shell), and is named after.
@@ -365,8 +365,8 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         const themeObserver = new MutationObserver(theme);
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
         term.attachCustomKeyEventHandler((e) => {
-            // Leave the app's toggle and clipboard shortcuts to their owners.
-            if (actionOf(e, ["Global"]) === "app:toggleTerminal") return false;
+            // Leave the app's toggle (and its chords) and clipboard shortcuts to their owners.
+            if (terminalKey(e) === "app") return false;
             if (isMod(e) && e.key.toLowerCase() === "c" && term.hasSelection()) {
                 if (e.type === "keydown") void copyText(term.getSelection());
                 return false;

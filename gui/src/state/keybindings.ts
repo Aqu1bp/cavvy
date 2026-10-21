@@ -68,6 +68,23 @@ export const actionOf = (e: KeyboardEvent, contexts: readonly Context[]): string
     return r.kind === "action" ? r.action : undefined;
 };
 
+/**
+ * What the integrated terminal does with a key press. The terminal keeps its
+ * keys: only the terminal toggle, and the chords that lead to it, are the
+ * app's there. The first key of such a chord is held back from the shell (as
+ * in VS Code); the first key of any other chord goes to the shell, and the
+ * chord is dropped, since its action doesn't run from the terminal.
+ */
+export function terminalKey(e: KeyboardEvent): "app" | "shell" {
+    const r = matchKey(e, ["Global"]);
+    if (r.kind === "action") return r.action === "app:toggleTerminal" ? "app" : "shell";
+    if (r.kind !== "pending") return "shell";
+    const start = `${r.keys} `;
+    for (const [seq, action] of keymap().table.get("Global") ?? []) if (action === "app:toggleTerminal" && seq.startsWith(start)) return "app";
+    matcher.reset();
+    return "shell";
+}
+
 /** The keys bound to an action, for people: "⌘+K" (each part one key cap). `all`: every key, joined by "  ". */
 export function shortcut(action: string, all = false): string | undefined {
     return keyLabel(keymap(), action, all, "  ");

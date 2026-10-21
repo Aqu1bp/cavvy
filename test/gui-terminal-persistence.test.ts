@@ -119,7 +119,7 @@ import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
 import { RpcError } from "../gui/src/lib/rpc";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
     const [panelOpen, setPanelOpen] = solid.createSignal(false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
@@ -134,7 +134,8 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         input: (data: string) => void = () => {};
         writes: { data: string; done?: () => void }[] = [];
         constructor() { terminals.push(this); }
-        loadAddon() {} open() {} focus() {} dispose() {} attachCustomKeyEventHandler() {}
+        keyHandler?: (e: KeyboardEvent) => boolean;
+        loadAddon() {} open() {} focus() {} dispose() {} attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean) { this.keyHandler = fn; }
         onData(fn: (data: string) => void) { this.input = fn; return { dispose() {} }; }
         write(data: string, done?: () => void) { this.writes.push({ data, done }); }
         drain() { for (const w of this.writes.splice(0)) { if (w.data.includes("QUERY")) this.input("\x1b[?1;2c"); w.done?.(); } }
@@ -167,7 +168,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs() {},
-        basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, actionOf: () => undefined, toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
+        basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
         Play: noop, Plus: noop, RotateCw: noop, SquareTerminal: noop, X: noop, Terminal: Emulator, FitAddon: class { fit() {} },
         ResizeObserver: class { observe() {} disconnect() {} }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
@@ -319,4 +320,29 @@ test("a saved setup tab retains only display metadata and reattaches on reload a
         expect(m.calls.some((c) => ["scripts.run", "terminal.arm", "terminal.open"].includes(c.method))).toBe(false);
         expect(JSON.stringify(m.calls.map((c) => c.params))).not.toContain("ticket");
     } finally { m.dispose(); }
+});
+
+test("the terminal holds back the first key of a chord for the terminal toggle, and only that", async () => {
+    const kb = await import("../gui/src/state/keybindings");
+    const key = (k: string, code: string, extra: Partial<KeyboardEvent> = {}) =>
+        ({ type: "keydown", key: k, code, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, isComposing: false, keyCode: 0, preventDefault() {}, ...extra }) as unknown as KeyboardEvent;
+    kb.applyKeybindingsFile({ path: "/k.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "ctrl+u t": "app:toggleTerminal", "enter t": "app:toggleTerminal", "ctrl+x ctrl+s": "app:settings" } }] }) });
+    const m = mounted("TerminalScreen", { terminalKey: kb.terminalKey });
+    try {
+        const handler = m.terminals[0]!.keyHandler!;
+        // true: xterm sends the key to the shell.
+        expect(handler(key("u", "KeyU", { ctrlKey: true }))).toBe(false);
+        expect(handler(key("t", "KeyT"))).toBe(false);
+        expect(handler(key("Enter", "Enter"))).toBe(false);
+        expect(handler(key("t", "KeyT"))).toBe(false);
+        // A chord whose action doesn't run from the terminal leaves its keys to the shell, and is dropped.
+        expect(handler(key("x", "KeyX", { ctrlKey: true }))).toBe(true);
+        expect(kb.matchKey(key("s", "KeyS", { ctrlKey: true }), ["Global"]).kind).toBe("none");
+        // Typing is the shell's.
+        expect(handler(key("a", "KeyA"))).toBe(true);
+        expect(handler(key("u", "KeyU"))).toBe(true);
+    } finally {
+        m.dispose();
+        kb.applyKeybindingsFile({ path: "/k.json" });
+    }
 });
