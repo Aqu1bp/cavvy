@@ -4,7 +4,7 @@
 // variables so every theme applies without highlighting again. Results are
 // cached by language and code.
 
-import type { HighlighterCore, ThemedToken } from "shiki/core";
+import type { GrammarState, HighlighterCore, ThemedToken } from "shiki/core";
 
 type Grammar = () => Promise<{ default: unknown[] }>;
 
@@ -155,19 +155,54 @@ function tokenHtml(t: ThemedToken): string {
 
 /** Each line highlighted on its own (for diffs), or undefined. */
 export async function highlightLines(code: string, lang: string | undefined): Promise<string[] | undefined> {
-    if (!lang || code.length > MAX_CHARS) return undefined;
+    let out: string[] | undefined;
+    await highlightLineChunks(code, lang, (from, lines) => (out = from ? [...(out ?? []), ...lines] : lines), () => false, Infinity);
+    return out;
+}
+
+/** The first part of a stream: about a screenful, so the top of a long diff is colored at once. */
+const FIRST_CHUNK = 80;
+const CHUNK = 400;
+/**
+ * Lines past this length are shown plain: an unbounded minified line can hold the tokenizer for its whole
+ * time limit. Above the server's own cut (2,000 characters a diff line), so its diffs stay colored.
+ */
+const MAX_LINE = 4000;
+
+/**
+ * Each line highlighted on its own, handed over a part at a time (`emit(from, lines)`), the grammar's
+ * state carried from one part to the next so the colors are the same as in one go. Between parts, other
+ * messages (a cancel) get a turn; `stopped` ends it early. False when it stays plain.
+ */
+export async function highlightLineChunks(code: string, lang: string | undefined, emit: (from: number, lines: string[]) => void, stopped: () => boolean, first = FIRST_CHUNK): Promise<boolean> {
+    if (!lang || code.length > MAX_CHARS) return false;
     const key = `${lang}\u0000${code}`;
     const hit = lineCache.get(key);
-    if (hit) return hit;
+    if (hit) {
+        emit(0, hit);
+        return true;
+    }
     const id = await ensure(lang);
-    if (!id) return undefined;
+    if (!id || stopped()) return false;
     const h = await highlighter();
-    const { tokens } = h.codeToTokens(code, { lang: id, theme: "harness" });
-    return remember(
-        lineCache,
-        key,
-        tokens.map((line) => line.map(tokenHtml).join("")),
-    );
+    const lines = code.split("\n");
+    const out: string[] = [];
+    let state: GrammarState | undefined;
+    for (let i = 0; i < lines.length; ) {
+        const n = i ? CHUNK : first;
+        const { tokens, grammarState } = h.codeToTokens(lines.slice(i, i + n).join("\n"), { lang: id, theme: "harness", tokenizeMaxLineLength: MAX_LINE, ...(state ? { grammarState: state } : {}) });
+        state = grammarState;
+        const html = tokens.map((line) => line.map(tokenHtml).join(""));
+        emit(i, html);
+        for (const l of html) out.push(l);
+        i += n;
+        if (i < lines.length) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (stopped()) return false;
+        }
+    }
+    remember(lineCache, key, out);
+    return true;
 }
 
 /** Start loading Shiki in the background (after first paint). */
