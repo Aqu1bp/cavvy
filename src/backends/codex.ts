@@ -746,8 +746,8 @@ class CodexTurn {
     private async nextGoalTurn(waitMs = GOAL_TURN_WAIT_MS, warn = true): Promise<string | undefined> {
         const deadline = Date.now() + waitMs;
         while (!this.aborted && this.goal?.status === "active") {
-            // The newest Codex started that's still going and wasn't started here.
-            const id = this.startedTurns.filter((t) => !this.completedTurns.has(t) && !this.ownTurns.has(t)).at(-1);
+            // The newest Codex started that wasn't started here, still going (or failed: that's said).
+            const id = this.startedTurns.filter((t) => !this.ownTurns.has(t) && (!this.completedTurns.has(t) || this.completedTurns.get(t)!.status === "failed")).at(-1);
             this.startedTurns = [];
             if (id) return id;
             const left = deadline - Date.now();
@@ -844,6 +844,7 @@ class CodexTurn {
                 // One Codex started itself, for the goal (it may start as the last ends, before that end is taken in).
                 if (typeof p.turn?.id === "string" && p.turn.id !== this.turnId) {
                     this.startedTurns.push(p.turn.id);
+                    if (this.startedTurns.length > 16) this.startedTurns.shift();
                     this.goalWake?.();
                 }
                 break;
@@ -879,7 +880,7 @@ class CodexTurn {
                 this.onItemCompleted(p.item ?? {}, p.turnId);
                 break;
             case "turn/completed":
-                if (typeof p.turn?.id === "string") this.completedTurns.set(p.turn.id, { status: typeof p.turn.status === "string" ? p.turn.status : "completed", error: p.turn.error });
+                if (typeof p.turn?.id === "string") this.completedTurns.set(p.turn.id, { status: typeof p.turn.status === "string" ? p.turn.status : "completed", ...(p.turn.status === "failed" ? { error: p.turn.error } : {}) });
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
                 this.status = p.turn?.status;
                 if (p.turn?.status === "failed") this.fail(p.turn?.error, "Codex reported a failed turn");

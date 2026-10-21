@@ -16,9 +16,8 @@ import type { NativeGoal } from "../agent/goal";
 import { redact } from "../util/redact";
 
 /** At most this much of a transcript is read when it's first found (a long resumed session): its newest part. */
-const FIRST_READ = 4 * 1024 * 1024;
-/** At most this much is read at a time, so a poll doesn't hold up the rest of the app; the next goes on. */
-const CHUNK = 1024 * 1024;
+const FIRST_READ = 16 * 1024 * 1024;
+const MARK = Buffer.from('"goal_status"');
 
 /** How far each transcript has been read, and where its goal stood there: the next turn goes on from it. */
 const readSoFar = new Map<string, { offset: number; goal: NativeGoal | null }>();
@@ -92,15 +91,19 @@ export class ClaudeGoalWatch {
             }
         }
         // Never fatal: the transcript is Claude Code's, and the goal tab can do without it.
+        let lines: string[];
         try {
-            this.read(this.file);
+            lines = this.read(this.file);
         } catch {
-            // unreadable for now: next time
+            return;
         }
+        for (const line of lines) this.entry(line);
+        readSoFar.set(this.file, { offset: this.offset, goal: this.goal });
+        this.flush();
     }
 
-    /** What's been written since the last read, whole lines only (a line still being written waits for the next). */
-    private read(file: string) {
+    /** The goal entries written since the last read, whole lines only (a line still being written waits for the next). */
+    private read(file: string): string[] {
         const fd = openSync(file, "r");
         try {
             const size = fstatSync(fd).size;
@@ -110,7 +113,7 @@ export class ClaudeGoalWatch {
                 this.goal = null;
             }
             if (this.offset === 0 && size > FIRST_READ) this.offset = size - FIRST_READ;
-            const buf = Buffer.alloc(Math.min(size - this.offset, CHUNK));
+            const buf = Buffer.alloc(size - this.offset);
             let read = 0;
             while (read < buf.length) {
                 const n = readSync(fd, buf, read, buf.length - read, this.offset + read);
@@ -118,12 +121,17 @@ export class ClaudeGoalWatch {
                 read += n;
             }
             const end = buf.subarray(0, read).lastIndexOf(0x0a);
-            if (end >= 0) {
-                this.offset += end + 1;
-                for (const line of buf.subarray(0, end).toString("utf8").split("\n")) if (line.includes('"goal_status"')) this.entry(line);
-                readSoFar.set(file, { offset: this.offset, goal: this.goal });
-            } else if (read === CHUNK) this.offset += read; // one line longer than a chunk: no goal entry is
-            this.flush();
+            if (end < 0) return [];
+            this.offset += end + 1;
+            // Only the lines with a goal entry are decoded (a resumed session's backlog can be megabytes).
+            const out: string[] = [];
+            for (let at = buf.indexOf(MARK); at >= 0 && at < end; at = buf.indexOf(MARK, at + 1)) {
+                const from = buf.lastIndexOf(0x0a, at) + 1;
+                const to = buf.indexOf(0x0a, at);
+                out.push(buf.subarray(from, to).toString("utf8"));
+                at = to;
+            }
+            return out;
         } finally {
             closeSync(fd);
         }

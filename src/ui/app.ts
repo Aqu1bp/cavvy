@@ -739,9 +739,10 @@ export class App {
         const provider = this.model?.provider;
         if (!nativeGoals(provider)) return false;
         const dropped = this.goal?.clear();
-        if (dropped) {
-            this.session.recordNotice("info", loopGoalDropped(dropped, provider!));
-            this.notice(loopGoalDropped(dropped, provider!));
+        const said = dropped && loopGoalDropped(dropped, provider!);
+        if (said) {
+            this.session.recordNotice("info", said);
+            this.notice(said);
         }
         return Boolean(dropped);
     }
