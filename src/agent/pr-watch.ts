@@ -240,23 +240,45 @@ export function describeSnapshot(snap: PrSnapshot): string {
 // ---------------------------------------------------------------------------
 // Reading a pull request
 
+const CHECK_FIELDS = `__typename
+        ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber: $number) }
+        ... on StatusContext { context state targetUrl isRequired(pullRequestNumber: $number) }`;
+const THREAD_FIELDS = "comments(last: 10) { nodes { id author { login } body createdAt path url } }";
+
 const QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   viewer { login }
   rateLimit { remaining resetAt }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number url title state isDraft headRefOid headRefName baseRefName mergeable
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
-        __typename
-        ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber: $number) }
-        ... on StatusContext { context state targetUrl isRequired(pullRequestNumber: $number) }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage endCursor } nodes {
+        ${CHECK_FIELDS}
       } } } } } }
       comments(last: 50) { nodes { id author { login } body createdAt url } }
       reviews(last: 30) { nodes { id author { login } body state submittedAt url } }
-      reviewThreads(last: 30) { nodes { comments(last: 10) { nodes { id author { login } body createdAt path url } } } }
+      reviewThreads(first: 100) { pageInfo { hasNextPage endCursor } nodes { ${THREAD_FIELDS} } }
     }
   }
 }`;
+
+/** The rest of the checks, past the first page (a big matrix). */
+const CHECKS_PAGE = `query($owner: String!, $name: String!, $number: Int!, $after: String!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes {
+      ${CHECK_FIELDS}
+    } } } } } }
+  } }
+}`;
+
+/** The rest of the review threads: oldest first, so a reply on an old one is on a later page. */
+const THREADS_PAGE = `query($owner: String!, $name: String!, $number: Int!, $after: String!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${THREAD_FIELDS} } }
+  } }
+}`;
+
+/** Pages read past the first, for each of checks and threads: 500 of either is plenty. */
+const MORE_PAGES = 4;
 
 export type GhRunner = (args: string[], signal?: AbortSignal) => Promise<{ out: string; err: string; code: number }>;
 
@@ -369,22 +391,53 @@ export function parseSnapshot(repo: string, json: string): PrSnapshot {
     };
 }
 
-/** One read of a pull request: a single GraphQL request (costs 1 point of the hourly 5,000). */
+/** One read of a pull request: a single GraphQL request (1 point of the hourly 5,000), and one more per extra page of checks or review threads. */
 export async function readPullRequest(gh: GhRunner, repo: string, number: number, signal?: AbortSignal): Promise<PrSnapshot> {
     const [owner, name] = repo.split("/");
-    const res = await gh(["api", "graphql", "-f", `query=${QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], signal);
-    // gh exits non-zero on GraphQL errors too, with the JSON on stdout: parse that first for the real reason.
-    if (res.code) {
-        if (res.out.trim().startsWith("{")) {
-            try {
-                return parseSnapshot(repo, res.out);
-            } catch (e) {
-                if (e instanceof PrReadError && e.kind !== "other") throw e;
+    const ask = async (query: string, after?: string): Promise<string> => {
+        const res = await gh(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`, ...(after ? ["-f", `after=${after}`] : [])], signal);
+        // gh exits non-zero on GraphQL errors too, with the JSON on stdout: parse that first for the real reason.
+        if (res.code) {
+            if (res.out.trim().startsWith("{")) {
+                try {
+                    parseSnapshot(repo, res.out);
+                } catch (e) {
+                    if (e instanceof PrReadError && e.kind !== "other") throw e;
+                }
             }
+            throw classify(`${res.err}\n${res.out}`);
         }
-        throw classify(`${res.err}\n${res.out}`);
+        return res.out;
+    };
+    const out = await ask(QUERY);
+    let data: any;
+    try {
+        data = JSON.parse(out);
+    } catch {
+        return parseSnapshot(repo, out);
     }
-    return parseSnapshot(repo, res.out);
+    const pr = data?.data?.repository?.pullRequest;
+    const rollup = () => pr?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+    // Each page's nodes go onto the first's; parseSnapshot reads them all as one.
+    const more = async (query: string, list: () => { pageInfo?: any; nodes?: any[] } | undefined, from: (d: any) => { pageInfo?: any; nodes?: any[] } | undefined) => {
+        for (let page = 0; page < MORE_PAGES; page++) {
+            const into = list();
+            const cursor = into?.pageInfo?.hasNextPage ? str(into.pageInfo.endCursor) : "";
+            if (!into || !cursor) return;
+            let next: any;
+            try {
+                next = from(JSON.parse(await ask(query, cursor))?.data?.repository?.pullRequest);
+            } catch (e) {
+                if (e instanceof PrReadError) throw e;
+                throw new PrReadError("GitHub returned something that isn't JSON.", "other");
+            }
+            into.nodes = [...(into.nodes ?? []), ...(next?.nodes ?? [])];
+            into.pageInfo = next?.pageInfo;
+        }
+    };
+    await more(CHECKS_PAGE, () => rollup()?.contexts, (p) => p?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts);
+    await more(THREADS_PAGE, () => pr?.reviewThreads, (p) => p?.reviewThreads);
+    return parseSnapshot(repo, JSON.stringify(data));
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +490,7 @@ export class PrWatch {
     }
 
     start() {
-        this.schedule(this.interval(this.o.snapshot));
+        this.schedule(this.delayAfter(this.o.snapshot));
     }
 
     stop() {
@@ -495,10 +548,15 @@ export class PrWatch {
         }
         if (snap.state !== "open") return this.end(`it was ${snap.state}`);
         if (exhausted) return this.end("of too many comment-only updates");
+        this.schedule(this.delayAfter(snap));
+    }
+
+    /** Until the next poll after this read. */
+    private delayAfter(snap: PrSnapshot): number {
         // Spend the last of the hourly budget on the user's own work, not on polling.
         const reset = Date.parse(snap.rateLimit?.resetAt ?? "");
-        if (snap.rateLimit && snap.rateLimit.remaining < prWatchTiming.lowBudget && reset > this.now()) return this.schedule(reset - this.now() + 1000);
-        this.schedule(this.interval(snap));
+        if (snap.rateLimit && snap.rateLimit.remaining < prWatchTiming.lowBudget && reset > this.now()) return reset - this.now() + 1000;
+        return this.interval(snap);
     }
 
     private interval(snap: PrSnapshot): number {

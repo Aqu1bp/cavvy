@@ -270,6 +270,29 @@ describe("reading GitHub's answer", () => {
         expect(secret.message).not.toContain("ghp_zzzz");
     });
 
+    test("more checks or review threads than one page: the rest are read too", async () => {
+        const run = (i: number, conclusion = "SUCCESS") => ({ __typename: "CheckRun", name: `job-${i}`, status: "COMPLETED", conclusion });
+        const thread = (i: number) => ({ comments: { nodes: [{ id: `RC_${i}`, author: { login: "rev" }, body: `note ${i}`, createdAt: "2026-10-20T09:00:00Z", path: "a.ts" }] } });
+        const first = graphql({
+            commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: true, endCursor: "C1" }, nodes: Array.from({ length: 100 }, (_, i) => run(i)) } } } }] },
+            reviewThreads: { pageInfo: { hasNextPage: true, endCursor: "T1" }, nodes: Array.from({ length: 100 }, (_, i) => thread(i)) },
+        });
+        const pr = (over: object) => JSON.stringify({ data: { repository: { pullRequest: over } } });
+        const calls: string[][] = [];
+        const gh = async (args: string[]) => {
+            calls.push(args);
+            const after = args.find((a) => a.startsWith("after="));
+            if (!after) return { out: first, err: "", code: 0 };
+            if (after === "after=C1") return { out: pr({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false, endCursor: "C2" }, nodes: [run(100, "FAILURE")] } } } }] } }), err: "", code: 0 };
+            return { out: pr({ reviewThreads: { pageInfo: { hasNextPage: false, endCursor: "T2" }, nodes: [thread(100)] } }), err: "", code: 0 };
+        };
+        const s = await readPullRequest(gh, "acme/app", 12);
+        expect(s.checks).toHaveLength(101);
+        expect(s.checks.find((c) => c.name === "job-100")?.status).toBe("failure");
+        expect(s.remarks.some((r) => r.id === "RC_100")).toBe(true);
+        expect(calls).toHaveLength(3);
+    });
+
     test("pull request references", () => {
         expect(parsePrRef("12")).toEqual({ number: 12 });
         expect(parsePrRef("#12")).toEqual({ number: 12 });
@@ -413,6 +436,28 @@ describe("the watch", () => {
             // Pending; green once (checking again soon to be sure); green twice (told; slower now); budget nearly spent.
             expect(polls.slice(0, 3)).toEqual([prWatchTiming.fastMs, prWatchTiming.fastMs, prWatchTiming.slowMs]);
             expect(polls[3]).toBeGreaterThan(29 * 60_000);
+        } finally {
+            (globalThis as any).setTimeout = real;
+        }
+    });
+
+    test("a new watch on a nearly spent budget waits for the reset before its first poll", () => {
+        const delays: number[] = [];
+        const real = globalThis.setTimeout;
+        (globalThis as any).setTimeout = (fn: () => void, ms: number) => {
+            delays.push(ms);
+            return real(() => {}, 0);
+        };
+        try {
+            const resetAt = new Date(Date.now() + 30 * 60_000).toISOString();
+            const low = JSON.parse(graphql());
+            low.data.rateLimit = { remaining: 10, resetAt };
+            const wakes = new WakeQueue({ coalesceMs: 12_345 });
+            const w = new PrWatch({ repo: "acme/app", number: 12, gh: async () => ({ out: "", err: "", code: 1 }), wakes, snapshot: parseSnapshot("acme/app", JSON.stringify(low)) });
+            w.start();
+            w.stop();
+            wakes.dispose();
+            expect(delays.filter((d) => d !== 12_345)[0]).toBeGreaterThan(29 * 60_000);
         } finally {
             (globalThis as any).setTimeout = real;
         }
