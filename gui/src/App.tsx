@@ -1,13 +1,13 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { AlertCircle, CheckCircle2, Info, PanelLeft, PlugZap, SquarePen, X } from "lucide-solid";
+import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
 import { activate, app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorWidth, paletteOpen, railOpen, requestComposerFocus, review, reviewSplit, setAgentFocus, setDockHeight, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalMax, terminalShown } from "./state/ui";
 import { copyText, isTauri, os } from "./lib/platform";
 import { canStop } from "./lib/session-status";
-import { actionOf, setEnterSends, withShortcut } from "./state/keybindings";
+import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, requestCloses, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
@@ -169,35 +169,6 @@ function SessionView(p: { handle: SessionHandle }) {
                 </div>
             </div>
         </>
-    );
-}
-
-/** The rail's own buttons, right of the traffic lights: they stay when the rail is hidden. */
-function RailTop() {
-    const shown = () => shellLayout().railShown;
-    return (
-        <div class="rail-top">
-            <button
-                class="hb"
-                title={withShortcut(shown() ? "Hide sidebar" : "Show sidebar", "app:toggleSidebar")}
-                aria-label={shown() ? "Hide sidebar" : "Show sidebar"}
-                aria-expanded={shown()}
-                onClick={toggleSidebar}
-            >
-                <PanelLeft size={17} />
-            </button>
-            <button
-                class="hb"
-                title={withShortcut("New session", "app:newSession")}
-                aria-label="New session"
-                onClick={() => {
-                    setSettingsTab(undefined);
-                    void newSession(app.homeCwd);
-                }}
-            >
-                <SquarePen size={16} />
-            </button>
-        </div>
     );
 }
 
@@ -424,9 +395,8 @@ export function App() {
 
     return (
         <div
-            class={`app ${isTauri ? `tauri os-${os}` : "browser"}`}
-            data-rail={prefs.sidebar ? "on" : "off"}
-            data-railmode={layout().railMode}
+            class={`app ${isTauri ? `tauri os-${os}` : "browser"} ${prefs.sidebar ? "" : "rail-off"}`}
+            data-rail={layout().railMode === "overlay" ? "overlay" : "docked"}
             data-railopen={layout().railMode === "overlay" && layout().railShown ? "on" : "off"}
             data-insp={inspOpen() ? "on" : "off"}
             data-inspmode={layout().inspector.mode}
@@ -443,9 +413,8 @@ export function App() {
         >
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
                 <div class="win">
-                    {/* The window's top edge drags it (the title bar does too). */}
+                    {/* The window's edges drag it, under the rail and the sheet (the rail's top and the title bar drag too). */}
                     <div class="win-drag" data-tauri-drag-region />
-                    <RailTop />
                     <div class="rail-scrim" aria-hidden="true" onClick={() => setRailOpen(false)} />
                     {/* The rail sits straight on the window glass; in narrow windows it's a drawer over the sheet. */}
                     <div class="win-rail" inert={!layout().railShown}>
@@ -476,7 +445,7 @@ export function App() {
                                             <Header />
                                             <div class="session-opening" aria-busy={!opening().error}>
                                                 <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
-                                                    <p role="alert">Couldn't open this session: {opening().error}</p>
+                                                    <p role="alert" class="selectable">Couldn't open this session: {opening().error}</p>
                                                     <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
                                                 </Show>
                                             </div>

@@ -5,35 +5,27 @@
    over the sheet as small glass pieces.
 
    Containers other areas build in (lib/layout.ts keeps their sizes):
-     .app      the window; data-rail (on|off: the sidebar preference),
-               data-railmode (dock|overlay), data-railopen, data-insp,
-               data-inspmode (dock|float), data-inspshort, data-term,
-               data-tmax, data-settings
+     .app      the window. data-rail: docked (beside the sheet) or overlay
+               (a drawer over it, below 900px), always set; .rail-off while
+               the sidebar preference hides a docked rail; data-railopen
+               (the drawer), data-insp, data-inspmode (dock|float),
+               data-inspshort, data-term, data-tmax, data-settings
      .win-rail the rail column (Sidebar, or SettingsNav in Settings)
-     .rail-top the toggle and new-session buttons, right of the traffic lights
      .sheet    the sheet's grid
      .main     the conversation column: container `main` (size)
      .insp     the inspector column (RightPanel, or ReviewPane)
      .terminal-panel  the bottom row
-   Variables: --rail-w, --bar-h, --bar-inset (the title bar's left room
-   when the rail isn't showing), --insp-w, --insp-col, --term-h. */
+   Variables: --rail-w, --bar-h, --insp-w, --insp-col, --term-h.
+   The title bar (Header) clears the traffic lights itself. */
 
 .app {
     --rail-w: var(--sidebar-w);
     --win-pad: 8px;
-    /* Clear of the traffic lights (macOS) and the rail's buttons, from the sheet's edge. */
-    --lights-w: 12px;
-    --bar-inset: 78px;
     position: relative;
     display: flex;
     height: 100%;
     width: 100%;
     overflow: hidden;
-}
-
-.app.tauri.os-macos {
-    --lights-w: 80px;
-    --bar-inset: 146px;
 }
 
 .win {
@@ -47,25 +39,18 @@
     transition: grid-template-columns var(--dur-panel) var(--ease), padding var(--dur-panel) var(--ease);
 }
 
-[data-rail="off"] .win,
-[data-railmode="overlay"] .win {
+.rail-off .win,
+[data-rail="overlay"] .win {
     grid-template-columns: 0 minmax(0, 1fr);
     padding-left: var(--win-pad);
 }
 
-/* The window drags by its top edge over the rail (the title bar drags too). */
+/* The window drags by its edges: this lies under the rail and the sheet, so
+   only the gaps around them take the drag (the rail's top and the title bar
+   are drag regions of their own). */
 .win-drag {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: var(--rail-w);
-    height: 44px;
-    z-index: 38;
-}
-
-[data-rail="off"] .win-drag,
-[data-railmode="overlay"] .win-drag {
-    width: calc(var(--bar-inset) - 6px);
+    inset: 0;
 }
 
 /* ---- Rail ------------------------------------------------------------ */
@@ -87,13 +72,14 @@
     min-width: 0;
 }
 
-[data-railmode="dock"][data-rail="off"] .win-rail {
+[data-rail="docked"].rail-off .win-rail {
     opacity: 0;
     pointer-events: none;
 }
 
-/* Narrow windows: the rail floats over the sheet when you open it. */
-[data-railmode="overlay"] .win-rail {
+/* Narrow windows: the rail is a drawer over the sheet when you open it.
+   (The rail's own look floats it: [data-rail="overlay"] .sidebar.) */
+[data-rail="overlay"] .win-rail {
     position: absolute;
     z-index: 40;
     left: var(--win-pad);
@@ -101,57 +87,32 @@
     bottom: var(--win-pad);
     width: var(--rail-w);
     border-radius: 14px;
-    background: var(--rail-float);
-    -webkit-backdrop-filter: blur(30px) saturate(1.8);
-    backdrop-filter: blur(30px) saturate(1.8);
-    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
     transform: translateX(calc(-100% - 16px));
 }
 
-[data-railmode="overlay"][data-railopen="on"] .win-rail {
+[data-rail="overlay"][data-railopen="on"] .win-rail {
     transform: none;
 }
 
-/* Over the window while the drawer is open: a click anywhere else closes it. */
+/* Over the window while the drawer is open, dimming it: a click anywhere else closes it.
+   (The mockup's black at 18%, from the window's stroke: 22% black in light, 60% in dark.) */
 .rail-scrim {
     position: absolute;
     inset: 0;
     z-index: 39;
-    background: var(--scrim, var(--bg-overlay));
+    background: color-mix(in srgb, var(--win-stroke) 82%, transparent);
     opacity: 0;
     pointer-events: none;
-    transition: opacity var(--dur-panel) var(--ease);
+    transition: opacity var(--dur) var(--ease);
 }
 
-[data-railmode="overlay"][data-railopen="on"] .rail-scrim {
+[data-theme="dark"] .rail-scrim {
+    background: color-mix(in srgb, var(--win-stroke) 30%, transparent);
+}
+
+[data-rail="overlay"][data-railopen="on"] .rail-scrim {
     opacity: 1;
     pointer-events: auto;
-}
-
-/* The rail's buttons sit right of the traffic lights; at the rail's top right while it shows. */
-.rail-top {
-    position: absolute;
-    top: 13px;
-    left: calc(var(--rail-w) - 72px);
-    z-index: 41;
-    display: flex;
-    gap: 2px;
-    transition: left var(--dur-panel) var(--ease);
-}
-
-[data-railmode="dock"][data-rail="off"] .rail-top,
-[data-railmode="overlay"]:not([data-railopen="on"]) .rail-top {
-    left: var(--lights-w);
-}
-
-.rail-top .hb {
-    border-radius: var(--pill);
-    color: var(--rail-fg-2);
-}
-
-.rail-top .hb:hover:not(:disabled) {
-    background: var(--rail-hover);
-    color: var(--rail-fg);
 }
 
 /* ---- Sheet ----------------------------------------------------------- */
@@ -221,11 +182,11 @@
     border-left-color: transparent;
 }
 
-/* Its content keeps its width while the column opens and closes. */
+/* Its content keeps its width (less the hairline) while the column opens and closes. */
 .insp > :not(.insp-resizer) {
     flex: 1 1 auto;
-    width: var(--insp-w);
-    min-width: var(--insp-w);
+    width: calc(var(--insp-w) - 0.5px);
+    min-width: calc(var(--insp-w) - 0.5px);
     min-height: 0;
 }
 
@@ -332,7 +293,6 @@ body.resizing .insp,
     .win,
     .win-rail,
     .rail-scrim,
-    .rail-top,
     .sheet,
     .insp {
         transition: none;
