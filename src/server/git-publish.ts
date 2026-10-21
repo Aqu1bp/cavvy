@@ -66,6 +66,16 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
         signal?.removeEventListener("abort", stop);
     }
 }
+/** One `gh` call with the publish rules: inherited credentials only, no prompts, the folder's network trust checked. */
+export function runGh(cwd: string, args: string[], signal?: AbortSignal): Promise<{ out: string; err: string; code: number }> {
+    return run(cwd, ["gh", ...args], true, signal);
+}
+
+/** The GitHub repository ("owner/name") the current branch pushes to. */
+export async function currentGithubRepo(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+    return githubRepo((await local(cwd, signal)).url);
+}
+
 async function git(cwd: string, args: string[], signal?: AbortSignal, network = false, optional = false) {
     const result = await run(cwd, ["git", ...args], network, signal);
     if (result.code && (!optional || (args[0] === "config" && result.code !== 1))) throw fail(result.err + result.out || "Git command failed.");
@@ -135,6 +145,12 @@ async function local(cwd: string, signal?: AbortSignal) {
     const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
     return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
 }
+/** Where a push would go now (git only, no network), with the fingerprint gitPublish checks. */
+export async function gitPushTarget(cwd: string, signal?: AbortSignal) {
+    const t = await local(cwd, signal);
+    return { branch: clean(t.branch), sha: t.sha, remote: clean(t.remote), target: clean(t.target), url: clean(t.url), fingerprint: t.fingerprint };
+}
+
 async function defaultBranch(cwd: string, url: string, signal?: AbortSignal) {
     // Query the actual push destination, not a potentially stale origin/HEAD.
     const refs = await git(cwd, ["ls-remote", "--symref", "--", url, "HEAD"], signal, true);

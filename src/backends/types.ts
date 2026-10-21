@@ -88,6 +88,8 @@ export interface BackendHost {
     /** Messages the user typed while the backend was working. If any are drained,
      * consume and record preceding output before recording the queued prompt. */
     drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
+    /** A drained message is an event a watch raised (others' words, such as a PR comment), not the user's. */
+    fromWake?(text: string): boolean;
     /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
     onQueued?(listener: () => void): () => void;
     /**
@@ -96,6 +98,13 @@ export interface BackendHost {
      * turn, so they reach it even after a restart.
      */
     undelivered?(texts: string[]): void;
+    /**
+     * Files the backend changed (absolute paths): the language servers' new
+     * problems in them, as a note for the model, or undefined when there's
+     * nothing new. The user is told either way (a notice). For a backend
+     * without diagnostics of its own (Codex).
+     */
+    diagnose?(paths: string[]): Promise<string | undefined>;
 }
 
 export interface BackendTurn {
@@ -104,6 +113,11 @@ export interface BackendTurn {
     prompt: string;
     /** With a /goal command as the prompt: what Harness would have put before it (the conversation so far), kept apart. */
     goalContext?: string;
+    /**
+     * The prompt isn't only the user's own words (an event a watch raised, or what the harness adds before
+     * them): Claude Code reads it as written, with no @mention expansion or slash command.
+     */
+    synthetic?: boolean;
     images: ImagePart[];
     /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
     documents?: PdfPart[];

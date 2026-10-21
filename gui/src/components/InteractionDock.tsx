@@ -4,7 +4,7 @@
 // anything; the number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Save, ShieldAlert, SquareTerminal } from "lucide-solid";
+import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { rpc } from "../state/app";
@@ -106,6 +106,15 @@ function PermIcon(p: { it: PermissionInteraction }) {
             </Match>
             <Match when={p.it.category === "mcp"}>
                 <Plug size={14} />
+            </Match>
+            <Match when={p.it.toolName === "GitCommit"}>
+                <GitCommitHorizontal size={14} />
+            </Match>
+            <Match when={p.it.toolName === "GitPush"}>
+                <ArrowUpFromLine size={14} />
+            </Match>
+            <Match when={p.it.toolName === "CreatePullRequest"}>
+                <GitPullRequestArrow size={14} />
             </Match>
         </Switch>
     );

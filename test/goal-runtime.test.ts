@@ -158,6 +158,26 @@ test("an interrupt pauses the goal; the user's next message picks it up", async 
     }
 });
 
+test("a watch's events get a turn of their own, but don't pick up a paused goal (they aren't the user's)", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    try {
+        const rt = await engine.createSession(realpathSync(tempDir("goal-wake-")), { mode: "bypassPermissions" });
+        await rt.ready;
+        // Paused with /goal pause (not an interrupt: after one, a wake waits for the user's next message).
+        await rt.send("/goal the pause is over");
+        await until(() => rt.busy);
+        await rt.send("/goal pause");
+        await until(() => !rt.busy && rt.snapshot().state.goal?.state === "paused");
+        rt.toolState.wakes!.push({ source: "pull-request", key: "pr:acme/app#12", label: "PR #12: new comment", text: "- bob: looks good" });
+        await until(() => rt.session.messages.some((m) => m.role === "user" && m.meta?.kind === "wake") && !rt.busy);
+        await Bun.sleep(50);
+        expect(rt.snapshot().state.goal).toMatchObject({ state: "paused" });
+        expect(rt.goal.pending()).toBe(false);
+    } finally {
+        await engine.stop();
+    }
+});
+
 test("a reopened session gets its goal back, paused until the next message", async () => {
     const engine = new Engine({ listModels: async () => [] });
     try {

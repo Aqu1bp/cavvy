@@ -826,7 +826,12 @@ export class CodexTurn {
                         }
                         break;
                     }
-                    text = request = queued = next.join("\n\n");
+                    // The user's words name skills; a watch's events (others' words, such as a PR comment) come after and don't.
+                    const typed = next.filter((x) => !this.host.fromWake?.(x));
+                    const woke = next.filter((x) => this.host.fromWake?.(x));
+                    request = typed.length ? typed.join("\n\n") : undefined;
+                    after = woke.length ? `${typed.length ? "\n\n" : ""}${woke.join("\n\n")}` : "";
+                    text = queued = [...typed, ...woke].join("\n\n");
                     // The goal active: Codex starts its next turn as this one ends, and the messages go into that one
                     // (a turn started here as well would run beside it).
                     const own = this.goal?.status === "active" ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
@@ -1453,6 +1458,7 @@ export class CodexTurn {
                 const content = item.status === "declined" ? this.takeRefusal(id, "The change was declined.") : failed ? "The change was not applied." : `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}: ${changes.map((c) => c.path).join(", ")}`;
                 const body = changes.map((c) => `${c.kind} ${c.path}\n${c.diff}`).join("\n").slice(0, 20_000);
                 this.endItem(id, open, content, failed, failed ? undefined : { summary: `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}`, body });
+                if (!failed && !sub) this.diagnose(changes);
                 break;
             }
             case "mcpToolCall": {
@@ -1769,9 +1775,27 @@ export class CodexTurn {
             try {
                 await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(text, []) });
             } catch {
-                this.unsteered.push(text);
+                // Each as it was queued, so the user's words and a watch's events stay told apart.
+                this.unsteered.push(...texts);
             }
         }).catch(() => {});
+    }
+
+    /**
+     * The language servers' new problems in files Codex changed (it has no
+     * diagnostics of its own): into the turn that made them while it runs;
+     * once it has ended, the user is told (a notice) and no turn starts.
+     */
+    private diagnose(changes: FileChange[]) {
+        const paths = changes.filter((c) => c.kind !== "delete").map((c) => resolve(this.t.cwd, c.movePath ?? c.path));
+        const turnId = this.turnId;
+        if (!paths.length || !turnId || !this.host.diagnose) return;
+        void this.host.diagnose(paths).then(
+            (note) => {
+                if (note && !this.aborted && this.turnId === turnId) this.steer(`<system-reminder>\n${note}\n</system-reminder>`, false);
+            },
+            () => {},
+        );
     }
 
     /**

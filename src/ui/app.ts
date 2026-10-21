@@ -1,6 +1,8 @@
 // The interactive terminal app: prompt, transcript rendering, dialogs,
 // permission prompts, and wiring between the agent and the screen.
 
+import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
+import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { spawnSync } from "bun";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
@@ -15,7 +17,7 @@ import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine,
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
 import type { Ask as WorktreeAsk } from "./worktree";
-import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
+import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiagnostics, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
@@ -41,7 +43,7 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "..
 import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
 import { BUILTIN_TOOLS } from "../tools/index";
-import type { Tool, ToolState, TodoItem } from "../tools/types";
+import type { Tool, ToolDisplay, ToolState, TodoItem } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
@@ -218,7 +220,7 @@ export class App {
         this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings());
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
-        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
+        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap() };
         this.schedules = new SessionSchedules({
             session: () => this.session,
             settings: () => this.settings,
@@ -228,6 +230,8 @@ export class App {
             changed: () => this.renderLive(),
         });
         this.toolState.scheduler = this.schedules.scheduler;
+        this.toolState.wakes!.onReady(() => this.wake());
+        (this.toolState.watchers as WatcherMap).onChange = () => this.renderLive();
         this.editor.setHistory(loadPromptHistory(init.cwd));
     }
 
@@ -261,6 +265,20 @@ export class App {
         if (this.init.extraDeny?.length) p.deny = [...(p.deny ?? []), ...this.init.extraDeny];
         if (this.init.addDirs?.length) p.additionalDirectories = [...(p.additionalDirectories ?? []), ...this.init.addDirs];
         if (this.init.effort) this.settings.effort = this.init.effort;
+    }
+
+    /**
+     * The user trusted the folder (/trust) after it was opened untrusted: its
+     * project settings (language servers among them), commands and skills
+     * apply from now on. True if anything changed.
+     */
+    projectTrusted(): boolean {
+        if (this.init.trusted) return false;
+        this.init.trusted = true;
+        this.reloadSettings();
+        this.customCommands = loadCustomCommands(this.cwd, true);
+        this.skills = loadSkills(this.cwd, true);
+        return true;
     }
 
     reloadSettings() {
@@ -346,6 +364,8 @@ export class App {
         this.schedules.dispose();
         this.goal?.dispose();
         this.abort?.abort();
+        stopWatchers(this.toolState);
+        this.toolState.wakes?.dispose();
         const disposed = this.agent?.dispose();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.stopTicker();
@@ -357,7 +377,7 @@ export class App {
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         if (finishWorktree) {
             for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
             this.screen.flushNow();
@@ -707,6 +727,8 @@ export class App {
         const prev = this.session;
         this.session = Session.create(this.cwd);
         prev.release();
+        stopWatchers(this.toolState);
+        this.toolState.wakes?.drainRunning();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
@@ -729,6 +751,8 @@ export class App {
             return;
         }
         prev?.release();
+        stopWatchers(this.toolState);
+        this.toolState.wakes?.drainRunning();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
@@ -921,7 +945,8 @@ export class App {
                 noticesUpTo(from + i);
                 if (m.role === "user") {
                     const kind = m.meta?.kind ?? "prompt";
-                    if (kind === "prompt" || kind === "summary") {
+                    if (kind === "wake") out.push("", ...wrapLine(theme.muted("↻ ") + theme.subtle(truncate(m.meta?.display ?? "", cols * 2)), cols - 2));
+                    else if (kind === "prompt" || kind === "summary") {
                         const t = (m.meta?.display ?? textOf(m)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
                         if (t) out.push("", ...wrapLine(theme.muted("> ") + truncate(t, cols * 3), cols - 2));
                         const note = attachmentsNote(m.content);
@@ -969,6 +994,11 @@ export class App {
             const shown = body.length > 12 ? [...body.slice(0, 10), theme.subtle(`… +${body.length - 10} lines`)] : body;
             return ["", ...shown.map((l, i) => (i === 0 ? theme.muted("> ") : "  ") + theme.user(l))];
         });
+    }
+
+    /** A turn an event started (a watched PR): one dim line, not a prompt of the user's. */
+    private printWake(label: string) {
+        this.screen.print((cols) => ["", ...wrapLine(theme.muted("↻ ") + theme.subtle(label), cols - 2)]);
     }
 
     private printAssistant(lines: string[]) {
@@ -1191,7 +1221,7 @@ export class App {
         }
     }
 
-    private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: { summary?: string; body?: string; diff?: { path: string; before: string; after: string } } }, durationMs: number) {
+    private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: ToolDisplay }, durationMs: number) {
         const a = this.active.get(call.id);
         const title = a?.title ?? call.name;
         const tool = a?.tool;
@@ -1227,6 +1257,7 @@ export class App {
                 out.push(theme.muted(`  ⎿  ${d.summary ?? "Updated"}`));
                 const body = before ? renderDiff(path, before, after, cols - 6, { maxLines: verbose ? 400 : 24 }) : renderFilePreview(path, after, cols - 6, verbose ? 400 : 10);
                 out.push(...body.map((l) => "     " + l));
+                if (d.diagnostics) out.push(...renderDiagnostics(d.diagnostics, cols, verbose ? 40 : 3));
             } else if (d?.body !== undefined || call.name === "Bash" || call.name === "BashOutput") {
                 // With a display, its body is what to show (none: the summary says it all).
                 const body = d ? (d.body ?? "") : result.content;
@@ -1341,6 +1372,13 @@ export class App {
             header.push(bold(String(input.url ?? "")));
             if (input.prompt) header.push(theme.muted(String(input.prompt).slice(0, 200)));
             if (suggestions.length) items.push({ label: `Yes, and don't ask again for ${bold(suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"))}`, value: "always" });
+        } else if (GIT_TOOL_HEADINGS[tool.name]) {
+            title = GIT_TOOL_HEADINGS[tool.name]!;
+            if (req.preview?.summary) header.push(theme.muted(req.preview.summary));
+            const body = (req.preview?.body ?? "").split("\n");
+            if (req.preview?.body) header.push("", ...body.slice(0, 16).map((l) => "  " + l));
+            if (body.length > 16) header.push(theme.subtle(`  … +${body.length - 16} lines`));
+            if (suggestions.length) items.push({ label: `Yes, and don't ask again for ${bold(tool.name)} in ${bold(projectName)}`, value: "always" });
         } else if (tool.category === "mcp") {
             title = "MCP tool";
             header.push(bold(req.title));
@@ -1485,6 +1523,8 @@ export class App {
 
     private interrupt() {
         if (!this.busy) return;
+        // Stopped by the user: what watches wake it again only once they send something.
+        this.toolState.wakes?.pause();
         this.abort?.abort();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.status = "Interrupting";
@@ -1959,6 +1999,7 @@ export class App {
     async submitText(input: string | Draft, followUp?: FollowUp) {
         const draft: Draft = typeof input === "string" ? { text: input, attachments: new Map() } : input;
         const text = plainText(draft.text);
+        this.toolState.wakes?.resume();
         if (this.switching) await this.switching.catch(() => undefined);
         if (text.startsWith("/") && !text.startsWith("//")) {
             const handled = await runCommand(this, text, draft);
@@ -1977,14 +2018,15 @@ export class App {
     /** `draft` carries the images typed with the prompt (or with the command that built it). */
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft; mentionsIn?: string; goal?: boolean } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; mentionsIn?: string; wakes?: Wake[]; goal?: boolean } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
         }
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
-        if (!opts.goal && this.scheduledTurn !== true) this.goal?.userTurn();
+        // A watch's events don't either: they aren't the user's.
+        if (!opts.goal && opts.kind !== "wake" && this.scheduledTurn !== true) this.goal?.userTurn();
         const goal = this.goal;
         const from = this.session.messages.length;
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
@@ -2005,21 +2047,26 @@ export class App {
         this.startTicker();
         let reason: TurnEndReason | undefined;
         try {
-            this.printUser(opts.display ?? text);
+            if (opts.kind === "wake") this.printWake(opts.display ?? "");
+            else this.printUser(opts.display ?? text);
             const images = opts.draft ? imagesIn(opts.draft.text, opts.draft.attachments) : [];
             if (images.length) this.screen.print((cols) => wrapLine(theme.subtle(`  ⎿  ${images.map((im, i) => `Image ${i + 1}: ${im.name} (${formatBytes(im.bytes)})`).join(", ")}`), cols - 2));
             if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
             if (ac.signal.aborted) {
-                // Nothing was sent: hand the message back rather than dropping it.
-                this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
-                this.queued.unshift({ ...(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() }), mode: "queue" });
+                // Nothing was sent: events go back in their queue; a message back in the prompt rather than dropped.
+                if (opts.wakes) this.toolState.wakes?.requeue(opts.wakes);
+                else {
+                    this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
+                    this.queued.unshift({ ...(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() }), mode: "queue" });
+                }
             } else {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
-                const skills = opts.kind === "command" ? [] : skillMentions(text, this.skills);
+                const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.skills);
                 // Claude Code and Codex are sent the $name, and load the skill themselves.
                 const sent = skills.length && !cliRunsSkills(agent.model.provider) ? withSkills(text, skills) : text;
-                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                // A wake quotes outside text (PR comments): its @words are not files to attach.
+                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
                 parts[0] = { type: "text", text: sent };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((sk) => sk.name).join(", ")}`);
                 parts.push(...images.map((im) => im.part));
@@ -2053,14 +2100,16 @@ export class App {
             return this.schedules.poke();
         }
         const next = this.nextQueued();
-        if (next !== undefined) {
-            this.queued.shift();
-            this.queueUpdated();
-            return void (await this.submitText(next));
+        if (next === undefined) {
+            // Nothing the user typed is waiting: the goal decides whether another turn starts; then a schedule, or
+            // events a watch raised meanwhile, can have their turn.
+            if (reason && goal === this.goal) await goal?.afterTurn(reason, from, Boolean(opts.goal), this.turnStart);
+            this.toolState.wakes?.poke();
+            return this.schedules.poke();
         }
-        // Nothing the user typed is waiting: the goal decides whether another turn starts.
-        if (reason && goal === this.goal) await goal?.afterTurn(reason, from, Boolean(opts.goal), this.turnStart);
-        this.schedules.poke();
+        this.queued.shift();
+        this.queueUpdated();
+        await this.submitText(next);
     }
 
     /** What runs when the turn ends: the first message still waiting. */
@@ -2161,6 +2210,21 @@ export class App {
         return true;
     }
 
+    /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
+    private wake() {
+        // Busy or with messages queued, the turn's end looks again.
+        if (this.exiting || this.busy || this.queued.length) return;
+        // A model switch, a dialog open, no agent yet, a goal between its turns (it goes first, as with scheduled
+        // prompts): look again in a moment.
+        if (this.switching || !this.agent || this.dialogs.length || this.goalPending()) {
+            setTimeout(() => this.toolState.wakes?.poke(), 1000).unref?.();
+            return;
+        }
+        const wakes = this.toolState.wakes!.takeForTurn();
+        if (!wakes.length) return;
+        void this.startTurn(formatWakes(wakes), { display: wakeDisplay(wakes), kind: "wake", wakes });
+    }
+
     /** Run a non-chat task (like /compact) with the spinner and esc-to-cancel. */
     async runTask<T>(verb: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
         if (this.busy) {
@@ -2215,6 +2279,7 @@ export class App {
     /** Messages typed during a task run next; after a cancel they go back to the prompt. */
     private afterTask(cancelled: boolean) {
         if (!this.queued.length) {
+            this.toolState.wakes?.poke();
             // After the caller (a command like /compact) has finished, as below.
             setTimeout(() => this.schedules.poke(), 0);
             return;
@@ -2512,6 +2577,12 @@ export class App {
             const next = sched.nextAt;
             const due = sched.list().some((j) => j.due);
             parts.push(theme.accent(`⏱ ${sched.size}`) + (due ? " due" : next ? ` next ${shortTime(next)}` : " paused"));
+        }
+        const watches = [...(this.toolState.watchers?.values() ?? [])];
+        if (watches.length) {
+            const bad = watches.some((w) => /failing|conflicts/.test(w.detail ?? ""));
+            const text = `↻ watching ${watches.length === 1 ? watches[0]!.label.replace(/ in .*$/, "") : `${watches.length} ${watches.every((w) => w.kind === "pull-request") ? "PRs" : "watches"}`}`;
+            parts.push(bad ? theme.warning(text) : text);
         }
         const mcpFailed = [...this.mcp.servers.values()].filter((s) => s.status === "failed").length;
         if (mcpFailed) parts.push(theme.error(`${mcpFailed} MCP failed · /mcp`));

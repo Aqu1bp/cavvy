@@ -22,6 +22,7 @@
 //                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
 //                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
 // FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web | steps (command, message, command, answer)
+//                     | edit (a patch, then work until steered; FAKE_EDIT_FILE, FAKE_EDIT_TEXT, FAKE_EDIT_WAIT)
 //                     subagent: Codex's own sub-agent (spawnAgent, then wait): its thread runs a command (which
 //                     asks from its thread under untrusted), says something, answers and has usage of its own;
 //                     FAKE_CHILD_EARLY=1 sends its first events before the spawn says which thread is whose;
@@ -235,6 +236,19 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         spend(threadId, turnId, tokens(120, 20, 30, 5));
         notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Finished.", ...phase("final_answer") } });
         return finish("completed");
+    }
+    if (scenario === "edit") {
+        // A patch to FAKE_EDIT_FILE (default a.ts) writing FAKE_EDIT_TEXT; then (FAKE_EDIT_WAIT ms, default 3000)
+        // it works on, until steered (with FAKE_STEER_WAKES=1), and its answer repeats what it heard.
+        const path = join(cwd, process.env.FAKE_EDIT_FILE ?? "a.ts");
+        writeFileSync(path, process.env.FAKE_EDIT_TEXT ?? "");
+        const change = { type: "fileChange", id: `fc-${turnId}`, changes: [{ path, kind: { type: "update", move_path: null }, diff: "@@" }], status: "inProgress" };
+        notify("item/started", { threadId, turnId, item: change });
+        notify("item/completed", { threadId, turnId, item: { ...change, status: "completed" } });
+        await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(Number(process.env.FAKE_EDIT_WAIT ?? 3000))]);
+        log({ steered: t.steered ?? [] });
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-heard-${turnId}`, text: t.steered?.length ? `Heard: ${t.steered.join(" | ")}` : "Done." } });
+        return finish(t.interrupted ? "interrupted" : "completed");
     }
     let decision: string | undefined = "accept";
     if (scenario === "mcp") {

@@ -1432,6 +1432,24 @@ async function trustForApproval(app: App): Promise<boolean> {
     return trustedByUser(app.cwd);
 }
 
+/** /trust: trust the folder yourself, which a folder trusted for this session only (nothing to protect when opened) isn't. */
+async function trustCommand(app: App) {
+    if (trustedByUser(app.cwd)) return app.notice(`You've trusted ${app.cwd}.`);
+    const header = [
+        theme.muted(app.cwd),
+        "",
+        theme.muted("Trusting it is saved. It lets you approve its .mcp.json servers, and turns on diagnostics after edits: language servers run the project's own code (its TypeScript, build scripts)."),
+    ];
+    if (!(await confirm(app, "Trust this folder?", header, "Trust this folder", "Cancel"))) return;
+    try {
+        trustFolder(app.cwd);
+    } catch (e) {
+        return app.notice(redact((e as Error).message), "warn");
+    }
+    const late = app.projectTrusted();
+    app.notice(`Trusted ${app.cwd}.${late ? " Its settings, language servers, commands and skills apply now; its MCP servers load when you next start here." : ""}`);
+}
+
 /** Shown the card, and approved if the user says yes; false if they didn't (or it changed meanwhile). */
 async function approveMcp(app: App, name: string): Promise<boolean> {
     for (;;) {
@@ -1967,6 +1985,7 @@ const BUILTIN: Command[] = [
     { name: "skills", description: "List skills (and pick up new ones)", args: "[filter]", whileBusy: true, run: skillsCommand },
     { name: "keybindings", description: "Customize keyboard shortcuts (keybindings.json)", args: "[edit]", whileBusy: true, run: keybindingsCommand },
     { name: "hooks", description: "List configured hooks", whileBusy: true, run: (app) => hooksCommand(app) },
+    { name: "trust", description: "Trust this folder (MCP approvals, diagnostics after edits)", run: (app) => trustCommand(app) },
     { name: "todos", description: "Show the current todo list", whileBusy: true, run: (app) => {
             const todos = app.toolState.todos.map((t) => ({ ...t }));
             if (!todos.length) return app.notice("No todos.");

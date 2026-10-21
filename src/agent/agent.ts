@@ -34,6 +34,7 @@ import { AutoClassifier, needsSummary, summaryFits, type ReviewContext } from ".
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
 import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
+import { formatWakes, wakeDisplay } from "./wakes";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
@@ -57,8 +58,13 @@ import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
+import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
+import { readFile } from "fs/promises";
+import { join, relative } from "path";
 import { BashTool } from "../tools/bash";
+import { LspManager, DIAGNOSED_TOOLS, MAX_FILE_CHARS } from "../lsp/manager";
+import { formatForModel, redactedReport, summaryLine } from "../lsp/diagnostics";
 import {
     DELEGATE_TOOL,
     DELEGATION_LIMITS,
@@ -79,7 +85,7 @@ import {
 import { suggestBashRules } from "../permissions/bash-safety";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
-import { expandPath } from "../util/files";
+import { canonical, expandPath, isInside } from "../util/files";
 import type { PlanLimits } from "../server/protocol";
 import type { NativeGoal } from "./goal";
 
@@ -387,6 +393,10 @@ export class Agent {
         if (!o.isSubagent) {
             this.state.fileHistory = FileHistory.for(o.session);
             this.turnSnapshots = TurnSnapshots.for(o.session, this.state.cwd);
+            // Language servers start on the first edit they handle and outlive this Agent (a model switch makes a new one).
+            const root = this.state.projectRoot;
+            this.state.lsp ??= new LspManager({ root, settings: o.settings, trusted: () => userTrusts(root) });
+            this.state.lsp.attach(o.session.meta.id, (level, message) => this.emit({ type: "notice", level, message }));
         }
     }
 
@@ -494,7 +504,7 @@ export class Agent {
     // -----------------------------------------------------------------------
 
     /** Run one user turn to completion. */
-    async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
+    async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
         this.prompted = false;
@@ -513,14 +523,15 @@ export class Agent {
         }
     }
 
-    private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
+    private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.o.settings();
         const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
         const checkpoint = await this.checkpoint(opts.display ?? promptText);
         if (this.cutOff) return "aborted";
 
-        if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
+        // A wake isn't something the user typed.
+        if (!this.o.isSubagent && opts.kind !== "wake" && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
             for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
             if (h?.blocked) {
@@ -537,11 +548,14 @@ export class Agent {
         // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
         const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
         for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
+        // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
+        const late = goalCommand ? undefined : this.lateDiagnostics();
+        if (late) parts.push(late);
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
-        if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal);
+        if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal, opts.kind === "wake");
 
         let turns = 0;
         let maxTokenStrikes = 0;
@@ -645,6 +659,12 @@ export class Agent {
                     if (this.cutOff) return "aborted";
                     continue;
                 }
+                // Events (a watched PR, a monitor) that came in during the last request: answer them in this turn.
+                const woke = this.takeWakes();
+                if (woke) {
+                    this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
+                    continue;
+                }
 
                 const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
                 if (settings.hooks?.[stopEvent]?.length && stopHookRounds < 3) {
@@ -666,6 +686,8 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = [...this.toolHookContext.splice(0).map(reminder), ...this.takeTaskResults()];
+            const late = this.lateDiagnostics();
+            if (late) extra.push(late);
             let recorded = false;
             const record = (checkpoint?: number) => {
                 this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(checkpoint !== undefined ? { checkpoint } : {}) } });
@@ -673,10 +695,12 @@ export class Agent {
             };
             if (!signal.aborted) {
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (queued.length) {
-                    extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
-                    await this.checkpoint(queued.join("\n"), true, record);
-                }
+                // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
+                const woke = denied ? undefined : this.takeWakes();
+                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                if (woke) extra.push(reminder(woke));
+                // Steering's checkpoint records the results: everything to go with them is in by then.
+                if (queued.length) await this.checkpoint(queued.join("\n"), true, record);
             }
             if (this.cutOff) return "aborted";
             // Steering saved the completed results before its capture: an interrupt is a new message.
@@ -692,6 +716,15 @@ export class Agent {
                 return "denied";
             }
         }
+    }
+
+    /** Wakes that may join the running turn, as one reminder; noted in the transcript. */
+    private takeWakes(): string | undefined {
+        if (this.o.isSubagent) return undefined;
+        const wakes = this.state.wakes?.drainRunning() ?? [];
+        if (!wakes.length) return undefined;
+        this.emit({ type: "notice", level: "info", message: `↻ ${wakeDisplay(wakes)}` });
+        return formatWakes(wakes);
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
@@ -1005,7 +1038,9 @@ export class Agent {
         const store = this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
         const scheduling = Boolean(this.state.scheduler);
-        if (!delegating && !(store && ask) && !scheduling) return undefined;
+        // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
+        const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
+        if (!delegating && !(store && ask) && !scheduling && !watching) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1028,6 +1063,10 @@ export class Agent {
         if (scheduling) {
             tools.push(...scheduleServerTools(() => this.state.scheduler));
             instructions.push(SCHEDULE_INSTRUCTIONS);
+        }
+        if (watching) {
+            tools.push(...watchServerTools((signal) => this.toolContext("", signal)));
+            instructions.push(WATCH_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -1190,10 +1229,14 @@ export class Agent {
         return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
     }
 
-    private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
+    /** `woken`: the turn is for wakes, so its prompt carries others' words (see BackendTurn.synthetic). */
+    private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken = false): Promise<TurnEndReason> {
+        // A wake while the backend works is offered to it as a message the user queued is (Codex steers with it at once).
+        const stopWaking = this.o.isSubagent ? undefined : this.state.wakes?.onReady(() => this.queueChanged());
         try {
-            return await this.runBackendTurn(backend, parts, signal);
+            return await this.runBackendTurn(backend, parts, signal, woken);
         } finally {
+            stopWaking?.();
             this.delegateCalls = [];
             // Written after the backend sync cursor: a resumed CLI must see this
             // on its next prompt, including after reopening or switching models.
@@ -1205,13 +1248,15 @@ export class Agent {
 
     private backendStopReminders: string[] = [];
 
-    private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
+    private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean): Promise<TurnEndReason> {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
         const folder = this.backendFolder(provider);
         let promptIndex = this.session.messages.length - 1;
         const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
+        /** What drainQueued handed over that came from wakes, not the user. */
+        const wakeTexts = new Set<string>();
         const host: BackendHost = {
             emit: (e) => this.emitFromBackend(e),
             mode: () => this.o.mode.get(),
@@ -1249,26 +1294,45 @@ export class Agent {
                 return () => this.queueListeners.delete(listener);
             },
             // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
-            undelivered: (texts) => this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${texts.join("\n\n")}`),
+            diagnose: (paths) => this.diagnoseBackendEdits(paths, signal),
+            undelivered: (texts) => {
+                const news = texts.filter((t) => wakeTexts.has(t));
+                const typed = texts.filter((t) => !wakeTexts.has(t));
+                if (typed.length) this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
+                if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
+            },
+            fromWake: (text) => wakeTexts.has(text),
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (!queued.length) return [];
+                // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
+                const woke = this.takeWakes();
+                if (!queued.length && !woke) return [];
                 if (progress) this.recordBackendTurn(provider, name, progress());
-                let text = "";
-                await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                    const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
-                    text = textOf(m);
-                });
+                const out: string[] = [];
+                if (queued.length) {
+                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                        const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                        out.push(textOf(m));
+                    });
+                }
+                if (woke) {
+                    // Not a prompt: no checkpoint, and the auto-mode reviewer doesn't read it as the user's request.
+                    const m = this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
+                    const text = textOf(m);
+                    wakeTexts.add(text);
+                    out.push(text);
+                }
                 if (this.cutOff) return [];
-                return [text];
+                return out;
             },
         };
         const base = this.backendTurn(signal, host);
         let stopRounds = 0;
         // The user's own message, for the skills it names: its first part, not the files and notes after it.
         // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
-        const first = !this.o.isSubagent && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
+        // Nor does a wake's, which quotes others (a PR comment's /name or $name).
+        const first = !this.o.isSubagent && !woken && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
         const asked = { request: first, requestAfter: first === undefined ? undefined : text.slice(first.length) };
         let prompt = text;
         // The conversation so far goes beside a /goal (goalContext), so the command stays the whole prompt.
@@ -1283,12 +1347,14 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(resume), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
+                const sent = toSend(resume);
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    const fresh = toSend();
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, synthetic: woken || fresh.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
@@ -1661,6 +1727,8 @@ export class Agent {
             },
             onProgress: (text) => this.emit({ type: "tool_progress", id: callId, text }),
             ui: this.o.host.ui,
+            // Only the session's own agent can be woken: a sub-agent's turn ends with its task.
+            wakes: this.o.isSubagent ? undefined : this.state.wakes,
             hidden: (toolName, abs) => this.o.checker.hiddenFromSearch(toolName, abs),
             runSubagent: this.o.isSubagent ? undefined : (opts, sig) => this.runSubagent(callId, opts, sig),
             taskStatus: this.o.isSubagent ? undefined : (id, ms, sig) => this.taskStatus(id, ms, sig),
@@ -1879,6 +1947,7 @@ export class Agent {
         }
         // Tools redact their own output; this catches any that print a secret (RequestSecret's) without doing so, before hooks, windows or the model.
         result = redactResult(result);
+        if (!result.isError && DIAGNOSED_TOOLS.has(tool.name) && this.state.lsp && !signal.aborted) result = await this.withDiagnostics(result, input, signal);
         const settings = this.o.settings();
         if (settings.hooks?.PostToolUse?.length && !signal.aborted) {
             const h = await runHooks(settings, "PostToolUse", { tool_name: tool.name, tool_input: input, tool_response: { content: result.content.slice(0, 20_000), is_error: Boolean(result.isError) }, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -1895,6 +1964,58 @@ export class Agent {
             images: result.images as ImagePart[] | undefined,
             isError: result.isError,
         };
+    }
+
+    /** The language server's news on an edited file, after the tool's result (and under it, for the user). */
+    private async withDiagnostics(result: ToolResult, input: { file_path?: unknown }, signal: AbortSignal): Promise<ToolResult> {
+        if (typeof input.file_path !== "string") return result;
+        const abs = expandPath(input.file_path, this.state.cwd);
+        if (!this.state.lsp!.handles(abs) || Bun.file(abs).size > MAX_FILE_CHARS) return result;
+        try {
+            // From disk: what the result shows is redacted.
+            const text = await readFile(abs, "utf-8");
+            const report = await this.state.lsp!.afterEdit(abs, text, signal);
+            if (!report) return result;
+            return { ...result, content: `${result.content}\n\n${redact(formatForModel(report))}`, display: { ...result.display, diagnostics: redactedReport(report) } };
+        } catch {
+            return result;
+        }
+    }
+
+    /**
+     * The language server's news on files a backend changed itself (Codex has
+     * no diagnostics of its own): a note for the model, and a line for the user.
+     */
+    private async diagnoseBackendEdits(paths: string[], signal: AbortSignal): Promise<string | undefined> {
+        const lsp = this.state.lsp;
+        if (!lsp || signal.aborted) return undefined;
+        const root = this.state.projectRoot;
+        const real = canonical(root);
+        const files: { path: string; text: string }[] = [];
+        for (const p of paths) {
+            let abs = expandPath(p, this.state.cwd);
+            // The backend names files by their real path; the servers know the project by the path it was opened at.
+            if (!isInside(abs, root) && isInside(abs, real)) abs = join(root, relative(real, abs));
+            if (!lsp.handles(abs)) continue;
+            try {
+                if (Bun.file(abs).size <= MAX_FILE_CHARS) files.push({ path: abs, text: await readFile(abs, "utf-8") });
+            } catch {
+                // gone (deleted, or moved again)
+            }
+        }
+        if (!files.length) return undefined;
+        const report = await lsp.afterEdits(files, signal).catch(() => undefined);
+        if (!report || signal.aborted) return undefined;
+        this.emit({ type: "notice", level: "info", message: `Diagnostics: ${summaryLine(report)} in ${report.files.map((f) => f.path).join(", ")}` });
+        return redact(formatForModel(report));
+    }
+
+    /** Diagnostics that came after their edit stopped waiting, as a note for the model (and a line for the user). */
+    private lateDiagnostics(): UserContent | undefined {
+        const late = this.state.lsp?.takeLate();
+        if (!late) return undefined;
+        this.emit({ type: "notice", level: "info", message: `Diagnostics: ${summaryLine(late)} in ${late.files.map((f) => f.path).join(", ")}` });
+        return reminder(redact(formatForModel(late)));
     }
 
     /**
@@ -2126,6 +2247,8 @@ export class Agent {
                 fileHistory: this.state.fileHistory,
                 // Its Bash sees the secrets the user gave this session (only the main agent can ask for one).
                 secrets: this.state.secrets,
+                // Same servers, its own record of what it edited and was told.
+                lsp: this.state.lsp?.fork(),
             },
             host: {
                 emit: (e) => {
@@ -2265,4 +2388,13 @@ function nestedAgentLabel(parent: string, label: string): string {
 export function readOnlyBackendMode(mode: PermissionMode, provider: string): PermissionMode {
     if (mode === "plan") return "plan";
     return mode === "auto" && provider === "codex" ? "auto" : "default";
+}
+
+/** Whether the user trusted the folder themselves (not for the session only); no when that can't be read. */
+function userTrusts(dir: string): boolean {
+    try {
+        return trustedByUser(dir);
+    } catch {
+        return false;
+    }
 }

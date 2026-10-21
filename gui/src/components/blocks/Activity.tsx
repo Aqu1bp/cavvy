@@ -9,6 +9,8 @@ import {
     Bot,
     Check,
     ChevronRight,
+    CircleCheck,
+    CircleX,
     ClipboardList,
     Clock,
     FilePen,
@@ -26,8 +28,7 @@ import {
     SquareArrowOutUpRight,
     SquareTerminal,
     Wrench,
-    X,
-} from "lucide-solid";
+    X, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, firstChangedLine, plural, sleepSeconds, splitTitle, stripAnsi, tokens } from "../../lib/format";
 import { now } from "../../lib/clock";
@@ -97,6 +98,11 @@ const VERBS: Record<string, string> = {
     TodoWrite: "Update todos",
     AskUserQuestion: "Ask",
     ExitPlanMode: "Present plan",
+    GitCommit: "Commit",
+    GitPush: "Push",
+    CreatePullRequest: "Open pull request",
+    WatchPullRequest: "Watch pull request",
+    UnwatchPullRequest: "Stop watching",
 };
 
 const RUNNING: Record<string, string> = {
@@ -117,6 +123,10 @@ const RUNNING: Record<string, string> = {
     TodoWrite: "Updating todos",
     AskUserQuestion: "Waiting for your answer",
     ExitPlanMode: "Waiting for plan review",
+    GitCommit: "Committing",
+    GitPush: "Pushing",
+    CreatePullRequest: "Opening pull request",
+    WatchPullRequest: "Reading pull request",
 };
 
 /** "Gemini 3 Pro" style: the model part of provider:model. */
@@ -144,7 +154,10 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     if (t.name === "Task") a = String(input.description ?? arg ?? "");
     if (t.name === "AskUserQuestion") a = String(input.question ?? arg ?? "");
     if (t.name === "Skill") a = String(input.skill ?? input.name ?? arg ?? "");
-    if (t.name === "TodoWrite" || t.name === "ExitPlanMode") a = undefined;
+    if (t.name === "TodoWrite" || t.name === "ExitPlanMode" || t.name === "GitPush") a = undefined;
+    if (t.name === "GitCommit") a = String(input.message ?? arg ?? "").split("\n")[0];
+    if (t.name === "CreatePullRequest") a = String(input.title ?? arg ?? "");
+    if (t.name === "WatchPullRequest" || t.name === "UnwatchPullRequest") a = input.pr !== undefined && input.pr !== "" ? `#${String(input.pr).replace(/^#/, "").replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\//, "")}` : undefined;
     return { verb: VERBS[t.name] ?? t.name, arg: a || undefined };
 }
 
@@ -166,6 +179,9 @@ export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
             <Match when={p.name === "AskUserQuestion"}><MessageCircleQuestion size={s()} /></Match>
             <Match when={p.name === "ExitPlanMode"}><ClipboardList size={s()} /></Match>
             <Match when={p.name.startsWith("mcp__")}><Plug size={s()} /></Match>
+            <Match when={p.name === "GitCommit"}><GitCommitHorizontal size={s()} /></Match>
+            <Match when={p.name === "GitPush"}><ArrowUpFromLine size={s()} /></Match>
+            <Match when={p.name === "CreatePullRequest" || p.name === "WatchPullRequest" || p.name === "UnwatchPullRequest"}><GitPullRequestArrow size={s()} /></Match>
         </Switch>
     );
 }
@@ -242,6 +258,21 @@ function summarize(tools: ToolBlock[]): string {
                 break;
             case "ExitPlanMode":
                 misc.push("presented a plan");
+                break;
+            case "GitCommit":
+                misc.push("committed");
+                break;
+            case "GitPush":
+                misc.push("pushed");
+                break;
+            case "CreatePullRequest":
+                misc.push("opened a pull request");
+                break;
+            case "WatchPullRequest":
+                misc.push("watched a pull request");
+                break;
+            case "UnwatchPullRequest":
+                misc.push("stopped watching");
                 break;
             default:
                 if (t.name.startsWith("mcp__")) mcp++;
@@ -367,6 +398,7 @@ function ActivityGroupContent(p: { tools: ToolBlock[]; steps: (ToolBlock | Think
                                 <span class="del">−{stats().removed}</span>
                             </span>
                         </Show>
+                        <Show when={groupDiagnostics(done())}>{(r) => <DiagnosticsChip report={r()} />}</Show>
                         <Show when={failed()}>
                             <span class="wflag err" title={`${plural(failed(), "call")} failed`}>
                                 <AlertTriangle size={12} /> {failed()}
@@ -616,6 +648,7 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
                                 <span class="del">−{p.tool.diff!.removed}</span>
                             </span>
                         </Show>
+                        <Show when={p.tool.diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
                         <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
                             <span class="tool-dur num" data-find-skip>
                                 {duration(p.tool.durationMs!)}
@@ -684,6 +717,83 @@ function Output(p: { tool: ToolBlock }) {
     );
 }
 
+type DiagnosticReport = NonNullable<ToolBlock["diagnostics"]>;
+
+function diagnosticCounts(r: DiagnosticReport) {
+    return {
+        errors: r.files.reduce((a, f) => a + f.newErrors, 0),
+        warnings: r.files.reduce((a, f) => a + f.newWarnings, 0),
+        fixed: r.files.reduce((a, f) => a + f.fixed, 0),
+    };
+}
+
+/** A group's word from the language server: each file as its latest report in the group left it. */
+function groupDiagnostics(tools: ToolBlock[]): DiagnosticReport | undefined {
+    const last = new Map<string, DiagnosticReport["files"][number]>();
+    for (const t of tools) for (const f of t.diagnostics?.files ?? []) last.set(f.path, f);
+    const files = [...last.values()];
+    return files.length ? { files, omitted: files.reduce((a, f) => a + f.total - f.items.length, 0) } : undefined;
+}
+
+/** On the row: what the language server found after the edit, at a glance. */
+function DiagnosticsChip(p: { report: DiagnosticReport }) {
+    const c = () => diagnosticCounts(p.report);
+    const title = () => {
+        const { errors, warnings, fixed } = c();
+        const parts = [errors && plural(errors, "new error"), warnings && plural(warnings, "new warning"), fixed && `${fixed} fixed`].filter(Boolean);
+        return `Language server: ${parts.join(", ")}`;
+    };
+    return (
+        <span class="diag-chip" title={title()} data-find-skip>
+            <Show when={c().errors}>
+                <span class="diag-err"><CircleX size={11} />{c().errors}</span>
+            </Show>
+            <Show when={c().warnings}>
+                <span class="diag-warn"><AlertTriangle size={11} />{c().warnings}</span>
+            </Show>
+            <Show when={!c().errors && !c().warnings && c().fixed}>
+                <span class="diag-ok"><CircleCheck size={11} />{c().fixed} fixed</span>
+            </Show>
+        </span>
+    );
+}
+
+/** In the details: each new problem, its place opening the file there. */
+function Diagnostics(p: { report: DiagnosticReport }) {
+    const items = () => p.report.files.flatMap((f) => f.items);
+    const more = () => p.report.omitted;
+    const multi = () => p.report.files.length > 1;
+    const aside = () => {
+        const { errors, warnings, fixed } = diagnosticCounts(p.report);
+        return [errors && plural(errors, "error"), warnings && plural(warnings, "warning"), fixed && `${fixed} fixed`].filter(Boolean).join(" · ");
+    };
+    return (
+        <Section label="Diagnostics" aside={<span class="diag-aside">{aside()}</span>}>
+            <Show when={items().length} fallback={<div class="detail-note">The problems reported before are gone.</div>}>
+                <ul class="diag-list">
+                    <For each={items()}>
+                        {(i) => (
+                            <li class={`diag-item ${i.severity}`}>
+                                <span class="diag-icon">{i.severity === "error" ? <CircleX size={12} /> : <AlertTriangle size={12} />}</span>
+                                <button class="diag-at mono" title={`Open ${i.path} at line ${i.line}`} onClick={() => void openInEditor(i.path, i.line, { col: i.col })}>
+                                    {multi() ? `${i.path}:` : ""}{i.line}:{i.col}
+                                </button>
+                                <span class="diag-msg" title={i.message}>{i.message}</span>
+                                <Show when={i.code}>
+                                    <span class="diag-code mono">{i.source ? `${i.source}(${i.code})` : i.code}</span>
+                                </Show>
+                            </li>
+                        )}
+                    </For>
+                </ul>
+                <Show when={more() > 0}>
+                    <div class="detail-note">and {plural(more(), "more problem")}</div>
+                </Show>
+            </Show>
+        </Section>
+    );
+}
+
 function Todos(p: { todos: TodoEntry[] }) {
     return (
         <ul class="todo-list">
@@ -738,6 +848,7 @@ function ToolDetailsContent(p: { tool: ToolBlock }) {
             >
                 <Match when={t().diff}>
                     <DiffView diff={t().diff!} maxLines={80} header headerAction={<Show when={toolFile(t())}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>} />
+                    <Show when={t().diagnostics}>{(r) => <Diagnostics report={r()} />}</Show>
                     <Show when={t().status === "error"}>
                         <Output tool={t()} />
                     </Show>

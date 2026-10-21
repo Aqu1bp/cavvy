@@ -222,6 +222,33 @@
     margin-bottom: 28px;
 }
 
+.wake-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding: 6px 12px;
+    width: fit-content;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    font-size: 0.929rem;
+    line-height: 1.4;
+}
+
+.wake-row svg {
+    flex: none;
+    color: var(--accent);
+}
+
+.wake-row .wake-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .user-actions {
     display: flex;
     gap: 2px;
@@ -777,6 +804,115 @@ button.wrow:hover {
 .detail-note {
     font-size: 0.857rem;
     color: var(--fg-muted);
+}
+
+/* ---- Diagnostics after an edit ---------------------------------------- */
+
+.diag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    font: 500 0.786rem/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.diag-chip > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.diag-err {
+    color: var(--danger);
+}
+
+.diag-warn {
+    color: var(--warning);
+}
+
+.diag-ok {
+    color: var(--success);
+}
+
+.diag-aside {
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+}
+
+.diag-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.857rem;
+}
+
+.diag-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+}
+
+.diag-item.error {
+    background: var(--danger-soft);
+}
+
+.diag-item.warning {
+    background: var(--warning-soft);
+}
+
+.diag-icon {
+    flex: none;
+    align-self: flex-start;
+    margin-top: 3px;
+    display: inline-flex;
+}
+
+.diag-item.error .diag-icon {
+    color: var(--danger);
+}
+
+.diag-item.warning .diag-icon {
+    color: var(--warning);
+}
+
+.diag-at {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg-muted);
+    font-size: 0.786rem;
+    cursor: pointer;
+}
+
+.diag-at:hover {
+    color: var(--fg);
+    text-decoration: underline;
+}
+
+.diag-msg {
+    min-width: 0;
+    flex: 1;
+    overflow-wrap: anywhere;
+    color: var(--fg);
+    /* A TypeScript chain can run long: three lines here, all of it on hover. */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.diag-code {
+    flex: none;
+    color: var(--fg-subtle);
+    font-size: 0.75rem;
 }
 
 .approval-note {

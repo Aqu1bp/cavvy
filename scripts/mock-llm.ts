@@ -3,6 +3,7 @@
 // and picks a script from keywords in the prompt:
 //
 //   "sso" / "demo"   explore, read, edit (asks permission), run tests, summarize
+//   "diagnostics"    an edit with a type error, then its fix (shows the language server's report)
 //   "question"       asks a multiple-choice question
 //   "plan"           presents a plan for approval
 //   "todo"           keeps a todo list while working
@@ -22,6 +23,8 @@
 //   "schedule"       schedules the test suite for weekday mornings (CronCreate)
 //   "goaldemo"       runs the tests (for /goal); the goal check answers "not met" on its first check and
 //                    "met" after, or "impossible" when the goal says so
+//   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
+//   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -83,6 +86,24 @@ const TESTS_REPORT = `Only email sign-in is tested (\`test/auth.test.ts\`, one c
 
 function scenario(prompt: string, toolRounds: number, lastResult: string): Step | undefined {
     const p = prompt.toLowerCase();
+    // News from a watched pull request (the harness woke the agent).
+    if (/events? you asked to be told about arrived/.test(p)) {
+        if (/checks failed/.test(p)) return { text: "CI's **test** job failed on the latest commit. The log shows the SAML assertion test expects an issuer check; I'll fix it and push again." };
+        if (/new comments?:/.test(p)) return { text: "A reviewer asked for a test of the rejected-assertion path. I'll add it and reply once it's pushed." };
+        if (/passed/.test(p)) return { text: "All checks passed. The pull request is ready for your review." };
+        return { text: "Noted." };
+    }
+    if (/\bship\b/.test(p) && !/\bgoaldemo\b/.test(p)) {
+        const steps: Step[] = [
+            { text: "I'll commit the SSO work first.", calls: [{ name: "GitCommit", args: { message: "Add SAML SSO sign-in\n\nRegisters a SamlProvider strategy next to email sign-in." } }] },
+            {
+                text: "Now the pull request, and I'll watch it.",
+                calls: [{ name: "CreatePullRequest", args: { title: "Add SAML SSO sign-in", body: "Adds a SAML strategy next to email sign-in.\n\nTested with `bun test`.", watch: true } }],
+            },
+            { text: "The pull request is open and I'm watching it: I'll be back when CI finishes or someone comments." },
+        ];
+        return steps[toolRounds];
+    }
     // A sub-agent's task (from "agents"): look around, then report.
     if (/^subtask:/.test(p)) {
         // One that changes something (asks permission in Manual mode).
@@ -129,6 +150,21 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
                 ],
             };
         return { text: "Both reviews are back.\n\n- **Auth:** strategies live in one list in `src/auth/index.ts`, so SSO can be appended there.\n- **Tests:** only the happy path of email sign-in is covered; SSO and failures need tests." };
+    }
+    // An edit with a type error the language server catches, then the fix (needs typescript-language-server installed).
+    if (/\bdiagnostics\b/.test(p)) {
+        const line = "        return email ? { id: email, email } : null;";
+        const typo = "        return email ? { id: email, mail: email } : null;";
+        const steps: Step[] = [
+            { text: "I'll rename the field in the email strategy.", calls: [{ name: "Read", args: { file_path: "src/auth/email.ts" } }] },
+            { calls: [{ name: "Edit", args: { file_path: "src/auth/email.ts", old_string: line, new_string: typo } }] },
+            {
+                text: lastResult.includes("<new-diagnostics>") ? "The language server caught it: `User` has no `mail` field. Putting it back." : "Checking it again.",
+                calls: [{ name: "Edit", args: { file_path: "src/auth/email.ts", old_string: typo, new_string: line } }],
+            },
+            { text: "Done. `src/auth/email.ts` type-checks again." },
+        ];
+        return steps[toolRounds];
     }
     if (/\b(sso|demo)\b/.test(p)) {
         const steps: Step[] = [
@@ -240,6 +276,7 @@ function goalVerdict(prompt: string): string {
 function titleFor(prompt: string): string {
     const p = prompt.toLowerCase();
     if (/\bsso\b|\bdemo\b/.test(p)) return "Add enterprise SSO";
+    if (/\bdiagnostics\b/.test(p)) return "Rename the email field";
     if (/\bplan\b/.test(p)) return "Plan the SSO rollout";
     if (/\bquestion\b/.test(p)) return "Choose an identity protocol";
     if (/\bsecret\b/.test(p)) return "Use a demo token";
