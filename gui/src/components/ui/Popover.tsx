@@ -1,4 +1,4 @@
-import { createEffect, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
@@ -46,10 +46,11 @@ export function Popover(p: PopoverProps) {
         if (p.open && el && p.behavior) onCleanup(mountMenu(el, p.behavior));
     });
 
-    // Settings opening hides what it covers without unmounting it (App.tsx): a menu open there closes, as it did when that went.
-    createEffect(on(settingsTab, (tab) => {
-        if (tab && p.open && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
-    }, { defer: true }));
+    // Settings hides what it covers without unmounting it (App.tsx): a menu there closes as Settings opens, as it did
+    // when that went, and one opened while it's covered (a shortcut, say) closes at once.
+    createEffect(() => {
+        if (settingsTab() && p.open && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
+    });
 
     onMount(() => {
         const onDown = (e: PointerEvent) => {

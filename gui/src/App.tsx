@@ -272,6 +272,14 @@ export function App() {
     // Enter-sends decides what Enter and Mod+Enter are bound to.
     createEffect(() => setEnterSends(prefs.enterSends));
 
+    // What Settings covers stays mounted (lib/cover.ts): focus in it (the composer, say) leaves as Settings opens,
+    // so typing there doesn't edit, or Enter send, a prompt out of sight.
+    createEffect(on(settingsTab, (tab) => {
+        if (!tab) return;
+        const focused = document.activeElement as HTMLElement | null;
+        if (focused?.closest?.("[data-covered], .keep.covered")) focused.blur();
+    }, { defer: true }));
+
     // Global shortcuts.
     onMount(() => {
         // Bound keys (the keybindings file over the defaults); Esc's ways out stay on Esc.
@@ -281,8 +289,9 @@ export function App() {
             "app:newSession": () => void (setSettingsTab(undefined), newSession(app.homeCwd)),
             "app:toggleSidebar": () => void toggleSidebar(),
             "app:togglePanel": () => void togglePanel(),
-            "chat:modelPicker": () => void setModelPickerOpen(true),
-            "chat:focusInput": () => void requestComposerFocus(),
+            // Not while Settings covers the session (it stays mounted under it): they'd act on it out of sight.
+            "chat:modelPicker": () => void (!settingsTab() && setModelPickerOpen(true)),
+            "chat:focusInput": () => void (!settingsTab() && requestComposerFocus()),
             // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
             "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
             "app:previousSession": () => void cycleSession(-1),

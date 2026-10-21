@@ -13,9 +13,11 @@ test("opening and leaving Settings keeps the session view, rail and inspector mo
     const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
     const tags = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
     const mounts: Record<string, number> = {};
+    let blurred = 0;
+    const composer = { closest: (sel: string) => (sel.includes("[data-covered]") && settingsTab() ? composer : null), blur: () => { blurred++; } };
     const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
         RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
-        prefs: { sidebar: true, panel: true }, isTauri: false, document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
+        prefs: { sidebar: true, panel: true }, isTauri: false, document: { activeElement: composer }, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
         railDrag: () => undefined, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, inspector: { open: true, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }),
         settingsTab, agentFocus: () => undefined, review: () => undefined, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
         ...Object.fromEntries(tags.map((tag) => [tag, () => { mounts[tag] = (mounts[tag] ?? 0) + 1; return node(tag); }])),
@@ -40,6 +42,8 @@ test("opening and leaving Settings keeps the session view, rail and inspector mo
         expect(find("Sidebar")).toBe(rail);
         expect(covered()?.props["data-covered"]).toBe("");
         expect(covered()?.props["aria-hidden"]).toBe("true");
+        // Focus in it (the composer) left, so typing doesn't edit or send a prompt out of sight.
+        expect(blurred).toBe(1);
 
         setSettingsTab(undefined);
         expect(find("SettingsPage")).toBeUndefined();
@@ -50,5 +54,31 @@ test("opening and leaving Settings keeps the session view, rail and inspector mo
         expect(before.RightPanel).toBe(1);
         // (The inspector's column closes under Settings, so only its resizer comes back.)
         for (const tag of ["SessionView", "Sidebar", "RightPanel", "TerminalPanel"]) expect([tag, mounts[tag]]).toEqual([tag, 1]);
+    } finally { dispose(); }
+});
+
+test("a menu of the covered session opened while Settings is up (a shortcut, say) closes at once", () => {
+    const source = readFileSync(new URL("../../gui/src/components/ui/Popover.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
+    const [tab, setTab] = solid.createSignal<string | undefined>("general");
+    const [open, setOpen] = solid.createSignal(false);
+    let closes = 0;
+    const doc = { addEventListener() {}, removeEventListener() {} };
+    const Popover = component(source, "Popover", {
+        settingsTab: tab, document: doc, window: doc, requestAnimationFrame() {}, mountMenu: () => () => {}, placePopover: () => undefined,
+        renderer: { ...solid, ...renderer, Portal: (p: any) => p.children },
+    });
+    const covered = { closest: (sel: string) => (sel.includes(".settings-page") ? null : covered) };
+    const root = node("root");
+    const dispose = renderer.render(() => Popover({ get open() { return open(); }, onClose: () => { closes++; setOpen(false); }, anchor: () => covered, children: "menu" }), root);
+    try {
+        setOpen(true);
+        expect(closes).toBe(1);
+        // With Settings closed it stays open.
+        setTab(undefined);
+        setOpen(true);
+        expect(closes).toBe(1);
+        // And Settings opening over it closes it.
+        setTab("general");
+        expect(closes).toBe(2);
     } finally { dispose(); }
 });
