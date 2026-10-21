@@ -67,3 +67,21 @@ test("a reached limit fills the ring and says when it resets", () => {
     expect(foot.line).toMatch(/^Limit reached, resets .+, in 2h$/);
     expect(railFoot({ conn: "reconnecting", limits: all, providers: [codex], now: NOW }).line).toBe("Reconnecting…");
 });
+
+test("a report from before a window reset doesn't show its old use as current", () => {
+    // 100% of the 5-hour window, reported 6h ago; that window has reset since, the weekly one hasn't.
+    const at = NOW - 6 * 3_600_000;
+    const all = { [key("codex")]: limits("codex", at, [
+        { id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt: NOW - 3_600_000 },
+        { id: "codex:secondary", label: "Weekly", usedPercent: 40, resetsAt: NOW + 3 * 86_400_000 },
+    ]) };
+    const foot = railFoot({ conn: "open", limits: all, providers: [codex], now: NOW });
+    expect(foot.pct).toBe(40);
+    expect(foot.tone).toBe("normal");
+    expect(foot.line).toMatch(/^40% of the weekly limit, as of /);
+    // With every window reset, there's no figure to show.
+    const gone = { [key("codex")]: limits("codex", at, [{ id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt: NOW - 3_600_000 }]) };
+    const old = railFoot({ conn: "open", limits: gone, providers: [codex], now: NOW });
+    expect(old.pct).toBeUndefined();
+    expect(old.line).toBe("Plan limits");
+});

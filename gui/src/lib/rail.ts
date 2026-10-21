@@ -74,11 +74,12 @@ export function railFoot(o: {
     const info = o.providers.find((p) => p.id === limits.provider);
     const account = info?.agentCli?.accounts?.find((a) => a.id === (limits.accountId ?? info.agentCli?.defaultAccount ?? "default"));
     const name = account?.plan ? `${info!.name} ${capital(account.plan)}` : info?.agentCli?.plan ?? info?.name ?? limits.provider;
-    // The window nearest its limit is the one that matters now.
-    const top = meter.windows.filter((w) => w.pct !== undefined).sort((a, b) => b.pct! - a.pct!)[0];
+    // The window nearest its limit is the one that matters now; one that has reset since the report says nothing.
+    const reset = (i: number) => (limits.windows[i]?.resetsAt ?? Infinity) <= o.now;
+    const top = meter.windows.filter((w, i) => w.pct !== undefined && !reset(i)).sort((a, b) => b.pct! - a.pct!)[0];
     const pct = meter.reached ? 100 : top?.pct;
     const line = offline ? "Reconnecting…"
         : meter.reached ? `Limit reached${meter.resets ? `, resets ${meter.resets}` : ""}`
-        : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit` : "Plan limits";
+        : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit${meter.asOf ? `, ${meter.asOf}` : ""}` : "Plan limits";
     return { provider: limits.provider, pct, tone: meter.reached || (pct ?? 0) >= 85 ? "danger" : (pct ?? 0) >= 70 ? "warn" : "normal", name, line };
 }
