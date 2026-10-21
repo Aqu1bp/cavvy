@@ -8,7 +8,7 @@ import type { WakeInput } from "../src/agent/wakes";
 const iso = isolate();
 const { SecretStore } = await import("../src/agent/secrets");
 const { BashOutputTool, KillShellTool, killAllShells } = await import("../src/tools/bash");
-const { MonitorTool, MAX_MONITORS, FLOOD_LINES } = await import("../src/tools/monitor");
+const { MonitorTool, MAX_MONITORS, FLOOD_LINES, monitorServerTools, nativeMonitorCall } = await import("../src/tools/monitor");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { WakeQueue, stopWatchers } = await import("../src/agent/wakes");
@@ -394,5 +394,51 @@ describe("permissions: a Monitor command is checked like the same Bash command",
         const { checker, dir } = mk({});
         const d = checker.check(tool, input("npm run watch"), "default", dir);
         expect(d.suggestions?.some((s) => s.startsWith("Bash("))).toBe(true);
+    });
+});
+
+describe("served to Codex (through the harness MCP server)", () => {
+    // What the agent's checks would let through, run as is.
+    const served = (ctx: ToolContext) => {
+        const tools = monitorServerTools(async (tool, input) => {
+            const err = await tool.validate?.(input as any, ctx);
+            if (err) return { text: err, isError: true };
+            const r = await tool.run(input as any, ctx);
+            return { text: r.content, isError: r.isError };
+        }, () => ctx.state);
+        const call = async (name: string, args: Record<string, unknown>) => tools.find((t) => t.name === name)!.call(args, { signal: new AbortController().signal, meta: {} });
+        return { tools, call };
+    };
+
+    test("its tools, and what they and its notifications say, name the served tools", async () => {
+        const { ctx, woken, dir } = setup();
+        const { tools, call } = served(ctx);
+        expect(tools.map((t) => t.name)).toEqual(["monitor", "monitor_output", "monitor_stop"]);
+        const desc = tools[0]!.description;
+        expect(desc).toContain("monitor_stop");
+        expect(desc).not.toMatch(/KillShell|BashOutput|run_in_background/);
+        const r = await call("monitor", { command: node(dir, `for (let i = 1; i <= 100; i++) await out(\`line \${i}\\n\`); await err("oops\\n"); await pause(5000);`), description: "burst" });
+        expect(r.isError).toBeFalsy();
+        const id = /monitor_\d+/.exec(r.text)![0];
+        expect(r.text).toContain(`monitor_stop id "${id}"`);
+        await until(() => woken.length >= 1);
+        expect(woken[0]!.text).toContain(`read them with monitor_output id "${id}"`);
+        expect(woken[0]!.text).not.toContain("BashOutput");
+
+        const out = await call("monitor_output", { id, filter: "oops" });
+        expect(out.text).toContain("<status>running</status>");
+        expect(out.text).toContain("oops");
+        const stop = await call("monitor_stop", { id });
+        expect(stop).toMatchObject({ isError: undefined });
+        expect(stop.text).toContain(`Killed ${id}`);
+        expect(ctx.state.shells.has(id)).toBe(false);
+        expect((await call("monitor_stop", { id })).text).toContain(`No monitor with id ${id}`);
+    });
+
+    test("a served call shows as the Harness tool it is", () => {
+        expect(nativeMonitorCall("monitor", { command: "x", description: "d" })).toEqual({ name: "Monitor", input: { command: "x", description: "d" } });
+        expect(nativeMonitorCall("monitor_output", { id: "monitor_3" })).toEqual({ name: "BashOutput", input: { bash_id: "monitor_3" } });
+        expect(nativeMonitorCall("monitor_stop", { id: "monitor_3" })).toEqual({ name: "KillShell", input: { shell_id: "monitor_3" } });
+        expect(nativeMonitorCall("watch_pull_request", {})).toBeUndefined();
     });
 });

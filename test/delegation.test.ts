@@ -1345,6 +1345,94 @@ describe("Codex as the main agent", () => {
 
 // ---------------------------------------------------------------------------
 
+describe("Monitor for Codex (it has none of its own)", () => {
+    const MONITOR_TOOLS = ["monitor", "monitor_output", "monitor_stop"];
+    const harnessTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
+    const monitors = (agent: InstanceType<typeof Agent>) => [...agent.state.shells.values()].filter((s) => s.monitor);
+
+    test("a session that can be woken gives Codex the monitor tools; a call is asked about as Monitor and starts one", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        // Not read-only, so it is asked about (a read-only one runs unasked, as Harness's own Monitor does).
+        calls([{ tool: "monitor", args: { command: "touch started; echo ready; sleep 30", description: "server readiness" } }]);
+        const { run, agent, asked, events } = await makeAgent({ provider: "codex", wakes: true });
+        try {
+            expect(await run("watch the server")).toBe("done");
+            expect(harnessTools()).toEqual(expect.arrayContaining(MONITOR_TOOLS));
+            const thread = received().find((m) => m.method === "thread/start")!.params;
+            expect(thread.developerInstructions).toContain("use monitor");
+            // The CLI approves Harness's tools without asking: Harness asks, as for its own Monitor.
+            expect(asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Monitor", "touch started; echo ready; sleep 30"]]);
+            expect(asked[0]!.callId).toMatch(/^mcp-/);
+            const [r] = mcpResults();
+            expect(r).toMatchObject({ tool: "monitor", isError: false });
+            expect(r.text).toMatch(/Started monitor monitor_\d+/);
+            // It names the tools Codex has.
+            expect(r.text).toContain("monitor_stop id");
+            expect(r.text).not.toContain("KillShell");
+            expect(r.text).not.toContain("BashOutput");
+            // Shown once, as Harness's Monitor (not as an MCP call, nor twice).
+            const startsOf = events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []));
+            expect(startsOf).toEqual(["Monitor"]);
+            const m = monitors(agent);
+            expect(m).toHaveLength(1);
+            expect(agent.state.watchers!.has(m[0]!.id)).toBe(true);
+            await until(() => agent.state.wakes!.pending().some((w) => w.text.includes("ready")));
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
+    test("declined, or refused by a Bash rule, it starts nothing", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "touch started; tail -f app.log", description: "errors" } }]);
+        const declined = await makeAgent({ provider: "codex", wakes: true, ask: () => ({ allow: false }) });
+        expect(await declined.run("watch")).toBe("done");
+        expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
+        expect(mcpResults()[0].text).toContain("declined");
+        expect(monitors(declined.agent)).toHaveLength(0);
+
+        rmSync(LOG, { force: true });
+        calls([{ tool: "monitor", args: { command: "rm -rf build", description: "cleanup" } }]);
+        const denied = await makeAgent({ provider: "codex", wakes: true, settings: { permissions: { deny: ["Bash(rm:*)"] } } });
+        expect(await denied.run("watch")).toBe("done");
+        expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
+        expect(denied.asked).toHaveLength(0);
+        expect(monitors(denied.agent)).toHaveLength(0);
+    });
+
+    test("monitor_output and monitor_stop act on monitors only", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([
+            { tool: "monitor_output", args: { id: "bash_1" } },
+            { tool: "monitor_stop", args: { id: "bash_1" } },
+        ]);
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true });
+        let killed = false;
+        agent.state.shells.set("bash_1", { id: "bash_1", command: "sleep 30", startedAt: Date.now(), output: "", readOffset: 0, exitCode: null, sandboxed: false, kill: async () => ((killed = true), "stopped") });
+        expect(await run("stop it")).toBe("done");
+        for (const r of mcpResults()) {
+            expect(r.isError).toBe(true);
+            expect(r.text).toContain("No monitor with id bash_1");
+        }
+        expect(killed).toBe(false);
+        expect(agent.state.shells.has("bash_1")).toBe(true);
+    });
+
+    test("Claude Code keeps its own Monitor: none offered; nor in -p, which has nowhere to wake", async () => {
+        const cc = await makeAgent({ provider: "claude-code", wakes: true });
+        expect(await cc.run("hi")).toBe("done");
+        const ccTools = (setServers()[0]?.request.servers.harness.tools ?? []).map((t: { name: string }) => t.name);
+        expect(ccTools).not.toContain("monitor");
+
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex", wakes: true, headless: true });
+        expect(await headless.run("hi")).toBe("done");
+        expect(harnessTools()).not.toContain("monitor");
+    });
+});
+
+// ---------------------------------------------------------------------------
+
 describe("harness models", () => {
     test("Task runs a sub-agent on the model asked for, and ListModels shows what can run", async () => {
         const mainRequests: ChatRequest[] = [];

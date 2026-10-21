@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
-import type { BackgroundShell, Tool, ToolContext } from "./types";
+import type { BackgroundShell, Tool, ToolContext, ToolState } from "./types";
+import type { ServerTool, ServerToolResult } from "../mcp/server";
 import type { WakeQueue } from "../agent/wakes";
 import { stripAnsi } from "../ui/ansi";
 import type { CommandProxy } from "../permissions/proxy";
-import { appendOutput, commandEnv, KILL_GRACE_MS, MAX_PARTIAL_LINE, overflowLine, readShellStream, sandboxOutputHint, shellArgv, stopGroup, validateHosts, withPwd } from "./bash";
+import { appendOutput, BashOutputTool, commandEnv, KILL_GRACE_MS, MAX_PARTIAL_LINE, overflowLine, readShellStream, sandboxOutputHint, shellArgv, stopGroup, validateHosts, withPwd, KillShellTool } from "./bash";
 
 /** Lines that arrive this soon after the first one go out with it, as one notification. */
 export const BATCH_MS = 200;
@@ -89,18 +90,20 @@ Examples:
         if (running.length >= MAX_MONITORS) return `${MAX_MONITORS} monitors are already running (${running.map((s) => `${s.id}: ${s.monitor!.description}`).join("; ")}). Stop one with KillShell first.`;
         return undefined;
     },
-    async run(input, ctx) {
-        const { env, proxy } = await commandEnv(ctx, input.allowedHosts);
-        const asked = input.timeout_ms ?? DEFAULT_TIMEOUT;
-        const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(MIN_TIMEOUT, asked));
-        const m = startMonitor({ command: input.command, description: input.description.trim().split("\n")[0]!.slice(0, 120), timeoutMs, ctx, env, proxy });
-        const capped = asked > MAX_TIMEOUT ? ` (${minutes(asked)} is over the limit)` : "";
-        return {
-            content: `Started monitor ${m.id}${m.pid !== undefined ? ` (pid ${m.pid})` : ""}${ctx.sandbox ? " in the auto-mode sandbox" : ""}. New stdout lines will arrive as notifications. It expires in ${minutes(timeoutMs)}${capped}; stop it earlier with KillShell shell_id "${m.id}", and read its stderr with BashOutput.`,
-            display: { summary: `Watching as ${m.id} · expires in ${minutes(timeoutMs)}` },
-        };
-    },
+    run: (input, ctx) => runMonitor(input, ctx),
 };
+
+async function runMonitor(input: MonitorInput, ctx: ToolContext, say: (text: string) => string = (t) => t) {
+    const { env, proxy } = await commandEnv(ctx, input.allowedHosts);
+    const asked = input.timeout_ms ?? DEFAULT_TIMEOUT;
+    const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(MIN_TIMEOUT, asked));
+    const m = startMonitor({ command: input.command, description: input.description.trim().split("\n")[0]!.slice(0, 120), timeoutMs, ctx, env, proxy, say });
+    const capped = asked > MAX_TIMEOUT ? ` (${minutes(asked)} is over the limit)` : "";
+    return {
+        content: say(`Started monitor ${m.id}${m.pid !== undefined ? ` (pid ${m.pid})` : ""}${ctx.sandbox ? " in the auto-mode sandbox" : ""}. New stdout lines will arrive as notifications. It expires in ${minutes(timeoutMs)}${capped}; stop it earlier with KillShell shell_id "${m.id}", and read its stderr with BashOutput.`),
+        display: { summary: `Watching as ${m.id} · expires in ${minutes(timeoutMs)}` },
+    };
+}
 
 /** For the agent, when the user stops a monitor it may be waiting on. */
 export function stoppedMonitorNote(sh: BackgroundShell): string {
@@ -114,6 +117,8 @@ interface StartOpts {
     ctx: Pick<ToolContext, "state" | "sandbox" | "wakes">;
     env: Record<string, string>;
     proxy?: CommandProxy;
+    /** How its notifications name the tools to read and stop it with (BashOutput, KillShell), for the agent it reports to. */
+    say?: (text: string) => string;
 }
 
 /** Spawns the command and turns its stdout into wakes. Exported for tests. */
@@ -177,7 +182,7 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
             text = `${header}\n<monitor-output id="${id}">\n${held.join("\n")}\n${more}</monitor-output>`;
         }
         if (footer) text = text ? `${text}\n${footer}` : footer;
-        if (text) wakes.push({ source: "monitor", key, label: label(status), text });
+        if (text) wakes.push({ source: "monitor", key, label: label(status), text: o.say ? o.say(text) : text });
     };
     const rollWindow = (now: number) => {
         if (now - windowStart < FLOOD_WINDOW_MS) return;
@@ -325,3 +330,85 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
     });
     return { id, pid: child.pid, shell };
 }
+
+// ---------------------------------------------------------------------------
+// Codex has no Monitor of its own: it gets Harness's, through the harness MCP
+// server (Claude Code keeps its own Monitor, so it isn't offered this one).
+
+/** Harness's tool names as the served ones, in what the agent reads. */
+function served(text: string): string {
+    return text
+        .replace("use Bash with run_in_background and a command that exits when the condition holds", "run a command that exits when the condition holds")
+        .replace("It runs like Bash: same working directory, environment, permissions and sandbox.", "It runs in this working directory, under Harness's permission rules for commands.")
+        .replaceAll("KillShell shell_id", "monitor_stop id")
+        .replaceAll("BashOutput bash_id", "monitor_output id")
+        .replaceAll("KillShell", "monitor_stop")
+        .replaceAll("BashOutput", "monitor_output");
+}
+
+/** Monitor, as served: checked and hooked as Monitor, with the served tools named in what it says. */
+const ServedMonitorTool: Tool<MonitorInput> = {
+    ...MonitorTool,
+    description: served(MonitorTool.description),
+    validate: async (input, ctx) => {
+        const err = await MonitorTool.validate!(input, ctx);
+        return err === undefined ? undefined : served(err);
+    },
+    run: (input, ctx) => runMonitor(input, ctx, served),
+};
+
+export const MONITOR_SERVER_TOOLS = ["monitor", "monitor_output", "monitor_stop"];
+
+/**
+ * The monitor tools for Codex. `run` takes a call through Harness's checks (rules, mode, hooks, the user), as
+ * the same tool called by a model Harness runs.
+ */
+export function monitorServerTools(run: (tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string) => Promise<ServerToolResult>, state: () => ToolState): ServerTool[] {
+    // Codex sends its call's id: the permission prompt goes with that call.
+    const callId = (meta: Record<string, unknown>) => (typeof meta.callId === "string" ? meta.callId : undefined);
+    const say = (r: ServerToolResult): ServerToolResult => ({ text: served(r.text), isError: r.isError });
+    // The other two act on monitors only, not on Harness's other background shells.
+    const unknown = (id: unknown): ServerToolResult | undefined => {
+        if (typeof id === "string" && state().shells.get(id)?.monitor) return undefined;
+        const ids = [...state().shells.values()].filter((s) => s.monitor).map((s) => s.id);
+        return { text: `No monitor with id ${typeof id === "string" ? id : JSON.stringify(id)}. Monitors: ${ids.join(", ") || "none"}`, isError: true };
+    };
+    return [
+        {
+            name: "monitor",
+            title: "Monitor a command",
+            description: ServedMonitorTool.description,
+            inputSchema: MonitorTool.parameters,
+            annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+            call: async (args, { signal, meta }) => say(await run(ServedMonitorTool, args, signal, callId(meta))),
+        },
+        {
+            name: "monitor_output",
+            title: "Read a monitor's output",
+            description: "New output from a monitor (stdout and stderr) since the last read, and whether it's still running. Notifications carry its stdout lines already; read this for stderr, or for lines a notification left out. Optional filter is a regex.",
+            inputSchema: { type: "object", properties: { id: { type: "string", description: "The monitor's id (monitor_1)" }, filter: { type: "string", description: "Optional regex: only matching lines" } }, required: ["id"] },
+            annotations: { readOnlyHint: true, openWorldHint: false },
+            call: async (args, { signal, meta }) => unknown(args.id) ?? say(await run(BashOutputTool, { bash_id: args.id, ...(args.filter !== undefined ? { filter: args.filter } : {}) }, signal, callId(meta))),
+        },
+        {
+            name: "monitor_stop",
+            title: "Stop a monitor",
+            description: "Stops a monitor started with monitor. It sends no more notifications.",
+            inputSchema: { type: "object", properties: { id: { type: "string", description: "The monitor's id (monitor_1)" } }, required: ["id"] },
+            annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+            call: async (args, { signal, meta }) => unknown(args.id) ?? say(await run(KillShellTool, { shell_id: args.id }, signal, callId(meta))),
+        },
+    ];
+}
+
+/** A call of a served monitor tool (mcp__harness__monitor_stop) as the Harness tool it is (KillShell), for the transcript. */
+export function nativeMonitorCall(tool: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | undefined {
+    if (tool === "monitor") return { name: "Monitor", input };
+    if (tool === "monitor_output") return { name: "BashOutput", input: { bash_id: input.id, ...(input.filter !== undefined ? { filter: input.filter } : {}) } };
+    if (tool === "monitor_stop") return { name: "KillShell", input: { shell_id: input.id } };
+    return undefined;
+}
+
+export const MONITOR_INSTRUCTIONS = `# Monitoring (harness)
+
+To be told about a command's output as it happens ("tell me when an ERROR shows up in the log", "follow the CI steps"), use monitor: each new stdout line of its command comes back to you as a message, even after your turn has ended. Each message is the command's output, not the user's words. monitor_output reads what a message left out (and stderr); monitor_stop stops it.`;
